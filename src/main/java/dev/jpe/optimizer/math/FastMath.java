@@ -21,11 +21,23 @@ public final class FastMath {
     private static final float[] TABLE = new float[SIZE + 1];
     private static final float[] DERIV_TABLE = new float[SIZE + 1];
 
+    // Large single-read tables: no interpolation multiply/add, just index + load.
+    private static final int BIG_BITS = 16;
+    private static final int BIG_SIZE = 1 << BIG_BITS;  // 65536 buckets
+    private static final float BIG_SCALE = (float) BIG_SIZE;
+    private static final float[] BIG_TABLE = new float[BIG_SIZE + 1];
+    private static final float[] BIG_DERIV_TABLE = new float[BIG_SIZE + 1];
+
     static {
         for (int i = 0; i <= SIZE; i++) {
             float x = (float) i / SCALE;
             TABLE[i] = x * x * x * (x * (x * 6.0f - 15.0f) + 10.0f);
             DERIV_TABLE[i] = 30.0f * x * x * (x - 1.0f) * (x - 1.0f);
+        }
+        for (int i = 0; i <= BIG_SIZE; i++) {
+            float x = (float) i / BIG_SCALE;
+            BIG_TABLE[i] = x * x * x * (x * (x * 6.0f - 15.0f) + 10.0f);
+            BIG_DERIV_TABLE[i] = 30.0f * x * x * (x - 1.0f) * (x - 1.0f);
         }
     }
 
@@ -57,6 +69,18 @@ public final class FastMath {
     }
 
     public static int tableSize() { return TABLE.length; }
+
+    /** Single-read 65536-entry lookup (max error ~2e-6), no interpolation. */
+    public static float smoothstepBig(float x) {
+        if (x <= 0.0f || x >= 1.0f) return smoothstepExact(x);
+        return BIG_TABLE[(int) (x * BIG_SCALE)];
+    }
+
+    /** Single-read 65536-entry derivative lookup. */
+    public static float smoothstepDerivativeBig(float x) {
+        if (x <= 0.0f || x >= 1.0f) return smoothstepDerivativeExact(x);
+        return BIG_DERIV_TABLE[(int) (x * BIG_SCALE)];
+    }
 
     /** Bit-exact reference (vanilla Mth.smoothstepDerivative). */
     public static float smoothstepDerivativeExact(float x) {

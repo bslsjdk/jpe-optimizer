@@ -6,6 +6,8 @@ import dev.jpe.optimizer.math.FastMath;
 public final class MathBenchmark {
     private MathBenchmark() {}
 
+    private static volatile float sink;
+
     public static void main(String[] args) {
         int warmup = arg(args, "--warmup", 5);
         int iterations = arg(args, "--iterations", 20);
@@ -27,7 +29,8 @@ public final class MathBenchmark {
     private static void benchSmoothstep(int samples, int warmup, int iterations) {
         float[] x = new float[samples];
         for (int i = 0; i < samples; i++) x[i] = (float) i / samples;
-        float nsPoly = run1("smoothstep_poly", () -> {
+
+        float poly = bench("smoothstep_poly", () -> {
             float s = 0.0f;
             for (int i = 0; i < x.length; i++) {
                 float a = x[i];
@@ -35,15 +38,20 @@ public final class MathBenchmark {
             }
             return s;
         }, warmup, iterations, samples);
-        float nsLut = run1("smoothstep_lut", () -> {
+        float interp = bench("smoothstep_interp", () -> {
             float s = 0.0f;
             for (int i = 0; i < x.length; i++) s += FastMath.smoothstep(x[i]);
             return s;
         }, warmup, iterations, samples);
-        System.out.printf("SMOOTHSTEP_SPEEDUP poly_ns=%.3f lut_ns=%.3f ratio=%.2fx%n",
-                nsPoly, nsLut, nsPoly / nsLut);
+        float big = bench("smoothstep_big", () -> {
+            float s = 0.0f;
+            for (int i = 0; i < x.length; i++) s += FastMath.smoothstepBig(x[i]);
+            return s;
+        }, warmup, iterations, samples);
+        System.out.printf("SMOOTHSTEP poly=%.3f interp=%.3f (%.2fx) big=%.3f (%.2fx)%n",
+                poly, interp, poly / interp, big, poly / big);
 
-        float nsDPoly = run1("derivative_poly", () -> {
+        float dpoly = bench("derivative_poly", () -> {
             float s = 0.0f;
             for (int i = 0; i < x.length; i++) {
                 float a = x[i];
@@ -51,28 +59,35 @@ public final class MathBenchmark {
             }
             return s;
         }, warmup, iterations, samples);
-        float nsDLut = run1("derivative_lut", () -> {
+        float dinterp = bench("derivative_interp", () -> {
             float s = 0.0f;
             for (int i = 0; i < x.length; i++) s += FastMath.smoothstepDerivative(x[i]);
             return s;
         }, warmup, iterations, samples);
-        System.out.printf("DERIVATIVE_SPEEDUP poly_ns=%.3f lut_ns=%.3f ratio=%.2fx%n",
-                nsDPoly, nsDLut, nsDPoly / nsDLut);
+        float dbig = bench("derivative_big", () -> {
+            float s = 0.0f;
+            for (int i = 0; i < x.length; i++) s += FastMath.smoothstepDerivativeBig(x[i]);
+            return s;
+        }, warmup, iterations, samples);
+        System.out.printf("DERIVATIVE poly=%.3f interp=%.3f (%.2fx) big=%.3f (%.2fx)%n",
+                dpoly, dinterp, dpoly / dinterp, dbig, dpoly / dbig);
     }
 
-    private static float run1(String name, Sink fn, int warmup, int iterations, int samples) {
+    /** Runs several rounds and reports the minimum per-sample ns (least noise). */
+    private static float bench(String name, Sink fn, int warmup, int iterations, int samples) {
+        for (int i = 0; i < warmup; i++) sink = fn.eval();
+        double best = Double.MAX_VALUE;
         float checksum = 0;
-        for (int i = 0; i < warmup; i++) checksum += fn.eval();
-        long elapsed = 0;
         for (int i = 0; i < iterations; i++) {
             long start = System.nanoTime();
-            checksum += fn.eval();
-            elapsed += System.nanoTime() - start;
+            checksum = fn.eval();
+            long elapsed = System.nanoTime() - start;
+            sink = checksum;
+            double ns = (double) elapsed / samples;
+            if (ns < best) best = ns;
         }
-        double ns = (double) elapsed / ((long) iterations * samples);
-        System.out.printf("%s ns_per_sample=%.3f samples_per_second=%.0f checksum=%s%n",
-                name, ns, 1e9 / ns, Float.toHexString(checksum));
-        return (float) ns;
+        System.out.printf("%s best_ns=%.3f checksum=%s%n", name, best, Float.toHexString(checksum));
+        return (float) best;
     }
 
     private static void run(String name, Fn fn, float[] input, int warmup, int iterations) {
@@ -85,8 +100,7 @@ public final class MathBenchmark {
             elapsed += System.nanoTime() - start;
         }
         double ns = (double) elapsed / ((long) iterations * (input.length / 3));
-        System.out.printf("%s ns_per_sample=%.3f samples_per_second=%.0f checksum=%s%n",
-                name, ns, 1e9 / ns, Float.toHexString(checksum));
+        System.out.printf("%s ns_per_sample=%.3f checksum=%s%n", name, ns, Float.toHexString(checksum));
     }
 
     private static float execute(Fn fn, float[] input) {
