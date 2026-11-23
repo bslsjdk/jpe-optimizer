@@ -1,5 +1,3 @@
-modLoader="javafml"
-loaderVersion="[1,)"
 license="${mod_license}"
 
 [[mods]]
@@ -11,13 +9,13 @@ description='''Minecraft 26.3 world-generation optimization and correctness labo
 [[dependencies.${mod_id}]]
 modId="neoforge"
 type="required"
-versionRange="[26.3.0.115,)"
+versionRange="[${neo_version},)"
 ordering="NONE"
 side="BOTH"
 
 [[dependencies.${mod_id}]]
 modId="minecraft"
 type="required"
-versionRange="[${minecraft_version}]"
+versionRange="${minecraft_version_range}"
 ordering="NONE"
 side="BOTH"
