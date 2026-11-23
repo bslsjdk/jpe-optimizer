@@ -1,17 +1,16 @@
 package dev.jpe.optimizer;
 
-import java.util.List;
 import java.util.function.Consumer;
 
 import net.minecraft.core.Holder;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.gametest.framework.FunctionGameTestInstance;
-import net.minecraft.gametest.framework.GameTestEnvironments;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.gametest.framework.TestData;
 import net.minecraft.gametest.framework.TestEnvironmentDefinition;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.level.block.Rotation;
+import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
 public final class GameTests {
@@ -20,10 +19,8 @@ public final class GameTests {
     public static final DeferredRegister<Consumer<GameTestHelper>> TEST_FUNCTIONS =
             DeferredRegister.create(BuiltInRegistries.TEST_FUNCTION, JPEOptimizer.MOD_ID);
 
-    public static final var FLOAT_MATH_SMOKE = TEST_FUNCTIONS.register(
-            "float_math_smoke",
-            () -> GameTests::floatMathSmoke
-    );
+    public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> FLOAT_MATH_SMOKE =
+            TEST_FUNCTIONS.register("float_math_smoke", () -> GameTests::floatMathSmoke);
 
     public static void registerFunctions(net.neoforged.bus.api.IEventBus modEventBus) {
         TEST_FUNCTIONS.register(modEventBus);
@@ -32,11 +29,7 @@ public final class GameTests {
     public static void register(net.neoforged.neoforge.event.RegisterGameTestsEvent event) {
         Holder<TestEnvironmentDefinition<?>> environment = event.registerEnvironment(
                 Identifier.parse("jpe_optimizer:default"),
-                new TestEnvironmentDefinition.AllOf(List.of(
-                        net.minecraft.core.Holder.direct(
-                                new TestEnvironmentDefinition.AllOf(List.of())
-                        )
-                ))
+                new TestEnvironmentDefinition.AllOf()
         );
 
         TestData<Holder<TestEnvironmentDefinition<?>>> data = new TestData<>(
