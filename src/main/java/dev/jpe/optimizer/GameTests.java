@@ -32,17 +32,15 @@ public final class GameTests {
                 new TestEnvironmentDefinition.AllOf()
         );
 
+        // Minecraft 26.3 provides a six-argument convenience constructor.
+        // It supplies the overworld dimension and default retry/padding values.
         TestData<Holder<TestEnvironmentDefinition<?>>> data = new TestData<>(
                 environment,
                 Identifier.parse("minecraft:empty"),
                 40,
                 0,
                 true,
-                Rotation.NONE,
-                false,
-                1,
-                1,
-                false
+                Rotation.NONE
         );
 
         event.registerTest(
