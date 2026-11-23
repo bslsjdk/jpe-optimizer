@@ -1,6 +1,7 @@
 package dev.jpe.optimizer;
 
 import com.mojang.logging.LogUtils;
+import dev.jpe.optimizer.runtime.JavaRuntimeDiagnostics;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.common.Mod;
 import org.slf4j.Logger;
@@ -14,5 +15,6 @@ public final class JPEOptimizer {
         GameTests.registerFunctions(modEventBus);
         modEventBus.addListener(GameTests::register);
         LOGGER.info("JPE Optimizer initialized for Minecraft 26.3");
+        JavaRuntimeDiagnostics.logRuntimeCapabilities();
     }
 }

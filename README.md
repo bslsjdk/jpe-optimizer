@@ -11,6 +11,17 @@ The first target is fresh chunk generation, especially Density Function and Nois
 - ModDevGradle 2.0.148
 - Gradle 9.2.1
 
+## Java runtime diagnostics
+At mod initialization, JPE logs the actual runtime version, VM, vendor, CPU architecture, operating system, processor count, heap limit, compiler, active garbage collectors, JVM input arguments, and selected Java 25 module capabilities.
+
+The Vector API checks distinguish:
+- `vectorInImage`: the runtime image contains `jdk.incubator.vector`.
+- `vectorResolved`: the module is resolved in the boot module layer and can be used by the application.
+
+ZL2's Java 25 runtime image is expected to package the incubator module. To resolve it, add `--add-modules=jdk.incubator.vector` to the Minecraft profile's JVM arguments. The diagnostic reports the preferred FloatVector lane count only when the module is active. This is a capability probe, not proof that a particular world-generation loop was vectorized or accelerated.
+
+The probe also reads `UseCompactObjectHeaders` when the running VM exposes that option. It does not enable the option or change garbage-collector settings. Runtime flags must be benchmarked on the actual device before being recommended.
+
 ## Test layers
 1. Fast math tests: deterministic JUnit tests over one million float inputs.
 2. Microbenchmarks: the `benchmark` task compares a reference expression graph with a common-subexpression-elimination candidate; reports ns/sample, samples/s and checksums.
