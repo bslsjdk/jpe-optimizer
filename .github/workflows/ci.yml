@@ -41,6 +41,9 @@ jobs:
       - name: Build mod
         run: gradle build --no-daemon --stacktrace
 
+      - name: Verify and decompile exact Minecraft 26.3 artifacts
+        run: python3 scripts/audit_minecraft_26_3_sources.py
+
       - name: Upload build and test reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -50,6 +53,7 @@ jobs:
             build/libs/
             build/reports/tests/
             build/test-results/
+            build/source-audit/report.txt
             run/gametest/logs/
           if-no-files-found: warn
           retention-days: 7
