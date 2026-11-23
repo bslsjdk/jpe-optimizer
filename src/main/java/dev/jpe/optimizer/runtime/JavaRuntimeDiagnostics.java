@@ -82,7 +82,8 @@ public final class JavaRuntimeDiagnostics {
         try {
             Class<?> vectorClass = Class.forName("jdk.incubator.vector.FloatVector");
             Object species = vectorClass.getField("SPECIES_PREFERRED").get(null);
-            Object lanes = species.getClass().getMethod("length").invoke(species);
+            Class<?> speciesType = Class.forName("jdk.incubator.vector.VectorSpecies");
+            Object lanes = speciesType.getMethod("length").invoke(species);
             LOGGER.info("Vector API active: preferred FloatVector species has {} lanes", lanes);
         } catch (ReflectiveOperationException | LinkageError | RuntimeException exception) {
             LOGGER.warn("Vector API module is resolved, but preferred species could not be queried: {}", exception.toString());
