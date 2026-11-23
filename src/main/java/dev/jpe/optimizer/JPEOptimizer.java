@@ -11,6 +11,7 @@ public final class JPEOptimizer {
     public static final Logger LOGGER = LogUtils.getLogger();
 
     public JPEOptimizer(IEventBus modEventBus) {
+        GameTests.registerFunctions(modEventBus);
         modEventBus.addListener(GameTests::register);
         LOGGER.info("JPE Optimizer initialized for Minecraft 26.3");
     }
