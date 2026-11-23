@@ -1,152 +1,46 @@
 package dev.jpe.optimizer.benchmark;
 
-import java.util.Arrays;
-import java.util.Random;
-import jdk.incubator.vector.FloatVector;
-import jdk.incubator.vector.VectorSpecies;
-
 /**
- * Standalone scalar-versus-Vector-API probe.
- *
- * This is intentionally isolated from the shipped mod. It measures a simple
- * lane-wise arithmetic kernel and verifies bit-exact output before timing.
- * It does not prove that Minecraft's noise graph is vectorizable.
+ * Launches the Vector API probe without statically linking the incubator module.
+ * That lets users get a useful diagnostic when the module exists in the runtime
+ * image but has not been resolved with --add-modules.
  */
 public final class VectorApiBenchmark {
-    private static final VectorSpecies<Float> SPECIES = FloatVector.SPECIES_PREFERRED;
-    private static volatile double blackhole;
+    private static final String VECTOR_MODULE = "jdk.incubator.vector";
+    private static final String KERNEL_CLASS = "dev.jpe.optimizer.benchmark.VectorApiKernel";
 
     private VectorApiBenchmark() {}
 
-    public static void main(String[] args) {
-        int warmup = intArg(args, "--warmup", 5);
-        int iterations = intArg(args, "--iterations", 20);
-        int samples = intArg(args, "--samples", 262_144);
-        if (warmup < 1 || iterations < 3 || samples < SPECIES.length()) {
-            throw new IllegalArgumentException("Require warmup >= 1, iterations >= 3, and samples >= vector lanes");
+    public static void main(String[] args) throws ReflectiveOperationException {
+        System.out.printf(
+                "Runtime: java=%s, runtime=%s, vm=%s %s, arch=%s, os=%s/%s%n",
+                System.getProperty("java.version", "unknown"),
+                System.getProperty("java.runtime.version", "unknown"),
+                System.getProperty("java.vm.name", "unknown"),
+                System.getProperty("java.vm.version", "unknown"),
+                System.getProperty("os.arch", "unknown"),
+                System.getProperty("os.name", "unknown"),
+                System.getProperty("os.version", "unknown")
+        );
+
+        if (ModuleLayer.boot().findModule(VECTOR_MODULE).isEmpty()) {
+            System.err.println("Vector API module is not resolved.");
+            System.err.println("Add this as a separate JVM argument: --add-modules=jdk.incubator.vector");
+            throw new IllegalStateException("Cannot run Vector API probe because " + VECTOR_MODULE + " is not resolved");
         }
 
-        float[] a = new float[samples];
-        float[] b = new float[samples];
-        float[] c = new float[samples];
-        float[] scalarOut = new float[samples];
-        float[] vectorOut = new float[samples];
-        fillInputs(a, b, c);
-
-        scalar(a, b, c, scalarOut);
-        vector(a, b, c, vectorOut);
-        verifyExact(scalarOut, vectorOut);
-
-        for (int i = 0; i < warmup; i++) {
-            if ((i & 1) == 0) {
-                scalar(a, b, c, scalarOut);
-                vector(a, b, c, vectorOut);
-            } else {
-                vector(a, b, c, vectorOut);
-                scalar(a, b, c, scalarOut);
+        Class<?> kernelClass = Class.forName(KERNEL_CLASS);
+        try {
+            kernelClass.getMethod("run", String[].class).invoke(null, (Object) args);
+        } catch (java.lang.reflect.InvocationTargetException exception) {
+            Throwable cause = exception.getCause();
+            if (cause instanceof RuntimeException runtimeException) {
+                throw runtimeException;
             }
-            blackhole = checksum(scalarOut) + checksum(vectorOut);
-        }
-
-        long[] scalarTimes = new long[iterations];
-        long[] vectorTimes = new long[iterations];
-        for (int i = 0; i < iterations; i++) {
-            if ((i & 1) == 0) {
-                scalarTimes[i] = time(() -> scalar(a, b, c, scalarOut));
-                blackhole = checksum(scalarOut);
-                vectorTimes[i] = time(() -> vector(a, b, c, vectorOut));
-                blackhole = checksum(vectorOut);
-            } else {
-                vectorTimes[i] = time(() -> vector(a, b, c, vectorOut));
-                blackhole = checksum(vectorOut);
-                scalarTimes[i] = time(() -> scalar(a, b, c, scalarOut));
-                blackhole = checksum(scalarOut);
+            if (cause instanceof Error error) {
+                throw error;
             }
+            throw new IllegalStateException("Vector API benchmark failed", cause);
         }
-
-        verifyExact(scalarOut, vectorOut);
-        double scalarMedian = percentile(scalarTimes, 0.50) / (double) samples;
-        double vectorMedian = percentile(vectorTimes, 0.50) / (double) samples;
-        double scalarP95 = percentile(scalarTimes, 0.95) / (double) samples;
-        double vectorP95 = percentile(vectorTimes, 0.95) / (double) samples;
-
-        System.out.println("Vector API benchmark (diagnostic only)");
-        System.out.printf("species=%s, floatLanes=%d, vectorBits=%d, samples=%d, warmup=%d, iterations=%d%n",
-                SPECIES, SPECIES.length(), SPECIES.vectorBitSize(), samples, warmup, iterations);
-        System.out.printf("scalar median=%.3f ns/sample, p95=%.3f ns/sample%n", scalarMedian, scalarP95);
-        System.out.printf("vector median=%.3f ns/sample, p95=%.3f ns/sample%n", vectorMedian, vectorP95);
-        System.out.printf("median speedup=%.3fx, checksum=%.9f%n",
-                scalarMedian / vectorMedian, checksum(vectorOut));
-        System.out.println("Correctness: bit-exact scalar/vector outputs");
-        System.out.println("Note: throughput does not prove a specific SIMD instruction was emitted.");
-    }
-
-    private static void scalar(float[] a, float[] b, float[] c, float[] out) {
-        for (int i = 0; i < out.length; i++) {
-            float product = a[i] * b[i];
-            out[i] = product + c[i];
-        }
-    }
-
-    private static void vector(float[] a, float[] b, float[] c, float[] out) {
-        int bound = SPECIES.loopBound(out.length);
-        for (int i = 0; i < bound; i += SPECIES.length()) {
-            FloatVector va = FloatVector.fromArray(SPECIES, a, i);
-            FloatVector vb = FloatVector.fromArray(SPECIES, b, i);
-            FloatVector vc = FloatVector.fromArray(SPECIES, c, i);
-            va.mul(vb).add(vc).intoArray(out, i);
-        }
-        for (int i = bound; i < out.length; i++) {
-            float product = a[i] * b[i];
-            out[i] = product + c[i];
-        }
-    }
-
-    private static void fillInputs(float[] a, float[] b, float[] c) {
-        Random random = new Random(0x4A50454F50544CL);
-        for (int i = 0; i < a.length; i++) {
-            a[i] = random.nextFloat() * 2.0f - 1.0f;
-            b[i] = random.nextFloat() * 2.0f - 1.0f;
-            c[i] = random.nextFloat() * 2.0f - 1.0f;
-        }
-    }
-
-    private static void verifyExact(float[] expected, float[] actual) {
-        for (int i = 0; i < expected.length; i++) {
-            if (Float.floatToRawIntBits(expected[i]) != Float.floatToRawIntBits(actual[i])) {
-                throw new IllegalStateException("Scalar/vector mismatch at index " + i
-                        + ": " + expected[i] + " != " + actual[i]);
-            }
-        }
-    }
-
-    private static double checksum(float[] values) {
-        double sum = 0.0;
-        for (float value : values) {
-            sum += value;
-        }
-        return sum;
-    }
-
-    private static long time(Runnable action) {
-        long start = System.nanoTime();
-        action.run();
-        return System.nanoTime() - start;
-    }
-
-    private static long percentile(long[] values, double percentile) {
-        long[] sorted = values.clone();
-        Arrays.sort(sorted);
-        int index = Math.min(sorted.length - 1, (int) Math.ceil(percentile * sorted.length) - 1);
-        return sorted[index];
-    }
-
-    private static int intArg(String[] args, String key, int fallback) {
-        for (int i = 0; i < args.length - 1; i++) {
-            if (key.equals(args[i])) {
-                return Integer.parseInt(args[i + 1]);
-            }
-        }
-        return fallback;
     }
 }

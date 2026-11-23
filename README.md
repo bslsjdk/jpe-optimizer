@@ -25,6 +25,8 @@ The probe also reads `UseCompactObjectHeaders` when the running VM exposes that 
 ## Vector API probe
 The `vectorBenchmark` Gradle task compiles a separate source set, packages it as a standalone JAR, and executes that exact JAR. The shipped mod therefore has no compile-time dependency on the incubator module.
 
+The JAR's entry class checks whether the Vector API module is actually resolved before loading the Vector-specific kernel. If the module is missing or unresolved, it prints the exact JVM option required instead of failing with an opaque `NoClassDefFoundError`.
+
 The probe compares scalar and Vector API float multiply-plus-add over identical deterministic arrays, verifies bit-exact results, alternates execution order, and reports median and p95 ns/sample together with the runtime architecture and preferred vector species.
 
 Build and run on a desktop:
@@ -43,7 +45,7 @@ build/vector-probe/jpe-vector-probe.jar
 3. Ensure the JVM arguments used by the JAR process include this exact argument as one separate argument: `--add-modules=jdk.incubator.vector`. ZL2's JAR launcher reuses the configured user JVM arguments; do not concatenate this flag with another argument.
 4. Read the output in ZL2's Java execution log. Save the full output, including the reported `os.arch`, `java.version`, preferred species and scalar/vector timings.
 
-If the Vector API module is not resolved, the program will say so and exit before the benchmark. Do not interpret the scalar fallback as a Vector API result.
+The first desktop CI smoke test on 2026-11-23 used an x86-64 256-bit preferred species (8 float lanes). It measured 0.299 ns/sample for the scalar loop and 0.300 ns/sample for the Vector API loop (0.998x median speedup). The outputs were bit-exact, but this simple kernel showed no measurable speedup on that desktop host. This is not an ARM64 result.
 
 This is an ARM64 runtime and arithmetic probe, not a Minecraft chunk-generation benchmark. A faster result for this one kernel does not establish faster Density Function evaluation, and it does not establish a world-generation improvement.
 

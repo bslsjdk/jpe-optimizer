@@ -39,6 +39,7 @@ jobs:
         env:
           JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector
         run: |
+          mkdir -p build/vector-probe
           set -o pipefail
           gradle vectorBenchmark --no-daemon --stacktrace | tee build/vector-probe/result.txt
 
