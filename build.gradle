@@ -61,6 +61,29 @@ tasks.register('benchmark', JavaExec) {
     mainClass = 'dev.jpe.optimizer.benchmark.MathBenchmark'
     args = ['--warmup', '5', '--iterations', '20', '--samples', '262144']
 }
+
+// Keep incubator API references out of the shipped mod. This isolated source
+// set is an opt-in diagnostic benchmark for runtimes that resolve the module.
+sourceSets {
+    vectorBenchmark {
+        java.srcDir 'src/vectorBenchmark/java'
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += output + compileClasspath
+    }
+}
+tasks.named('compileVectorBenchmarkJava', JavaCompile) {
+    options.compilerArgs += ['--add-modules', 'jdk.incubator.vector']
+}
+tasks.register('vectorBenchmark', JavaExec) {
+    group = 'verification'
+    description = 'Compares scalar and Java Vector API float arithmetic; requires the incubator module.'
+    dependsOn tasks.named('vectorBenchmarkClasses')
+    classpath = sourceSets.vectorBenchmark.runtimeClasspath
+    mainClass = 'dev.jpe.optimizer.benchmark.VectorApiBenchmark'
+    jvmArgs '--add-modules=jdk.incubator.vector'
+    args = ['--warmup', '5', '--iterations', '20', '--samples', '262144']
+}
+
 tasks.named('check') { dependsOn tasks.named('benchmark') }
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'

@@ -35,6 +35,11 @@ jobs:
       - name: Math microbenchmark
         run: gradle benchmark --no-daemon --stacktrace
 
+      - name: Vector API scalar comparison
+        env:
+          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector
+        run: gradle vectorBenchmark --no-daemon --stacktrace
+
       - name: Official NeoForge GameTestServer (Vector API enabled)
         env:
           JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector
