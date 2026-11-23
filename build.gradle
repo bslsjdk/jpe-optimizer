@@ -23,6 +23,28 @@ neoForge {
     mods { "${mod_id}" { sourceSet(sourceSets.main) } }
 }
 repositories { mavenCentral() }
+
+// Expand the mod metadata template and include it in the main source set.
+// Without this, NeoForge sees the compiled classes directory but cannot
+// discover META-INF/neoforge.mods.toml, so the development mod is rejected.
+def generateModMetadata = tasks.register("generateModMetadata", ProcessResources) {
+    def replaceProperties = [
+        minecraft_version: minecraft_version,
+        minecraft_version_range: minecraft_version_range,
+        neo_version: neo_version,
+        mod_id: mod_id,
+        mod_name: mod_name,
+        mod_license: mod_license,
+        mod_version: mod_version
+    ]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    from "src/main/templates"
+    into layout.buildDirectory.dir("generated/sources/modMetadata")
+}
+
+sourceSets.main.resources.srcDir(generateModMetadata)
+
 dependencies {
     testImplementation platform('org.junit:junit-bom:5.12.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
