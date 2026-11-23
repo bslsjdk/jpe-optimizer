@@ -150,13 +150,12 @@ def class_method_inventory(data: bytes) -> dict[tuple[str, str], dict[str, objec
     u2(); u2(); u2()
     for _ in range(u2()):
         u2()
-    for _ in range(2):
+    for _ in range(u2()):
+        u2(); u2()
         for _ in range(u2()):
-            u2(); u2()
-            for _ in range(u2()):
-                u2()
-                length = u4()
-                take(length)
+            u2()
+            length = u4()
+            take(length)
 
     methods: dict[tuple[str, str], dict[str, object]] = {}
     for _ in range(u2()):
