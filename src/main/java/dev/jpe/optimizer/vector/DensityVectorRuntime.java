@@ -67,6 +67,23 @@ public final class DensityVectorRuntime {
         }
     }
 
+    public static void rangeChoice(float[] values, float[] input, float[] whenOutOfRange,
+                                   int length, float minInclusive, float maxExclusive) {
+        DensityVectorKernel current = activeKernel;
+        if (current == null) {
+            ScalarDensityKernel.INSTANCE.rangeChoice(values, input, whenOutOfRange,
+                    length, minInclusive, maxExclusive);
+            return;
+        }
+        try {
+            current.rangeChoice(values, input, whenOutOfRange, length, minInclusive, maxExclusive);
+        } catch (RuntimeException | LinkageError exception) {
+            disable(exception);
+            ScalarDensityKernel.INSTANCE.rangeChoice(values, input, whenOutOfRange,
+                    length, minInclusive, maxExclusive);
+        }
+    }
+
     public static void minMax(float[] left, float[] right, int length, boolean minimum) {
         DensityVectorKernel current = activeKernel;
         if (current == null) {
@@ -121,6 +138,20 @@ public final class DensityVectorRuntime {
             ScalarDensityKernel.INSTANCE.rangeChoiceConst(expected, length, 0.2F, 0.8F, in, out);
             candidate.rangeChoiceConst(actual, length, 0.2F, 0.8F, in, out);
             String mismatch = compare("rangeChoiceConst", length, expected, actual);
+            if (mismatch != null) return mismatch;
+
+            float[] rangeInput = right.clone();
+            float[] outOfRange = right.clone();
+            for (int i = 0; i < outOfRange.length; ++i) {
+                outOfRange[i] = edges[(i * 7 + 5) % edges.length];
+            }
+            expected = source.clone();
+            actual = source.clone();
+            ScalarDensityKernel.INSTANCE.rangeChoice(expected, rangeInput, outOfRange,
+                    length, 0.2F, 0.8F);
+            candidate.rangeChoice(actual, rangeInput, outOfRange,
+                    length, 0.2F, 0.8F);
+            mismatch = compare("rangeChoice", length, expected, actual);
             if (mismatch != null) return mismatch;
 
             for (boolean minimum : new boolean[]{true, false}) {

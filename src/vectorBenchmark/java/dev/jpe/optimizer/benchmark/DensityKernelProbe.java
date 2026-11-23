@@ -48,6 +48,18 @@ public final class DensityKernelProbe {
         report("rangeChoiceConst", scalarResult, vectorResult, size);
         compare("rangeChoiceConst", scalarValues, vectorValues);
 
+        float[] outOfRange = right.clone();
+        for (int i = 0; i < outOfRange.length; ++i) outOfRange[i] = source[(i * 13 + 7) % size];
+        float[] scalarRange = new float[size], vectorRange = new float[size];
+        Result scalarRangeResult = measure(size, warmup, iterations,
+                () -> System.arraycopy(source, 0, scalarRange, 0, size),
+                () -> scalar.rangeChoice(scalarRange, right, outOfRange, size, 0.2F, 0.8F), scalarRange);
+        Result vectorRangeResult = measure(size, warmup, iterations,
+                () -> System.arraycopy(source, 0, vectorRange, 0, size),
+                () -> vector.rangeChoice(vectorRange, right, outOfRange, size, 0.2F, 0.8F), vectorRange);
+        report("rangeChoice", scalarRangeResult, vectorRangeResult, size);
+        compare("rangeChoice", scalarRange, vectorRange);
+
         for (boolean minimum : new boolean[]{true, false}) {
             float[] scalarLeft = new float[size], vectorLeft = new float[size];
             float[] scalarRight = right.clone(), vectorRight = right.clone();

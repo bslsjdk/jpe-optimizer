@@ -32,6 +32,29 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
     }
 
     @Override
+    public void rangeChoice(float[] values, float[] input, float[] whenOutOfRange,
+                            int length, float minInclusive, float maxExclusive) {
+        Objects.checkFromIndexSize(0, length, values.length);
+        Objects.checkFromIndexSize(0, length, input.length);
+        Objects.checkFromIndexSize(0, length, whenOutOfRange.length);
+        int bound = SPECIES.loopBound(length), i = 0;
+        for (; i < bound; i += SPECIES.length()) {
+            FloatVector in = FloatVector.fromArray(SPECIES, input, i);
+            FloatVector selected = FloatVector.fromArray(SPECIES, values, i);
+            FloatVector out = FloatVector.fromArray(SPECIES, whenOutOfRange, i);
+            VectorMask<Float> outside = in.compare(VectorOperators.GE, minInclusive)
+                    .and(in.compare(VectorOperators.LT, maxExclusive)).not();
+            selected.blend(out, outside).intoArray(values, i);
+        }
+        for (; i < length; ++i) {
+            float selected = input[i];
+            if (!(selected >= minInclusive) || !(selected < maxExclusive)) {
+                values[i] = whenOutOfRange[i];
+            }
+        }
+    }
+
+    @Override
     public void minMax(float[] left, float[] right, int length, boolean minimum) {
         Objects.checkFromIndexSize(0, length, left.length);
         Objects.checkFromIndexSize(0, length, right.length);

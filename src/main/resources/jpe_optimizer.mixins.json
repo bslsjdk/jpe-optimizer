@@ -4,7 +4,11 @@
   "package": "dev.jpe.optimizer.mixin",
   "compatibilityLevel": "JAVA_25",
   "mixins": [
-    "NoiseBasedChunkGeneratorMixin"
+    "NoiseBasedChunkGeneratorMixin",
+    "DensityBufferAccessor",
+    "RangeChoiceConstSamplerMixin",
+    "RangeChoiceSamplerMixin",
+    "BinaryFunctionMinMaxMixin"
   ],
   "injectors": {
     "defaultRequire": 1

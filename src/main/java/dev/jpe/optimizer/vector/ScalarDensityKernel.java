@@ -18,6 +18,20 @@ public final class ScalarDensityKernel implements DensityVectorKernel {
     }
 
     @Override
+    public void rangeChoice(float[] values, float[] input, float[] whenOutOfRange,
+                            int length, float minInclusive, float maxExclusive) {
+        Objects.checkFromIndexSize(0, length, values.length);
+        Objects.checkFromIndexSize(0, length, input.length);
+        Objects.checkFromIndexSize(0, length, whenOutOfRange.length);
+        for (int i = 0; i < length; ++i) {
+            float selected = input[i];
+            if (!(selected >= minInclusive) || !(selected < maxExclusive)) {
+                values[i] = whenOutOfRange[i];
+            }
+        }
+    }
+
+    @Override
     public void minMax(float[] left, float[] right, int length, boolean minimum) {
         Objects.checkFromIndexSize(0, length, left.length);
         Objects.checkFromIndexSize(0, length, right.length);

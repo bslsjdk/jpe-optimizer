@@ -54,10 +54,10 @@ This is an ARM64 runtime and arithmetic probe, not a Minecraft chunk-generation 
 When `jdk.incubator.vector` is resolved, JPE reflectively loads Java 25 Vector API kernels and runs bit-exact startup self-tests before enabling them. If the module is missing, a self-test fails, or a kernel throws at runtime, the scalar implementation is used instead.
 
 The first enabled operations are deliberately narrow:
-- `RangeChoiceFunction.ConstSampler`: vectorized inclusive/exclusive range comparison and constant selection.
+- `RangeChoiceFunction.ConstSampler` and `RangeChoiceFunction.Sampler`: vectorized inclusive/exclusive range selection, including the full three-buffer path.
 - `BinaryFunction.MinSampler` / `MaxSampler`, including constant-right variants: vectorized conditional replacement.
 
-The kernels preserve Minecraft's comparison semantics rather than using `Math.min`/`Math.max`, which can differ for NaN and signed zero. Loops stop at `DensityBuffer.size()`, never the pooled backing-array capacity. Devices without the Vector API retain the vanilla sampler path.
+The full range-choice path keeps vanilla's branch-sampling order and pooled temporary-buffer lifecycle. The kernels preserve Minecraft's comparison semantics rather than using `Math.min`/`Math.max`, which can differ for NaN and signed zero. Loops stop at `DensityBuffer.size()`, never the pooled backing-array capacity. Devices without the Vector API retain the vanilla sampler path.
 
 To force scalar execution for an A/B test, add `-Djpe.forceScalar=true` as a separate JVM argument. Remove it to allow automatic activation. The startup log line `JPE density kernels: active: ...` confirms bit-exact self-tests passed; it does not by itself prove faster world generation.
 
