@@ -2,6 +2,7 @@ package dev.jpe.optimizer.mixin;
 
 import dev.jpe.optimizer.worldgen.DensityVolumeIndex;
 import dev.jpe.optimizer.worldgen.SectionCachePolicy;
+import dev.jpe.optimizer.worldgen.WorldgenMetrics;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.world.level.block.state.BlockState;
@@ -35,8 +36,9 @@ public abstract class NoiseBasedChunkGeneratorMixin {
     }
 
     /**
-     * Caches the current section and walks the density buffer with a descending
-     * linear index. Y is the innermost contiguous axis of DensityVolume.
+     * Traverses the Y-contiguous density buffer backwards. For unit-Y volumes,
+     * each chunk section is acquired once and processed as one uninterrupted
+     * run, keeping section-boundary decisions out of the per-block hot loop.
      */
     @Overwrite
     private void doFill(NoiseChunk noiseChunk, ChunkAccess chunk) {
@@ -51,44 +53,82 @@ public abstract class NoiseBasedChunkGeneratorMixin {
         DensitySampler.Bound finalDensity = noiseChunk.cachingSamplers()
                 .get(generatorSettings.noiseRouter().finalDensity());
 
+        boolean profile = WorldgenMetrics.enabled();
+        long densityStart = profile ? System.nanoTime() : 0L;
+        long densityNanos = 0L;
+        long fillStart = 0L;
+
         try (ScopedDensityBuffer densityBuffer = finalDensity.sampleVolume(volume)) {
+            if (profile) {
+                densityNanos = System.nanoTime() - densityStart;
+                fillStart = System.nanoTime();
+            }
+
+            int sizeY = volume.sizeY();
+            boolean contiguousY = volume.stepBlockY() == 1;
+
             for (int z = 0; z < volume.sizeZ(); ++z) {
                 int blockZ = volume.blockZ(z);
                 for (int x = 0; x < volume.sizeX(); ++x) {
-                    int blockX = volume.blockX(x);
-                    LevelChunkSection section = null;
+                    int y = sizeY - 1;
+                    int blockY = volume.blockY(y);
                     int densityIndex = DensityVolumeIndex.descendingStartIndex(
-                            volume.sizeX(), volume.sizeY(), x, z
+                            volume.sizeX(), sizeY, x, z
                     );
 
-                    for (int y = volume.sizeY() - 1; y >= 0; --y, --densityIndex) {
-                        int blockY = volume.blockY(y);
-                        int localY = blockY & 15;
-                        if (SectionCachePolicy.shouldRefresh(section != null, blockY)) {
-                            section = chunk.getSection(chunk.getSectionIndex(blockY));
+                    while (y >= 0) {
+                        int sectionIndex = chunk.getSectionIndex(blockY);
+                        int runLength;
+                        if (contiguousY) {
+                            runLength = SectionCachePolicy.descendingRunLength(y + 1, blockY);
+                        } else {
+                            // Defensive fallback for non-unit Y volumes supplied by other integrations.
+                            runLength = 1;
+                            while (runLength <= y
+                                    && chunk.getSectionIndex(volume.blockY(y - runLength)) == sectionIndex) {
+                                ++runLength;
+                            }
                         }
 
-                        float density = densityBuffer.get(densityIndex);
-                        BlockState state = aquifer.computeSubstance(blockX, blockY, blockZ, density);
-                        if (state == null) {
-                            state = defaultBlock;
-                        }
-                        state = this.debugPreliminarySurfaceLevel(noiseChunk, blockX, blockY, blockZ, state);
-                        if (state == AIR) {
-                            continue;
-                        }
+                        LevelChunkSection section = chunk.getSection(sectionIndex);
+                        for (int inSection = 0; inSection < runLength; ++inSection) {
+                            int localY = blockY & 15;
+                            float density = densityBuffer.get(densityIndex);
+                            BlockState state = aquifer.computeSubstance(blockX(x, volume), blockY, blockZ, density);
+                            if (state == null) {
+                                state = defaultBlock;
+                            }
+                            state = this.debugPreliminarySurfaceLevel(noiseChunk, blockX(x, volume), blockY, blockZ, state);
+                            if (state != AIR) {
+                                section.setBlockState(x, localY, z, state, false);
+                                oceanFloor.update(x, blockY, z, state);
+                                worldSurface.update(x, blockY, z, state);
 
-                        section.setBlockState(x, localY, z, state, false);
-                        oceanFloor.update(x, blockY, z, state);
-                        worldSurface.update(x, blockY, z, state);
+                                if (aquifer.shouldScheduleFluidUpdate() && !state.getFluidState().isEmpty()) {
+                                    blockPos.set(blockX(x, volume), blockY, blockZ);
+                                    chunk.markPosForPostProcessing(blockPos);
+                                }
+                            }
 
-                        if (aquifer.shouldScheduleFluidUpdate() && !state.getFluidState().isEmpty()) {
-                            blockPos.set(blockX, blockY, blockZ);
-                            chunk.markPosForPostProcessing(blockPos);
+                            --y;
+                            --densityIndex;
+                            if (contiguousY) {
+                                --blockY;
+                            } else if (y >= 0) {
+                                blockY = volume.blockY(y);
+                            }
                         }
                     }
                 }
             }
         }
+
+        if (profile) {
+            WorldgenMetrics.record(densityNanos, System.nanoTime() - fillStart, volume.size());
+        }
+    }
+
+    private static int blockX(int index, DensityVolume volume) {
+        return volume.blockX(index);
     }
 }

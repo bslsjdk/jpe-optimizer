@@ -49,6 +49,16 @@ The first desktop CI smoke test on 2026-11-23 used an x86-64 256-bit preferred s
 
 This is an ARM64 runtime and arithmetic probe, not a Minecraft chunk-generation benchmark. A faster result for this one kernel does not establish faster Density Function evaluation, and it does not establish a world-generation improvement.
 
+## World-generation stage metrics
+The block-fill loop now processes one vertical chunk-section run at a time when the density volume has unit Y stride. That removes the section-boundary decision from every block iteration while preserving the original per-block aquifer, debug, block-state, heightmap, and post-processing operations. Non-unit Y volumes retain a defensive fallback.
+
+For on-device diagnosis, add `-Djpe.worldgenMetrics=true` as one separate JVM argument. JPE then reports cumulative averages every 64 `doFill` calls, separating:
+- `avgDensitySampleMs`: time spent evaluating the final-density volume.
+- `avgBlockFillMs`: time spent converting sampled densities into blocks and updating heightmaps/post-processing.
+- `avgSamplesPerCall`: number of density samples processed per call.
+
+The metrics are disabled by default. They measure only these two `doFill` phases, not surface rules, carvers, lighting, chunk scheduling, or total world-generation time. Compare identical fresh-world runs and treat these timings as diagnostic data, not a complete benchmark.
+
 ## Test layers
 1. Fast math tests: deterministic JUnit tests over one million float inputs.
 2. Math microbenchmarks: the `benchmark` task compares a reference expression graph with a common-subexpression-elimination candidate; reports ns/sample, samples/s and checksums.

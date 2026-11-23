@@ -1,14 +1,17 @@
 package dev.jpe.optimizer.worldgen;
 
-/** Branch-light section-boundary policy for descending, contiguous block-Y scans. */
+/** Section-run sizing for descending scans through a unit-stride Y volume. */
 public final class SectionCachePolicy {
     private SectionCachePolicy() {}
 
     /**
-     * Returns true for the first section access and at each next section's
-     * highest local Y (15), when scanning downwards one block at a time.
+     * Returns the number of remaining samples that stay in the current
+     * vertical chunk section when blockY decreases by exactly one per sample.
+     *
+     * @param remainingSamples number of samples left, including the current one
+     * @param blockY world-space Y coordinate of the current sample
      */
-    public static boolean shouldRefresh(boolean initialized, int blockY) {
-        return !initialized || (blockY & 15) == 15;
+    public static int descendingRunLength(int remainingSamples, int blockY) {
+        return Math.min(remainingSamples, (blockY & 15) + 1);
     }
 }
