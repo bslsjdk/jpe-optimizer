@@ -4,16 +4,17 @@ import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
 
 /**
- * Samples process-wide allocation rate (bytes/s) and GC counters at a fixed
- * interval, writing a CSV to the game directory via a daemon thread. Game
- * threads never perform I/O. This is the measuring instrument for the
- * "reduce allocation rate on the default JVM" work.
+ * Samples process-wide allocation rate (bytes/s) and GC counters at 250ms to
+ * capture the short peak during fresh-world / chunk generation, writing a CSV
+ * to the game directory via a daemon thread. Game threads never do I/O.
  */
 public final class AllocationSampler implements AutoCloseable {
+    private static final long SAMPLE_INTERVAL_MS = 250;
+
     private final com.sun.management.ThreadMXBean bean;
     private final java.nio.file.Path csv;
     private final java.util.concurrent.ArrayBlockingQueue<String> queue =
-            new java.util.concurrent.ArrayBlockingQueue<>(4096);
+            new java.util.concurrent.ArrayBlockingQueue<>(16384);
     private final java.util.concurrent.atomic.LongAdder dropped =
             new java.util.concurrent.atomic.LongAdder();
     private volatile boolean running = true;
@@ -74,13 +75,17 @@ public final class AllocationSampler implements AutoCloseable {
 
     private void sampleLoop() {
         while (running) {
+            long t0 = System.nanoTime();
             try {
-                Thread.sleep(1000);
                 sample();
-            } catch (InterruptedException e) {
-                if (!running) break;
             } catch (Throwable t) {
                 dev.jpe.optimizer.JPEOptimizer.LOGGER.warn("alloc sample failed", t);
+            }
+            long elapsed = (System.nanoTime() - t0) / 1_000_000L;
+            long sleep = SAMPLE_INTERVAL_MS - elapsed;
+            if (sleep > 0) {
+                try { Thread.sleep(sleep); }
+                catch (InterruptedException e) { if (!running) break; }
             }
         }
     }
