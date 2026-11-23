@@ -12,7 +12,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -43,10 +43,22 @@ jobs:
           set -o pipefail
           gradle vectorBenchmark --no-daemon --stacktrace | tee build/vector-probe/result.txt
 
-      - name: Official NeoForge GameTestServer (Vector API enabled)
+      - name: Dedicated GameTestServer worldgen benchmark (SIMD)
         env:
           JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector
-        run: gradle runGameTestServer --no-daemon --stacktrace
+        run: |
+          mkdir -p build/server-benchmark
+          set -o pipefail
+          gradle runGameTestServer --no-daemon --stacktrace 2>&1 | tee build/server-benchmark/simd.log
+          grep 'JPE_SERVER_WORLDGEN_BENCH' build/server-benchmark/simd.log
+
+      - name: Dedicated GameTestServer worldgen benchmark (scalar baseline)
+        env:
+          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.forceScalar=true
+        run: |
+          set -o pipefail
+          gradle runGameTestServer --no-daemon --stacktrace 2>&1 | tee build/server-benchmark/scalar.log
+          grep 'JPE_SERVER_WORLDGEN_BENCH' build/server-benchmark/scalar.log
 
       - name: Build mod
         run: gradle build --no-daemon --stacktrace
@@ -60,7 +72,7 @@ jobs:
       - name: Verify and decompile exact Minecraft 26.3 artifacts
         run: python3 scripts/audit_minecraft_26_3_sources.py
 
-      - name: Upload build, reports, and standalone Android probe
+      - name: Upload build, reports, and server benchmark logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -68,6 +80,7 @@ jobs:
           path: |
             build/libs/
             build/vector-probe/
+            build/server-benchmark/
             build/reports/tests/
             build/test-results/
             build/source-audit/report.txt
