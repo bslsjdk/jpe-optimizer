@@ -24,9 +24,6 @@ neoForge {
 }
 repositories { mavenCentral() }
 
-// Expand the mod metadata template and include it in the main source set.
-// Without this, NeoForge sees the compiled classes directory but cannot
-// discover META-INF/neoforge.mods.toml, so the development mod is rejected.
 def generateModMetadata = tasks.register("generateModMetadata", ProcessResources) {
     def replaceProperties = [
         minecraft_version: minecraft_version,
@@ -42,13 +39,14 @@ def generateModMetadata = tasks.register("generateModMetadata", ProcessResources
     from "src/main/templates"
     into layout.buildDirectory.dir("generated/sources/modMetadata")
 }
-
 sourceSets.main.resources.srcDir(generateModMetadata)
 
 dependencies {
     testImplementation platform('org.junit:junit-bom:5.12.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    // Mixin annotation processor (NeoForge bundles the runtime; processor generate refmap)
+    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
 }
 tasks.withType(Test).configureEach {
     useJUnitPlatform()
@@ -65,4 +63,5 @@ tasks.named('check') { dependsOn tasks.named('benchmark') }
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
     options.release = 25
+    options.compilerArgs += ['-AdefaultTargetLevel=21', '-Xlint:-processing']
 }
