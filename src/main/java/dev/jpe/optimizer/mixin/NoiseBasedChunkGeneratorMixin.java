@@ -17,6 +17,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Final;
+import dev.jpe.optimizer.worldgen.SectionCachePolicy;
 
 /**
  * Rewrites the vanilla block-fill loop while preserving its density, aquifer,
@@ -61,7 +62,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                     for (int y = volume.sizeY() - 1; y >= 0; --y) {
                         int blockY = volume.blockY(y);
                         int localY = blockY & 15;
-                        if (section == null || localY == 15) {
+                        if (SectionCachePolicy.shouldRefresh(section != null, blockY)) {
                             section = chunk.getSection(chunk.getSectionIndex(blockY));
                         }
 
