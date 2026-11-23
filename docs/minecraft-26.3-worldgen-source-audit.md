@@ -1,6 +1,6 @@
 # Minecraft 26.3 world-generation source audit
 
-Status: source inspection, not an optimization result.
+Status: source provenance is defined; the detailed implementation notes below remain provisional until the official-artifact CI audit completes. These notes were initially derived from a third-party CFR snapshot, not yet independently confirmed against Mojang's release JAR and the NeoForge-patched JAR. This is not an optimization result.
 
 ## Source provenance and version identity
 
@@ -52,7 +52,7 @@ The report's class hashes distinguish byte-for-byte unchanged classes from class
 whose bytecode differs after NeoForge patching. A successful workflow run is required
 before treating this automated provenance check as verified.
 
-## Verified generation path
+## Provisional generation-path notes (third-party snapshot; not yet verified)
 
 Relevant classes:
 
@@ -67,7 +67,7 @@ Inside `doFill`, the generator obtains the router's `finalDensity` sampler and c
 
 This gives us an important separation: density/noise evaluation is a bulk volume operation; block placement, aquifer decisions, and heightmap updates are a second per-voxel pass. A profiler must measure these separately.
 
-## Existing optimizations already present in vanilla
+## Provisional notes on existing vanilla optimizations (must be rechecked)
 
 ### Compiled samplers and graph rewrites
 
@@ -89,7 +89,7 @@ This means a generic "add common-subexpression elimination" patch would be prema
 
 [`PerlinNoise.addToVolume`](https://github.com/0khs/minecraft_source_26.3/blob/74720c2890f22942b72d7d84958eff1b3f72b95b/net/minecraft/world/level/levelgen/synth/PerlinNoise.java) is already a specialized Z/X/Y loop. It hoists X/Z work outside the Y loop and reuses gradient/permutation work while the sampled Y lattice cell remains unchanged. Replacing this with a naive scalar loop would likely be a regression.
 
-## Overworld graph facts
+## Provisional overworld graph notes (third-party snapshot; not yet verified)
 
 Relevant data:
 
@@ -108,7 +108,7 @@ The terrain/cave branch contains range choices, including a surface-vs-undergrou
 
 The final-density JSON uses interpolation with 4-block X/Z cells and 8-block Y cells before the final squeeze. This is a major clue: much of the expensive density work is evaluated at coarse lattice points and interpolated, not independently recomputed for every output block.
 
-## Numeric semantics
+## Numeric semantics to verify against the official artifacts
 
 Density values and noise outputs are floats, but coordinates and frequency/scale calculations also use doubles. The implementation mixes both types. Any optimization must preserve the exact sequence of float operations and the double-to-float conversion points. "Algebraically equivalent" is not enough. Validate output bits over fixed seeds and coordinates before any runtime enablement.
 
