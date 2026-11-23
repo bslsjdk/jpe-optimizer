@@ -1,5 +1,7 @@
 package dev.jpe.optimizer.mixin;
 
+import dev.jpe.optimizer.worldgen.DensityVolumeIndex;
+import dev.jpe.optimizer.worldgen.SectionCachePolicy;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.world.level.block.state.BlockState;
@@ -13,11 +15,10 @@ import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
 import net.minecraft.world.level.levelgen.densityfunction.DensitySampler;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
 import net.minecraft.world.level.levelgen.densityfunction.ScopedDensityBuffer;
+import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Shadow;
-import org.spongepowered.asm.mixin.Final;
-import dev.jpe.optimizer.worldgen.SectionCachePolicy;
 
 /**
  * Rewrites the vanilla block-fill loop while preserving its density, aquifer,
@@ -34,10 +35,9 @@ public abstract class NoiseBasedChunkGeneratorMixin {
     }
 
     /**
-     * Vanilla performs getSectionIndex + getSection for every voxel.
-     * The volume is contiguous in Y and traversed from high to low, so the
-     * section reference only needs refreshing at the first voxel and whenever
-     * the local Y coordinate wraps to 15 at the next section.
+     * Caches the current section and walks the density buffer with a descending
+     * linear index. The vanilla indexUnchecked call performs the same base
+     * multiply/add for every voxel even though Y is the innermost contiguous axis.
      */
     @Overwrite
     private void doFill(NoiseChunk noiseChunk, ChunkAccess chunk) {
@@ -58,15 +58,16 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                 for (int x = 0; x < volume.sizeX(); ++x) {
                     int blockX = volume.blockX(x);
                     LevelChunkSection section = null;
+                    int densityIndex = DensityVolumeIndex.descendingStartIndex(volume, x, z);
 
-                    for (int y = volume.sizeY() - 1; y >= 0; --y) {
+                    for (int y = volume.sizeY() - 1; y >= 0; --y, --densityIndex) {
                         int blockY = volume.blockY(y);
                         int localY = blockY & 15;
                         if (SectionCachePolicy.shouldRefresh(section != null, blockY)) {
                             section = chunk.getSection(chunk.getSectionIndex(blockY));
                         }
 
-                        float density = densityBuffer.get(volume.indexUnchecked(x, y, z));
+                        float density = densityBuffer.get(densityIndex);
                         BlockState state = aquifer.computeSubstance(blockX, blockY, blockZ, density);
                         if (state == null) {
                             state = defaultBlock;

@@ -36,7 +36,6 @@ public final class GameTests {
                 new TestEnvironmentDefinition.AllOf()
         );
 
-        // Allow the terrain smoke test to finish a genuinely fresh chunk.
         TestData<Holder<TestEnvironmentDefinition<?>>> data = new TestData<>(
                 environment,
                 Identifier.parse("minecraft:empty"),
@@ -69,26 +68,26 @@ public final class GameTests {
     }
 
     /**
-     * Forces generation of a remote overworld chunk instead of merely starting
-     * GameTestServer. This exercises the NoiseBasedChunkGenerator mixin on the
-     * normal terrain-generation path.
+     * Forces generation of a remote overworld chunk. This exercises the
+     * NoiseBasedChunkGenerator mixin on the normal terrain-generation path.
      */
     private static void terrainGenerationSmoke(GameTestHelper helper) {
         int chunkX = 4096;
         int chunkZ = -4096;
-        var chunk = helper.getLevel().getChunk(chunkX, chunkZ);
+        var level = helper.getLevel();
+        var chunk = level.getChunk(chunkX, chunkZ);
 
-        if (chunk.getPos().x != chunkX || chunk.getPos().z != chunkZ) {
+        if (chunk.getPos().x() != chunkX || chunk.getPos().z() != chunkZ) {
             throw new AssertionError("Server returned the wrong chunk: " + chunk.getPos());
         }
 
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         boolean foundTerrain = false;
-        int minY = helper.getLevel().getMinBuildHeight();
-        int maxY = helper.getLevel().getMaxBuildHeight();
+        int minY = level.getMinY();
+        int maxY = level.getMaxY();
         for (int x = 0; x < 16 && !foundTerrain; ++x) {
             for (int z = 0; z < 16 && !foundTerrain; ++z) {
-                for (int y = minY; y < maxY; y += 8) {
+                for (int y = minY; y < maxY; ++y) {
                     pos.set(chunkX * 16 + x, y, chunkZ * 16 + z);
                     if (!chunk.getBlockState(pos).isAir()) {
                         foundTerrain = true;
