@@ -151,7 +151,7 @@ def class_method_inventory(data: bytes) -> dict[tuple[str, str], dict[str, objec
     for _ in range(u2()):
         u2()
     for _ in range(u2()):
-        u2(); u2()
+        u2(); u2(); u2()
         for _ in range(u2()):
             u2()
             length = u4()
