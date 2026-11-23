@@ -42,5 +42,6 @@ public final class VectorApiBenchmark {
             }
             throw new IllegalStateException("Vector API benchmark failed", cause);
         }
+        DensityKernelProbe.run(args);
     }
 }

@@ -62,8 +62,12 @@ tasks.register('benchmark', JavaExec) {
     args = ['--warmup', '5', '--iterations', '20', '--samples', '262144']
 }
 
-// Keep incubator API references out of the shipped mod. This isolated source
-// set is packaged separately for optional desktop and Android runtime probes.
+// The optional Vector API implementation is loaded reflectively only after
+// the runtime module probe succeeds; all startup-path classes stay scalar-safe.
+tasks.named('compileJava', JavaCompile) {
+    options.compilerArgs += ['--add-modules', 'jdk.incubator.vector']
+}
+
 sourceSets {
     vectorBenchmark {
         java.srcDir 'src/vectorBenchmark/java'
@@ -77,11 +81,16 @@ tasks.named('compileVectorBenchmarkJava', JavaCompile) {
 
 def vectorProbeJar = tasks.register('vectorProbeJar', Jar) {
     group = 'build'
-    description = 'Packages the standalone Java 25 Vector API probe for direct execution.'
+    description = 'Packages the standalone Java 25 arithmetic and density-kernel probe.'
     dependsOn tasks.named('vectorBenchmarkClasses')
     archiveFileName = 'jpe-vector-probe.jar'
     destinationDirectory = layout.buildDirectory.dir('vector-probe')
     from sourceSets.vectorBenchmark.output
+    from(sourceSets.main.output) {
+        include 'dev/jpe/optimizer/vector/DensityVectorKernel.class'
+        include 'dev/jpe/optimizer/vector/ScalarDensityKernel.class'
+        include 'dev/jpe/optimizer/vector/VectorApiDensityKernel.class'
+    }
     manifest {
         attributes('Main-Class': 'dev.jpe.optimizer.benchmark.VectorApiBenchmark')
     }
@@ -89,7 +98,7 @@ def vectorProbeJar = tasks.register('vectorProbeJar', Jar) {
 
 tasks.register('vectorBenchmark', JavaExec) {
     group = 'verification'
-    description = 'Runs the packaged scalar-versus-Vector API benchmark; requires the incubator module.'
+    description = 'Runs arithmetic and branch-heavy density-kernel probes; requires the incubator module.'
     dependsOn vectorProbeJar
     classpath = files(vectorProbeJar.flatMap { it.archiveFile })
     mainClass = 'dev.jpe.optimizer.benchmark.VectorApiBenchmark'

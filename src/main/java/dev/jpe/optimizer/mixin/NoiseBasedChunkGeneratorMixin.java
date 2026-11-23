@@ -70,6 +70,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
             for (int z = 0; z < volume.sizeZ(); ++z) {
                 int blockZ = volume.blockZ(z);
                 for (int x = 0; x < volume.sizeX(); ++x) {
+                    int worldX = volume.blockX(x);
                     int y = sizeY - 1;
                     int blockY = volume.blockY(y);
                     int densityIndex = DensityVolumeIndex.descendingStartIndex(
@@ -94,18 +95,18 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                         for (int inSection = 0; inSection < runLength; ++inSection) {
                             int localY = blockY & 15;
                             float density = densityBuffer.get(densityIndex);
-                            BlockState state = aquifer.computeSubstance(blockX(x, volume), blockY, blockZ, density);
+                            BlockState state = aquifer.computeSubstance(worldX, blockY, blockZ, density);
                             if (state == null) {
                                 state = defaultBlock;
                             }
-                            state = this.debugPreliminarySurfaceLevel(noiseChunk, blockX(x, volume), blockY, blockZ, state);
+                            state = this.debugPreliminarySurfaceLevel(noiseChunk, worldX, blockY, blockZ, state);
                             if (state != AIR) {
                                 section.setBlockState(x, localY, z, state, false);
                                 oceanFloor.update(x, blockY, z, state);
                                 worldSurface.update(x, blockY, z, state);
 
                                 if (aquifer.shouldScheduleFluidUpdate() && !state.getFluidState().isEmpty()) {
-                                    blockPos.set(blockX(x, volume), blockY, blockZ);
+                                    blockPos.set(worldX, blockY, blockZ);
                                     chunk.markPosForPostProcessing(blockPos);
                                 }
                             }
@@ -128,7 +129,4 @@ public abstract class NoiseBasedChunkGeneratorMixin {
         }
     }
 
-    private static int blockX(int index, DensityVolume volume) {
-        return volume.blockX(index);
-    }
 }

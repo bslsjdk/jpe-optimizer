@@ -23,11 +23,11 @@ ZL2's Java 25 runtime image is expected to package the incubator module. To reso
 The probe also reads `UseCompactObjectHeaders` when the running VM exposes that option. It does not enable the option or change garbage-collector settings. Runtime flags must be benchmarked on the actual device before being recommended.
 
 ## Vector API probe
-The `vectorBenchmark` Gradle task compiles a separate source set, packages it as a standalone JAR, and executes that exact JAR. The shipped mod therefore has no compile-time dependency on the incubator module.
+The `vectorBenchmark` Gradle task compiles a separate source set, packages it as a standalone JAR, and executes that exact JAR. The mod keeps all Vector API calls in a separately loadable implementation and activates it only when the module is resolved.
 
 The JAR's entry class checks whether the Vector API module is actually resolved before loading the Vector-specific kernel. If the module is missing or unresolved, it prints the exact JVM option required instead of failing with an opaque `NoClassDefFoundError`.
 
-The probe compares scalar and Vector API float multiply-plus-add over identical deterministic arrays, verifies bit-exact results, alternates execution order, and reports median and p95 ns/sample together with the runtime architecture and preferred vector species.
+The probe compares scalar and Vector API float multiply-plus-add, then benchmarks the same branch-heavy range-choice and min/max array kernels used by the mod. It checks bit-exact results and reports median and p95 ns/sample. These are isolated kernel timings, not full chunk-generation measurements.
 
 Build and run on a desktop:
 ```sh
@@ -49,6 +49,18 @@ The first desktop CI smoke test on 2026-11-23 used an x86-64 256-bit preferred s
 
 This is an ARM64 runtime and arithmetic probe, not a Minecraft chunk-generation benchmark. A faster result for this one kernel does not establish faster Density Function evaluation, and it does not establish a world-generation improvement.
 
+## Active density SIMD kernels
+
+When `jdk.incubator.vector` is resolved, JPE reflectively loads Java 25 Vector API kernels and runs bit-exact startup self-tests before enabling them. If the module is missing, a self-test fails, or a kernel throws at runtime, the scalar implementation is used instead.
+
+The first enabled operations are deliberately narrow:
+- `RangeChoiceFunction.ConstSampler`: vectorized inclusive/exclusive range comparison and constant selection.
+- `BinaryFunction.MinSampler` / `MaxSampler`, including constant-right variants: vectorized conditional replacement.
+
+The kernels preserve Minecraft's comparison semantics rather than using `Math.min`/`Math.max`, which can differ for NaN and signed zero. Loops stop at `DensityBuffer.size()`, never the pooled backing-array capacity. Devices without the Vector API retain the vanilla sampler path.
+
+To force scalar execution for an A/B test, add `-Djpe.forceScalar=true` as a separate JVM argument. Remove it to allow automatic activation. The startup log line `JPE density kernels: active: ...` confirms bit-exact self-tests passed; it does not by itself prove faster world generation.
+
 ## World-generation stage metrics
 The block-fill loop now processes one vertical chunk-section run at a time when the density volume has unit Y stride. That removes the section-boundary decision from every block iteration while preserving the original per-block aquifer, debug, block-state, heightmap, and post-processing operations. Non-unit Y volumes retain a defensive fallback.
 
@@ -62,7 +74,7 @@ The metrics are disabled by default. They measure only these two `doFill` phases
 ## Test layers
 1. Fast math tests: deterministic JUnit tests over one million float inputs.
 2. Math microbenchmarks: the `benchmark` task compares a reference expression graph with a common-subexpression-elimination candidate; reports ns/sample, samples/s and checksums.
-3. Vector probe: the standalone `vectorBenchmark` JAR checks scalar/vector arithmetic equivalence and reports a controlled microbenchmark.
+3. Vector probe: `vectorBenchmark` verifies arithmetic and the actual branch-heavy density kernels on the selected runtime.
 4. Official in-game GameTests: `runGameTestServer` launches NeoForge GameTestServer and runs the registered `jpe_optimizer` namespace.
 5. Worldgen integration: fixed-seed fresh-world chunk generation with generated chunk counts, elapsed time, CPU time, allocation and GC metrics is the next stage.
 6. Device validation: sustained mobile thermal and power behavior requires real hardware; cloud CI cannot establish it.
