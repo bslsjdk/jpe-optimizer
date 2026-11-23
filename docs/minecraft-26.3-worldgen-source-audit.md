@@ -35,6 +35,23 @@ If the vanilla and patched implementations differ, the patched implementation is
 runtime authority for this project. Any third-party snapshot discrepancy is resolved in
 favor of those exact artifacts.
 
+## Automated artifact verification
+
+The CI workflow now runs
+[`scripts/audit_minecraft_26_3_sources.py`](../blob/main/scripts/audit_minecraft_26_3_sources.py)
+after the NeoForge build. It resolves the exact `26.3` entry from Mojang's version
+manifest, verifies the version metadata and official server JAR against Mojang's
+SHA-1/size, extracts the nested 26.3 server JAR, and checks the matching worldgen
+classes in both vanilla and
+`minecraft-patched-26.3.0.115.jar`. It then runs Vineflower 1.12.0 over those
+selected classes from both artifacts.
+
+The generated JARs and decompiled source stay in the CI build directory and are
+not committed or uploaded. The CI artifact contains only a metadata/hash report.
+The report's class hashes distinguish byte-for-byte unchanged classes from classes
+whose bytecode differs after NeoForge patching. A successful workflow run is required
+before treating this automated provenance check as verified.
+
 ## Verified generation path
 
 Relevant classes:
