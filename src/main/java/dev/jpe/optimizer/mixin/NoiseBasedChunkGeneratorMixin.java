@@ -36,8 +36,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
 
     /**
      * Caches the current section and walks the density buffer with a descending
-     * linear index. The vanilla indexUnchecked call performs the same base
-     * multiply/add for every voxel even though Y is the innermost contiguous axis.
+     * linear index. Y is the innermost contiguous axis of DensityVolume.
      */
     @Overwrite
     private void doFill(NoiseChunk noiseChunk, ChunkAccess chunk) {
@@ -58,7 +57,9 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                 for (int x = 0; x < volume.sizeX(); ++x) {
                     int blockX = volume.blockX(x);
                     LevelChunkSection section = null;
-                    int densityIndex = DensityVolumeIndex.descendingStartIndex(volume, x, z);
+                    int densityIndex = DensityVolumeIndex.descendingStartIndex(
+                            volume.sizeX(), volume.sizeY(), x, z
+                    );
 
                     for (int y = volume.sizeY() - 1; y >= 0; --y, --densityIndex) {
                         int blockY = volume.blockY(y);
