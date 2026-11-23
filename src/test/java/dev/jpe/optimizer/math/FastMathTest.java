@@ -19,6 +19,16 @@ class FastMathTest {
         // 4096-segment linear interp of a smooth quartic: error should be tiny.
         assertTrue(maxErr < 1e-5f, "max smoothstep error = " + maxErr);
         System.out.println("MAX_SMOOTHSTEP_ERROR=" + maxErr);
+
+        float maxDerivErr = 0f;
+        for (int i = 0; i < 2_000_000; i++) {
+            float x = r.nextFloat();
+            float err = Math.abs(FastMath.smoothstepDerivativeExact(x)
+                    - FastMath.smoothstepDerivative(x));
+            if (err > maxDerivErr) maxDerivErr = err;
+        }
+        assertTrue(maxDerivErr < 1e-4f, "max smoothstepDerivative error = " + maxDerivErr);
+        System.out.println("MAX_DERIV_ERROR=" + maxDerivErr);
     }
 
     @Test

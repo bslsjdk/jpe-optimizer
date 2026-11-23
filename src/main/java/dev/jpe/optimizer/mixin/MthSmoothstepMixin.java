@@ -19,4 +19,13 @@ public abstract class MthSmoothstepMixin {
     public static float smoothstep(float x) {
         return dev.jpe.optimizer.math.FastMath.smoothstep(x);
     }
+
+    /**
+     * @author dreamxi
+     * @reason lookup-table smoothstepDerivative, called 3x per PerlinNoise gradient sample
+     */
+    @Overwrite
+    public static float smoothstepDerivative(float x) {
+        return dev.jpe.optimizer.math.FastMath.smoothstepDerivative(x);
+    }
 }
