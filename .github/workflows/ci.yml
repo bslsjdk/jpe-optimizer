@@ -1,0 +1,55 @@
+name: JPE Optimizer CI
+
+on:
+  push:
+    branches: [main, "work/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: gradle
+
+      - name: Set up Gradle 9.2.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.2.1"
+
+      - name: Unit correctness tests
+        run: gradle test --no-daemon --stacktrace
+
+      - name: Math microbenchmark
+        run: gradle benchmark --no-daemon --stacktrace
+
+      - name: Official NeoForge GameTestServer
+        run: gradle runGameTestServer --no-daemon --stacktrace
+
+      - name: Build mod
+        run: gradle build --no-daemon --stacktrace
+
+      - name: Upload build and test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jpe-optimizer-ci-${{ github.run_id }}
+          path: |
+            build/libs/
+            build/reports/tests/
+            build/test-results/
+            run/gametest/logs/
+          if-no-files-found: warn
+          retention-days: 7
