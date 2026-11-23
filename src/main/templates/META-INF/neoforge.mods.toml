@@ -4,7 +4,10 @@ license="${mod_license}"
 modId="${mod_id}"
 version="${mod_version}"
 displayName="${mod_name}"
-description='''Minecraft 26.3 world-generation optimization and correctness laboratory.'''
+description='''Lean-Heap: lookup-table math + allocation telemetry for faster worldgen.'''
+
+[[mixins]]
+config="leanheap.mixins.json"
 
 [[dependencies.${mod_id}]]
 modId="neoforge"

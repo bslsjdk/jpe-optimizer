@@ -32,8 +32,6 @@ public final class GameTests {
                 new TestEnvironmentDefinition.AllOf()
         );
 
-        // Minecraft 26.3 provides a six-argument convenience constructor.
-        // It supplies the overworld dimension and default retry/padding values.
         TestData<Holder<TestEnvironmentDefinition<?>>> data = new TestData<>(
                 environment,
                 Identifier.parse("minecraft:empty"),
@@ -57,6 +55,24 @@ public final class GameTests {
         float candidate = dev.jpe.optimizer.math.DensityMath.syntheticGraphShared(x, y, z);
         if (Float.floatToIntBits(reference) != Float.floatToIntBits(candidate)) {
             throw new AssertionError("Float32 CSE candidate mismatch: " + reference + " vs " + candidate);
+        }
+
+        // Verify the FastMath Mth.smoothstep @Overwrite mixin actually applied.
+        // Sample many points and count bit differences from the exact polynomial.
+        // The LUT approximation differs on most points (~1e-6, far above one
+        // float ULP); if the mixin never loaded, all bits are identical.
+        int differing = 0;
+        int total = 0;
+        for (int i = 1; i < 100; i++) {
+            float v = i / 100.0f;
+            float live = net.minecraft.util.Mth.smoothstep(v);
+            float exact = v * v * v * (v * (v * 6.0f - 15.0f) + 10.0f);
+            total++;
+            if (Float.floatToIntBits(live) != Float.floatToIntBits(exact)) differing++;
+        }
+        if (differing < total / 2) {
+            throw new AssertionError("Mth.smoothstep mixin did not apply (differing "
+                    + differing + "/" + total + ")");
         }
         helper.succeed();
     }
