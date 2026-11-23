@@ -2,11 +2,38 @@
 
 Status: source inspection, not an optimization result.
 
-## Source provenance
+## Source provenance and version identity
 
-The initial audit used a decompiled Minecraft 26.3 source snapshot at
-[`0khs/minecraft_source_26.3`](https://github.com/0khs/minecraft_source_26.3/tree/74720c2890f22942b72d7d84958eff1b3f72b95b).
-It is a third-party CFR decompilation, not a Mojang-published source archive. It is used as a navigation/reference aid only; this repository does not copy or redistribute Minecraft source. Before changing runtime behavior, verify signatures and control flow against the exact NeoForge 26.3.0.115 development artifacts / generated sources used by this project.
+**Authoritative target:** Minecraft Java Edition **26.3 full release**, as selected by
+`minecraft_version=26.3` in this project, with NeoForge **26.3.0.115** and Java 25.
+Do not confuse this release with any `26.3-snapshot-*`, pre-release, release candidate,
+or a third-party source dump that merely uses "26.3" in its repository name.
+
+Mojang's official policy announcement says Java Edition builds starting with the first
+snapshot after the Mounts of Mayhem launch ship without obfuscation, including original
+class, method, field, and variable names:
+https://www.minecraft.net/en-us/article/removing-obfuscation-in-java-edition
+
+Minecraft 26.3 is a full release (15 September 2026), not a snapshot. The source of truth
+for vanilla bytecode is therefore the **official 26.3 client/server artifact selected by
+Mojang's version manifest**, verified against the manifest's SHA-1. The project build
+also generates the NeoForge-patched development artifact
+`build/moddev/artifacts/minecraft-patched-26.3.0.115.jar`; this is the artifact that
+must be inspected when reasoning about runtime behavior under NeoForge 26.3.0.115.
+
+The earlier
+[`0khs/minecraft_source_26.3`](https://github.com/0khs/minecraft_source_26.3/tree/74720c2890f22942b72d7d84958eff1b3f72b95b)
+repository is only a third-party CFR decompilation. Its exact input artifact/build
+identity has not been independently established. Keep it as a secondary navigation aid,
+not as evidence of what the target game executes. No Minecraft source is copied or
+redistributed in this repository.
+
+**Required verification before optimization:** inspect/decompile the official 26.3
+vanilla artifact and the generated NeoForge-patched 26.3.0.115 artifact separately;
+compare the relevant methods and data resources; record the input SHA-1s and patch version.
+If the vanilla and patched implementations differ, the patched implementation is the
+runtime authority for this project. Any third-party snapshot discrepancy is resolved in
+favor of those exact artifacts.
 
 ## Verified generation path
 
