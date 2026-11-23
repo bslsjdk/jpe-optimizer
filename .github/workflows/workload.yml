@@ -1,0 +1,89 @@
+name: Lean-Heap Chunk-Gen Workload (1G server)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "work/lean-heap" ]
+    paths:
+      - '.github/workflows/workload.yml'
+      - 'scripts/stress_rcon.py'
+
+permissions:
+  contents: read
+
+jobs:
+  workload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      JAVA_TOOL_OPTIONS: -Xmx1G -Xms1G
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: gradle
+
+      - name: Set up Gradle 9.2.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.2.1"
+
+      - name: Build mod jar
+        run: gradle build --no-daemon
+
+      - name: Prepare server (EULA, RCON, big view distance, install mod)
+        run: |
+          mkdir -p run/mods
+          cp build/libs/jpe_optimizer-0.1.0.jar run/mods/
+          echo "eula=true" > run/eula.txt
+          cat > run/server.properties <<EOF
+          server-port=25565
+          online-mode=false
+          enable-rcon=true
+          rcon.port=25575
+          rcon.password=leanheap
+          view-distance=32
+          simulation-distance=24
+          max-tick-time=-1
+          spawn-protection=0
+          level-type=minecraft:normal
+          level-seed=leanheap42
+          EOF
+          echo "Prepared run/ contents:"
+          ls -la run/ run/mods/
+
+      - name: Start NeoForge server in background
+        run: |
+          nohup gradle runServer --no-daemon > server-console.log 2>&1 &
+          echo "SERVER_PID=$!" >> $GITHUB_ENV
+          echo "Server launch initiated"
+
+      - name: Wait for server RCON then stress chunk generation
+        run: python3 scripts/stress_rcon.py
+
+      - name: Collect allocation metrics & stop server
+        if: always()
+        run: |
+          echo "=== alloc csv files ==="
+          find run/logs -type f 2>/dev/null || true
+          echo "=== alloc csv contents ==="
+          for f in run/logs/jpe-optimizer/*.csv; do
+            [ -f "$f" ] && { echo "--- $f ---"; cat "$f"; }
+          done
+          kill ${{ env.SERVER_PID }} 2>/dev/null || true
+          sleep 3
+
+      - name: Upload workload results (成绩)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: leanheap-workload-${{ github.run_id }}
+          path: |
+            run/logs/jpe-optimizer/
+            server-console.log
+          if-no-files-found: warn
+          retention-days: 7
