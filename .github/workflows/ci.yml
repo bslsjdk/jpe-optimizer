@@ -35,10 +35,12 @@ jobs:
       - name: Math microbenchmark
         run: gradle benchmark --no-daemon --stacktrace
 
-      - name: Vector API scalar comparison
+      - name: Vector API scalar comparison and standalone JAR
         env:
           JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector
-        run: gradle vectorBenchmark --no-daemon --stacktrace
+        run: |
+          set -o pipefail
+          gradle vectorBenchmark --no-daemon --stacktrace | tee build/vector-probe/result.txt
 
       - name: Official NeoForge GameTestServer (Vector API enabled)
         env:
@@ -51,13 +53,14 @@ jobs:
       - name: Verify and decompile exact Minecraft 26.3 artifacts
         run: python3 scripts/audit_minecraft_26_3_sources.py
 
-      - name: Upload build and test reports
+      - name: Upload build, reports, and standalone Android probe
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: jpe-optimizer-ci-${{ github.run_id }}
           path: |
             build/libs/
+            build/vector-probe/
             build/reports/tests/
             build/test-results/
             build/source-audit/report.txt

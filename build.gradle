@@ -63,7 +63,7 @@ tasks.register('benchmark', JavaExec) {
 }
 
 // Keep incubator API references out of the shipped mod. This isolated source
-// set is an opt-in diagnostic benchmark for runtimes that resolve the module.
+// set is packaged separately for optional desktop and Android runtime probes.
 sourceSets {
     vectorBenchmark {
         java.srcDir 'src/vectorBenchmark/java'
@@ -74,11 +74,24 @@ sourceSets {
 tasks.named('compileVectorBenchmarkJava', JavaCompile) {
     options.compilerArgs += ['--add-modules', 'jdk.incubator.vector']
 }
+
+def vectorProbeJar = tasks.register('vectorProbeJar', Jar) {
+    group = 'build'
+    description = 'Packages the standalone Java 25 Vector API probe for direct execution.'
+    dependsOn tasks.named('vectorBenchmarkClasses')
+    archiveFileName = 'jpe-vector-probe.jar'
+    destinationDirectory = layout.buildDirectory.dir('vector-probe')
+    from sourceSets.vectorBenchmark.output
+    manifest {
+        attributes('Main-Class': 'dev.jpe.optimizer.benchmark.VectorApiBenchmark')
+    }
+}
+
 tasks.register('vectorBenchmark', JavaExec) {
     group = 'verification'
-    description = 'Compares scalar and Java Vector API float arithmetic; requires the incubator module.'
-    dependsOn tasks.named('vectorBenchmarkClasses')
-    classpath = sourceSets.vectorBenchmark.runtimeClasspath
+    description = 'Runs the packaged scalar-versus-Vector API benchmark; requires the incubator module.'
+    dependsOn vectorProbeJar
+    classpath = files(vectorProbeJar.flatMap { it.archiveFile })
     mainClass = 'dev.jpe.optimizer.benchmark.VectorApiBenchmark'
     jvmArgs '--add-modules=jdk.incubator.vector'
     args = ['--warmup', '5', '--iterations', '20', '--samples', '262144']
