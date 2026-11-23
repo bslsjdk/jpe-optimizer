@@ -53,10 +53,10 @@ jobs:
           grep 'JPE_SERVER_WORLDGEN_BENCH' build/server-benchmark/simd.log
 
       - name: Dedicated GameTestServer worldgen benchmark (scalar baseline)
-        run: rm -rf run/gametest
         env:
           JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.forceScalar=true
         run: |
+          rm -rf run/gametest
           set -o pipefail
           gradle runGameTestServer --no-daemon --stacktrace 2>&1 | tee build/server-benchmark/scalar.log
           grep 'JPE_SERVER_WORLDGEN_BENCH' build/server-benchmark/scalar.log
