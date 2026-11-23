@@ -2,6 +2,7 @@ package dev.jpe.optimizer;
 
 import java.util.function.Consumer;
 
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.gametest.framework.FunctionGameTestInstance;
@@ -22,6 +23,9 @@ public final class GameTests {
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> FLOAT_MATH_SMOKE =
             TEST_FUNCTIONS.register("float_math_smoke", () -> GameTests::floatMathSmoke);
 
+    public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> TERRAIN_GENERATION_SMOKE =
+            TEST_FUNCTIONS.register("terrain_generation_smoke", () -> GameTests::terrainGenerationSmoke);
+
     public static void registerFunctions(net.neoforged.bus.api.IEventBus modEventBus) {
         TEST_FUNCTIONS.register(modEventBus);
     }
@@ -32,12 +36,11 @@ public final class GameTests {
                 new TestEnvironmentDefinition.AllOf()
         );
 
-        // Minecraft 26.3 provides a six-argument convenience constructor.
-        // It supplies the overworld dimension and default retry/padding values.
+        // Allow the terrain smoke test to finish a genuinely fresh chunk.
         TestData<Holder<TestEnvironmentDefinition<?>>> data = new TestData<>(
                 environment,
                 Identifier.parse("minecraft:empty"),
-                40,
+                1200,
                 0,
                 true,
                 Rotation.NONE
@@ -46,6 +49,10 @@ public final class GameTests {
         event.registerTest(
                 Identifier.parse("jpe_optimizer:math_smoke"),
                 new FunctionGameTestInstance(FLOAT_MATH_SMOKE.getKey(), data)
+        );
+        event.registerTest(
+                Identifier.parse("jpe_optimizer:terrain_generation_smoke"),
+                new FunctionGameTestInstance(TERRAIN_GENERATION_SMOKE.getKey(), data)
         );
     }
 
@@ -57,6 +64,42 @@ public final class GameTests {
         float candidate = dev.jpe.optimizer.math.DensityMath.syntheticGraphShared(x, y, z);
         if (Float.floatToIntBits(reference) != Float.floatToIntBits(candidate)) {
             throw new AssertionError("Float32 CSE candidate mismatch: " + reference + " vs " + candidate);
+        }
+        helper.succeed();
+    }
+
+    /**
+     * Forces generation of a remote overworld chunk instead of merely starting
+     * GameTestServer. This exercises the NoiseBasedChunkGenerator mixin on the
+     * normal terrain-generation path.
+     */
+    private static void terrainGenerationSmoke(GameTestHelper helper) {
+        int chunkX = 4096;
+        int chunkZ = -4096;
+        var chunk = helper.getLevel().getChunk(chunkX, chunkZ);
+
+        if (chunk.getPos().x != chunkX || chunk.getPos().z != chunkZ) {
+            throw new AssertionError("Server returned the wrong chunk: " + chunk.getPos());
+        }
+
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        boolean foundTerrain = false;
+        int minY = helper.getLevel().getMinBuildHeight();
+        int maxY = helper.getLevel().getMaxBuildHeight();
+        for (int x = 0; x < 16 && !foundTerrain; ++x) {
+            for (int z = 0; z < 16 && !foundTerrain; ++z) {
+                for (int y = minY; y < maxY; y += 8) {
+                    pos.set(chunkX * 16 + x, y, chunkZ * 16 + z);
+                    if (!chunk.getBlockState(pos).isAir()) {
+                        foundTerrain = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (!foundTerrain) {
+            throw new AssertionError("Fresh overworld chunk contains no generated terrain blocks");
         }
         helper.succeed();
     }
