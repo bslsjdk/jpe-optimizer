@@ -84,6 +84,137 @@ def make_subset(source_jar: Path, subset_jar: Path) -> dict[str, str]:
     return hashes
 
 
+
+def class_method_inventory(data: bytes) -> dict[tuple[str, str], dict[str, object]]:
+    """Read method names/descriptors and Code lengths from a JVM class file."""
+    import struct
+
+    offset = 0
+
+    def u1() -> int:
+        nonlocal offset
+        value = data[offset]
+        offset += 1
+        return value
+
+    def u2() -> int:
+        nonlocal offset
+        value = struct.unpack_from(">H", data, offset)[0]
+        offset += 2
+        return value
+
+    def u4() -> int:
+        nonlocal offset
+        value = struct.unpack_from(">I", data, offset)[0]
+        offset += 4
+        return value
+
+    def take(length: int) -> bytes:
+        nonlocal offset
+        value = data[offset:offset + length]
+        if len(value) != length:
+            raise ValueError("Truncated class file")
+        offset += length
+        return value
+
+    if u4() != 0xCAFEBABE:
+        raise ValueError("Invalid class-file magic")
+    u2(); u2()
+    cp_count = u2()
+    cp: list[object] = [None] * cp_count
+    i = 1
+    while i < cp_count:
+        tag = u1()
+        if tag == 1:
+            length = u2()
+            cp[i] = take(length).decode("utf-8", errors="replace")
+        elif tag in (3, 4):
+            take(4)
+        elif tag in (5, 6):
+            take(8)
+            i += 1
+        elif tag in (7, 8, 16, 19, 20):
+            cp[i] = u2()
+        elif tag in (9, 10, 11, 12, 17, 18):
+            take(4)
+        elif tag == 15:
+            take(3)
+        else:
+            raise ValueError(f"Unknown constant-pool tag {tag}")
+        i += 1
+
+    def utf(index: int) -> str:
+        value = cp[index]
+        return value if isinstance(value, str) else ""
+
+    u2(); u2(); u2()
+    for _ in range(u2()):
+        u2()
+    for _ in range(2):
+        for _ in range(u2()):
+            u2(); u2()
+            for _ in range(u2()):
+                u2()
+                length = u4()
+                take(length)
+
+    methods: dict[tuple[str, str], dict[str, object]] = {}
+    for _ in range(u2()):
+        access = u2()
+        name = utf(u2())
+        descriptor = utf(u2())
+        code_length = None
+        code_hash = None
+        for _ in range(u2()):
+            attribute_name = utf(u2())
+            attribute_length = u4()
+            attribute_end = offset + attribute_length
+            if attribute_name == "Code":
+                u2(); u2()
+                length = u4()
+                code = take(length)
+                code_length = length
+                code_hash = hashlib.sha256(code).hexdigest()
+            offset = attribute_end
+        methods[(name, descriptor)] = {
+            "access": access,
+            "code_length": code_length,
+            "code_hash": code_hash,
+        }
+    return methods
+
+
+def compare_method_inventories(
+    vanilla_jar: Path, patched_jar: Path, class_names: list[str]
+) -> list[str]:
+    lines: list[str] = []
+    with zipfile.ZipFile(vanilla_jar) as vanilla, zipfile.ZipFile(patched_jar) as patched:
+        for class_name in class_names:
+            old = class_method_inventory(vanilla.read(class_name))
+            new = class_method_inventory(patched.read(class_name))
+            added = sorted(set(new) - set(old))
+            removed = sorted(set(old) - set(new))
+            common = sorted(set(old) & set(new))
+            length_changed = [
+                (key, old[key]["code_length"], new[key]["code_length"])
+                for key in common
+                if old[key]["code_length"] != new[key]["code_length"]
+            ]
+            raw_code_changed = [
+                key for key in common
+                if old[key]["code_hash"] != new[key]["code_hash"]
+            ]
+            lines.append(f"{class_name}: methods vanilla={len(old)}, patched={len(new)}")
+            lines.append(f"  added signatures: {len(added)}; removed signatures: {len(removed)}")
+            lines.append(f"  changed Code lengths: {len(length_changed)}; raw Code hashes differ: {len(raw_code_changed)}")
+            for name, descriptor in added:
+                lines.append(f"  + {name}{descriptor}")
+            for name, descriptor in removed:
+                lines.append(f"  - {name}{descriptor}")
+            for (name, descriptor), before, after in length_changed:
+                lines.append(f"  * {name}{descriptor}: Code bytes {before} -> {after}")
+    return lines
+
 def main() -> int:
     root = Path("build/source-audit")
     root.mkdir(parents=True, exist_ok=True)
@@ -152,6 +283,7 @@ def main() -> int:
             raise RuntimeError(f"Vineflower produced no Java source for {subset}")
 
     all_names = sorted(set(vanilla_hashes) | set(patched_hashes))
+    method_report = compare_method_inventories(vanilla_inner, PATCHED_JAR, all_names)
     changed = [name for name in all_names if vanilla_hashes.get(name) != patched_hashes.get(name)]
     report = [
         f"Minecraft version: {VERSION} ({version_data['type']})",
@@ -170,6 +302,9 @@ def main() -> int:
         "",
         "Changed target class entries:",
         *(changed or ["(none)"]),
+        "",
+        "Method-level inventory (raw Code hashes may differ when constant-pool indices are remapped):",
+        *method_report,
         "",
         "Decompiled source generated locally in build/source-audit/decompiled/ (not committed or uploaded).",
     ]
