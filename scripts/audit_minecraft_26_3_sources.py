@@ -12,6 +12,8 @@ import json
 import os
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -21,9 +23,10 @@ NEOFORGE_VERSION = "26.3.0.115"
 MANIFEST_URL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
 VINEFLOWER_VERSION = "1.12.0"
 VINEFLOWER_URL = (
-    "https://repo.maven.apache.org/maven2/org/vineflower/vineflower/"
+    "https://github.com/Vineflower/vineflower/releases/download/"
     f"{VINEFLOWER_VERSION}/vineflower-{VINEFLOWER_VERSION}.jar"
 )
+VINEFLOWER_SHA256 = "1dfcfe974395734fa467ce620661c7623d05ba83670de0529b1fbd63ff548b9d"
 PATCHED_JAR = Path("build/moddev/artifacts") / f"minecraft-patched-{NEOFORGE_VERSION}.jar"
 NESTED_SERVER_JAR = f"META-INF/versions/{VERSION}/server-{VERSION}.jar"
 TARGET_CLASSES = (
@@ -39,15 +42,40 @@ TARGET_CLASSES = (
 )
 
 
-def fetch(url: str, destination: Path) -> None:
+def fetch(url: str, destination: Path, retries: int = 5) -> None:
+    """Download atomically with bounded retries for transient rate limits and network errors."""
     destination.parent.mkdir(parents=True, exist_ok=True)
-    request = urllib.request.Request(url, headers={"User-Agent": "JPE-Optimizer-source-audit/1.0"})
-    with urllib.request.urlopen(request, timeout=90) as response, destination.open("wb") as output:
-        while True:
-            chunk = response.read(1024 * 1024)
-            if not chunk:
-                break
-            output.write(chunk)
+    temporary = destination.with_suffix(destination.suffix + ".part")
+    for attempt in range(retries):
+        request = urllib.request.Request(url, headers={"User-Agent": "JPE-Optimizer-source-audit/1.1"})
+        try:
+            with urllib.request.urlopen(request, timeout=90) as response, temporary.open("wb") as output:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+            os.replace(temporary, destination)
+            return
+        except urllib.error.HTTPError as exc:
+            temporary.unlink(missing_ok=True)
+            if exc.code not in (408, 425, 429, 500, 502, 503, 504) or attempt + 1 >= retries:
+                raise
+            retry_after = exc.headers.get("Retry-After")
+            try:
+                delay = min(30.0, max(1.0, float(retry_after))) if retry_after else min(30.0, 2.0 ** attempt)
+            except ValueError:
+                delay = min(30.0, 2.0 ** attempt)
+            print(f"HTTP {exc.code} while downloading {url}; retry {attempt + 1}/{retries} in {delay:.0f}s")
+            time.sleep(delay)
+        except (urllib.error.URLError, TimeoutError) as exc:
+            temporary.unlink(missing_ok=True)
+            if attempt + 1 >= retries:
+                raise
+            delay = min(30.0, 2.0 ** attempt)
+            print(f"Network error while downloading {url}: {exc}; retry {attempt + 1}/{retries} in {delay:.0f}s")
+            time.sleep(delay)
+    raise RuntimeError(f"Failed to download {url} after {retries} attempts")
 
 
 def sha1_file(path: Path) -> str:
@@ -267,7 +295,13 @@ def main() -> int:
     patched_hashes = make_subset(PATCHED_JAR, patched_subset)
 
     vineflower = root / f"vineflower-{VINEFLOWER_VERSION}.jar"
-    fetch(VINEFLOWER_URL, vineflower)
+    if not vineflower.is_file() or hashlib.sha256(vineflower.read_bytes()).hexdigest() != VINEFLOWER_SHA256:
+        fetch(VINEFLOWER_URL, vineflower)
+    actual_vineflower_sha256 = hashlib.sha256(vineflower.read_bytes()).hexdigest()
+    if actual_vineflower_sha256 != VINEFLOWER_SHA256:
+        raise RuntimeError(
+            f"Vineflower SHA-256 mismatch: {actual_vineflower_sha256} != {VINEFLOWER_SHA256}"
+        )
     decompile_root = root / "decompiled"
     vanilla_out = decompile_root / "vanilla"
     patched_out = decompile_root / "neoforge"
