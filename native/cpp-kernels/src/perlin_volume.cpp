@@ -96,15 +96,23 @@ int32_t perlin_add_volume(
     // order used by the original inner loop.
     thread_local std::vector<double> y_coordinates;
     thread_local std::vector<int32_t> y_floors;
+    thread_local std::vector<float> y_relative;
+    thread_local std::vector<float> y_alpha;
     if (y_coordinates.size() < size_y) {
         y_coordinates.resize(size_y);
         y_floors.resize(size_y);
+        y_relative.resize(size_y);
+        y_alpha.resize(size_y);
     }
     for (uint32_t iy = 0; iy < size_y; ++iy) {
         const double y = wrap_coordinate(
             static_cast<double>(axis_coordinate(min_y, iy, step_y)) * y_scale, far_lands) + offset_y;
+        const int32_t floor_y = floor_to_i32(y);
+        const float relative_y = static_cast<float>(y - static_cast<double>(floor_y));
         y_coordinates[iy] = y;
-        y_floors[iy] = floor_to_i32(y);
+        y_floors[iy] = floor_y;
+        y_relative[iy] = relative_y;
+        y_alpha[iy] = smoothstep(relative_y);
     }
 
     // X coordinates and their lattice lookups are also invariant across Z.
@@ -167,8 +175,7 @@ int32_t perlin_add_volume(
                 corner(permutation, static_cast<uint32_t>(xy11) + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F, corner_xz[7], corner_y[7]);
 
                 while (iy < size_y && y_floors[iy] == floor_y) {
-                    const float relative_y = static_cast<float>(
-                        y_coordinates[iy] - static_cast<double>(floor_y));
+                    const float relative_y = y_relative[iy];
                     const float relative_y1 = relative_y - 1.0F;
 
                     const float x000 = corner_xz[0] + corner_y[0] * relative_y;
@@ -180,7 +187,7 @@ int32_t perlin_add_volume(
                     const float x011 = corner_xz[6] + corner_y[6] * relative_y1;
                     const float x111 = corner_xz[7] + corner_y[7] * relative_y1;
 
-                    const float alpha_y = smoothstep(relative_y);
+                    const float alpha_y = y_alpha[iy];
                     const float lower = lerp(alpha_y,
                         lerp(alpha_x, x000, x100),
                         lerp(alpha_x, x010, x110));
