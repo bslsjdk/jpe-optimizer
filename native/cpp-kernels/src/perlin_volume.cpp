@@ -107,7 +107,7 @@ inline void perlin_evaluate_8_avx2(
 }
 #endif
 
-template<bool CacheY, bool CacheXY>
+template<bool CacheY, bool CacheXY, bool UseAvx2>
 int32_t perlin_add_volume_impl(
     const uint8_t* permutation,
     uint32_t size_x,
@@ -268,7 +268,7 @@ int32_t perlin_add_volume_impl(
                 corner(permutation, static_cast<uint32_t>(xy11) + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F, corner_xz[7], corner_y[7]);
 
 #if (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
-                if constexpr (CacheY) {
+                if constexpr (CacheY && UseAvx2) {
                     if (use_avx2) {
                         uint32_t run_end = iy + 1;
                         while (run_end < size_y && y_floors[run_end] == floor_y) ++run_end;
@@ -338,9 +338,32 @@ extern "C" int32_t jpe_cpp_perlin_add_volume(
     uint64_t output_length,
     uint32_t flags
 ) noexcept {
-    return perlin_add_volume_impl<true, false>(permutation,
+    return perlin_add_volume_impl<true, false, true>(permutation,
         size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
         xz_scale, y_scale, amplitude, output, output_length, flags);
+}
+
+extern "C" int32_t jpe_cpp_perlin_add_volume_scalar_cached_y(
+    const uint8_t* permutation,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    double offset_x, double offset_y, double offset_z,
+    double xz_scale, double y_scale, float amplitude,
+    float* output, uint64_t output_length, uint32_t flags
+) noexcept {
+    return perlin_add_volume_impl<true, false, false>(permutation,
+        size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
+        xz_scale, y_scale, amplitude, output, output_length, flags);
+}
+
+extern "C" int32_t jpe_cpp_perlin_avx2_supported() noexcept {
+#if (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
+    __builtin_cpu_init();
+    return __builtin_cpu_supports("avx2") ? 1 : 0;
+#else
+    return 0;
+#endif
 }
 
 extern "C" int32_t jpe_cpp_perlin_add_volume_uncached_y(
@@ -352,7 +375,7 @@ extern "C" int32_t jpe_cpp_perlin_add_volume_uncached_y(
     double xz_scale, double y_scale, float amplitude,
     float* output, uint64_t output_length, uint32_t flags
 ) noexcept {
-    return perlin_add_volume_impl<false, false>(permutation,
+    return perlin_add_volume_impl<false, false, false>(permutation,
         size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
         xz_scale, y_scale, amplitude, output, output_length, flags);
 }
@@ -366,7 +389,7 @@ extern "C" int32_t jpe_cpp_perlin_add_volume_cached_xy(
     double xz_scale, double y_scale, float amplitude,
     float* output, uint64_t output_length, uint32_t flags
 ) noexcept {
-    return perlin_add_volume_impl<true, true>(permutation,
+    return perlin_add_volume_impl<true, true, false>(permutation,
         size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
         xz_scale, y_scale, amplitude, output, output_length, flags);
 }
@@ -380,7 +403,7 @@ extern "C" int32_t jpe_cpp_perlin_add_volume_uncached_xy(
     double xz_scale, double y_scale, float amplitude,
     float* output, uint64_t output_length, uint32_t flags
 ) noexcept {
-    return perlin_add_volume_impl<true, false>(permutation,
+    return perlin_add_volume_impl<true, false, false>(permutation,
         size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
         xz_scale, y_scale, amplitude, output, output_length, flags);
 }
