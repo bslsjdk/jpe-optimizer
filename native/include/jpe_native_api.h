@@ -44,8 +44,9 @@ JPE_API int32_t jpe_runtime_perlin_add_stack(
     int32_t step_x, int32_t step_y, int32_t step_z,
     float *output, uint64_t output_length, uint32_t flags
 );
-/* Async stack API copies every permutation into Rust-owned task memory and borrows output_buffer
- * until terminal job status. layer_count is limited to 64. */
+/* Async stack API borrows the descriptor array, every 256-byte permutation, and output_buffer
+ * until terminal job status and release. The caller must keep all borrowed memory valid and
+ * exclusively reserved for the job's full lifetime. layer_count is limited to 64. */
 JPE_API uint64_t jpe_runtime_submit_perlin_stack(
     const JpePerlinLayer *layers, uint32_t layer_count,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
