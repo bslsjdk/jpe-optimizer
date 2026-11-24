@@ -9,7 +9,7 @@ class NativeRuntimeValidationTest {
     @Test
     void acceptsPooledOutputBufferWithExtraCapacity() {
         int length = NativeRuntime.validatePerlinInputs(
-                new byte[256], 2, 3, 4, 0, 0, 0, 1, 1, 1, new float[32]
+                new byte[256], 2, 3, 4, 1, 1, 1, new float[32]
         );
 
         assertEquals(24, length);
@@ -18,7 +18,7 @@ class NativeRuntimeValidationTest {
     @Test
     void acceptsExactOutputBuffer() {
         int length = NativeRuntime.validatePerlinInputs(
-                new byte[256], 2, 3, 4, 0, 0, 0, 1, 1, 1, new float[24]
+                new byte[256], 2, 3, 4, 1, 1, 1, new float[24]
         );
 
         assertEquals(24, length);
@@ -28,7 +28,7 @@ class NativeRuntimeValidationTest {
     void rejectsOutputBufferSmallerThanRequestedVolume() {
         assertThrows(IllegalArgumentException.class, () ->
                 NativeRuntime.validatePerlinInputs(
-                        new byte[256], 2, 3, 4, 0, 0, 0, 1, 1, 1, new float[23]
+                        new byte[256], 2, 3, 4, 1, 1, 1, new float[23]
                 )
         );
     }
