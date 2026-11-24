@@ -1302,7 +1302,7 @@ mod tests {
         const REPEATS: usize = 64;
         const ROUNDS: usize = 21;
         let permutation: [u8; 256] =
-            std::array::from_fn(|i| ((i * 37 + 11) & 255) as u8)
+            std::array::from_fn(|i| ((i * 37 + 11) & 255) as u8);
         let len = SX * SY * SZ;
 
         // Scales are taken from the highest-contribution eligible layers in
