@@ -15,7 +15,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  */
 @Mixin(BoundingBox.class)
 public abstract class BoundingBoxMixin {
-    @Inject(method = "move(IIILnet/minecraft/world/level/levelgen/structure/BoundingBox;)", at = @At("TAIL"))
+    @Inject(method = "move(III)Lnet/minecraft/world/level/levelgen/structure/BoundingBox;", at = @At("TAIL"))
     private void jpe$afterMove(int dx, int dy, int dz,
                                CallbackInfoReturnable<BoundingBox> callback) {
         StructureSpatialIndex.noteBoundsMutation();
