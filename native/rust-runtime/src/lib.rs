@@ -60,25 +60,33 @@ struct Scheduler {
 
 static SCHEDULER: OnceLock<Scheduler> = OnceLock::new();
 static CONFIGURED_WORKERS: AtomicUsize = AtomicUsize::new(0);
+static WORKER_CONFIG_LOCK: Mutex<()> = Mutex::new(());
 
-/// Configures the worker count before the scheduler is first used. Zero selects
-/// the process-visible CPU count. Explicit requests are capped to that count.
+/// Configures the worker count. Zero selects the process-visible CPU count.
+/// Repeating the active setting is safe after startup; changing it after the
+/// scheduler starts is rejected because worker threads cannot be resized in place.
 #[no_mangle]
 pub extern "C" fn jpe_runtime_configure_workers(requested: u32) -> i32 {
-    if SCHEDULER.get().is_some() { return -1; }
+    let _guard = WORKER_CONFIG_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let available = thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
     let selected = if requested == 0 { available } else { (requested as usize).min(available).max(1) };
+    if SCHEDULER.get().is_some() {
+        let active = CONFIGURED_WORKERS.load(Ordering::Acquire);
+        return if active == selected { selected.min(i32::MAX as usize) as i32 } else { -1 };
+    }
     CONFIGURED_WORKERS.store(selected, Ordering::Release);
     selected.min(i32::MAX as usize) as i32
 }
 
 fn scheduler() -> &'static Scheduler {
     SCHEDULER.get_or_init(|| {
+        let _guard = WORKER_CONFIG_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let (sender, receiver) = mpsc::sync_channel::<PerlinTask>(QUEUE_CAPACITY);
         let receiver = Arc::new(Mutex::new(receiver));
         let detected = thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
         let configured = CONFIGURED_WORKERS.load(Ordering::Acquire);
         let workers = if configured == 0 { detected } else { configured.min(detected).max(1) };
+        CONFIGURED_WORKERS.store(workers, Ordering::Release);
         for worker_index in 0..workers {
             let receiver = Arc::clone(&receiver);
             thread::Builder::new().name(format!("jpe-native-worldgen-{worker_index}"))
@@ -319,6 +327,15 @@ mod tests {
 
     #[test]
     fn exports_expected_abi_version() { assert_eq!(jpe_runtime_abi_version(), 5); }
+
+    #[test]
+    fn worker_configuration_is_idempotent_after_scheduler_start() {
+        let _ = scheduler();
+        let active = CONFIGURED_WORKERS.load(Ordering::Acquire);
+        assert!(active >= 1);
+        assert_eq!(jpe_runtime_configure_workers(active as u32), active as i32);
+        assert_eq!(jpe_runtime_configure_workers(0), active as i32);
+    }
 
     #[test]
     fn bulk_boundary_calls_cpp_kernel() {

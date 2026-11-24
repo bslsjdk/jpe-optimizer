@@ -41,7 +41,7 @@ The scheduler is in-process. It is not a daemon, does not use shared-memory IPC,
 ## Current implementation status
 
 - Synchronous C++ Perlin volume call: present and used by the exact-parity GameTest.
-- Rust asynchronous Perlin worker pool: bounded queue and job table, copied inputs, configurable worker count, condition-variable completion wait, result copy, cancellation state and release.
+- Rust asynchronous Perlin worker pool: bounded queue and job table, copied inputs, configurable worker count (same-setting reinitialization is idempotent), condition-variable completion wait, result copy, cancellation state and release.
 - Java FFM bridge: exposes synchronous and asynchronous Perlin calls, condition-variable waits, job lifecycle management and per-calling-thread reusable scratch arenas. Scratch arenas are no longer capped at eight threads.
 
 - Minecraft production chunk generation: not redirected.

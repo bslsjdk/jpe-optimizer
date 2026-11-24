@@ -16,6 +16,8 @@ extern "C" {
 /* ABI v5. Axis coordinates use min + index * step with Java int wrap semantics. */
 JPE_API uint32_t jpe_runtime_abi_version(void);
 /* requested=0 selects all process-visible CPUs; positive values are capped to that count. */
+/* Zero selects available CPUs. Repeating the active count is safe after startup;
+ * changing the count after worker creation returns -1. */
 JPE_API int32_t jpe_runtime_configure_workers(uint32_t requested);
 JPE_API int32_t jpe_runtime_add_f32(const float *input, float *output, uint32_t length);
 /* Synchronous entry retained for exact parity tests. */
