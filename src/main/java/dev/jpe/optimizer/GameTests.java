@@ -230,7 +230,7 @@ public final class GameTests {
      */
     private static void perlinVectorParity(GameTestHelper helper) {
         if (!DensityVectorRuntime.enabled()) {
-            throw new AssertionError("Perlin vector parity test requires the Java 25 Vector API module");
+            throw new AssertionError("Perlin vector parity test requires an active Vector API kernel: " + DensityVectorRuntime.diagnostic());
         }
         if (!PerlinNoiseVectorizer.enabled()) {
             throw new AssertionError("Perlin vector parity test requires -Djpe.perlinVectorEnabled=true");
