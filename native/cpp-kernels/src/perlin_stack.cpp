@@ -65,6 +65,8 @@ struct LayerWorkspace {
     std::vector<int32_t> x_lattice1;
     std::vector<double> y_coordinates;
     std::vector<int32_t> y_floors;
+    std::vector<float> y_relative;
+    std::vector<float> y_alpha;
     int32_t z_floor = 0;
     float z_relative = 0.0F;
     float z_alpha = 0.0F;
@@ -133,6 +135,8 @@ extern "C" int32_t jpe_cpp_perlin_add_stack_fused(
         if (ws.y_coordinates.size() < size_y) {
             ws.y_coordinates.resize(size_y);
             ws.y_floors.resize(size_y);
+            ws.y_relative.resize(size_y);
+            ws.y_alpha.resize(size_y);
         }
         for (uint32_t ix = 0; ix < size_x; ++ix) {
             const double x = wrap_coordinate(
@@ -149,8 +153,12 @@ extern "C" int32_t jpe_cpp_perlin_add_stack_fused(
             const double y = wrap_coordinate(
                 static_cast<double>(axis_coordinate(min_y, iy, step_y)) * layer.y_scale,
                 far_lands) + layer.offset_y;
+            const int32_t floor_y = floor_to_i32(y);
+            const float relative_y = static_cast<float>(y - static_cast<double>(floor_y));
             ws.y_coordinates[iy] = y;
-            ws.y_floors[iy] = floor_to_i32(y);
+            ws.y_floors[iy] = floor_y;
+            ws.y_relative[iy] = relative_y;
+            ws.y_alpha[iy] = smoothstep(relative_y);
         }
     }
 
@@ -205,8 +213,7 @@ extern "C" int32_t jpe_cpp_perlin_add_stack_fused(
                     corner(layer.permutation, static_cast<uint32_t>(xy11) + floor_z + 1U, relative_x - 1.0F, relative_z - 1.0F, corner_xz[li][7], corner_y[li][7]);
 
                     while (iy < size_y && ws.y_floors[iy] == floor_y) {
-                        const float relative_y = static_cast<float>(
-                            ws.y_coordinates[iy] - static_cast<double>(floor_y));
+                        const float relative_y = ws.y_relative[iy];
                         const float relative_y1 = relative_y - 1.0F;
                         const float x000 = corner_xz[li][0] + corner_y[li][0] * relative_y;
                         const float x100 = corner_xz[li][1] + corner_y[li][1] * relative_y;
@@ -216,7 +223,7 @@ extern "C" int32_t jpe_cpp_perlin_add_stack_fused(
                         const float x101 = corner_xz[li][5] + corner_y[li][5] * relative_y;
                         const float x011 = corner_xz[li][6] + corner_y[li][6] * relative_y1;
                         const float x111 = corner_xz[li][7] + corner_y[li][7] * relative_y1;
-                        const float alpha_y = smoothstep(relative_y);
+                        const float alpha_y = ws.y_alpha[iy];
                         const float lower = lerp(alpha_y,
                             lerp(alpha_x, x000, x100),
                             lerp(alpha_x, x010, x110));
