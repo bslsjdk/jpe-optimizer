@@ -11,8 +11,8 @@ public final class DensityKernelProbe {
     private static volatile long blackhole;
     private static final int[] SIZES = {256, 1024, 4096, 16384, 65536};
     private static final int[] OUTSIDE_PERCENT = {0, 25, 50, 75, 100};
-    private static final int WARMUP = 5;
-    private static final int ITERATIONS = 31;
+    private static final int WARMUP = 40;
+    private static final int ITERATIONS = 41;
 
     private DensityKernelProbe() {}
 
