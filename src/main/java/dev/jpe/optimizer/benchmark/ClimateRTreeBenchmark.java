@@ -66,7 +66,7 @@ public final class ClimateRTreeBenchmark {
 
                 for (int i = 0; i < measuredIterations; i++) {
                     long start = System.nanoTime();
-                    checksum += execute(candidate, queries, expected);
+                    checksums[variant] += execute(candidate, queries, expected);
                     long elapsed = System.nanoTime() - start;
                     searchSamples[variant][round * measuredIterations + i] =
                             elapsed / (double) queryCount;
