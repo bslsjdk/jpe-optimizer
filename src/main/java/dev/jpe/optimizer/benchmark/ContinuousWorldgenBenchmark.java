@@ -23,12 +23,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Sustained run-speed world-generation benchmark.
+ * Synthetic moving-frontier world-generation probe.
  *
- * A moving player crossing one 16-block chunk column every 45 server ticks
- * (approximately 7.1 blocks/second) exposes a new 17-chunk-wide frontier.
- * Requests are asynchronous and bounded by the natural completion rate; the
- * server tick loop is never blocked waiting for a generated chunk.
+ * It submits FULL-chunk futures from the server tick loop at a configurable
+ * frontier interval. This is not a real ServerPlayer ticket lifecycle and
+ * does not measure network delivery, client meshing, or rendering. Request
+ * submission time is recorded separately because getChunkFuture may perform
+ * nontrivial synchronous work before returning its future.
  */
 public final class ContinuousWorldgenBenchmark {
     private static final int VIEW_RADIUS_CHUNKS = 8;
@@ -57,8 +58,8 @@ public final class ContinuousWorldgenBenchmark {
             if (STATE.compareAndSet(null, created)) {
                 state = created;
                 JPEOptimizer.LOGGER.info(
-                        "JPE continuous worldgen benchmark armed: speed=7.1blocksPerSecond width={} warmupRows={} measuredRows={}",
-                        FRONTIER_WIDTH, WARMUP_ROWS, MEASURED_ROWS
+                        "JPE synthetic chunk-future frontier probe armed: speedBlocksPerSecond={} width={} warmupRows={} measuredRows={}",
+                        format(320.0 / TICKS_PER_CHUNK_COLUMN), FRONTIER_WIDTH, WARMUP_ROWS, MEASURED_ROWS
                 );
             } else {
                 state = STATE.get();
@@ -220,6 +221,12 @@ public final class ContinuousWorldgenBenchmark {
                 return;
             }
             measurementStartNanos = now;
+            maxInFlight.set(0);
+            maxPendingTasks.set(0);
+            maxLoadedChunks.set(0);
+            requestSubmissionNanos = 0L;
+            maxRequestSubmissionNanos = 0L;
+            requestSubmissionCount = 0L;
             worldgenBefore = WorldgenMetrics.snapshot();
             structureBefore = StructureSpatialIndex.metricsSnapshot();
             serverCpuBefore = currentThreadCpuTime();
