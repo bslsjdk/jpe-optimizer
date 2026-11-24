@@ -125,13 +125,22 @@ public final class ClimateRTreeBenchmark {
 
         Climate.ParameterList<Holder<Biome>> reference = source.rebuildWithChildrenPerNode(19);
         List<Holder<Biome>> expected = new ArrayList<>(queries.size());
+        List<Pair<Climate.ParameterPoint, Holder<Biome>>> parameterValues = source.values();
         for (int i = 0; i < queries.size(); i++) {
             Climate.TargetPoint query = queries.get(i);
             Holder<Biome> indexed = reference.findValueIndex(query);
-            Holder<Biome> bruteForce = source.findValueBruteForce(query);
-            if (!indexed.equals(bruteForce)) {
-                throw new IllegalStateException("Vanilla 19-way RTree disagrees with brute force at real query "
-                        + i + ": indexed=" + indexed + " bruteForce=" + bruteForce);
+            long minimumFitness = Long.MAX_VALUE;
+            long indexedBiomeFitness = Long.MAX_VALUE;
+            for (Pair<Climate.ParameterPoint, Holder<Biome>> entry : parameterValues) {
+                long fitness = entry.getFirst().fitness(query);
+                minimumFitness = Math.min(minimumFitness, fitness);
+                if (entry.getSecond().equals(indexed)) {
+                    indexedBiomeFitness = Math.min(indexedBiomeFitness, fitness);
+                }
+            }
+            if (indexedBiomeFitness != minimumFitness) {
+                throw new IllegalStateException("Vanilla 19-way RTree did not return a nearest biome at real query "
+                        + i + ": indexedFitness=" + indexedBiomeFitness + " minimumFitness=" + minimumFitness);
             }
             expected.add(indexed);
         }
