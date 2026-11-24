@@ -53,6 +53,13 @@ public final class ServerWorldgenBenchmark {
                     + generator.getClass().getName());
         }
 
+        if (Boolean.getBoolean("jpe.climateRTreeBenchmark")) {
+            ClimateRTreeBenchmark.runActualOverworld(level, 3, 15);
+            if (Boolean.getBoolean("jpe.climateRTreeBenchmarkOnly")) {
+                return;
+            }
+        }
+
         long seed = level.getSeed();
         long threadId = Thread.currentThread().threadId();
         ThreadMXBean threadBean = ManagementFactory.getThreadMXBean();
