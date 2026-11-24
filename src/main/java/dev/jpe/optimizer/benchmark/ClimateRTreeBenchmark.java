@@ -155,9 +155,9 @@ public final class ClimateRTreeBenchmark {
         int measured = Math.max(1, iterations);
 
         System.out.printf(
-                "JPE_CLIMATE_RTREE_REAL points=%d queries=%d seed=%d fanOuts=%s rounds=%d iterationsPerRound=%d trace=overworld-climate-quart-grid%n",
+                "JPE_CLIMATE_RTREE_REAL points=%d queries=%d seed=%d fanOuts=%s rounds=%d warmupPasses=%d iterationsPerRound=%d trace=overworld-climate-quart-grid%n",
                 source.values().size(), queries.size(), level.getSeed(), Arrays.toString(FAN_OUTS),
-                MEASUREMENT_ROUNDS, measured
+                MEASUREMENT_ROUNDS, warmup, measured
         );
 
         for (int round = 0; round < MEASUREMENT_ROUNDS; round++) {
