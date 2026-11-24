@@ -60,7 +60,14 @@ inline void corner(const uint8_t* p, uint32_t hash, float rx, float rz,
     y = static_cast<float>(kGradientY[gradient]);
 }
 
-template<bool CacheY>
+struct XyPermutationCache {
+    uint8_t xy00;
+    uint8_t xy01;
+    uint8_t xy10;
+    uint8_t xy11;
+};
+
+template<bool CacheY, bool CacheXY>
 int32_t perlin_add_volume_impl(
     const uint8_t* permutation,
     uint32_t size_x,
@@ -145,6 +152,28 @@ int32_t perlin_add_volume_impl(
         x_lattice1[ix] = static_cast<int32_t>(permute_sum(permutation, floor_x, 1));
     }
 
+    // The four XY permutation results do not depend on Z. Cache one compact
+    // four-byte record per X/Y coordinate and reuse it for every Z slice.
+    thread_local std::vector<XyPermutationCache> xy_cache;
+    if constexpr (CacheXY) {
+        const size_t xy_count = static_cast<size_t>(size_x) * size_y;
+        if (xy_cache.size() < xy_count) xy_cache.resize(xy_count);
+        for (uint32_t ix = 0; ix < size_x; ++ix) {
+            const int32_t x0 = x_lattice0[ix];
+            const int32_t x1 = x_lattice1[ix];
+            const size_t row = static_cast<size_t>(ix) * size_y;
+            for (uint32_t iy = 0; iy < size_y; ++iy) {
+                const int32_t floor_y = y_floors[iy];
+                xy_cache[row + iy] = XyPermutationCache{
+                    static_cast<uint8_t>(permute_sum(permutation, x0, floor_y)),
+                    static_cast<uint8_t>(permute_sum(permutation, x0, floor_y, 1)),
+                    static_cast<uint8_t>(permute_sum(permutation, x1, floor_y)),
+                    static_cast<uint8_t>(permute_sum(permutation, x1, floor_y, 1))
+                };
+            }
+        }
+    }
+
     for (uint32_t iz = 0; iz < size_z; ++iz) {
         const double z = wrap_coordinate(static_cast<double>(axis_coordinate(min_z, iz, step_z)) * xz_scale, far_lands) + offset_z;
         const int32_t floor_z = floor_to_i32(z);
@@ -165,10 +194,23 @@ int32_t perlin_add_volume_impl(
                 // to the same lattice cell.
                 const int32_t floor_y = y_floors[iy];
 
-                const int32_t xy00 = static_cast<int32_t>(permute_sum(permutation, x0, floor_y));
-                const int32_t xy01 = static_cast<int32_t>(permute_sum(permutation, x0, floor_y, 1));
-                const int32_t xy10 = static_cast<int32_t>(permute_sum(permutation, x1, floor_y));
-                const int32_t xy11 = static_cast<int32_t>(permute_sum(permutation, x1, floor_y, 1));
+                int32_t xy00;
+                int32_t xy01;
+                int32_t xy10;
+                int32_t xy11;
+                if constexpr (CacheXY) {
+                    const XyPermutationCache& cached = xy_cache[
+                        static_cast<size_t>(ix) * size_y + iy];
+                    xy00 = cached.xy00;
+                    xy01 = cached.xy01;
+                    xy10 = cached.xy10;
+                    xy11 = cached.xy11;
+                } else {
+                    xy00 = static_cast<int32_t>(permute_sum(permutation, x0, floor_y));
+                    xy01 = static_cast<int32_t>(permute_sum(permutation, x0, floor_y, 1));
+                    xy10 = static_cast<int32_t>(permute_sum(permutation, x1, floor_y));
+                    xy11 = static_cast<int32_t>(permute_sum(permutation, x1, floor_y, 1));
+                }
 
                 float corner_xz[8];
                 float corner_y[8];
@@ -237,7 +279,7 @@ extern "C" int32_t jpe_cpp_perlin_add_volume(
     uint64_t output_length,
     uint32_t flags
 ) noexcept {
-    return perlin_add_volume_impl<true>(permutation,
+    return perlin_add_volume_impl<true, true>(permutation,
         size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
         xz_scale, y_scale, amplitude, output, output_length, flags);
 }
@@ -251,7 +293,22 @@ extern "C" int32_t jpe_cpp_perlin_add_volume_uncached_y(
     double xz_scale, double y_scale, float amplitude,
     float* output, uint64_t output_length, uint32_t flags
 ) noexcept {
-    return perlin_add_volume_impl<false>(permutation,
+    return perlin_add_volume_impl<false, false>(permutation,
         size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
         xz_scale, y_scale, amplitude, output, output_length, flags);
 }
+
+extern "C" int32_t jpe_cpp_perlin_add_volume_uncached_xy(
+    const uint8_t* permutation,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    double offset_x, double offset_y, double offset_z,
+    double xz_scale, double y_scale, float amplitude,
+    float* output, uint64_t output_length, uint32_t flags
+) noexcept {
+    return perlin_add_volume_impl<true, false>(permutation,
+        size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
+        xz_scale, y_scale, amplitude, output, output_length, flags);
+}
+
