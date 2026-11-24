@@ -83,7 +83,10 @@ public final class ContinuousWorldgenBenchmark {
         private final ServerLevel level;
         private final ThreadMXBean threadBean = ManagementFactory.getThreadMXBean();
         private final long serverThreadId = Thread.currentThread().threadId();
+        // Counts requests whose completion callbacks have not yet been observed.
         private final AtomicInteger inFlight = new AtomicInteger();
+        // Counts futures observed as genuinely incomplete immediately after submission.
+        private final AtomicInteger activeGenerationFutures = new AtomicInteger();
         private final AtomicInteger measuredCompleted = new AtomicInteger();
         private final AtomicInteger measuredFailed = new AtomicInteger();
         private final AtomicInteger maxInFlight = new AtomicInteger();
@@ -165,15 +168,25 @@ public final class ContinuousWorldgenBenchmark {
         private void issueFrontierRow(boolean measured) {
             int rowIndex = measured ? measuredRowsIssued : warmupRowsIssued;
             int chunkX = (measured ? MEASURE_START_CHUNK_X : WARMUP_START_CHUNK_X) + rowIndex;
+
+            // Submit the entire frontier row before attaching completion callbacks.
+            // This prevents an already-completed future from making the benchmark
+            // accidentally serialize submission and completion one chunk at a time.
+            List<PendingChunk> submitted = new ArrayList<>(FRONTIER_WIDTH);
             for (int offset = -VIEW_RADIUS_CHUNKS; offset <= VIEW_RADIUS_CHUNKS; offset++) {
-                requestFullChunk(chunkX, START_CHUNK_Z + offset, measured);
+                PendingChunk pending = submitChunk(chunkX, START_CHUNK_Z + offset, measured);
+                if (pending != null) {
+                    submitted.add(pending);
+                }
+            }
+            for (PendingChunk pending : submitted) {
+                observeChunk(pending);
             }
         }
 
-        private void requestFullChunk(int x, int z, boolean measured) {
+        private PendingChunk submitChunk(int x, int z, boolean measured) {
             long requestedAt = System.nanoTime();
-            int currentInFlight = inFlight.incrementAndGet();
-            maxInFlight.accumulateAndGet(currentInFlight, Math::max);
+            inFlight.incrementAndGet();
 
             try {
                 long submitStart = System.nanoTime();
@@ -183,40 +196,62 @@ public final class ContinuousWorldgenBenchmark {
                 requestSubmissionNanos += submitElapsed;
                 maxRequestSubmissionNanos = Math.max(maxRequestSubmissionNanos, submitElapsed);
                 requestSubmissionCount++;
-                future.whenComplete((rawResult, failure) -> {
-                    try {
-                        if (failure != null) {
-                            if (measured) {
-                                measuredFailed.incrementAndGet();
-                            }
-                            return;
-                        }
 
-                        if (!(rawResult instanceof net.minecraft.server.level.ChunkResult<?> result)
-                                || !result.isSuccess()
-                                || !(result.orElse(null) instanceof LevelChunk)) {
-                            if (measured) {
-                                measuredFailed.incrementAndGet();
-                            }
-                            return;
-                        }
-
-                        if (measured) {
-                            measuredCompleted.incrementAndGet();
-                            measuredLatencies.add(System.nanoTime() - requestedAt);
-                        }
-                    } finally {
-                        inFlight.decrementAndGet();
-                    }
-                });
+                boolean pendingAtSubmission = !future.isDone();
+                if (pendingAtSubmission) {
+                    int active = activeGenerationFutures.incrementAndGet();
+                    maxInFlight.accumulateAndGet(active, Math::max);
+                }
+                maxPendingTasks.accumulateAndGet(level.getChunkSource().getPendingTasksCount(), Math::max);
+                return new PendingChunk(future, requestedAt, measured, pendingAtSubmission);
             } catch (Throwable failure) {
                 inFlight.decrementAndGet();
                 if (measured) {
                     measuredFailed.incrementAndGet();
                 }
                 JPEOptimizer.LOGGER.error("Unable to request benchmark chunk {},{}", x, z, failure);
+                return null;
             }
         }
+
+        private void observeChunk(PendingChunk pending) {
+            pending.future().whenComplete((rawResult, failure) -> {
+                try {
+                    if (failure != null) {
+                        if (pending.measured()) {
+                            measuredFailed.incrementAndGet();
+                        }
+                        return;
+                    }
+
+                    if (!(rawResult instanceof net.minecraft.server.level.ChunkResult<?> result)
+                            || !result.isSuccess()
+                            || !(result.orElse(null) instanceof LevelChunk)) {
+                        if (pending.measured()) {
+                            measuredFailed.incrementAndGet();
+                        }
+                        return;
+                    }
+
+                    if (pending.measured()) {
+                        measuredCompleted.incrementAndGet();
+                        measuredLatencies.add(System.nanoTime() - pending.requestedAt());
+                    }
+                } finally {
+                    if (pending.pendingAtSubmission()) {
+                        activeGenerationFutures.decrementAndGet();
+                    }
+                    inFlight.decrementAndGet();
+                }
+            });
+        }
+
+        private record PendingChunk(
+                CompletableFuture<?> future,
+                long requestedAt,
+                boolean measured,
+                boolean pendingAtSubmission
+        ) {}
 
         private void beginMeasurement(long now) {
             if (measuredRowsIssued != 0 || measurementStartNanos != 0L) {
