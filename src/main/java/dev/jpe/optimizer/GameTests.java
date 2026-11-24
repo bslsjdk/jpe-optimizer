@@ -157,9 +157,12 @@ public final class GameTests {
         long total = elapsed.stream().mapToLong(Long::longValue).sum();
         long[] sorted = elapsed.stream().mapToLong(Long::longValue).sorted().toArray();
 
+        var structureMetrics = dev.jpe.optimizer.worldgen.StructureSpatialIndex.metricsSnapshot();
         JPEOptimizer.LOGGER.info(
                 "JPE_SERVER_WORLDGEN_BENCH seed={} mode={} chunks=24 meanMs={} medianMs={} p95Ms={} " +
-                "serverThreadCpuMs={} processCpuMs={} serverThreadAllocatedMiB={} gcCollections={} gcMs={} warmupChunks=8",
+                "serverThreadCpuMs={} processCpuMs={} serverThreadAllocatedMiB={} gcCollections={} gcMs={} warmupChunks=8 " +
+                "structureQueries={} structureIndexBuilds={} structureIndexedPieces={} structureCandidateChecks={} " +
+                "structureLinearFallbacks={} structureVanillaLinearChecks={}",
                 seed,
                 dev.jpe.optimizer.vector.DensityVectorRuntime.enabled() ? "vector" : "scalar",
                 String.format(java.util.Locale.ROOT, "%.3f", total / 24_000_000.0),
@@ -175,7 +178,13 @@ public final class GameTests {
                         ? String.format(java.util.Locale.ROOT, "%.2f", (allocatedAfter - allocatedBefore) / 1048576.0)
                         : "unsupported",
                 gcCountAfter - gcCountBefore,
-                gcTimeAfter - gcTimeBefore
+                gcTimeAfter - gcTimeBefore,
+                structureMetrics.queries(),
+                structureMetrics.builds(),
+                structureMetrics.indexedPieces(),
+                structureMetrics.candidateChecks(),
+                structureMetrics.linearFallbacks(),
+                structureMetrics.vanillaLinearChecks()
         );
         helper.succeed();
     }
