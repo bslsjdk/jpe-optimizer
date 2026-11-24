@@ -140,6 +140,20 @@ public final class DensityVectorRuntime {
         }
     }
 
+    public static void binaryConstLeft(float[] values, int length, float operand, DensityVectorKernel.BinaryOp operation) {
+        DensityVectorKernel current = activeKernel;
+        if (current == null) {
+            ScalarDensityKernel.INSTANCE.binaryConstLeft(values, length, operand, operation);
+            return;
+        }
+        try {
+            current.binaryConstLeft(values, length, operand, operation);
+        } catch (RuntimeException | LinkageError exception) {
+            disable(exception);
+            ScalarDensityKernel.INSTANCE.binaryConstLeft(values, length, operand, operation);
+        }
+    }
+
     private static synchronized void disable(Throwable failure) {
         if (activeKernel != null) {
             activeKernel = null;
@@ -194,6 +208,12 @@ public final class DensityVectorRuntime {
                     ScalarDensityKernel.INSTANCE.binaryConst(expected, length, operand, operation.operation);
                     candidate.binaryConst(actual, length, operand, operation.operation);
                     mismatch = compare("binary-constant-" + operation, length, expected, actual);
+                    if (mismatch != null) return mismatch;
+
+                    expected = source.clone(); actual = source.clone();
+                    ScalarDensityKernel.INSTANCE.binaryConstLeft(expected, length, operand, operation.operation);
+                    candidate.binaryConstLeft(actual, length, operand, operation.operation);
+                    mismatch = compare("binary-constant-left-" + operation, length, expected, actual);
                     if (mismatch != null) return mismatch;
                 }
             }

@@ -9,5 +9,6 @@ public interface DensityVectorKernel {
     void minMaxConst(float[] values, int length, float operand, boolean minimum);
     void binary(float[] left, float[] right, int length, BinaryOp operation);
     void binaryConst(float[] values, int length, float operand, BinaryOp operation);
+    void binaryConstLeft(float[] values, int length, float operand, BinaryOp operation);
     String description();
 }

@@ -149,6 +149,35 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
     }
 
     @Override
+    public void binaryConstLeft(float[] values, int length, float operand, BinaryOp operation) {
+        Objects.checkFromIndexSize(0, length, values.length);
+        FloatVector constant = FloatVector.broadcast(SPECIES, operand);
+        int bound = SPECIES.loopBound(length), i = 0;
+        switch (operation) {
+            case ADD -> {
+                for (; i < bound; i += SPECIES.length())
+                    constant.add(FloatVector.fromArray(SPECIES, values, i)).intoArray(values, i);
+                for (; i < length; ++i) values[i] = operand + values[i];
+            }
+            case SUBTRACT -> {
+                for (; i < bound; i += SPECIES.length())
+                    constant.sub(FloatVector.fromArray(SPECIES, values, i)).intoArray(values, i);
+                for (; i < length; ++i) values[i] = operand - values[i];
+            }
+            case MULTIPLY -> {
+                for (; i < bound; i += SPECIES.length())
+                    constant.mul(FloatVector.fromArray(SPECIES, values, i)).intoArray(values, i);
+                for (; i < length; ++i) values[i] = operand * values[i];
+            }
+            case DIVIDE -> {
+                for (; i < bound; i += SPECIES.length())
+                    constant.div(FloatVector.fromArray(SPECIES, values, i)).intoArray(values, i);
+                for (; i < length; ++i) values[i] = operand / values[i];
+            }
+        }
+    }
+
+    @Override
     public String description() {
         return "Java Vector API " + SPECIES + " (lanes=" + SPECIES.length() + ")";
     }

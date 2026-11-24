@@ -74,5 +74,16 @@ public final class ScalarDensityKernel implements DensityVectorKernel {
     }
 
     @Override
+    public void binaryConstLeft(float[] values, int length, float operand, BinaryOp operation) {
+        Objects.checkFromIndexSize(0, length, values.length);
+        switch (operation) {
+            case ADD -> { for (int i = 0; i < length; ++i) values[i] = operand + values[i]; }
+            case SUBTRACT -> { for (int i = 0; i < length; ++i) values[i] = operand - values[i]; }
+            case MULTIPLY -> { for (int i = 0; i < length; ++i) values[i] = operand * values[i]; }
+            case DIVIDE -> { for (int i = 0; i < length; ++i) values[i] = operand / values[i]; }
+        }
+    }
+
+    @Override
     public String description() { return "scalar reference"; }
 }

@@ -50,11 +50,15 @@ public abstract class BinaryFunctionMinMaxMixin {
         } else if (sampler instanceof BinaryFunction.ConstAddSampler op) {
             jpe$applyConst(context, outputBuffer, volume, op.left(), op.right(), BinaryOp.ADD);
         } else if (sampler instanceof BinaryFunction.ConstSubSampler op) {
-            jpe$applyConst(context, outputBuffer, volume, op.left(), op.right(), BinaryOp.SUBTRACT);
+            op.right().sampleVolume(context, outputBuffer, volume);
+            DensityVectorRuntime.binaryConstLeft(((DensityBufferAccessor) outputBuffer).jpe$values(),
+                    outputBuffer.size(), op.left(), BinaryOp.SUBTRACT);
         } else if (sampler instanceof BinaryFunction.ConstMulSampler op) {
             jpe$applyConst(context, outputBuffer, volume, op.left(), op.right(), BinaryOp.MULTIPLY);
         } else if (sampler instanceof BinaryFunction.ConstDivSampler op) {
-            jpe$applyConst(context, outputBuffer, volume, op.left(), op.right(), BinaryOp.DIVIDE);
+            op.right().sampleVolume(context, outputBuffer, volume);
+            DensityVectorRuntime.binaryConstLeft(((DensityBufferAccessor) outputBuffer).jpe$values(),
+                    outputBuffer.size(), op.left(), BinaryOp.DIVIDE);
         } else if (sampler instanceof BinaryFunction.ConstMinSampler op) {
             op.left().sampleVolume(context, outputBuffer, volume);
             DensityVectorRuntime.minMaxConst(((DensityBufferAccessor) outputBuffer).jpe$values(),
