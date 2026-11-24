@@ -12,6 +12,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
@@ -39,7 +41,64 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle releaseJob;
     private final ConcurrentHashMap<Long, NativeJob> jobs = new ConcurrentHashMap<>();
     private final ReentrantReadWriteLock lifecycle = new ReentrantReadWriteLock();
+    // Reuse FFM buffers on the existing Minecraft worldgen workers. Keep the
+    // retained native scratch bounded even on machines with large worker pools.
+    private static final int MAX_REUSABLE_PERLIN_WORKERS = 8;
+    private final AtomicInteger perlinScratchCount = new AtomicInteger();
+    private final ConcurrentLinkedQueue<PerlinScratch> perlinScratchArenas = new ConcurrentLinkedQueue<>();
+    private final ThreadLocal<PerlinScratch> perlinScratch = ThreadLocal.withInitial(() -> {
+        if (perlinScratchCount.getAndIncrement() >= MAX_REUSABLE_PERLIN_WORKERS) {
+            perlinScratchCount.decrementAndGet();
+            return null;
+        }
+        PerlinScratch scratch = new PerlinScratch();
+        perlinScratchArenas.add(scratch);
+        return scratch;
+    });
     private volatile boolean closed;
+
+    private static final class PerlinScratch implements AutoCloseable {
+        private final Arena arena = Arena.ofShared();
+        private MemorySegment permutation;
+        private MemorySegment blockX;
+        private MemorySegment blockY;
+        private MemorySegment blockZ;
+        private MemorySegment output;
+        private int permutationCapacity;
+        private int xCapacity;
+        private int yCapacity;
+        private int zCapacity;
+        private int outputCapacity;
+
+        private void ensureCapacity(int permutationLength, int xLength, int yLength,
+                                    int zLength, int outputLength) {
+            if (permutationCapacity < permutationLength) {
+                permutation = allocateBytes(arena, permutationLength);
+                permutationCapacity = permutationLength;
+            }
+            if (xCapacity < xLength) {
+                blockX = allocateInts(arena, xLength);
+                xCapacity = xLength;
+            }
+            if (yCapacity < yLength) {
+                blockY = allocateInts(arena, yLength);
+                yCapacity = yLength;
+            }
+            if (zCapacity < zLength) {
+                blockZ = allocateInts(arena, zLength);
+                zCapacity = zLength;
+            }
+            if (outputCapacity < outputLength) {
+                output = allocateFloats(arena, outputLength);
+                outputCapacity = outputLength;
+            }
+        }
+
+        @Override
+        public void close() {
+            arena.close();
+        }
+    }
 
     private NativeRuntime(Arena arena, MethodHandle add, MethodHandle perlin,
                           MethodHandle submit, MethodHandle status, MethodHandle copy,
@@ -134,7 +193,7 @@ public final class NativeRuntime implements AutoCloseable {
         }
     }
 
-    /** Synchronous bulk Perlin entry retained for exact parity tests, not live worldgen. */
+    /** Synchronous bulk Perlin entry; live mode runs it on Minecraft's existing worldgen worker. */
     public void perlinAddVolume(byte[] permutation, int[] blockX, int[] blockY, int[] blockZ,
                                 double offsetX, double offsetY, double offsetZ,
                                 double xzScale, double yScale, float amplitude,
@@ -143,23 +202,38 @@ public final class NativeRuntime implements AutoCloseable {
         try {
         ensureOpen();
         validatePerlinInputs(permutation, blockX, blockY, blockZ, output);
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment p = allocateBytes(arena, permutation.length);
-            MemorySegment x = allocateInts(arena, blockX.length);
-            MemorySegment y = allocateInts(arena, blockY.length);
-            MemorySegment z = allocateInts(arena, blockZ.length);
-            MemorySegment out = allocateFloats(arena, output.length);
-            copy(permutation, p);
-            copy(blockX, x);
-            copy(blockY, y);
-            copy(blockZ, z);
-            copy(output, out);
-            int status = (int) perlinAddVolume.invokeExact(p, x, y, z,
-                    blockX.length, blockY.length, blockZ.length,
-                    offsetX, offsetY, offsetZ, xzScale, yScale, amplitude,
-                    out, (long) output.length, farLands ? 1 : 0);
-            checkStatus(status, "perlin-add-volume");
-            copy(out, output);
+        try {
+            PerlinScratch scratch = perlinScratch.get();
+            if (scratch == null) {
+                // More than eight distinct worldgen workers: keep the memory cap
+                // and use a temporary confined arena for the overflow workers.
+                try (Arena arena = Arena.ofConfined()) {
+                    MemorySegment p = allocateBytes(arena, permutation.length);
+                    MemorySegment x = allocateInts(arena, blockX.length);
+                    MemorySegment y = allocateInts(arena, blockY.length);
+                    MemorySegment z = allocateInts(arena, blockZ.length);
+                    MemorySegment out = allocateFloats(arena, output.length);
+                    copy(permutation, p);
+                    copy(blockX, x);
+                    copy(blockY, y);
+                    copy(blockZ, z);
+                    copy(output, out);
+                    invokePerlin(p, x, y, z, blockX.length, blockY.length, blockZ.length,
+                            offsetX, offsetY, offsetZ, xzScale, yScale, amplitude, out, output, farLands);
+                }
+            } else {
+                scratch.ensureCapacity(permutation.length, blockX.length, blockY.length,
+                        blockZ.length, output.length);
+                copy(permutation, scratch.permutation);
+                copy(blockX, scratch.blockX);
+                copy(blockY, scratch.blockY);
+                copy(blockZ, scratch.blockZ);
+                copy(output, scratch.output);
+                invokePerlin(scratch.permutation, scratch.blockX, scratch.blockY, scratch.blockZ,
+                        blockX.length, blockY.length, blockZ.length,
+                        offsetX, offsetY, offsetZ, xzScale, yScale, amplitude,
+                        scratch.output, output, farLands);
+            }
         } catch (Throwable failure) {
             throw rethrow("Native Perlin volume call failed", failure);
         }
@@ -167,6 +241,19 @@ public final class NativeRuntime implements AutoCloseable {
         } finally {
             lifecycle.readLock().unlock();
         }
+    }
+
+    private void invokePerlin(MemorySegment p, MemorySegment x, MemorySegment y, MemorySegment z,
+                              int sizeX, int sizeY, int sizeZ,
+                              double offsetX, double offsetY, double offsetZ,
+                              double xzScale, double yScale, float amplitude,
+                              MemorySegment nativeOutput, float[] javaOutput, boolean farLands) throws Throwable {
+        int status = (int) perlinAddVolume.invokeExact(p, x, y, z,
+                sizeX, sizeY, sizeZ, offsetX, offsetY, offsetZ,
+                xzScale, yScale, amplitude, nativeOutput, (long) javaOutput.length,
+                farLands ? 1 : 0);
+        checkStatus(status, "perlin-add-volume");
+        copy(nativeOutput, javaOutput);
     }
 
     /**
@@ -272,6 +359,10 @@ public final class NativeRuntime implements AutoCloseable {
                     + " jobs are still owned; cancel, await completion, and release each job first");
         }
         closed = true;
+        PerlinScratch scratch;
+        while ((scratch = perlinScratchArenas.poll()) != null) {
+            scratch.close();
+        }
         libraryArena.close();
     
         } finally {
