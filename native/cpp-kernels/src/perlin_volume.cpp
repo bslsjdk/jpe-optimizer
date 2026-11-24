@@ -99,11 +99,14 @@ int32_t perlin_add_volume(
             const int32_t x1 = static_cast<int32_t>(permute_sum(permutation, floor_x, 1));
             const uint64_t base = (static_cast<uint64_t>(iz) * size_x + ix) * size_y;
 
-            for (uint32_t iy = 0; iy < size_y; ++iy) {
-                const double y_coord = wrap_coordinate(static_cast<double>(block_y[iy]) * y_scale, far_lands) + offset_y;
-                const int32_t floor_y = floor_to_i32(y_coord);
-                const float relative_y = static_cast<float>(y_coord - static_cast<double>(floor_y));
-                const float relative_y1 = relative_y - 1.0F;
+            uint32_t iy = 0;
+            while (iy < size_y) {
+                // Gradient corners depend on floor(Y), not on the fractional Y
+                // coordinate. Reuse them for the whole contiguous run that maps
+                // to the same lattice cell (common when y_scale is below 1).
+                const double first_y_coord = wrap_coordinate(
+                    static_cast<double>(block_y[iy]) * y_scale, far_lands) + offset_y;
+                const int32_t floor_y = floor_to_i32(first_y_coord);
 
                 const int32_t xy00 = static_cast<int32_t>(permute_sum(permutation, x0, floor_y));
                 const int32_t xy01 = static_cast<int32_t>(permute_sum(permutation, x0, floor_y, 1));
@@ -121,24 +124,44 @@ int32_t perlin_add_volume(
                 corner(permutation, static_cast<uint32_t>(xy01) + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F, corner_xz[6], corner_y[6]);
                 corner(permutation, static_cast<uint32_t>(xy11) + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F, corner_xz[7], corner_y[7]);
 
-                const float x000 = corner_xz[0] + corner_y[0] * relative_y;
-                const float x100 = corner_xz[1] + corner_y[1] * relative_y;
-                const float x010 = corner_xz[2] + corner_y[2] * relative_y1;
-                const float x110 = corner_xz[3] + corner_y[3] * relative_y1;
-                const float x001 = corner_xz[4] + corner_y[4] * relative_y;
-                const float x101 = corner_xz[5] + corner_y[5] * relative_y;
-                const float x011 = corner_xz[6] + corner_y[6] * relative_y1;
-                const float x111 = corner_xz[7] + corner_y[7] * relative_y1;
+                double y_coord = first_y_coord;
+                while (iy < size_y) {
+                    const int32_t sample_floor_y = floor_to_i32(y_coord);
+                    if (sample_floor_y != floor_y) {
+                        break;
+                    }
 
-                const float alpha_y = smoothstep(relative_y);
-                const float lower = lerp(alpha_y,
-                    lerp(alpha_x, x000, x100),
-                    lerp(alpha_x, x010, x110));
-                const float upper = lerp(alpha_y,
-                    lerp(alpha_x, x001, x101),
-                    lerp(alpha_x, x011, x111));
-                const float sample = amplitude * lerp(alpha_z, lower, upper);
-                output[base + iy] = output[base + iy] + sample;
+                    const float relative_y = static_cast<float>(
+                        y_coord - static_cast<double>(floor_y));
+                    const float relative_y1 = relative_y - 1.0F;
+
+                    const float x000 = corner_xz[0] + corner_y[0] * relative_y;
+                    const float x100 = corner_xz[1] + corner_y[1] * relative_y;
+                    const float x010 = corner_xz[2] + corner_y[2] * relative_y1;
+                    const float x110 = corner_xz[3] + corner_y[3] * relative_y1;
+                    const float x001 = corner_xz[4] + corner_y[4] * relative_y;
+                    const float x101 = corner_xz[5] + corner_y[5] * relative_y;
+                    const float x011 = corner_xz[6] + corner_y[6] * relative_y1;
+                    const float x111 = corner_xz[7] + corner_y[7] * relative_y1;
+
+                    const float alpha_y = smoothstep(relative_y);
+                    const float lower = lerp(alpha_y,
+                        lerp(alpha_x, x000, x100),
+                        lerp(alpha_x, x010, x110));
+                    const float upper = lerp(alpha_y,
+                        lerp(alpha_x, x001, x101),
+                        lerp(alpha_x, x011, x111));
+                    const float sample = amplitude * lerp(alpha_z, lower, upper);
+                    const uint64_t output_index =
+                        (static_cast<uint64_t>(iz) * size_x + ix) * size_y + iy;
+                    output[output_index] = output[output_index] + sample;
+
+                    ++iy;
+                    if (iy < size_y) {
+                        y_coord = wrap_coordinate(
+                            static_cast<double>(block_y[iy]) * y_scale, far_lands) + offset_y;
+                    }
+                }
             }
         }
     }
