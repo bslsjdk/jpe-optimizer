@@ -125,8 +125,15 @@ public final class ClimateRTreeBenchmark {
 
         Climate.ParameterList<Holder<Biome>> reference = source.rebuildWithChildrenPerNode(19);
         List<Holder<Biome>> expected = new ArrayList<>(queries.size());
-        for (Climate.TargetPoint query : queries) {
-            expected.add(reference.findValueIndex(query));
+        for (int i = 0; i < queries.size(); i++) {
+            Climate.TargetPoint query = queries.get(i);
+            Holder<Biome> indexed = reference.findValueIndex(query);
+            Holder<Biome> bruteForce = source.findValueBruteForce(query);
+            if (!indexed.equals(bruteForce)) {
+                throw new IllegalStateException("Vanilla 19-way RTree disagrees with brute force at real query "
+                        + i + ": indexed=" + indexed + " bruteForce=" + bruteForce);
+            }
+            expected.add(indexed);
         }
 
         double[][] samples = new double[FAN_OUTS.length][MEASUREMENT_ROUNDS * Math.max(1, iterations)];
