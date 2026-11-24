@@ -33,7 +33,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class ContinuousWorldgenBenchmark {
     private static final int VIEW_RADIUS_CHUNKS = 8;
     private static final int FRONTIER_WIDTH = VIEW_RADIUS_CHUNKS * 2 + 1;
-    private static final int TICKS_PER_CHUNK_COLUMN = 45;
+    private static final int TICKS_PER_CHUNK_COLUMN = Math.max(1, Integer.getInteger("jpe.benchmark.ticksPerColumn", 45));
     private static final int WARMUP_ROWS = 3;
     private static final int MEASURED_ROWS = 20;
     private static final int MAX_DRAIN_TICKS = 400;
@@ -85,6 +85,8 @@ public final class ContinuousWorldgenBenchmark {
         private final AtomicInteger measuredCompleted = new AtomicInteger();
         private final AtomicInteger measuredFailed = new AtomicInteger();
         private final AtomicInteger maxInFlight = new AtomicInteger();
+        private final AtomicInteger maxPendingTasks = new AtomicInteger();
+        private final AtomicInteger maxLoadedChunks = new AtomicInteger();
         private final ConcurrentLinkedQueue<Long> measuredLatencies = new ConcurrentLinkedQueue<>();
         private final ConcurrentLinkedQueue<Long> tickIntervals = new ConcurrentLinkedQueue<>();
 
@@ -100,6 +102,9 @@ public final class ContinuousWorldgenBenchmark {
         private long allocatedBefore = -1L;
         private long gcCountBefore;
         private long gcTimeBefore;
+        private long requestSubmissionNanos;
+        private long maxRequestSubmissionNanos;
+        private long requestSubmissionCount;
         private WorldgenMetrics.Snapshot worldgenBefore;
         private StructureSpatialIndex.Metrics structureBefore;
         private volatile boolean finished;
@@ -120,6 +125,8 @@ public final class ContinuousWorldgenBenchmark {
                 tickIntervals.add(now - lastTickNanos);
             }
             lastTickNanos = now;
+            maxPendingTasks.accumulateAndGet(level.getChunkSource().getPendingTasksCount(), Math::max);
+            maxLoadedChunks.accumulateAndGet(level.getChunkSource().getLoadedChunksCount(), Math::max);
 
             if (measurementStartNanos == 0L) {
                 if (warmupRowsIssued < WARMUP_ROWS && tick >= nextIssueTick) {
@@ -166,8 +173,13 @@ public final class ContinuousWorldgenBenchmark {
             maxInFlight.accumulateAndGet(currentInFlight, Math::max);
 
             try {
+                long submitStart = System.nanoTime();
                 CompletableFuture<?> future = level.getChunkSource()
                         .getChunkFuture(x, z, ChunkStatus.FULL, true);
+                long submitElapsed = System.nanoTime() - submitStart;
+                requestSubmissionNanos += submitElapsed;
+                maxRequestSubmissionNanos = Math.max(maxRequestSubmissionNanos, submitElapsed);
+                requestSubmissionCount++;
                 future.whenComplete((rawResult, failure) -> {
                     try {
                         if (failure != null) {
@@ -248,23 +260,28 @@ public final class ContinuousWorldgenBenchmark {
             long allocatedAfter = allocatedBytes(threadBean, serverThreadId);
 
             JPEOptimizer.LOGGER.info(
-                    "JPE_CONTINUOUS_WORLDGEN_BENCH seed={} generator={} mode={} speedBlocksPerSecond=7.1 "
+                    "JPE_CONTINUOUS_WORLDGEN_BENCH seed={} generator={} mode={} speedBlocksPerSecond={} "
                             + "viewRadiusChunks={} rows={} requestedChunks={} completedChunks={} failedChunks={} "
                             + "throughputChunksPerSecond={} meanChunkLatencyMs={} medianChunkLatencyMs={} p95ChunkLatencyMs={} "
-                            + "p95ServerTickMs={} maxInFlight={} elapsedSeconds={} "
+                            + "p95ServerTickMs={} maxInFlight={} maxPendingTasks={} maxLoadedChunks={} "
+                            + "avgGetChunkFutureCallMs={} maxGetChunkFutureCallMs={} elapsedSeconds={} "
                             + "serverThreadCpuMs={} processCpuMs={} serverThreadAllocatedMiB={} gcCollections={} gcMs={} "
                             + "doFillCalls={} doFillDensityMs={} doFillBlockMs={} doFillSamples={} "
                             + "structureQueries={} structureIndexBuilds={} structureIndexedPieces={} "
                             + "structureCandidateChecks={} structureVanillaLinearChecks={}",
                     level.getSeed(), level.getChunkSource().getGenerator().getClass().getName(),
                     DensityVectorRuntime.enabled() ? "vector" : "scalar",
+                    format(320.0 / TICKS_PER_CHUNK_COLUMN),
                     VIEW_RADIUS_CHUNKS, MEASURED_ROWS, requested, completed, failed,
                     format(completed / (elapsedNanos / 1_000_000_000.0)),
                     format(mean(latencies) / 1_000_000.0),
                     format(percentile(latencies, 0.50) / 1_000_000.0),
                     format(percentile(latencies, 0.95) / 1_000_000.0),
                     format(percentile(ticks, 0.95) / 1_000_000.0),
-                    maxInFlight.get(), format(elapsedNanos / 1_000_000_000.0),
+                    maxInFlight.get(), maxPendingTasks.get(), maxLoadedChunks.get(),
+                    format(requestSubmissionCount == 0 ? 0.0 : requestSubmissionNanos / (double) requestSubmissionCount / 1_000_000.0),
+                    format(maxRequestSubmissionNanos / 1_000_000.0),
+                    format(elapsedNanos / 1_000_000_000.0),
                     deltaMs(serverCpuBefore, serverCpuAfter),
                     deltaMs(processCpuBefore, processCpuAfter),
                     allocatedBefore >= 0 && allocatedAfter >= allocatedBefore
