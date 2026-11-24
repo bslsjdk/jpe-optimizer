@@ -1,0 +1,50 @@
+name: Native Perlin Verification
+
+on:
+  push:
+    branches: ["work/**"]
+    paths:
+      - "native/**"
+      - ".github/workflows/native-perlin.yml"
+  pull_request:
+    paths:
+      - "native/**"
+      - ".github/workflows/native-perlin.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-perlin-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-perlin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run optimized native correctness tests and fixed-workload benchmark
+        shell: bash
+        run: |
+          mkdir -p build/native-perlin
+          set -o pipefail
+          cargo test --release --manifest-path native/rust-runtime/Cargo.toml -- --nocapture 2>&1 | tee build/native-perlin/native-tests.log
+
+      - name: Build native runtime
+        run: cargo build --release --manifest-path native/rust-runtime/Cargo.toml
+
+      - name: Upload native benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-perlin-${{ github.run_id }}
+          path: build/native-perlin/native-tests.log
+          if-no-files-found: warn
+          retention-days: 14
