@@ -21,6 +21,14 @@ public final class NativePerlinNoiseBackend {
     private static final LongAdder SAMPLES = new LongAdder();
     private static final LongAdder TOTAL_NANOS = new LongAdder();
     private static final LongAdder SYNCHRONOUS_CALLS = new LongAdder();
+    private static final LongAdder INVALID_DIMENSIONS = new LongAdder();
+    private static final LongAdder AXIS_VOLUME_MISMATCHES = new LongAdder();
+    private static final LongAdder BUFFER_VOLUME_MISMATCHES = new LongAdder();
+    private static final LongAdder OVERSIZED_VOLUMES = new LongAdder();
+    private static final LongAdder RUNTIME_UNAVAILABLE = new LongAdder();
+    private static final LongAdder ASYNC_QUEUE_REJECTIONS = new LongAdder();
+    private static final LongAdder NATIVE_JOB_FAILURES = new LongAdder();
+    private static final LongAdder NATIVE_EXCEPTIONS = new LongAdder();
     private static final ThreadLocal<CoordinateScratch> COORDINATES =
             ThreadLocal.withInitial(CoordinateScratch::new);
 
@@ -37,11 +45,17 @@ public final class NativePerlinNoiseBackend {
     }
 
     public record Metrics(long attempts, long completed, long fallbacks, long samples,
-                          long totalNanos, long synchronousCalls) {}
+                          long totalNanos, long synchronousCalls,
+                          long invalidDimensions, long axisVolumeMismatches, long bufferVolumeMismatches,
+                          long oversizedVolumes, long runtimeUnavailable, long asyncQueueRejections,
+                          long nativeJobFailures, long nativeExceptions) {}
 
     public static Metrics metricsSnapshot() {
         return new Metrics(ATTEMPTS.sum(), COMPLETED.sum(), FALLBACKS.sum(), SAMPLES.sum(),
-                TOTAL_NANOS.sum(), SYNCHRONOUS_CALLS.sum());
+                TOTAL_NANOS.sum(), SYNCHRONOUS_CALLS.sum(), INVALID_DIMENSIONS.sum(),
+                AXIS_VOLUME_MISMATCHES.sum(), BUFFER_VOLUME_MISMATCHES.sum(), OVERSIZED_VOLUMES.sum(),
+                RUNTIME_UNAVAILABLE.sum(), ASYNC_QUEUE_REJECTIONS.sum(), NATIVE_JOB_FAILURES.sum(),
+                NATIVE_EXCEPTIONS.sum());
     }
 
     public static String mode() {
@@ -77,8 +91,40 @@ public final class NativePerlinNoiseBackend {
         SAMPLES.add(volume.size());
         long started = System.nanoTime();
         boolean success = false;
+        int sizeX = volume.sizeX();
+        int sizeY = volume.sizeY();
+        int sizeZ = volume.sizeZ();
+        if (sizeX <= 0 || sizeY <= 0 || sizeZ <= 0) {
+            INVALID_DIMENSIONS.increment();
+            FALLBACKS.increment();
+            TOTAL_NANOS.add(System.nanoTime() - started);
+            return false;
+        }
+        long expectedElements;
+        try {
+            expectedElements = Math.multiplyExact(Math.multiplyExact((long) sizeX, sizeY), sizeZ);
+        } catch (ArithmeticException overflow) {
+            INVALID_DIMENSIONS.increment();
+            FALLBACKS.increment();
+            TOTAL_NANOS.add(System.nanoTime() - started);
+            return false;
+        }
+        if (expectedElements != volume.size()) {
+            AXIS_VOLUME_MISMATCHES.increment();
+            FALLBACKS.increment();
+            TOTAL_NANOS.add(System.nanoTime() - started);
+            return false;
+        }
+        if (expectedElements > 1_048_576L) {
+            OVERSIZED_VOLUMES.increment();
+            FALLBACKS.increment();
+            TOTAL_NANOS.add(System.nanoTime() - started);
+            return false;
+        }
+
         NativeRuntime nativeRuntime = runtime();
         if (nativeRuntime == null) {
+            RUNTIME_UNAVAILABLE.increment();
             FALLBACKS.increment();
             TOTAL_NANOS.add(System.nanoTime() - started);
             return false;
@@ -99,7 +145,10 @@ public final class NativePerlinNoiseBackend {
             for (int i = 0; i < blockZ.length; ++i) blockZ[i] = volume.blockZ(i);
 
             float[] target = ((DensityBufferAccessor) buffer).jpe$values();
-            if (target.length != volume.size()) return false;
+            if (target.length != expectedElements) {
+                BUFFER_VOLUME_MISMATCHES.increment();
+                return false;
+            }
 
             // Experiment: run the C++ kernel inline on Minecraft's existing worldgen worker.
             // This avoids a second thread pool, Rust task copies, job tracking and 1 ms polling.
@@ -127,7 +176,10 @@ public final class NativePerlinNoiseBackend {
                     xzScale, yScale, amplitude, target,
                     SharedConstants.DEBUG_ENABLE_FARLANDS
             );
-            if (job == null) return false;
+            if (job == null) {
+                ASYNC_QUEUE_REJECTIONS.increment();
+                return false;
+            }
 
             long deadline = System.nanoTime() + 30_000_000_000L;
             boolean cancelRequested = false;
@@ -163,13 +215,17 @@ public final class NativePerlinNoiseBackend {
                 }
             }
 
-            if (status != NativeRuntime.JOB_COMPLETE || interrupted) return false;
+            if (status != NativeRuntime.JOB_COMPLETE || interrupted) {
+                NATIVE_JOB_FAILURES.increment();
+                return false;
+            }
             job.copyOutputInto(target);
             LAST_CALL_NATIVE.set(true);
             success = true;
             COMPLETED.increment();
             return true;
         } catch (RuntimeException | LinkageError failure) {
+            NATIVE_EXCEPTIONS.increment();
             JPEOptimizer.LOGGER.warn("Native Perlin backend failed; using Java fallback: {}", failure.toString());
             return false;
         } finally {

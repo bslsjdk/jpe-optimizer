@@ -308,6 +308,14 @@ public final class ContinuousWorldgenBenchmark {
             long nativeSamples = nativeAfter.samples() - nativeBefore.samples();
             long nativeNanos = nativeAfter.totalNanos() - nativeBefore.totalNanos();
             long nativeSyncCalls = nativeAfter.synchronousCalls() - nativeBefore.synchronousCalls();
+            long nativeInvalidDimensions = nativeAfter.invalidDimensions() - nativeBefore.invalidDimensions();
+            long nativeAxisMismatches = nativeAfter.axisVolumeMismatches() - nativeBefore.axisVolumeMismatches();
+            long nativeBufferMismatches = nativeAfter.bufferVolumeMismatches() - nativeBefore.bufferVolumeMismatches();
+            long nativeOversizedVolumes = nativeAfter.oversizedVolumes() - nativeBefore.oversizedVolumes();
+            long nativeRuntimeUnavailable = nativeAfter.runtimeUnavailable() - nativeBefore.runtimeUnavailable();
+            long nativeQueueRejections = nativeAfter.asyncQueueRejections() - nativeBefore.asyncQueueRejections();
+            long nativeJobFailures = nativeAfter.nativeJobFailures() - nativeBefore.nativeJobFailures();
+            long nativeExceptions = nativeAfter.nativeExceptions() - nativeBefore.nativeExceptions();
             long requested = (long) MEASURED_ROWS * FRONTIER_WIDTH;
             int completed = measuredCompleted.get();
             int failed = measuredFailed.get();
@@ -328,7 +336,9 @@ public final class ContinuousWorldgenBenchmark {
                             + "structureCandidateChecks={} structureVanillaLinearChecks={} "
                             + "densityMetricsEnabled={} unpooledCalls={} unpooledElements={} "
                             + "poolHits={} poolMisses={} poolRequestedElements={} poolReusedCapacityElements={} "
-                            + "nativePerlinEnabled={} nativePerlinMode={} nativeCalls={} nativeCompleted={} nativeFallbacks={} nativeSyncCalls={} nativeSamples={} nativeTotalMs={}",
+                            + "nativePerlinEnabled={} nativePerlinMode={} nativeCalls={} nativeCompleted={} nativeFallbacks={} nativeSyncCalls={} nativeSamples={} nativeTotalMs={} "
+                            + "nativeInvalidDimensions={} nativeAxisMismatches={} nativeBufferMismatches={} nativeOversizedVolumes={} "
+                            + "nativeRuntimeUnavailable={} nativeQueueRejections={} nativeJobFailures={} nativeExceptions={}",
                     level.getSeed(), level.getChunkSource().getGenerator().getClass().getName(),
                     NativePerlinNoiseBackend.enabled() ? NativePerlinNoiseBackend.mode() : (DensityVectorRuntime.enabled() ? "vector" : "scalar"),
                     format(320.0 / TICKS_PER_CHUNK_COLUMN),
@@ -362,7 +372,10 @@ public final class ContinuousWorldgenBenchmark {
                     densityBufferDelta.poolReusedCapacityElements(), NativePerlinNoiseBackend.enabled(),
                     NativePerlinNoiseBackend.mode(), nativeCalls, nativeCompleted, nativeFallbacks,
                     nativeSyncCalls, nativeSamples,
-                    format(nativeNanos / 1_000_000.0)
+                    format(nativeNanos / 1_000_000.0),
+                    nativeInvalidDimensions, nativeAxisMismatches, nativeBufferMismatches,
+                    nativeOversizedVolumes, nativeRuntimeUnavailable, nativeQueueRejections,
+                    nativeJobFailures, nativeExceptions
             );
 
             if (completed != requested || failed != 0 || inFlight.get() != 0 || doFillCalls < requested) {
