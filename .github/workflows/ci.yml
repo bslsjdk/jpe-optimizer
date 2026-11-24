@@ -78,7 +78,7 @@ jobs:
           mkdir -p build/climate-rtree-benchmark
           rm -rf run
           mkdir -p run
-          printf 'eula=true\\n' > run/eula.txt
+          printf '%s\n' 'eula=true' > run/eula.txt
           cat > run/server.properties <<'PROPERTIES'
           level-seed=12648430
           level-type=minecraft:normal
@@ -93,8 +93,7 @@ jobs:
           sync-chunk-writes=false
           PROPERTIES
           set -o pipefail
-          JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector -Djpe.serverWorldgenBenchmark=true -Djpe.climateRTreeBenchmark=true -Djpe.climateRTreeBenchmarkOnly=true" \\
-            gradle runServer --no-daemon --stacktrace 2>&1 | tee build/climate-rtree-benchmark/overworld.log
+          env JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector -Djpe.serverWorldgenBenchmark=true -Djpe.climateRTreeBenchmark=true -Djpe.climateRTreeBenchmarkOnly=true" gradle runServer --no-daemon --stacktrace 2>&1 | tee build/climate-rtree-benchmark/overworld.log
           grep 'JPE_CLIMATE_RTREE_REAL points=' build/climate-rtree-benchmark/overworld.log
           test "$(grep -c 'JPE_CLIMATE_RTREE_REAL fanOut=' build/climate-rtree-benchmark/overworld.log)" -eq 6
 
