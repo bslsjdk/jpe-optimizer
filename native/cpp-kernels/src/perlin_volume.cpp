@@ -333,9 +333,12 @@ extern "C" int32_t jpe_cpp_perlin_add_volume(
     uint32_t flags
 ) noexcept {
 #if (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
-    __builtin_cpu_init();
+    static const bool avx2_available = []() noexcept {
+        __builtin_cpu_init();
+        return __builtin_cpu_supports("avx2");
+    }();
     const double y_step_magnitude = std::abs(static_cast<double>(step_y) * y_scale);
-    if (__builtin_cpu_supports("avx2") && y_step_magnitude <= (1.0 / 16.0)) {
+    if (avx2_available && y_step_magnitude <= (1.0 / 16.0)) {
         return perlin_add_volume_impl<true, false, true>(permutation,
             size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
             xz_scale, y_scale, amplitude, output, output_length, flags);
