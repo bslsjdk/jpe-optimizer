@@ -38,6 +38,7 @@ JPE_API uint64_t jpe_runtime_submit_perlin_volume(
 );
 /* status: 0 complete, 1 pending, 2 running, 3 failed, 4 cancelled, -1 unknown job */
 JPE_API int32_t jpe_runtime_job_status(uint64_t job_id);
+JPE_API int32_t jpe_runtime_wait_job(uint64_t job_id, uint64_t timeout_nanos);
 JPE_API int32_t jpe_runtime_copy_job_output(uint64_t job_id, float *destination, uint64_t capacity);
 JPE_API int32_t jpe_runtime_cancel_job(uint64_t job_id);
 JPE_API int32_t jpe_runtime_release_job(uint64_t job_id);

@@ -145,8 +145,8 @@ public final class NativePerlinNoiseBackend {
                 return true;
             }
 
-            // submitPerlinVolume copies the input into FFM memory and then Rust-owned memory
-            // before returning. Passing the live array is safe: workers never retain it.
+            // submitPerlinVolume copies the permutation and initial output into Rust-owned
+            // buffers before returning. Workers never retain Java arrays or Minecraft objects.
             // Output is copied back only after the native job reaches JOB_COMPLETE.
             job = nativeRuntime.submitPerlinVolume(
                     access.jpe$perms(), sizeX, sizeY, sizeZ,

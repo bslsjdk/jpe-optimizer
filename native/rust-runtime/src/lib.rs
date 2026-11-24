@@ -44,8 +44,6 @@ enum JobStatus { Pending, Running, Complete(Vec<f32>), Failed(i32), Cancelled }
 struct PerlinTask {
     state: Arc<JobState>,
     permutation: Vec<u8>,
-    min_x: i32, min_y: i32, min_z: i32,
-    step_x: i32, step_y: i32, step_z: i32,
     output: Vec<f32>,
     size_x: u32, size_y: u32, size_z: u32,
     min_x: i32, min_y: i32, min_z: i32,

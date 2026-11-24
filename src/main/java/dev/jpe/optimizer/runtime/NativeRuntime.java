@@ -18,7 +18,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 /**
  * Optional Java 25 FFM bridge. Native worldgen is not loaded or enabled automatically.
  *
- * Async submission copies all arrays into native-owned memory before returning.
+ * Async submission copies the permutation and initial output into native-owned memory before returning.
  * Completed jobs must be explicitly released before this runtime can be closed.
  */
 public final class NativeRuntime implements AutoCloseable {
@@ -43,9 +43,8 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle releaseJob;
     private final ConcurrentHashMap<Long, NativeJob> jobs = new ConcurrentHashMap<>();
     private final ReentrantReadWriteLock lifecycle = new ReentrantReadWriteLock();
-    // Keep one reusable FFM scratch arena per calling worldgen worker. The
-    // previous fixed limit of eight forced higher-core machines into repeated
-    // temporary allocations.
+    // Keep one reusable FFM scratch arena per calling worldgen worker. Only
+    // permutation and output buffers remain after axis-coordinate generation moved native-side.
     private final ConcurrentLinkedQueue<PerlinScratch> perlinScratchArenas = new ConcurrentLinkedQueue<>();
     private final ThreadLocal<PerlinScratch> perlinScratch = ThreadLocal.withInitial(() -> {
         PerlinScratch scratch = new PerlinScratch();

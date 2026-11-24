@@ -1,7 +1,7 @@
 #include "jpe_native_api.h"
 
-#include <bit>
 #include <cmath>
+#include <cstring>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -15,7 +15,9 @@ constexpr double kRoundOff = 33554432.0;
 
 inline int32_t axis_coordinate(int32_t minimum, uint32_t index, int32_t step) noexcept {
     const uint32_t bits = static_cast<uint32_t>(minimum) + index * static_cast<uint32_t>(step);
-    return std::bit_cast<int32_t>(bits);
+    int32_t coordinate;
+    std::memcpy(&coordinate, &bits, sizeof(coordinate));
+    return coordinate;
 }
 
 inline double wrap_coordinate(double value, bool far_lands) noexcept {
