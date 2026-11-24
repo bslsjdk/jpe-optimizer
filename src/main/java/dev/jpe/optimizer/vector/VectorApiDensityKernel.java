@@ -104,14 +104,13 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
                 case MULTIPLY -> a.mul(b);
                 case DIVIDE -> a.div(b);
             };
-            VectorMask<Float> nanResults = result.compare(VectorOperators.NE, result);
-            result.intoArray(left, i);
-            // Vector hardware may canonicalize NaN payload/sign bits. Recompute only
-            // NaN lanes with Java scalar operators to preserve vanilla raw-bit behavior.
-            for (int lane = 0; lane < SPECIES.length(); ++lane) {
-                if (nanResults.laneIsSet(lane)) {
-                    left[i + lane] = scalarBinary(a.lane(lane), b.lane(lane), operation);
+            if (result.compare(VectorOperators.NE, result).anyTrue()) {
+                // Preserve original scalar NaN payloads and invalid-operation behavior.
+                for (int lane = 0; lane < SPECIES.length(); ++lane) {
+                    left[i + lane] = scalarBinary(left[i + lane], right[i + lane], operation);
                 }
+            } else {
+                result.intoArray(left, i);
             }
         }
         for (; i < length; ++i) {
@@ -138,12 +137,12 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
                 case MULTIPLY -> current.mul(constant);
                 case DIVIDE -> current.div(constant);
             };
-            VectorMask<Float> nanResults = result.compare(VectorOperators.NE, result);
-            result.intoArray(values, i);
-            for (int lane = 0; lane < SPECIES.length(); ++lane) {
-                if (nanResults.laneIsSet(lane)) {
-                    values[i + lane] = scalarBinary(current.lane(lane), operand, operation);
+            if (result.compare(VectorOperators.NE, result).anyTrue()) {
+                for (int lane = 0; lane < SPECIES.length(); ++lane) {
+                    values[i + lane] = scalarBinary(values[i + lane], operand, operation);
                 }
+            } else {
+                result.intoArray(values, i);
             }
         }
         for (; i < length; ++i) {
@@ -170,12 +169,12 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
                 case MULTIPLY -> constant.mul(current);
                 case DIVIDE -> constant.div(current);
             };
-            VectorMask<Float> nanResults = result.compare(VectorOperators.NE, result);
-            result.intoArray(values, i);
-            for (int lane = 0; lane < SPECIES.length(); ++lane) {
-                if (nanResults.laneIsSet(lane)) {
-                    values[i + lane] = scalarBinary(operand, current.lane(lane), operation);
+            if (result.compare(VectorOperators.NE, result).anyTrue()) {
+                for (int lane = 0; lane < SPECIES.length(); ++lane) {
+                    values[i + lane] = scalarBinary(operand, values[i + lane], operation);
                 }
+            } else {
+                result.intoArray(values, i);
             }
         }
         for (; i < length; ++i) {
