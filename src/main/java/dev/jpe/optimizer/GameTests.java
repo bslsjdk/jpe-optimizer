@@ -121,6 +121,7 @@ public final class GameTests {
         long seed = level.getSeed();
         long threadId = Thread.currentThread().threadId();
         ThreadMXBean threadBean = ManagementFactory.getThreadMXBean();
+        long processCpuBefore = processCpuTime();
 
         // Give the server thread and density kernels enough fresh chunks to warm up JIT compilation.
         for (int i = 0; i < 8; ++i) {
@@ -148,6 +149,7 @@ public final class GameTests {
 
         long cpuAfter = threadBean.isCurrentThreadCpuTimeSupported()
                 ? threadBean.getCurrentThreadCpuTime() : -1L;
+        long processCpuAfter = processCpuTime();
         long allocatedAfter = allocatedBytes(threadBean, threadId);
         long gcCountAfter = gcCount();
         long gcTimeAfter = gcTime();
@@ -156,7 +158,7 @@ public final class GameTests {
 
         JPEOptimizer.LOGGER.info(
                 "JPE_SERVER_WORLDGEN_BENCH seed={} mode={} chunks=24 meanMs={} medianMs={} p95Ms={} " +
-                "cpuMs={} allocatedMiB={} gcCollections={} gcMs={} warmupChunks=8",
+                "serverThreadCpuMs={} processCpuMs={} serverThreadAllocatedMiB={} gcCollections={} gcMs={} warmupChunks=8",
                 seed,
                 dev.jpe.optimizer.vector.DensityVectorRuntime.enabled() ? "vector" : "scalar",
                 String.format(java.util.Locale.ROOT, "%.3f", total / 24_000_000.0),
@@ -165,6 +167,9 @@ public final class GameTests {
                 cpuBefore >= 0 && cpuAfter >= 0
                         ? String.format(java.util.Locale.ROOT, "%.3f", (cpuAfter - cpuBefore) / 1_000_000.0)
                         : "unsupported",
+                processCpuBefore >= 0 && processCpuAfter >= processCpuBefore
+                        ? String.format(java.util.Locale.ROOT, "%.3f", (processCpuAfter - processCpuBefore) / 1_000_000.0)
+                        : "unsupported",
                 allocatedBefore >= 0 && allocatedAfter >= allocatedBefore
                         ? String.format(java.util.Locale.ROOT, "%.2f", (allocatedAfter - allocatedBefore) / 1048576.0)
                         : "unsupported",
@@ -172,6 +177,14 @@ public final class GameTests {
                 gcTimeAfter - gcTimeBefore
         );
         helper.succeed();
+    }
+
+    private static long processCpuTime() {
+        java.lang.management.OperatingSystemMXBean bean = ManagementFactory.getOperatingSystemMXBean();
+        if (bean instanceof com.sun.management.OperatingSystemMXBean sunBean) {
+            return sunBean.getProcessCpuTime();
+        }
+        return -1L;
     }
 
     private static long allocatedBytes(ThreadMXBean bean, long threadId) {
