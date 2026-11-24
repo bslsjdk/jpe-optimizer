@@ -139,7 +139,10 @@ int32_t perlin_add_volume_impl(
     const bool far_lands = (flags & 1U) != 0U;
 #if (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
     __builtin_cpu_init();
-    const bool use_avx2 = __builtin_cpu_supports("avx2");
+    // SIMD only pays off when each Y lattice run is long enough to amortize
+    // run discovery and vector setup. Short runs stay on the scalar path.
+    const double y_step_magnitude = std::abs(static_cast<double>(step_y) * y_scale);
+    const bool use_avx2 = __builtin_cpu_supports("avx2") && y_step_magnitude <= (1.0 / 16.0);
 #endif
 
     // Y coordinates are identical for every X/Z column in this volume.
