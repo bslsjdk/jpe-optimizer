@@ -54,7 +54,7 @@ public final class ServerWorldgenBenchmark {
         }
 
         if (Boolean.getBoolean("jpe.climateRTreeBenchmark")) {
-            ClimateRTreeBenchmark.runActualOverworld(level, 3, 15);
+            ClimateRTreeBenchmark.runActualOverworld(level, 30, 15);
             if (Boolean.getBoolean("jpe.climateRTreeBenchmarkOnly")) {
                 return;
             }
