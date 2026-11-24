@@ -4,6 +4,7 @@ import com.mojang.datafixers.util.Pair;
 import net.minecraft.world.level.biome.Climate;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
 
@@ -11,15 +12,23 @@ import java.util.Random;
  * Measures Climate.RTree fan-out using deterministic synthetic biome parameter
  * points. This is a data-structure microbenchmark, not a claim about full
  * Minecraft world-generation performance.
+ *
+ * Candidate order is shuffled between rounds. Each reported search sample is a
+ * complete pass over the same query corpus, allowing median and p95 reporting
+ * without mixing tree construction into query latency.
  */
 public final class ClimateRTreeBenchmark {
     private static final int[] FAN_OUTS = {8, 12, 16, 19, 24, 32};
     private static final int PARAMETER_POINTS = 256;
+    private static final int MEASUREMENT_ROUNDS = 5;
 
     private ClimateRTreeBenchmark() {}
 
     public static void run(int warmupIterations, int iterations, int requestedQueries) {
         int queryCount = Math.max(4_096, Math.min(32_768, requestedQueries / 8));
+        int measuredIterations = Math.max(1, iterations);
+        int perRoundWarmup = Math.max(1, warmupIterations / 2);
+
         verifyDuplicateTieResults();
         Climate.ParameterList<Integer> source = createParameterList();
         List<Climate.TargetPoint> queries = createQueries(queryCount);
@@ -29,31 +38,51 @@ public final class ClimateRTreeBenchmark {
             expected[i] = reference.findValueIndex(queries.get(i));
         }
 
-        System.out.printf("JPE_CLIMATE_RTREE_BENCH points=%d queries=%d fanOuts=%s%n",
-                PARAMETER_POINTS, queryCount, java.util.Arrays.toString(FAN_OUTS));
+        double[][] searchSamples = new double[FAN_OUTS.length][MEASUREMENT_ROUNDS * measuredIterations];
+        double[][] buildSamples = new double[FAN_OUTS.length][MEASUREMENT_ROUNDS];
+        int[] order = new int[FAN_OUTS.length];
+        for (int i = 0; i < order.length; i++) order[i] = i;
+        Random orderRandom = new Random(0x2630_0D3L);
+        long checksum = 0;
 
-        for (int fanOut : FAN_OUTS) {
-            long buildStart = System.nanoTime();
-            Climate.ParameterList<Integer> candidate = source.rebuildWithChildrenPerNode(fanOut);
-            long buildNanos = System.nanoTime() - buildStart;
+        System.out.printf(
+                "JPE_CLIMATE_RTREE_BENCH points=%d queries=%d fanOuts=%s rounds=%d iterationsPerRound=%d order=randomized distribution=uniform%n",
+                PARAMETER_POINTS, queryCount, Arrays.toString(FAN_OUTS),
+                MEASUREMENT_ROUNDS, measuredIterations
+        );
 
-            long checksum = 0;
-            for (int i = 0; i < warmupIterations; i++) {
-                checksum += execute(candidate, queries, expected);
+        for (int round = 0; round < MEASUREMENT_ROUNDS; round++) {
+            shuffle(order, orderRandom);
+            for (int variant : order) {
+                int fanOut = FAN_OUTS[variant];
+
+                long buildStart = System.nanoTime();
+                Climate.ParameterList<Integer> candidate = source.rebuildWithChildrenPerNode(fanOut);
+                buildSamples[variant][round] = System.nanoTime() - buildStart;
+
+                for (int i = 0; i < perRoundWarmup; i++) {
+                    checksum += execute(candidate, queries, expected);
+                }
+
+                for (int i = 0; i < measuredIterations; i++) {
+                    long start = System.nanoTime();
+                    checksum += execute(candidate, queries, expected);
+                    long elapsed = System.nanoTime() - start;
+                    searchSamples[variant][round * measuredIterations + i] =
+                            elapsed / (double) queryCount;
+                }
             }
+        }
 
-            long elapsed = 0;
-            for (int i = 0; i < iterations; i++) {
-                long start = System.nanoTime();
-                checksum += execute(candidate, queries, expected);
-                elapsed += System.nanoTime() - start;
-            }
-
-            long totalQueries = (long) iterations * queryCount;
-            double nsPerQuery = elapsed / (double) totalQueries;
+        for (int variant = 0; variant < FAN_OUTS.length; variant++) {
+            double medianNs = percentile(searchSamples[variant], 0.50);
+            double p95Ns = percentile(searchSamples[variant], 0.95);
+            double medianBuildMs = percentile(buildSamples[variant], 0.50) / 1_000_000.0;
             System.out.printf(
-                    "fanOut=%d buildMs=%.3f nsPerQuery=%.3f queriesPerSecond=%.0f checksum=%d%n",
-                    fanOut, buildNanos / 1_000_000.0, nsPerQuery, 1_000_000_000.0 / nsPerQuery, checksum
+                    "fanOut=%d buildMedianMs=%.3f nsPerQueryMedian=%.3f nsPerQueryP95=%.3f "
+                            + "queriesPerSecondMedian=%.0f samples=%d checksum=%d%n",
+                    FAN_OUTS[variant], medianBuildMs, medianNs, p95Ns,
+                    1_000_000_000.0 / medianNs, searchSamples[variant].length, checksum
             );
         }
     }
@@ -120,6 +149,26 @@ public final class ClimateRTreeBenchmark {
                     coordinate(random), coordinate(random), coordinate(random)));
         }
         return queries;
+    }
+
+    private static void shuffle(int[] values, Random random) {
+        for (int i = values.length - 1; i > 0; i--) {
+            int other = random.nextInt(i + 1);
+            int value = values[i];
+            values[i] = values[other];
+            values[other] = value;
+        }
+    }
+
+    private static double percentile(double[] values, double percentile) {
+        double[] sorted = values.clone();
+        Arrays.sort(sorted);
+        double position = percentile * (sorted.length - 1);
+        int lower = (int) Math.floor(position);
+        int upper = (int) Math.ceil(position);
+        if (lower == upper) return sorted[lower];
+        double fraction = position - lower;
+        return sorted[lower] * (1.0 - fraction) + sorted[upper] * fraction;
     }
 
     private static float coordinate(Random random) {
