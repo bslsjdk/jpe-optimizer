@@ -200,13 +200,15 @@ pub extern "C" fn jpe_runtime_job_status(job_id: u64) -> i32 {
         let Some(state) = jobs.get(&job_id) else { return -1 };
         Arc::clone(state)
     };
-    match &*lock_status(&state) {
+    let status = lock_status(&state);
+    let result = match &*status {
         JobStatus::Pending => JOB_PENDING,
         JobStatus::Running => JOB_RUNNING,
         JobStatus::Complete(_) => JOB_COMPLETE,
         JobStatus::Failed(_) => JOB_FAILED,
         JobStatus::Cancelled => JOB_CANCELLED,
-    }
+    };
+    result
 }
 
 #[no_mangle]
@@ -217,7 +219,8 @@ pub unsafe extern "C" fn jpe_runtime_copy_job_output(job_id: u64, destination: *
         let Some(state) = jobs.get(&job_id) else { return STATUS_INVALID_ARGUMENT };
         Arc::clone(state)
     };
-    match &*lock_status(&state) {
+    let status = lock_status(&state);
+    let result = match &*status {
         JobStatus::Complete(output) => {
             if capacity < output.len() as u64 { return STATUS_INVALID_ARGUMENT; }
             unsafe { slice::from_raw_parts_mut(destination, output.len()).copy_from_slice(output); }
@@ -226,7 +229,8 @@ pub unsafe extern "C" fn jpe_runtime_copy_job_output(job_id: u64, destination: *
         JobStatus::Pending | JobStatus::Running => JOB_PENDING,
         JobStatus::Failed(code) => *code,
         JobStatus::Cancelled => JOB_CANCELLED,
-    }
+    };
+    result
 }
 
 #[no_mangle]
@@ -245,8 +249,10 @@ pub extern "C" fn jpe_runtime_cancel_job(job_id: u64) -> i32 {
 #[no_mangle]
 pub extern "C" fn jpe_runtime_release_job(job_id: u64) -> i32 {
     let mut jobs = scheduler().jobs.lock().unwrap_or_else(|p| p.into_inner());
-    let Some(state) = jobs.get(&job_id) else { return STATUS_INVALID_ARGUMENT };
-    let terminal = matches!(*lock_status(state), JobStatus::Complete(_) | JobStatus::Failed(_) | JobStatus::Cancelled);
+    let Some(state) = jobs.get(&job_id).cloned() else { return STATUS_INVALID_ARGUMENT };
+    let status = lock_status(&state);
+    let terminal = matches!(&*status, JobStatus::Complete(_) | JobStatus::Failed(_) | JobStatus::Cancelled);
+    drop(status);
     if !terminal { return JOB_RUNNING; }
     jobs.remove(&job_id);
     STATUS_OK
