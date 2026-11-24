@@ -132,9 +132,14 @@ public final class StructureSpatialIndex {
                 if (bucket == null) {
                     continue;
                 }
+                // Bucket entries are appended in global insertion order.
+                // Once this bucket reaches the best match, later entries cannot win.
                 for (int i = 0; i < bucket.size(); ++i) {
                     int candidate = bucket.getInt(i);
-                    if (candidate >= best || seen[candidate] == stamp) {
+                    if (candidate >= best) {
+                        break;
+                    }
+                    if (seen[candidate] == stamp) {
                         continue;
                     }
                     seen[candidate] = stamp;
@@ -152,9 +157,14 @@ public final class StructureSpatialIndex {
             }
         }
 
+        // Oversized entries also retain insertion order, so the same lower-bound
+        // cutoff avoids scanning candidates that cannot replace the current winner.
         for (int i = 0; i < oversizedPieces.size(); ++i) {
             int candidate = oversizedPieces.getInt(i);
-            if (candidate >= best || seen[candidate] == stamp) {
+            if (candidate >= best) {
+                break;
+            }
+            if (seen[candidate] == stamp) {
                 continue;
             }
             seen[candidate] = stamp;
