@@ -119,11 +119,11 @@ public final class NativeRuntime implements AutoCloseable {
             long bytes = Math.multiplyExact((long) input.length, ValueLayout.JAVA_FLOAT.byteSize());
             MemorySegment in = arena.allocate(bytes, ValueLayout.JAVA_FLOAT.byteAlignment());
             MemorySegment out = arena.allocate(bytes, ValueLayout.JAVA_FLOAT.byteAlignment());
-            for (int i = 0; i < input.length; i++) in.setAtIndex(ValueLayout.JAVA_FLOAT, i, input[i]);
+            MemorySegment.copy(input, 0, in, ValueLayout.JAVA_FLOAT, 0L, input.length);
             int status = (int) addF32.invokeExact(in, out, input.length);
             checkStatus(status, "add-f32");
             float[] result = new float[input.length];
-            for (int i = 0; i < result.length; i++) result[i] = out.getAtIndex(ValueLayout.JAVA_FLOAT, i);
+            MemorySegment.copy(out, ValueLayout.JAVA_FLOAT, 0L, result, 0, result.length);
             return result;
         } catch (Throwable failure) {
             throw rethrow("Native bulk call failed", failure);
@@ -240,16 +240,16 @@ public final class NativeRuntime implements AutoCloseable {
         return arena.allocate(Math.multiplyExact((long) length, ValueLayout.JAVA_FLOAT.byteSize()), ValueLayout.JAVA_FLOAT.byteAlignment());
     }
     private static void copy(byte[] source, MemorySegment target) {
-        for (int i = 0; i < source.length; i++) target.setAtIndex(ValueLayout.JAVA_BYTE, i, source[i]);
+        MemorySegment.copy(source, 0, target, ValueLayout.JAVA_BYTE, 0L, source.length);
     }
     private static void copy(int[] source, MemorySegment target) {
-        for (int i = 0; i < source.length; i++) target.setAtIndex(ValueLayout.JAVA_INT, i, source[i]);
+        MemorySegment.copy(source, 0, target, ValueLayout.JAVA_INT, 0L, source.length);
     }
     private static void copy(float[] source, MemorySegment target) {
-        for (int i = 0; i < source.length; i++) target.setAtIndex(ValueLayout.JAVA_FLOAT, i, source[i]);
+        MemorySegment.copy(source, 0, target, ValueLayout.JAVA_FLOAT, 0L, source.length);
     }
     private static void copy(MemorySegment source, float[] target) {
-        for (int i = 0; i < target.length; i++) target[i] = source.getAtIndex(ValueLayout.JAVA_FLOAT, i);
+        MemorySegment.copy(source, ValueLayout.JAVA_FLOAT, 0L, target, 0, target.length);
     }
     private static void checkStatus(int status, String operation) {
         if (status != 0) throw new IllegalStateException("Native " + operation + " failed with status " + status);
