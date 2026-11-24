@@ -43,9 +43,6 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
             FloatVector out = FloatVector.fromArray(SPECIES, whenOutOfRange, i);
             VectorMask<Float> outside = in.compare(VectorOperators.GE, minInclusive)
                     .and(in.compare(VectorOperators.LT, maxExclusive)).not();
-            // Match the scalar kernel's conditional store. Loading/blending the
-            // existing output and writing every lane wastes bandwidth when most
-            // samples are in range.
             out.intoArray(values, i, outside);
         }
         for (; i < length; ++i) {
@@ -90,6 +87,64 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
         for (; i < length; ++i) {
             float current = values[i];
             if (minimum ? operand < current : operand > current) values[i] = operand;
+        }
+    }
+
+    @Override
+    public void binary(float[] left, float[] right, int length, BinaryOp operation) {
+        Objects.checkFromIndexSize(0, length, left.length);
+        Objects.checkFromIndexSize(0, length, right.length);
+        int bound = SPECIES.loopBound(length), i = 0;
+        switch (operation) {
+            case ADD -> {
+                for (; i < bound; i += SPECIES.length())
+                    FloatVector.fromArray(SPECIES, left, i).add(FloatVector.fromArray(SPECIES, right, i)).intoArray(left, i);
+                for (; i < length; ++i) left[i] = left[i] + right[i];
+            }
+            case SUBTRACT -> {
+                for (; i < bound; i += SPECIES.length())
+                    FloatVector.fromArray(SPECIES, left, i).sub(FloatVector.fromArray(SPECIES, right, i)).intoArray(left, i);
+                for (; i < length; ++i) left[i] = left[i] - right[i];
+            }
+            case MULTIPLY -> {
+                for (; i < bound; i += SPECIES.length())
+                    FloatVector.fromArray(SPECIES, left, i).mul(FloatVector.fromArray(SPECIES, right, i)).intoArray(left, i);
+                for (; i < length; ++i) left[i] = left[i] * right[i];
+            }
+            case DIVIDE -> {
+                for (; i < bound; i += SPECIES.length())
+                    FloatVector.fromArray(SPECIES, left, i).div(FloatVector.fromArray(SPECIES, right, i)).intoArray(left, i);
+                for (; i < length; ++i) left[i] = left[i] / right[i];
+            }
+        }
+    }
+
+    @Override
+    public void binaryConst(float[] values, int length, float operand, BinaryOp operation) {
+        Objects.checkFromIndexSize(0, length, values.length);
+        FloatVector constant = FloatVector.broadcast(SPECIES, operand);
+        int bound = SPECIES.loopBound(length), i = 0;
+        switch (operation) {
+            case ADD -> {
+                for (; i < bound; i += SPECIES.length())
+                    FloatVector.fromArray(SPECIES, values, i).add(constant).intoArray(values, i);
+                for (; i < length; ++i) values[i] = values[i] + operand;
+            }
+            case SUBTRACT -> {
+                for (; i < bound; i += SPECIES.length())
+                    FloatVector.fromArray(SPECIES, values, i).sub(constant).intoArray(values, i);
+                for (; i < length; ++i) values[i] = values[i] - operand;
+            }
+            case MULTIPLY -> {
+                for (; i < bound; i += SPECIES.length())
+                    FloatVector.fromArray(SPECIES, values, i).mul(constant).intoArray(values, i);
+                for (; i < length; ++i) values[i] = values[i] * operand;
+            }
+            case DIVIDE -> {
+                for (; i < bound; i += SPECIES.length())
+                    FloatVector.fromArray(SPECIES, values, i).div(constant).intoArray(values, i);
+                for (; i < length; ++i) values[i] = values[i] / operand;
+            }
         }
     }
 

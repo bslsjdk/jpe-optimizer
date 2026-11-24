@@ -51,5 +51,28 @@ public final class ScalarDensityKernel implements DensityVectorKernel {
     }
 
     @Override
+    public void binary(float[] left, float[] right, int length, BinaryOp operation) {
+        Objects.checkFromIndexSize(0, length, left.length);
+        Objects.checkFromIndexSize(0, length, right.length);
+        switch (operation) {
+            case ADD -> { for (int i = 0; i < length; ++i) left[i] = left[i] + right[i]; }
+            case SUBTRACT -> { for (int i = 0; i < length; ++i) left[i] = left[i] - right[i]; }
+            case MULTIPLY -> { for (int i = 0; i < length; ++i) left[i] = left[i] * right[i]; }
+            case DIVIDE -> { for (int i = 0; i < length; ++i) left[i] = left[i] / right[i]; }
+        }
+    }
+
+    @Override
+    public void binaryConst(float[] values, int length, float operand, BinaryOp operation) {
+        Objects.checkFromIndexSize(0, length, values.length);
+        switch (operation) {
+            case ADD -> { for (int i = 0; i < length; ++i) values[i] = values[i] + operand; }
+            case SUBTRACT -> { for (int i = 0; i < length; ++i) values[i] = values[i] - operand; }
+            case MULTIPLY -> { for (int i = 0; i < length; ++i) values[i] = values[i] * operand; }
+            case DIVIDE -> { for (int i = 0; i < length; ++i) values[i] = values[i] / operand; }
+        }
+    }
+
+    @Override
     public String description() { return "scalar reference"; }
 }

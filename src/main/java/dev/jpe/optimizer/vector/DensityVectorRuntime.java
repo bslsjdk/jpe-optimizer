@@ -112,6 +112,34 @@ public final class DensityVectorRuntime {
         }
     }
 
+    public static void binary(float[] left, float[] right, int length, DensityVectorKernel.BinaryOp operation) {
+        DensityVectorKernel current = activeKernel;
+        if (current == null) {
+            ScalarDensityKernel.INSTANCE.binary(left, right, length, operation);
+            return;
+        }
+        try {
+            current.binary(left, right, length, operation);
+        } catch (RuntimeException | LinkageError exception) {
+            disable(exception);
+            ScalarDensityKernel.INSTANCE.binary(left, right, length, operation);
+        }
+    }
+
+    public static void binaryConst(float[] values, int length, float operand, DensityVectorKernel.BinaryOp operation) {
+        DensityVectorKernel current = activeKernel;
+        if (current == null) {
+            ScalarDensityKernel.INSTANCE.binaryConst(values, length, operand, operation);
+            return;
+        }
+        try {
+            current.binaryConst(values, length, operand, operation);
+        } catch (RuntimeException | LinkageError exception) {
+            disable(exception);
+            ScalarDensityKernel.INSTANCE.binaryConst(values, length, operand, operation);
+        }
+    }
+
     private static synchronized void disable(Throwable failure) {
         if (activeKernel != null) {
             activeKernel = null;
@@ -154,6 +182,22 @@ public final class DensityVectorRuntime {
             mismatch = compare("rangeChoice", length, expected, actual);
             if (mismatch != null) return mismatch;
 
+            for (BinaryDensityOperation operation : BinaryDensityOperation.values()) {
+                expected = source.clone(); actual = source.clone();
+                ScalarDensityKernel.INSTANCE.binary(expected, right, length, operation.operation);
+                candidate.binary(actual, right, length, operation.operation);
+                mismatch = compare("binary-" + operation, length, expected, actual);
+                if (mismatch != null) return mismatch;
+
+                for (float operand : edges) {
+                    expected = source.clone(); actual = source.clone();
+                    ScalarDensityKernel.INSTANCE.binaryConst(expected, length, operand, operation.operation);
+                    candidate.binaryConst(actual, length, operand, operation.operation);
+                    mismatch = compare("binary-constant-" + operation, length, expected, actual);
+                    if (mismatch != null) return mismatch;
+                }
+            }
+
             for (boolean minimum : new boolean[]{true, false}) {
                 expected = source.clone(); actual = source.clone();
                 ScalarDensityKernel.INSTANCE.minMax(expected, right, length, minimum);
@@ -171,6 +215,16 @@ public final class DensityVectorRuntime {
             }
         }
         return null;
+    }
+
+    private enum BinaryDensityOperation {
+        ADD(DensityVectorKernel.BinaryOp.ADD),
+        SUBTRACT(DensityVectorKernel.BinaryOp.SUBTRACT),
+        MULTIPLY(DensityVectorKernel.BinaryOp.MULTIPLY),
+        DIVIDE(DensityVectorKernel.BinaryOp.DIVIDE);
+
+        private final DensityVectorKernel.BinaryOp operation;
+        BinaryDensityOperation(DensityVectorKernel.BinaryOp operation) { this.operation = operation; }
     }
 
     private static String compare(String operation, int length, float[] expected, float[] actual) {

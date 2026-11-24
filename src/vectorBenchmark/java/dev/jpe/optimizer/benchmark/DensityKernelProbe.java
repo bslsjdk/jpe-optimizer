@@ -31,6 +31,10 @@ public final class DensityKernelProbe {
             runRangeChoiceConst(size, scalar, vector);
             runMinMax(size, scalar, vector, true);
             runMinMax(size, scalar, vector, false);
+            for (DensityVectorKernel.BinaryOp operation : DensityVectorKernel.BinaryOp.values()) {
+                runBinary(size, scalar, vector, operation);
+                runBinaryConst(size, scalar, vector, operation);
+            }
         }
         System.out.println("Density kernel checksum=" + blackhole);
     }
@@ -97,6 +101,45 @@ public final class DensityKernelProbe {
                 vectorValues);
         compare(minimum ? "min" : "max", scalarValues, vectorValues);
         report(minimum ? "min" : "max", result, size);
+    }
+
+    private static void runBinary(int size, DensityVectorKernel scalar,
+                                  DensityVectorKernel vector, DensityVectorKernel.BinaryOp operation) {
+        float[] initial = new float[size];
+        float[] right = new float[size];
+        for (int i = 0; i < size; ++i) {
+            initial[i] = (i % 2001) * 0.001F - 1.0F;
+            right[i] = ((i * 37) % 1999) * 0.001F + 0.125F;
+        }
+        float[] scalarValues = new float[size];
+        float[] vectorValues = new float[size];
+        PairResult result = measurePair(
+                () -> System.arraycopy(initial, 0, scalarValues, 0, size),
+                () -> scalar.binary(scalarValues, right, size, operation),
+                scalarValues,
+                () -> System.arraycopy(initial, 0, vectorValues, 0, size),
+                () -> vector.binary(vectorValues, right, size, operation),
+                vectorValues);
+        compare("binary-" + operation, scalarValues, vectorValues);
+        report("binary " + operation, result, size);
+    }
+
+    private static void runBinaryConst(int size, DensityVectorKernel scalar,
+                                       DensityVectorKernel vector, DensityVectorKernel.BinaryOp operation) {
+        float[] initial = new float[size];
+        for (int i = 0; i < size; ++i) initial[i] = (i % 2001) * 0.001F - 1.0F;
+        float[] scalarValues = new float[size];
+        float[] vectorValues = new float[size];
+        float operand = 0.375F;
+        PairResult result = measurePair(
+                () -> System.arraycopy(initial, 0, scalarValues, 0, size),
+                () -> scalar.binaryConst(scalarValues, size, operand, operation),
+                scalarValues,
+                () -> System.arraycopy(initial, 0, vectorValues, 0, size),
+                () -> vector.binaryConst(vectorValues, size, operand, operation),
+                vectorValues);
+        compare("binary-constant-" + operation, scalarValues, vectorValues);
+        report("binaryConst " + operation, result, size);
     }
 
     private static PairResult measurePair(Runnable scalarReset, Runnable scalarOperation, float[] scalarOutput,
