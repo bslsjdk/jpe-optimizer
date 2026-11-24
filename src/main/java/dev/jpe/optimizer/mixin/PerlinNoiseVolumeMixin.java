@@ -4,7 +4,7 @@ import dev.jpe.optimizer.vector.DensityVectorRuntime;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
 import net.minecraft.world.level.levelgen.synth.PerlinNoise;
-import net.minecraft.world.level.levelgen.synth.PerlinNoiseVectorizer;
+import dev.jpe.optimizer.vector.PerlinNoiseVectorizer;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;

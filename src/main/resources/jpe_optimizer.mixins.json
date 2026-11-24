@@ -9,6 +9,7 @@
     "RangeChoiceConstSamplerMixin",
     "RangeChoiceSamplerMixin",
     "BinaryFunctionMinMaxMixin",
+    "GradientNoiseAccessor",
     "PerlinNoiseVolumeMixin"
   ],
   "injectors": {

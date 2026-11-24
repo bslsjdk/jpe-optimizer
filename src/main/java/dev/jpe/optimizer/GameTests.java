@@ -20,7 +20,7 @@ import net.minecraft.world.level.block.Rotation;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
 import net.minecraft.world.level.levelgen.synth.PerlinNoise;
-import net.minecraft.world.level.levelgen.synth.PerlinNoiseVectorizer;
+import dev.jpe.optimizer.vector.PerlinNoiseVectorizer;
 import dev.jpe.optimizer.mixin.DensityBufferAccessor;
 import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredRegister;
