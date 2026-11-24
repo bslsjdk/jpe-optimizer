@@ -122,7 +122,10 @@ public final class GameTests {
         long threadId = Thread.currentThread().threadId();
         ThreadMXBean threadBean = ManagementFactory.getThreadMXBean();
 
-        level.getChunk(8192, -8192); // one fresh warmup chunk
+        // Give the server thread and density kernels enough fresh chunks to warm up JIT compilation.
+        for (int i = 0; i < 8; ++i) {
+            level.getChunk(8192 + i * 96, -8192 - (i % 2) * 96);
+        }
 
         List<Long> elapsed = new ArrayList<>();
         long cpuBefore = threadBean.isCurrentThreadCpuTimeSupported()
@@ -131,7 +134,7 @@ public final class GameTests {
         long gcCountBefore = gcCount();
         long gcTimeBefore = gcTime();
 
-        for (int i = 0; i < 6; ++i) {
+        for (int i = 0; i < 24; ++i) {
             int chunkX = 12288 + i * 96;
             int chunkZ = -12288 - (i % 2) * 96;
             long start = System.nanoTime();
@@ -152,13 +155,13 @@ public final class GameTests {
         long[] sorted = elapsed.stream().mapToLong(Long::longValue).sorted().toArray();
 
         JPEOptimizer.LOGGER.info(
-                "JPE_SERVER_WORLDGEN_BENCH seed={} mode={} chunks=6 meanMs={} medianMs={} p95Ms={} " +
-                "cpuMs={} allocatedMiB={} gcCollections={} gcMs={} warmupChunks=1",
+                "JPE_SERVER_WORLDGEN_BENCH seed={} mode={} chunks=24 meanMs={} medianMs={} p95Ms={} " +
+                "cpuMs={} allocatedMiB={} gcCollections={} gcMs={} warmupChunks=8",
                 seed,
                 dev.jpe.optimizer.vector.DensityVectorRuntime.enabled() ? "vector" : "scalar",
-                String.format(java.util.Locale.ROOT, "%.3f", total / 6_000_000.0),
-                String.format(java.util.Locale.ROOT, "%.3f", (sorted[2] + sorted[3]) / 2_000_000.0),
-                String.format(java.util.Locale.ROOT, "%.3f", sorted[5] / 1_000_000.0),
+                String.format(java.util.Locale.ROOT, "%.3f", total / 24_000_000.0),
+                String.format(java.util.Locale.ROOT, "%.3f", (sorted[11] + sorted[12]) / 2_000_000.0),
+                String.format(java.util.Locale.ROOT, "%.3f", sorted[22] / 1_000_000.0),
                 cpuBefore >= 0 && cpuAfter >= 0
                         ? String.format(java.util.Locale.ROOT, "%.3f", (cpuAfter - cpuBefore) / 1_000_000.0)
                         : "unsupported",
