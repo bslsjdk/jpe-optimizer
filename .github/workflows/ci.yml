@@ -24,6 +24,14 @@ jobs:
           java-version: "25"
           cache: gradle
 
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify native Rust and C++ boundary
+        run: |
+          cargo test --manifest-path native/rust-runtime/Cargo.toml
+          cargo build --release --manifest-path native/rust-runtime/Cargo.toml
+
       - name: Set up Gradle 9.2.1
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -48,8 +56,18 @@ jobs:
 
       - name: GameTest correctness suite
         env:
-          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.perlinVectorEnabled=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=true
-        run: gradle runGameTestServer --no-daemon --stacktrace
+          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.perlinVectorEnabled=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=true -Djpe.nativePerlinEnabled=true -Djpe.paletteHashEnabled=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
+        run: |
+          mkdir -p build/gametest
+          set +e
+          gradle runGameTestServer --no-daemon --stacktrace
+          test_status=$?
+          set -e
+          # Preserve the GameTest server log before later benchmark runs recreate run/.
+          if [ -d run/logs ]; then
+            cp -a run/logs build/gametest/
+          fi
+          exit "$test_status"
 
       - name: Dedicated continuous run-worldgen benchmark (scalar/vector ABBA, four fresh servers)
         run: |
@@ -101,12 +119,44 @@ jobs:
           run_worldgen vector_b vector
           run_worldgen scalar_b scalar
 
+          # Compare one native worker against automatic multi-core sizing.
+          # Order is 1-worker, auto, auto, 1-worker; scalar runs bracket the group.
+          native_option="-Djpe.nativePerlinEnabled=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so"
+          native_one_option="$native_option -Djpe.nativeWorkers=1"
+          run_worldgen native_scalar_a scalar
+          run_worldgen native_one_a scalar "$native_one_option"
+          run_worldgen native_auto_a scalar "$native_option"
+          run_worldgen native_auto_b scalar "$native_option"
+          run_worldgen native_one_b scalar "$native_one_option"
+          run_worldgen native_scalar_b scalar
+          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin.*nativeWorkers=1.*nativeCompleted=[1-9][0-9]*' build/server-benchmark/native_one_a.log
+          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin.*nativeWorkers=1.*nativeCompleted=[1-9][0-9]*' build/server-benchmark/native_one_b.log
+          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin.*nativeWorkers=[2-9][0-9]*.*nativeCompleted=[1-9][0-9]*' build/server-benchmark/native_auto_a.log
+          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin.*nativeWorkers=[2-9][0-9]*.*nativeCompleted=[1-9][0-9]*' build/server-benchmark/native_auto_b.log
+
+          # Compare synchronous C++ calls on Minecraft's own worldgen workers.
+          # This removes the second native pool and its task-copy/polling overhead.
+          native_sync_option="-Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so"
+          run_worldgen native_sync_scalar_a scalar
+          run_worldgen native_sync_a scalar "$native_sync_option"
+          run_worldgen native_sync_b scalar "$native_sync_option"
+          run_worldgen native_sync_scalar_b scalar
+          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin-sync.*nativeSyncCalls=[1-9][0-9]*' build/server-benchmark/native_sync_a.log
+          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin-sync.*nativeSyncCalls=[1-9][0-9]*' build/server-benchmark/native_sync_b.log
+
           # Isolate the material-rule density-buffer reuse experiment with a fresh-world ABBA.
           # All four runs use the same vector density kernels; only the scoped buffer lease changes.
           run_worldgen material_pool_off_a vector "-Djpe.densityBufferMetrics=true"
           run_worldgen material_pool_on_a vector "-Djpe.densityBufferMetrics=true -Djpe.materialBufferPooling=true"
           run_worldgen material_pool_on_b vector "-Djpe.densityBufferMetrics=true -Djpe.materialBufferPooling=true"
           run_worldgen material_pool_off_b vector "-Djpe.densityBufferMetrics=true"
+
+          # Isolate 3-bit and 4-bit palette lookup strategy with a fresh-world ABBA.
+          # Only the palette factory selection changes; world seed, generator and JVM stay fixed.
+          run_worldgen palette_hash_off_a scalar
+          run_worldgen palette_hash_on_a scalar "-Djpe.paletteHashEnabled=true"
+          run_worldgen palette_hash_on_b scalar "-Djpe.paletteHashEnabled=true"
+          run_worldgen palette_hash_off_b scalar
 
           # Separate diagnostic run: JFR sampling identifies real hot methods without
           # contaminating the four-run scalar/vector performance comparison.
@@ -135,6 +185,7 @@ jobs:
             build/vector-probe/
             build/math-benchmark/
             build/server-benchmark/
+            build/gametest/
             build/reports/tests/
             build/test-results/
             build/source-audit/report.txt

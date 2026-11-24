@@ -1,6 +1,7 @@
 package dev.jpe.optimizer.benchmark;
 
 import dev.jpe.optimizer.JPEOptimizer;
+import dev.jpe.optimizer.runtime.NativePerlinNoiseBackend;
 import dev.jpe.optimizer.worldgen.DensityBufferMetrics;
 import dev.jpe.optimizer.vector.DensityVectorRuntime;
 import dev.jpe.optimizer.worldgen.StructureSpatialIndex;
@@ -83,7 +84,10 @@ public final class ContinuousWorldgenBenchmark {
         private final ServerLevel level;
         private final ThreadMXBean threadBean = ManagementFactory.getThreadMXBean();
         private final long serverThreadId = Thread.currentThread().threadId();
+        // Counts requests whose completion callbacks have not yet been observed.
         private final AtomicInteger inFlight = new AtomicInteger();
+        // Counts futures observed as genuinely incomplete immediately after submission.
+        private final AtomicInteger activeGenerationFutures = new AtomicInteger();
         private final AtomicInteger measuredCompleted = new AtomicInteger();
         private final AtomicInteger measuredFailed = new AtomicInteger();
         private final AtomicInteger maxInFlight = new AtomicInteger();
@@ -108,6 +112,7 @@ public final class ContinuousWorldgenBenchmark {
         private long maxRequestSubmissionNanos;
         private long requestSubmissionCount;
         private WorldgenMetrics.Snapshot worldgenBefore;
+        private NativePerlinNoiseBackend.Metrics nativeBefore;
         private DensityBufferMetrics.Snapshot densityBuffersBefore;
         private StructureSpatialIndex.Metrics structureBefore;
         private volatile boolean finished;
@@ -165,15 +170,25 @@ public final class ContinuousWorldgenBenchmark {
         private void issueFrontierRow(boolean measured) {
             int rowIndex = measured ? measuredRowsIssued : warmupRowsIssued;
             int chunkX = (measured ? MEASURE_START_CHUNK_X : WARMUP_START_CHUNK_X) + rowIndex;
+
+            // Submit the entire frontier row before attaching completion callbacks.
+            // This prevents an already-completed future from making the benchmark
+            // accidentally serialize submission and completion one chunk at a time.
+            List<PendingChunk> submitted = new ArrayList<>(FRONTIER_WIDTH);
             for (int offset = -VIEW_RADIUS_CHUNKS; offset <= VIEW_RADIUS_CHUNKS; offset++) {
-                requestFullChunk(chunkX, START_CHUNK_Z + offset, measured);
+                PendingChunk pending = submitChunk(chunkX, START_CHUNK_Z + offset, measured);
+                if (pending != null) {
+                    submitted.add(pending);
+                }
+            }
+            for (PendingChunk pending : submitted) {
+                observeChunk(pending);
             }
         }
 
-        private void requestFullChunk(int x, int z, boolean measured) {
+        private PendingChunk submitChunk(int x, int z, boolean measured) {
             long requestedAt = System.nanoTime();
-            int currentInFlight = inFlight.incrementAndGet();
-            maxInFlight.accumulateAndGet(currentInFlight, Math::max);
+            inFlight.incrementAndGet();
 
             try {
                 long submitStart = System.nanoTime();
@@ -183,40 +198,62 @@ public final class ContinuousWorldgenBenchmark {
                 requestSubmissionNanos += submitElapsed;
                 maxRequestSubmissionNanos = Math.max(maxRequestSubmissionNanos, submitElapsed);
                 requestSubmissionCount++;
-                future.whenComplete((rawResult, failure) -> {
-                    try {
-                        if (failure != null) {
-                            if (measured) {
-                                measuredFailed.incrementAndGet();
-                            }
-                            return;
-                        }
 
-                        if (!(rawResult instanceof net.minecraft.server.level.ChunkResult<?> result)
-                                || !result.isSuccess()
-                                || !(result.orElse(null) instanceof LevelChunk)) {
-                            if (measured) {
-                                measuredFailed.incrementAndGet();
-                            }
-                            return;
-                        }
-
-                        if (measured) {
-                            measuredCompleted.incrementAndGet();
-                            measuredLatencies.add(System.nanoTime() - requestedAt);
-                        }
-                    } finally {
-                        inFlight.decrementAndGet();
-                    }
-                });
+                boolean pendingAtSubmission = !future.isDone();
+                if (pendingAtSubmission) {
+                    int active = activeGenerationFutures.incrementAndGet();
+                    maxInFlight.accumulateAndGet(active, Math::max);
+                }
+                maxPendingTasks.accumulateAndGet(level.getChunkSource().getPendingTasksCount(), Math::max);
+                return new PendingChunk(future, requestedAt, measured, pendingAtSubmission);
             } catch (Throwable failure) {
                 inFlight.decrementAndGet();
                 if (measured) {
                     measuredFailed.incrementAndGet();
                 }
                 JPEOptimizer.LOGGER.error("Unable to request benchmark chunk {},{}", x, z, failure);
+                return null;
             }
         }
+
+        private void observeChunk(PendingChunk pending) {
+            pending.future().whenComplete((rawResult, failure) -> {
+                try {
+                    if (failure != null) {
+                        if (pending.measured()) {
+                            measuredFailed.incrementAndGet();
+                        }
+                        return;
+                    }
+
+                    if (!(rawResult instanceof net.minecraft.server.level.ChunkResult<?> result)
+                            || !result.isSuccess()
+                            || !(result.orElse(null) instanceof LevelChunk)) {
+                        if (pending.measured()) {
+                            measuredFailed.incrementAndGet();
+                        }
+                        return;
+                    }
+
+                    if (pending.measured()) {
+                        measuredCompleted.incrementAndGet();
+                        measuredLatencies.add(System.nanoTime() - pending.requestedAt());
+                    }
+                } finally {
+                    if (pending.pendingAtSubmission()) {
+                        activeGenerationFutures.decrementAndGet();
+                    }
+                    inFlight.decrementAndGet();
+                }
+            });
+        }
+
+        private record PendingChunk(
+                CompletableFuture<?> future,
+                long requestedAt,
+                boolean measured,
+                boolean pendingAtSubmission
+        ) {}
 
         private void beginMeasurement(long now) {
             if (measuredRowsIssued != 0 || measurementStartNanos != 0L) {
@@ -229,7 +266,9 @@ public final class ContinuousWorldgenBenchmark {
             requestSubmissionNanos = 0L;
             maxRequestSubmissionNanos = 0L;
             requestSubmissionCount = 0L;
+            WorldgenMetrics.resetConcurrentPeak();
             worldgenBefore = WorldgenMetrics.snapshot();
+            nativeBefore = NativePerlinNoiseBackend.metricsSnapshot();
             densityBuffersBefore = DensityBufferMetrics.snapshot();
             structureBefore = StructureSpatialIndex.metricsSnapshot();
             serverCpuBefore = currentThreadCpuTime();
@@ -259,10 +298,28 @@ public final class ContinuousWorldgenBenchmark {
             Collections.sort(ticks);
 
             WorldgenMetrics.Snapshot worldgenAfter = WorldgenMetrics.snapshot();
+            NativePerlinNoiseBackend.Metrics nativeAfter = NativePerlinNoiseBackend.metricsSnapshot();
             DensityBufferMetrics.Snapshot densityBufferDelta = DensityBufferMetrics.delta(
                     DensityBufferMetrics.snapshot(), densityBuffersBefore);
             StructureSpatialIndex.Metrics structureAfter = StructureSpatialIndex.metricsSnapshot();
             long doFillCalls = worldgenAfter.calls() - worldgenBefore.calls();
+            long sampledAquiferNanos = worldgenAfter.sampledAquiferNanos() - worldgenBefore.sampledAquiferNanos();
+            long sampledPlacementNanos = worldgenAfter.sampledPlacementNanos() - worldgenBefore.sampledPlacementNanos();
+            long timingSamples = worldgenAfter.timingSamples() - worldgenBefore.timingSamples();
+            long nativeCalls = nativeAfter.attempts() - nativeBefore.attempts();
+            long nativeCompleted = nativeAfter.completed() - nativeBefore.completed();
+            long nativeFallbacks = nativeAfter.fallbacks() - nativeBefore.fallbacks();
+            long nativeSamples = nativeAfter.samples() - nativeBefore.samples();
+            long nativeNanos = nativeAfter.totalNanos() - nativeBefore.totalNanos();
+            long nativeSyncCalls = nativeAfter.synchronousCalls() - nativeBefore.synchronousCalls();
+            long nativeInvalidDimensions = nativeAfter.invalidDimensions() - nativeBefore.invalidDimensions();
+            long nativeAxisMismatches = nativeAfter.axisVolumeMismatches() - nativeBefore.axisVolumeMismatches();
+            long nativeBufferMismatches = nativeAfter.bufferVolumeMismatches() - nativeBefore.bufferVolumeMismatches();
+            long nativeOversizedVolumes = nativeAfter.oversizedVolumes() - nativeBefore.oversizedVolumes();
+            long nativeRuntimeUnavailable = nativeAfter.runtimeUnavailable() - nativeBefore.runtimeUnavailable();
+            long nativeQueueRejections = nativeAfter.asyncQueueRejections() - nativeBefore.asyncQueueRejections();
+            long nativeJobFailures = nativeAfter.nativeJobFailures() - nativeBefore.nativeJobFailures();
+            long nativeExceptions = nativeAfter.nativeExceptions() - nativeBefore.nativeExceptions();
             long requested = (long) MEASURED_ROWS * FRONTIER_WIDTH;
             int completed = measuredCompleted.get();
             int failed = measuredFailed.get();
@@ -275,16 +332,20 @@ public final class ContinuousWorldgenBenchmark {
                     "JPE_CONTINUOUS_WORLDGEN_BENCH seed={} generator={} mode={} speedBlocksPerSecond={} "
                             + "viewRadiusChunks={} rows={} requestedChunks={} completedChunks={} failedChunks={} "
                             + "throughputChunksPerSecond={} meanChunkLatencyMs={} medianChunkLatencyMs={} p95ChunkLatencyMs={} "
-                            + "p95ServerTickMs={} maxInFlight={} maxPendingTasks={} maxLoadedChunks={} "
+                            + "p95ServerTickMs={} maxInFlight={} maxPendingTasks={} maxLoadedChunks={} maxConcurrentDoFill={} "
                             + "avgGetChunkFutureCallMs={} maxGetChunkFutureCallMs={} elapsedSeconds={} "
                             + "serverThreadCpuMs={} processCpuMs={} serverThreadAllocatedMiB={} gcCollections={} gcMs={} "
                             + "doFillCalls={} doFillDensityMs={} doFillBlockMs={} doFillSamples={} "
+                            + "sampledAquiferMs={} sampledPlacementMs={} timingSamples={} "
                             + "structureQueries={} structureIndexBuilds={} structureIndexedPieces={} "
                             + "structureCandidateChecks={} structureVanillaLinearChecks={} "
                             + "densityMetricsEnabled={} unpooledCalls={} unpooledElements={} "
-                            + "poolHits={} poolMisses={} poolRequestedElements={} poolReusedCapacityElements={}",
+                            + "poolHits={} poolMisses={} poolRequestedElements={} poolReusedCapacityElements={} "
+                            + "nativePerlinEnabled={} nativePerlinMode={} nativeWorkers={} nativeCalls={} nativeCompleted={} nativeFallbacks={} nativeSyncCalls={} nativeSamples={} nativeTotalMs={} "
+                            + "nativeInvalidDimensions={} nativeAxisMismatches={} nativeBufferMismatches={} nativeOversizedVolumes={} "
+                            + "nativeRuntimeUnavailable={} nativeQueueRejections={} nativeJobFailures={} nativeExceptions={}",
                     level.getSeed(), level.getChunkSource().getGenerator().getClass().getName(),
-                    DensityVectorRuntime.enabled() ? "vector" : "scalar",
+                    NativePerlinNoiseBackend.enabled() ? NativePerlinNoiseBackend.mode() : (DensityVectorRuntime.enabled() ? "vector" : "scalar"),
                     format(320.0 / TICKS_PER_CHUNK_COLUMN),
                     VIEW_RADIUS_CHUNKS, MEASURED_ROWS, requested, completed, failed,
                     format(completed / (elapsedNanos / 1_000_000_000.0)),
@@ -292,7 +353,7 @@ public final class ContinuousWorldgenBenchmark {
                     format(percentile(latencies, 0.50) / 1_000_000.0),
                     format(percentile(latencies, 0.95) / 1_000_000.0),
                     format(percentile(ticks, 0.95) / 1_000_000.0),
-                    maxInFlight.get(), maxPendingTasks.get(), maxLoadedChunks.get(),
+                    maxInFlight.get(), maxPendingTasks.get(), maxLoadedChunks.get(), worldgenAfter.maxConcurrentDoFill(),
                     format(requestSubmissionCount == 0 ? 0.0 : requestSubmissionNanos / (double) requestSubmissionCount / 1_000_000.0),
                     format(maxRequestSubmissionNanos / 1_000_000.0),
                     format(elapsedNanos / 1_000_000_000.0),
@@ -305,6 +366,8 @@ public final class ContinuousWorldgenBenchmark {
                     format((worldgenAfter.densitySampleNanos() - worldgenBefore.densitySampleNanos()) / 1_000_000.0),
                     format((worldgenAfter.blockFillNanos() - worldgenBefore.blockFillNanos()) / 1_000_000.0),
                     worldgenAfter.samples() - worldgenBefore.samples(),
+                    format(sampledAquiferNanos / 1_000_000.0),
+                    format(sampledPlacementNanos / 1_000_000.0), timingSamples,
                     structureAfter.queries() - structureBefore.queries(),
                     structureAfter.builds() - structureBefore.builds(),
                     structureAfter.indexedPieces() - structureBefore.indexedPieces(),
@@ -313,7 +376,13 @@ public final class ContinuousWorldgenBenchmark {
                     DensityBufferMetrics.enabled(), densityBufferDelta.unpooledCalls(),
                     densityBufferDelta.unpooledElements(), densityBufferDelta.poolHits(),
                     densityBufferDelta.poolMisses(), densityBufferDelta.poolRequestedElements(),
-                    densityBufferDelta.poolReusedCapacityElements()
+                    densityBufferDelta.poolReusedCapacityElements(), NativePerlinNoiseBackend.enabled(),
+                    NativePerlinNoiseBackend.mode(), nativeAfter.nativeWorkers(), nativeCalls, nativeCompleted, nativeFallbacks,
+                    nativeSyncCalls, nativeSamples,
+                    format(nativeNanos / 1_000_000.0),
+                    nativeInvalidDimensions, nativeAxisMismatches, nativeBufferMismatches,
+                    nativeOversizedVolumes, nativeRuntimeUnavailable, nativeQueueRejections,
+                    nativeJobFailures, nativeExceptions
             );
 
             if (completed != requested || failed != 0 || inFlight.get() != 0 || doFillCalls < requested) {

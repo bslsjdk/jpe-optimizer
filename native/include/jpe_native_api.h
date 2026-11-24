@@ -1,0 +1,50 @@
+#ifndef JPE_NATIVE_API_H
+#define JPE_NATIVE_API_H
+#include <stdint.h>
+#if defined(_WIN32)
+  #if defined(JPE_NATIVE_BUILD)
+    #define JPE_API __declspec(dllexport)
+  #else
+    #define JPE_API __declspec(dllimport)
+  #endif
+#else
+  #define JPE_API __attribute__((visibility("default")))
+#endif
+#ifdef __cplusplus
+extern "C" {
+#endif
+/* ABI v6. Axis coordinates use min + index * step with Java int wrap semantics. */
+JPE_API uint32_t jpe_runtime_abi_version(void);
+/* requested=0 selects all process-visible CPUs; positive values are capped to that count. */
+/* Zero selects available CPUs. Repeating the active count is safe after startup;
+ * changing the count after worker creation returns -1. */
+JPE_API int32_t jpe_runtime_configure_workers(uint32_t requested);
+JPE_API int32_t jpe_runtime_add_f32(const float *input, float *output, uint32_t length);
+/* Synchronous entry retained for exact parity tests. */
+JPE_API int32_t jpe_runtime_perlin_add_volume(
+    const uint8_t *permutation,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    double offset_x, double offset_y, double offset_z, double xz_scale, double y_scale,
+    float amplitude, float *output, uint64_t output_length, uint32_t flags
+);
+/* Async API copies the permutation but borrows output_buffer until terminal job status.
+ * Caller must keep it valid and exclusively reserved until release. Zero means rejected/full. */
+JPE_API uint64_t jpe_runtime_submit_perlin_volume(
+    const uint8_t *permutation,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    double offset_x, double offset_y, double offset_z, double xz_scale, double y_scale,
+    float amplitude, float *output_buffer, uint64_t output_length, uint32_t flags
+);
+/* status: 0 complete, 1 pending, 2 running, 3 failed, 4 cancelled, -1 unknown job */
+JPE_API int32_t jpe_runtime_job_status(uint64_t job_id);
+JPE_API int32_t jpe_runtime_wait_job(uint64_t job_id, uint64_t timeout_nanos);
+JPE_API int32_t jpe_runtime_cancel_job(uint64_t job_id);
+JPE_API int32_t jpe_runtime_release_job(uint64_t job_id);
+#ifdef __cplusplus
+}
+#endif
+#endif

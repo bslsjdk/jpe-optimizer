@@ -18,7 +18,8 @@
     "RangeChoiceSamplerMixin",
     "BinaryFunctionMinMaxMixin",
     "StructurePiecesBuilderMixin",
-    "BoundingBoxMixin"
+    "BoundingBoxMixin",
+    "PaletteStrategyMixin"
   ],
   "injectors": {
     "defaultRequire": 1

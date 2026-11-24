@@ -268,7 +268,9 @@ public final class DensityVectorRuntime {
     private static String compare(String operation, int length, float[] expected, float[] actual) {
         for (int i = 0; i < expected.length; ++i) {
             if (Float.floatToRawIntBits(expected[i]) != Float.floatToRawIntBits(actual[i])) {
-                return operation + " mismatch at index " + i + " for length " + length;
+                return operation + " mismatch at index " + i + " for length " + length
+                        + ": expected=0x" + Integer.toHexString(Float.floatToRawIntBits(expected[i]))
+                        + ", actual=0x" + Integer.toHexString(Float.floatToRawIntBits(actual[i]));
             }
         }
         return null;

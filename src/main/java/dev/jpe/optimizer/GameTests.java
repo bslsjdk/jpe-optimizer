@@ -28,6 +28,9 @@ import net.minecraft.world.level.levelgen.structure.structures.MineshaftStructur
 import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredRegister;
 import dev.jpe.optimizer.mixin.DensityBufferAccessor;
+import dev.jpe.optimizer.mixin.GradientNoiseAccessor;
+import dev.jpe.optimizer.runtime.NativeRuntime;
+import dev.jpe.optimizer.runtime.NativePerlinNoiseBackend;
 import dev.jpe.optimizer.vector.DensityVectorRuntime;
 import dev.jpe.optimizer.vector.PerlinNoiseVectorizer;
 
@@ -51,6 +54,12 @@ public final class GameTests {
 
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> PERLIN_VECTOR_PARITY =
             TEST_FUNCTIONS.register("perlin_vector_parity", () -> GameTests::perlinVectorParity);
+
+    public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> PERLIN_NATIVE_PARITY =
+            TEST_FUNCTIONS.register("perlin_native_parity", () -> GameTests::perlinNativeParity);
+
+    public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> PALETTE_HASH_CONFIGURATION =
+            TEST_FUNCTIONS.register("palette_hash_configuration", () -> GameTests::paletteHashConfiguration);
 
     public static void registerFunctions(net.neoforged.bus.api.IEventBus modEventBus) {
         TEST_FUNCTIONS.register(modEventBus);
@@ -87,6 +96,24 @@ public final class GameTests {
                 Identifier.parse("jpe_optimizer:perlin_vector_parity"),
                 new FunctionGameTestInstance(PERLIN_VECTOR_PARITY.getKey(), data)
         );
+        event.registerTest(
+                Identifier.parse("jpe_optimizer:perlin_native_parity"),
+                new FunctionGameTestInstance(PERLIN_NATIVE_PARITY.getKey(), data)
+        );
+        event.registerTest(
+                Identifier.parse("jpe_optimizer:palette_hash_configuration"),
+                new FunctionGameTestInstance(PALETTE_HASH_CONFIGURATION.getKey(), data)
+        );
+    }
+
+    private static void paletteHashConfiguration(GameTestHelper helper) {
+        boolean requested = Boolean.getBoolean("jpe.paletteHashEnabled");
+        boolean applied = dev.jpe.optimizer.worldgen.PaletteHashExperiment.applied();
+        if (requested != applied) {
+            throw new AssertionError("Palette hash experiment mismatch: requested=" + requested + ", applied=" + applied);
+        }
+        JPEOptimizer.LOGGER.info("JPE_PALETTE_HASH_CONFIGURATION requested={} applied={}", requested, applied);
+        helper.succeed();
     }
 
     private static void floatMathSmoke(GameTestHelper helper) {
@@ -248,7 +275,12 @@ public final class GameTests {
             PerlinNoiseVectorizer.setVanillaBypass(false);
         }
 
-        noise.addToVolume(optimized, volume, 0.25, 0.0625, 0.75F);
+        NativePerlinNoiseBackend.setBypass(true);
+        try {
+            noise.addToVolume(optimized, volume, 0.25, 0.0625, 0.75F);
+        } finally {
+            NativePerlinNoiseBackend.setBypass(false);
+        }
         if (!PerlinNoiseVectorizer.wasLastCallVectorized()) {
             throw new AssertionError("Perlin vector path did not process a 16-lane Y run");
         }
@@ -267,6 +299,123 @@ public final class GameTests {
         JPEOptimizer.LOGGER.info("JPE_PERLIN_VECTOR_PARITY samples={} bitExact=true",
                 expected.length);
         helper.succeed();
+    }
+
+
+    /** Compares the Rust/C++ Perlin volume backend against vanilla output bit-for-bit. */
+    private static void perlinNativeParity(GameTestHelper helper) {
+        String library = System.getProperty("jpe.nativeLibraryPath");
+        if (library == null || library.isBlank()) {
+            throw new AssertionError("Set -Djpe.nativeLibraryPath to the freshly built native runtime library");
+        }
+
+        PerlinNoise noise = new PerlinNoise(RandomSource.create(0x4A50454C263L));
+        DensityVolume volume = new DensityVolume(3, 64, 2, -16, -64, 32, 4, 2, 8);
+        DensityBuffer vanilla = DensityBuffer.createUnpooled(volume.size());
+
+        PerlinNoiseVectorizer.setVanillaBypass(true);
+        try {
+            noise.addToVolume(vanilla, volume, 0.25, 0.0625, 0.75F);
+        } finally {
+            PerlinNoiseVectorizer.setVanillaBypass(false);
+        }
+
+        float[] expected = ((DensityBufferAccessor) vanilla).jpe$values();
+        float[] synchronous = new float[volume.size()];
+        GradientNoiseAccessor access = (GradientNoiseAccessor) (Object) noise;
+        try (NativeRuntime runtime = NativeRuntime.load(java.nio.file.Path.of(library))) {
+            runtime.perlinAddVolume(
+                    access.jpe$perms(), volume.sizeX(), volume.sizeY(), volume.sizeZ(),
+                    volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
+                    volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ(),
+                    access.jpe$offsetX(), access.jpe$offsetY(), access.jpe$offsetZ(),
+                    0.25, 0.0625, 0.75F, synchronous,
+                    net.minecraft.SharedConstants.DEBUG_ENABLE_FARLANDS
+            );
+            assertNativePerlinParity(expected, synchronous, "synchronous");
+
+            NativeRuntime.NativeJob job = runtime.submitPerlinVolume(
+                    access.jpe$perms(), volume.sizeX(), volume.sizeY(), volume.sizeZ(),
+                    volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
+                    volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ(),
+                    access.jpe$offsetX(), access.jpe$offsetY(), access.jpe$offsetZ(),
+                    0.25, 0.0625, 0.75F, new float[volume.size()],
+                    net.minecraft.SharedConstants.DEBUG_ENABLE_FARLANDS
+            );
+            if (job == null) throw new AssertionError("Native async queue unexpectedly rejected the parity job");
+            try (job) {
+                long deadline = System.nanoTime() + 10_000_000_000L;
+                int status;
+                boolean timedOut = false;
+                boolean interrupted = false;
+                do {
+                    status = job.waitForStatus(10_000_000L);
+                    if (status == NativeRuntime.JOB_COMPLETE
+                            || status == NativeRuntime.JOB_FAILED
+                            || status == NativeRuntime.JOB_CANCELLED) break;
+                    if (!timedOut && System.nanoTime() >= deadline) {
+                        timedOut = true;
+                        job.cancel();
+                    }
+                    try {
+                        Thread.sleep(1L);
+                    } catch (InterruptedException ignored) {
+                        interrupted = true;
+                        job.cancel();
+                    }
+                } while (true);
+                if (interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError("Interrupted while waiting for native async parity job");
+                }
+                if (timedOut) throw new AssertionError("Native async Perlin job timed out");
+                if (status != NativeRuntime.JOB_COMPLETE) {
+                    throw new AssertionError("Native async Perlin job ended with status " + status);
+                }
+                assertNativePerlinParity(expected, job.copyOutput(), "asynchronous");
+            }
+        } catch (Exception failure) {
+            throw new AssertionError("Unable to execute native Perlin parity test", failure);
+        }
+
+        if (!NativePerlinNoiseBackend.enabled()) {
+            throw new AssertionError("Live native Perlin GameTest requires -Djpe.nativePerlinEnabled=true");
+        }
+        DensityBuffer liveNative = DensityBuffer.createUnpooled(volume.size());
+        noise.addToVolume(liveNative, volume, 0.25, 0.0625, 0.75F);
+        if (!NativePerlinNoiseBackend.wasLastCallNative()) {
+            throw new AssertionError("PerlinNoise.addToVolume did not dispatch through the live native backend");
+        }
+        assertNativePerlinParity(expected, ((DensityBufferAccessor) liveNative).jpe$values(), "live-native-async");
+
+        String previousMode = System.getProperty("jpe.nativePerlinSynchronous");
+        try {
+            System.setProperty("jpe.nativePerlinSynchronous", "true");
+            DensityBuffer liveSynchronous = DensityBuffer.createUnpooled(volume.size());
+            noise.addToVolume(liveSynchronous, volume, 0.25, 0.0625, 0.75F);
+            if (!NativePerlinNoiseBackend.wasLastCallNative()) {
+                throw new AssertionError("PerlinNoise.addToVolume did not dispatch through synchronous native mode");
+            }
+            assertNativePerlinParity(expected, ((DensityBufferAccessor) liveSynchronous).jpe$values(), "live-native-sync");
+        } finally {
+            if (previousMode == null) System.clearProperty("jpe.nativePerlinSynchronous");
+            else System.setProperty("jpe.nativePerlinSynchronous", previousMode);
+        }
+        JPEOptimizer.LOGGER.info("JPE_NATIVE_PERLIN_PARITY samples={} synchronous=true asynchronous=true liveWorldgen=true bitExact=true",
+                expected.length);
+        helper.succeed();
+    }
+
+    private static void assertNativePerlinParity(float[] expected, float[] actual, String mode) {
+        if (expected.length != actual.length) {
+            throw new AssertionError("Native " + mode + " Perlin output length mismatch");
+        }
+        for (int i = 0; i < expected.length; ++i) {
+            if (Float.floatToRawIntBits(expected[i]) != Float.floatToRawIntBits(actual[i])) {
+                throw new AssertionError("Native " + mode + " Perlin mismatch at index " + i
+                        + ": vanilla=" + expected[i] + ", native=" + actual[i]);
+            }
+        }
     }
 
     /**
