@@ -127,9 +127,8 @@ public final class NativePerlinNoiseBackend {
                 return false;
             }
 
-            // Experiment: run the C++ kernel inline on Minecraft's existing worldgen worker.
-            // This avoids a second thread pool, Rust task copies, job tracking and 1 ms polling.
-            // Keep the asynchronous path available for an apples-to-apples ABBA comparison.
+            // The synchronous path stays on Minecraft's existing worldgen worker.
+            // The asynchronous path uses the native pool and a leased shared FFM output buffer.
             if (Boolean.getBoolean("jpe.nativePerlinSynchronous")) {
                 nativeRuntime.perlinAddVolume(
                         access.jpe$perms(), sizeX, sizeY, sizeZ,
@@ -146,9 +145,8 @@ public final class NativePerlinNoiseBackend {
                 return true;
             }
 
-            // submitPerlinVolume copies the permutation and initial output into Rust-owned
-            // buffers before returning. Workers never retain Java arrays or Minecraft objects.
-            // Output is copied back only after the native job reaches JOB_COMPLETE.
+            // The permutation is copied into Rust-owned memory. The output points to a
+            // leased shared FFM buffer that remains alive and untouched until job completion.
             job = nativeRuntime.submitPerlinVolume(
                     access.jpe$perms(), sizeX, sizeY, sizeZ,
                     volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
@@ -181,13 +179,13 @@ public final class NativePerlinNoiseBackend {
                     }
                 }
                 if (!cancelRequested && System.nanoTime() >= deadline) {
-                    JPEOptimizer.LOGGER.warn("Native Perlin job timed out; cancelling and falling back to Java");
+                    JPEOptimizer.LOGGER.warn("Native Perlin job exceeded 30 seconds; cancelling if still queued and waiting for a safe terminal state");
                     job.cancel();
                     cancelRequested = true;
                 }
             }
 
-            if (status != NativeRuntime.JOB_COMPLETE || interrupted) {
+            if (status != NativeRuntime.JOB_COMPLETE) {
                 NATIVE_JOB_FAILURES.increment();
                 return false;
             }

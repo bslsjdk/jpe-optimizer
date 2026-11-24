@@ -6,7 +6,7 @@ use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-const ABI_VERSION: u32 = 5;
+const ABI_VERSION: u32 = 6;
 const STATUS_OK: i32 = 0;
 const STATUS_INVALID_ARGUMENT: i32 = 1;
 const STATUS_CPP_FAILURE: i32 = 2;
@@ -39,12 +39,13 @@ struct JobState {
     changed: Condvar,
 }
 
-enum JobStatus { Pending, Running, Complete(Vec<f32>), Failed(i32), Cancelled }
+enum JobStatus { Pending, Running, Complete, Failed(i32), Cancelled }
 
 struct PerlinTask {
     state: Arc<JobState>,
     permutation: Vec<u8>,
-    output: Vec<f32>,
+    output_address: usize,
+    output_length: usize,
     size_x: u32, size_y: u32, size_z: u32,
     min_x: i32, min_y: i32, min_z: i32,
     step_x: i32, step_y: i32, step_z: i32,
@@ -96,12 +97,16 @@ fn scheduler() -> &'static Scheduler {
                         guard.recv()
                     };
                     let Ok(mut task) = task else { break };
+                    let mut status = lock_status(&task.state);
                     if task.state.cancelled.load(Ordering::Acquire) {
-                        *lock_status(&task.state) = JobStatus::Cancelled;
+                        *status = JobStatus::Cancelled;
+                        drop(status);
                         task.state.changed.notify_all();
                         continue;
                     }
-                    *lock_status(&task.state) = JobStatus::Running;
+                    *status = JobStatus::Running;
+                    drop(status);
+                    // The caller keeps this shared FFM buffer leased until terminal status.
                     let result = catch_unwind(AssertUnwindSafe(|| unsafe {
                         jpe_cpp_perlin_add_volume(
                             task.permutation.as_ptr(),
@@ -110,19 +115,16 @@ fn scheduler() -> &'static Scheduler {
                             task.step_x, task.step_y, task.step_z,
                             task.offset_x, task.offset_y, task.offset_z,
                             task.xz_scale, task.y_scale, task.amplitude,
-                            task.output.as_mut_ptr(), task.output.len() as u64, task.flags,
+                            task.output_address as *mut f32, task.output_length as u64, task.flags,
                         )
                     }));
                     let mut status = lock_status(&task.state);
-                    if task.state.cancelled.load(Ordering::Acquire) {
-                        *status = JobStatus::Cancelled;
-                    } else {
-                        *status = match result {
-                            Ok(STATUS_OK) => JobStatus::Complete(task.output),
-                            Ok(code) => JobStatus::Failed(code),
-                            Err(_) => JobStatus::Failed(STATUS_RUST_PANIC),
-                        };
-                    }
+                    // Running kernels are not interruptible; cancellation only blocks queued jobs.
+                    *status = match result {
+                        Ok(STATUS_OK) => JobStatus::Complete,
+                        Ok(code) => JobStatus::Failed(code),
+                        Err(_) => JobStatus::Failed(STATUS_RUST_PANIC),
+                    };
                     drop(status);
                     task.state.changed.notify_all();
                 })
@@ -181,7 +183,8 @@ pub unsafe extern "C" fn jpe_runtime_perlin_add_volume(
     }
 }
 
-/// Copies all inputs into Rust-owned memory before returning. Workers never retain caller pointers.
+/// Copies the permutation but borrows the caller's writable output buffer until terminal job status.
+/// The caller must keep that buffer valid and exclusively reserved until the job is released.
 #[no_mangle]
 pub unsafe extern "C" fn jpe_runtime_submit_perlin_volume(
     permutation: *const u8,
@@ -190,10 +193,10 @@ pub unsafe extern "C" fn jpe_runtime_submit_perlin_volume(
     step_x: i32, step_y: i32, step_z: i32,
     offset_x: f64, offset_y: f64, offset_z: f64,
     xz_scale: f64, y_scale: f64, amplitude: f32,
-    initial_output: *const f32, output_length: u64, flags: u32,
+    output_buffer: *mut f32, output_length: u64, flags: u32,
 ) -> u64 {
     catch_unwind(AssertUnwindSafe(|| {
-        if size_x == 0 || size_y == 0 || size_z == 0 || permutation.is_null() || initial_output.is_null()
+        if size_x == 0 || size_y == 0 || size_z == 0 || permutation.is_null() || output_buffer.is_null()
             || step_x == 0 || step_y == 0 || step_z == 0 {
             return 0;
         }
@@ -210,7 +213,8 @@ pub unsafe extern "C" fn jpe_runtime_submit_perlin_volume(
                 }),
                 permutation: slice::from_raw_parts(permutation, 256).to_vec(),
                 min_x, min_y, min_z, step_x, step_y, step_z,
-                output: slice::from_raw_parts(initial_output, output_length as usize).to_vec(),
+                output_address: output_buffer as usize,
+                output_length: output_length as usize,
                 size_x, size_y, size_z, offset_x, offset_y, offset_z, xz_scale, y_scale, amplitude, flags,
             }
         };
@@ -239,7 +243,7 @@ pub extern "C" fn jpe_runtime_job_status(job_id: u64) -> i32 {
     let result = match &*status {
         JobStatus::Pending => JOB_PENDING,
         JobStatus::Running => JOB_RUNNING,
-        JobStatus::Complete(_) => JOB_COMPLETE,
+        JobStatus::Complete => JOB_COMPLETE,
         JobStatus::Failed(_) => JOB_FAILED,
         JobStatus::Cancelled => JOB_CANCELLED,
     };
@@ -263,33 +267,10 @@ pub extern "C" fn jpe_runtime_wait_job(job_id: u64, timeout_nanos: u64) -> i32 {
     match &*status {
         JobStatus::Pending => JOB_PENDING,
         JobStatus::Running => JOB_RUNNING,
-        JobStatus::Complete(_) => JOB_COMPLETE,
+        JobStatus::Complete => JOB_COMPLETE,
         JobStatus::Failed(_) => JOB_FAILED,
         JobStatus::Cancelled => JOB_CANCELLED,
     }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn jpe_runtime_copy_job_output(job_id: u64, destination: *mut f32, capacity: u64) -> i32 {
-    if destination.is_null() { return STATUS_INVALID_ARGUMENT; }
-    let state = {
-        let jobs = scheduler().jobs.lock().unwrap_or_else(|p| p.into_inner());
-        let Some(state) = jobs.get(&job_id) else { return STATUS_INVALID_ARGUMENT };
-        Arc::clone(state)
-    };
-    let status = lock_status(&state);
-    let result = match &*status {
-        JobStatus::Complete(output) => {
-            if capacity < output.len() as u64 { return STATUS_INVALID_ARGUMENT; }
-            unsafe { slice::from_raw_parts_mut(destination, output.len()).copy_from_slice(output); }
-            STATUS_OK
-        }
-        JobStatus::Pending | JobStatus::Running => JOB_PENDING,
-        // Keep job-state values disjoint from native API error codes.
-        JobStatus::Failed(_) => JOB_FAILED,
-        JobStatus::Cancelled => JOB_CANCELLED,
-    };
-    result
 }
 
 #[no_mangle]
@@ -299,13 +280,14 @@ pub extern "C" fn jpe_runtime_cancel_job(job_id: u64) -> i32 {
         let Some(state) = jobs.get(&job_id) else { return STATUS_INVALID_ARGUMENT };
         Arc::clone(state)
     };
-    state.cancelled.store(true, Ordering::Release);
     let mut status = lock_status(&state);
     if matches!(*status, JobStatus::Pending) {
+        state.cancelled.store(true, Ordering::Release);
         *status = JobStatus::Cancelled;
         drop(status);
         state.changed.notify_all();
     }
+    // A running kernel cannot be interrupted safely while borrowing its output buffer.
     STATUS_OK
 }
 
@@ -314,7 +296,7 @@ pub extern "C" fn jpe_runtime_release_job(job_id: u64) -> i32 {
     let mut jobs = scheduler().jobs.lock().unwrap_or_else(|p| p.into_inner());
     let Some(state) = jobs.get(&job_id).cloned() else { return STATUS_INVALID_ARGUMENT };
     let status = lock_status(&state);
-    let terminal = matches!(&*status, JobStatus::Complete(_) | JobStatus::Failed(_) | JobStatus::Cancelled);
+    let terminal = matches!(&*status, JobStatus::Complete | JobStatus::Failed(_) | JobStatus::Cancelled);
     drop(status);
     if !terminal { return JOB_RUNNING; }
     jobs.remove(&job_id);
@@ -326,7 +308,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exports_expected_abi_version() { assert_eq!(jpe_runtime_abi_version(), 5); }
+    fn exports_expected_abi_version() { assert_eq!(jpe_runtime_abi_version(), 6); }
 
     #[test]
     fn worker_configuration_is_idempotent_after_scheduler_start() {
@@ -366,22 +348,25 @@ mod tests {
     }
 
     #[test]
-    fn async_perlin_job_returns_owned_result() {
-        let permutation = [0_u8; 256]; let initial = [0.0_f32];
-        let id = unsafe { jpe_runtime_submit_perlin_volume(permutation.as_ptr(),
-            1, 1, 1, 0, 0, 0, 1, 1, 1,
-            0.0, 0.0, 0.0, 1.0, 1.0, 1.0, initial.as_ptr(), 1, 0) };
+    fn async_perlin_job_writes_into_borrowed_output_buffer() {
+        let permutation = [1_u8; 256];
+        let mut expected = [0.75_f32];
+        let mut actual = [0.75_f32];
+        let sync = unsafe { jpe_runtime_perlin_add_volume(
+            permutation.as_ptr(), 1, 1, 1, 0, 0, 0, 1, 1, 1,
+            0.23, 0.41, 0.37, 1.0, 1.0, 1.0, expected.as_mut_ptr(), 1, 0
+        ) };
+        assert_eq!(sync, STATUS_OK);
+        let id = unsafe { jpe_runtime_submit_perlin_volume(
+            permutation.as_ptr(), 1, 1, 1, 0, 0, 0, 1, 1, 1,
+            0.23, 0.41, 0.37, 1.0, 1.0, 1.0, actual.as_mut_ptr(), 1, 0
+        ) };
         assert_ne!(id, 0);
         let status = jpe_runtime_wait_job(id, 2_000_000_000);
-        if status == JOB_COMPLETE {
-                let mut output = [99.0_f32];
-                assert_eq!(unsafe { jpe_runtime_copy_job_output(id, output.as_mut_ptr(), 1) }, STATUS_OK);
-                assert_eq!(output[0], 0.0);
-                assert_eq!(jpe_runtime_release_job(id), STATUS_OK);
-                return;
-        }
-        let _ = jpe_runtime_release_job(id);
-        panic!("native Perlin job did not complete");
+        assert_eq!(status, JOB_COMPLETE);
+        assert_eq!(actual, expected);
+        assert_ne!(actual[0], 0.75_f32);
+        assert_eq!(jpe_runtime_release_job(id), STATUS_OK);
     }
 
     #[test]

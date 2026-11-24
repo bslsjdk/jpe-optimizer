@@ -13,6 +13,7 @@ import java.nio.file.Path;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
@@ -22,7 +23,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * Completed jobs must be explicitly released before this runtime can be closed.
  */
 public final class NativeRuntime implements AutoCloseable {
-    public static final int EXPECTED_ABI_VERSION = 5;
+    public static final int EXPECTED_ABI_VERSION = 6;
 
     public static final int JOB_COMPLETE = 0;
     public static final int JOB_PENDING = 1;
@@ -40,7 +41,6 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle submitPerlinVolume;
     private final MethodHandle jobStatus;
     private final MethodHandle waitJob;
-    private final MethodHandle copyJobOutput;
     private final MethodHandle cancelJob;
     private final MethodHandle releaseJob;
     private final ConcurrentHashMap<Long, NativeJob> jobs = new ConcurrentHashMap<>();
@@ -61,6 +61,14 @@ public final class NativeRuntime implements AutoCloseable {
         private MemorySegment output;
         private int permutationCapacity;
         private int outputCapacity;
+        private final AtomicBoolean leased = new AtomicBoolean();
+
+        private boolean tryAcquire() { return leased.compareAndSet(false, true); }
+        private void release() {
+            if (!leased.compareAndSet(true, false)) {
+                throw new IllegalStateException("Perlin scratch lease was not active");
+            }
+        }
 
         private void ensureCapacity(int permutationLength, int outputLength) {
             if (permutationCapacity < permutationLength) {
@@ -75,13 +83,24 @@ public final class NativeRuntime implements AutoCloseable {
 
         @Override
         public void close() {
+            if (leased.get()) throw new IllegalStateException("Cannot close a leased Perlin scratch arena");
             arena.close();
         }
     }
 
+    private PerlinScratch acquirePerlinScratch() {
+        PerlinScratch scratch = perlinScratch.get();
+        if (scratch.tryAcquire()) return scratch;
+        scratch = new PerlinScratch();
+        perlinScratch.set(scratch);
+        perlinScratchArenas.add(scratch);
+        if (!scratch.tryAcquire()) throw new IllegalStateException("Unable to acquire Perlin scratch arena");
+        return scratch;
+    }
+
     private NativeRuntime(MethodHandle configureWorkers, int workerCount,
                           MethodHandle add, MethodHandle perlin, MethodHandle submit,
-                          MethodHandle status, MethodHandle wait, MethodHandle copy,
+                          MethodHandle status, MethodHandle wait,
                           MethodHandle cancel, MethodHandle release) {
         this.configureWorkers = configureWorkers;
         this.workerCount = workerCount;
@@ -90,7 +109,6 @@ public final class NativeRuntime implements AutoCloseable {
         this.submitPerlinVolume = submit;
         this.jobStatus = status;
         this.waitJob = wait;
-        this.copyJobOutput = copy;
         this.cancelJob = cancel;
         this.releaseJob = release;
     }
@@ -139,9 +157,6 @@ public final class NativeRuntime implements AutoCloseable {
             MethodHandle wait = linker.downcallHandle(
                     lookup.find("jpe_runtime_wait_job").orElseThrow(() -> new IllegalStateException("Missing async job wait symbol")),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG));
-            MethodHandle copy = linker.downcallHandle(
-                    lookup.find("jpe_runtime_copy_job_output").orElseThrow(() -> new IllegalStateException("Missing async output copy symbol")),
-                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
             MethodHandle cancel = linker.downcallHandle(
                     lookup.find("jpe_runtime_cancel_job").orElseThrow(() -> new IllegalStateException("Missing async cancel symbol")),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG));
@@ -156,7 +171,7 @@ public final class NativeRuntime implements AutoCloseable {
             int requestedWorkers = requestedNativeWorkers();
             int actualWorkers = (int) configureWorkers.invokeExact(requestedWorkers);
             if (actualWorkers < 1) throw new IllegalStateException("Unable to configure native workers: " + actualWorkers);
-            return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, submit, status, wait, copy, cancel, release);
+            return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, submit, status, wait, cancel, release);
         } catch (Throwable failure) {
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
         }
@@ -215,25 +230,25 @@ public final class NativeRuntime implements AutoCloseable {
                                 double xzScale, double yScale, float amplitude,
                                 float[] output, boolean farLands) {
         lifecycle.readLock().lock();
+        PerlinScratch scratch = null;
         try {
             ensureOpen();
             int outputLength = validatePerlinInputs(permutation, sizeX, sizeY, sizeZ, stepX, stepY, stepZ, output);
-            try {
-                PerlinScratch scratch = perlinScratch.get();
-                scratch.ensureCapacity(permutation.length, outputLength);
-                copy(permutation, scratch.permutation);
-                copyPrefix(output, outputLength, scratch.output);
-                int status = (int) perlinAddVolume.invokeExact(
-                        scratch.permutation, sizeX, sizeY, sizeZ,
-                        minX, minY, minZ, stepX, stepY, stepZ,
-                        offsetX, offsetY, offsetZ, xzScale, yScale, amplitude,
-                        scratch.output, (long) outputLength, farLands ? 1 : 0);
-                checkStatus(status, "perlin-add-volume");
-                copyPrefix(scratch.output, output, outputLength);
-            } catch (Throwable failure) {
-                throw rethrow("Native Perlin volume call failed", failure);
-            }
+            scratch = acquirePerlinScratch();
+            scratch.ensureCapacity(permutation.length, outputLength);
+            copy(permutation, scratch.permutation);
+            copyPrefix(output, outputLength, scratch.output);
+            int status = (int) perlinAddVolume.invokeExact(
+                    scratch.permutation, sizeX, sizeY, sizeZ,
+                    minX, minY, minZ, stepX, stepY, stepZ,
+                    offsetX, offsetY, offsetZ, xzScale, yScale, amplitude,
+                    scratch.output, (long) outputLength, farLands ? 1 : 0);
+            checkStatus(status, "perlin-add-volume");
+            copyPrefix(scratch.output, output, outputLength);
+        } catch (Throwable failure) {
+            throw rethrow("Native Perlin volume call failed", failure);
         } finally {
+            if (scratch != null) scratch.release();
             lifecycle.readLock().unlock();
         }
     }
@@ -247,28 +262,30 @@ public final class NativeRuntime implements AutoCloseable {
                                         double xzScale, double yScale, float amplitude,
                                         float[] initialOutput, boolean farLands) {
         lifecycle.readLock().lock();
+        PerlinScratch scratch = null;
+        boolean transferred = false;
         try {
             ensureOpen();
             int outputLength = validatePerlinInputs(permutation, sizeX, sizeY, sizeZ, stepX, stepY, stepZ, initialOutput);
-            try {
-                PerlinScratch scratch = perlinScratch.get();
-                scratch.ensureCapacity(permutation.length, outputLength);
-                copy(permutation, scratch.permutation);
-                copyPrefix(initialOutput, outputLength, scratch.output);
-                // Rust copies both segments into owned vectors before this call returns.
-                long id = (long) submitPerlinVolume.invokeExact(
-                        scratch.permutation, sizeX, sizeY, sizeZ,
-                        minX, minY, minZ, stepX, stepY, stepZ,
-                        offsetX, offsetY, offsetZ, xzScale, yScale, amplitude,
-                        scratch.output, (long) outputLength, farLands ? 1 : 0);
-                if (id == 0L) return null;
-                NativeJob job = new NativeJob(this, id, outputLength);
-                jobs.put(id, job);
-                return job;
-            } catch (Throwable failure) {
-                throw rethrow("Unable to submit native Perlin job", failure);
-            }
+            scratch = acquirePerlinScratch();
+            scratch.ensureCapacity(permutation.length, outputLength);
+            copy(permutation, scratch.permutation);
+            copyPrefix(initialOutput, outputLength, scratch.output);
+            // Rust borrows this shared FFM output buffer until the job reaches a terminal state.
+            long id = (long) submitPerlinVolume.invokeExact(
+                    scratch.permutation, sizeX, sizeY, sizeZ,
+                    minX, minY, minZ, stepX, stepY, stepZ,
+                    offsetX, offsetY, offsetZ, xzScale, yScale, amplitude,
+                    scratch.output, (long) outputLength, farLands ? 1 : 0);
+            if (id == 0L) return null;
+            NativeJob job = new NativeJob(this, id, outputLength, scratch);
+            jobs.put(id, job);
+            transferred = true;
+            return job;
+        } catch (Throwable failure) {
+            throw rethrow("Unable to submit native Perlin job", failure);
         } finally {
+            if (scratch != null && !transferred) scratch.release();
             lifecycle.readLock().unlock();
         }
     }
@@ -366,12 +383,14 @@ public final class NativeRuntime implements AutoCloseable {
         private final NativeRuntime runtime;
         private final long id;
         private final int outputLength;
+        private final PerlinScratch scratch;
         private volatile boolean released;
 
-        private NativeJob(NativeRuntime runtime, long id, int outputLength) {
+        private NativeJob(NativeRuntime runtime, long id, int outputLength, PerlinScratch scratch) {
             this.runtime = runtime;
             this.id = id;
             this.outputLength = outputLength;
+            this.scratch = scratch;
         }
 
         public long id() { return id; }
@@ -426,13 +445,10 @@ public final class NativeRuntime implements AutoCloseable {
                 throw new IllegalArgumentException("Destination buffer is smaller than " + outputLength);
             }
             try {
-                PerlinScratch scratch = runtime.perlinScratch.get();
-                scratch.ensureCapacity(256, outputLength);
-                int result = (int) runtime.copyJobOutput.invokeExact(id, scratch.output, (long) outputLength);
-                if (result == JOB_PENDING || result == JOB_RUNNING) {
-                    throw new IllegalStateException("Native job is not complete yet; status=" + result);
+                int current = status();
+                if (current != JOB_COMPLETE) {
+                    throw new IllegalStateException("Native job output is unavailable; status=" + current);
                 }
-                checkStatus(result, "copy-job-output");
                 copyPrefix(scratch.output, destination, outputLength);
             } catch (Throwable failure) {
                 throw rethrow("Unable to copy native job output", failure);
@@ -456,6 +472,7 @@ public final class NativeRuntime implements AutoCloseable {
                 checkStatus(result, "release-job");
                 released = true;
                 runtime.released(this, id);
+                scratch.release();
             } catch (Throwable failure) {
                 throw rethrow("Unable to release native job", failure);
             }

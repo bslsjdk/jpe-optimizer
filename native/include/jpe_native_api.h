@@ -13,7 +13,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* ABI v5. Axis coordinates use min + index * step with Java int wrap semantics. */
+/* ABI v6. Axis coordinates use min + index * step with Java int wrap semantics. */
 JPE_API uint32_t jpe_runtime_abi_version(void);
 /* requested=0 selects all process-visible CPUs; positive values are capped to that count. */
 /* Zero selects available CPUs. Repeating the active count is safe after startup;
@@ -29,19 +29,19 @@ JPE_API int32_t jpe_runtime_perlin_add_volume(
     double offset_x, double offset_y, double offset_z, double xz_scale, double y_scale,
     float amplitude, float *output, uint64_t output_length, uint32_t flags
 );
-/* Async API: submit copies input into bounded Rust-owned buffers. Zero means rejected/full. */
+/* Async API copies the permutation but borrows output_buffer until terminal job status.
+ * Caller must keep it valid and exclusively reserved until release. Zero means rejected/full. */
 JPE_API uint64_t jpe_runtime_submit_perlin_volume(
     const uint8_t *permutation,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
     double offset_x, double offset_y, double offset_z, double xz_scale, double y_scale,
-    float amplitude, const float *initial_output, uint64_t output_length, uint32_t flags
+    float amplitude, float *output_buffer, uint64_t output_length, uint32_t flags
 );
 /* status: 0 complete, 1 pending, 2 running, 3 failed, 4 cancelled, -1 unknown job */
 JPE_API int32_t jpe_runtime_job_status(uint64_t job_id);
 JPE_API int32_t jpe_runtime_wait_job(uint64_t job_id, uint64_t timeout_nanos);
-JPE_API int32_t jpe_runtime_copy_job_output(uint64_t job_id, float *destination, uint64_t capacity);
 JPE_API int32_t jpe_runtime_cancel_job(uint64_t job_id);
 JPE_API int32_t jpe_runtime_release_job(uint64_t job_id);
 #ifdef __cplusplus
