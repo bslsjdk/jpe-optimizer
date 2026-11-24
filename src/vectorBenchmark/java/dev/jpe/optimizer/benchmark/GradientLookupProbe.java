@@ -3,7 +3,7 @@ package dev.jpe.optimizer.benchmark;
 import java.util.Arrays;
 import java.util.Random;
 
-/** Diagnostic for the exact 256-entry gradient lookup in Minecraft 26.3. */
+/** Diagnostic for the exact 256-entry gradient lookup in Minecraft 26.3; runs eight corner lookups per sample. */
 public final class GradientLookupProbe {
     private static final int[] GX = {1,-1,1,-1,1,-1,1,-1,0,0,0,0,1,0,-1,0};
     private static final int[] GY = {1,1,-1,-1,0,0,0,0,1,-1,1,-1,1,-1,1,-1};
