@@ -209,6 +209,7 @@ jobs:
             build/libs/
             build/vector-probe/
             build/math-benchmark/
+            build/climate-rtree-benchmark/
             build/server-benchmark/
             build/gametest/
             build/reports/tests/
