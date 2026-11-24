@@ -101,6 +101,13 @@ jobs:
           run_worldgen vector_b vector
           run_worldgen scalar_b scalar
 
+          # Isolate the material-rule density-buffer reuse experiment with a fresh-world ABBA.
+          # All four runs use the same vector density kernels; only the scoped buffer lease changes.
+          run_worldgen material_pool_off_a vector "-Djpe.densityBufferMetrics=true"
+          run_worldgen material_pool_on_a vector "-Djpe.densityBufferMetrics=true -Djpe.materialBufferPooling=true"
+          run_worldgen material_pool_on_b vector "-Djpe.densityBufferMetrics=true -Djpe.materialBufferPooling=true"
+          run_worldgen material_pool_off_b vector "-Djpe.densityBufferMetrics=true"
+
           # Separate diagnostic run: JFR sampling identifies real hot methods without
           # contaminating the four-run scalar/vector performance comparison.
           run_worldgen profile vector "-XX:StartFlightRecording=filename=${GITHUB_WORKSPACE}/build/server-benchmark/profile-%p.jfr,settings=profile,dumponexit=true -Djpe.densityBufferMetrics=true"
