@@ -120,6 +120,14 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
         float c4 = cornerXZ[4], c5 = cornerXZ[5], c6 = cornerXZ[6], c7 = cornerXZ[7];
         float y0 = cornerY[0], y1 = cornerY[1], y2 = cornerY[2], y3 = cornerY[3];
         float y4 = cornerY[4], y5 = cornerY[5], y6 = cornerY[6], y7 = cornerY[7];
+        FloatVector v0 = FloatVector.broadcast(SPECIES, c0), v1 = FloatVector.broadcast(SPECIES, c1);
+        FloatVector v2 = FloatVector.broadcast(SPECIES, c2), v3 = FloatVector.broadcast(SPECIES, c3);
+        FloatVector v4 = FloatVector.broadcast(SPECIES, c4), v5 = FloatVector.broadcast(SPECIES, c5);
+        FloatVector v6 = FloatVector.broadcast(SPECIES, c6), v7 = FloatVector.broadcast(SPECIES, c7);
+        FloatVector gy0 = FloatVector.broadcast(SPECIES, y0), gy1 = FloatVector.broadcast(SPECIES, y1);
+        FloatVector gy2 = FloatVector.broadcast(SPECIES, y2), gy3 = FloatVector.broadcast(SPECIES, y3);
+        FloatVector gy4 = FloatVector.broadcast(SPECIES, y4), gy5 = FloatVector.broadcast(SPECIES, y5);
+        FloatVector gy6 = FloatVector.broadcast(SPECIES, y6), gy7 = FloatVector.broadcast(SPECIES, y7);
         FloatVector one = FloatVector.broadcast(SPECIES, 1.0F);
         FloatVector six = FloatVector.broadcast(SPECIES, 6.0F);
         FloatVector fifteen = FloatVector.broadcast(SPECIES, 15.0F);
@@ -129,14 +137,14 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
         for (; i < bound; i += SPECIES.length()) {
             FloatVector ry = FloatVector.fromArray(SPECIES, relativeY, i);
             FloatVector ry1 = ry.sub(one);
-            FloatVector x000 = FloatVector.broadcast(SPECIES, c0).add(ry.mul(y0));
-            FloatVector x100 = FloatVector.broadcast(SPECIES, c1).add(ry.mul(y1));
-            FloatVector x010 = FloatVector.broadcast(SPECIES, c2).add(ry1.mul(y2));
-            FloatVector x110 = FloatVector.broadcast(SPECIES, c3).add(ry1.mul(y3));
-            FloatVector x001 = FloatVector.broadcast(SPECIES, c4).add(ry.mul(y4));
-            FloatVector x101 = FloatVector.broadcast(SPECIES, c5).add(ry.mul(y5));
-            FloatVector x011 = FloatVector.broadcast(SPECIES, c6).add(ry1.mul(y6));
-            FloatVector x111 = FloatVector.broadcast(SPECIES, c7).add(ry1.mul(y7));
+            FloatVector x000 = v0.add(ry.mul(gy0));
+            FloatVector x100 = v1.add(ry.mul(gy1));
+            FloatVector x010 = v2.add(ry1.mul(gy2));
+            FloatVector x110 = v3.add(ry1.mul(gy3));
+            FloatVector x001 = v4.add(ry.mul(gy4));
+            FloatVector x101 = v5.add(ry.mul(gy5));
+            FloatVector x011 = v6.add(ry1.mul(gy6));
+            FloatVector x111 = v7.add(ry1.mul(gy7));
 
             FloatVector ry2 = ry.mul(ry);
             FloatVector alphaY = ry2.mul(ry).mul(
