@@ -127,12 +127,12 @@ public final class NativePerlinNoiseBackend {
                 AXIS_VOLUME_MISMATCHES.increment();
                 return false;
             }
-            if (Boolean.getBoolean("jpe.nativePerlinProfile")) {
-                profilePerlinYRuns(layers, volume);
-            }
             if (expectedElements > 1_048_576L) {
                 OVERSIZED_VOLUMES.increment();
                 return false;
+            }
+            if (Boolean.getBoolean("jpe.nativePerlinProfile")) {
+                profilePerlinYRuns(layers, volume);
             }
             float[] target = ((DensityBufferAccessor) buffer).jpe$values();
             if (target.length < expectedElements) {
