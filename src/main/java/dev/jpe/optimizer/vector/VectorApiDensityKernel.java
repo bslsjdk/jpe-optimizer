@@ -105,8 +105,8 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
                 case DIVIDE -> a.div(b);
             };
             if (result.compare(VectorOperators.NE, result).anyTrue()) {
-                // Use the exact scalar reference for this buffer when any lane is NaN.
-                ScalarDensityKernel.INSTANCE.binary(left, length, operation);
+                // Earlier lanes are already committed; recompute this and remaining lanes scalarly.
+                for (; i < length; ++i) left[i] = scalarBinary(left[i], right[i], operation);
                 return;
             }
             result.intoArray(left, i);
@@ -136,7 +136,10 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
                 case DIVIDE -> current.div(constant);
             };
             if (result.compare(VectorOperators.NE, result).anyTrue()) {
-                ScalarDensityKernel.INSTANCE.binaryConst(values, length, operand, operation);
+                for (; i < length; ++i) {
+                    float currentValue = values[i];
+                    values[i] = scalarBinary(currentValue, operand, operation);
+                }
                 return;
             }
             result.intoArray(values, i);
@@ -166,7 +169,10 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
                 case DIVIDE -> constant.div(current);
             };
             if (result.compare(VectorOperators.NE, result).anyTrue()) {
-                ScalarDensityKernel.INSTANCE.binaryConstLeft(values, length, operand, operation);
+                for (; i < length; ++i) {
+                    float currentValue = values[i];
+                    values[i] = scalarBinary(operand, currentValue, operation);
+                }
                 return;
             }
             result.intoArray(values, i);
