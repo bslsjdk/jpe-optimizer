@@ -121,14 +121,15 @@ public final class GameTests {
         long seed = level.getSeed();
         long threadId = Thread.currentThread().threadId();
         ThreadMXBean threadBean = ManagementFactory.getThreadMXBean();
-        long processCpuBefore = processCpuTime();
 
         // Give the server thread and density kernels enough fresh chunks to warm up JIT compilation.
         for (int i = 0; i < 8; ++i) {
             level.getChunk(8192 + i * 96, -8192 - (i % 2) * 96);
         }
 
+        // All resource counters begin after warmup and cover exactly the same 24 measured chunks.
         List<Long> elapsed = new ArrayList<>();
+        long processCpuBefore = processCpuTime();
         long cpuBefore = threadBean.isCurrentThreadCpuTimeSupported()
                 ? threadBean.getCurrentThreadCpuTime() : -1L;
         long allocatedBefore = allocatedBytes(threadBean, threadId);
