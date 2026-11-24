@@ -223,7 +223,7 @@ public final class NativeRuntime implements AutoCloseable {
                 }
             } else {
                 scratch.ensureCapacity(permutation.length, blockX.length, blockY.length,
-                        blockZ.length, output.length);
+                        blockZ.length, outputLength);
                 copy(permutation, scratch.permutation);
                 copy(blockX, scratch.blockX);
                 copy(blockY, scratch.blockY);
