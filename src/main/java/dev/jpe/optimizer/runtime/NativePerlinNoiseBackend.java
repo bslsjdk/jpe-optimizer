@@ -3,7 +3,6 @@ package dev.jpe.optimizer.runtime;
 import dev.jpe.optimizer.JPEOptimizer;
 import dev.jpe.optimizer.mixin.DensityBufferAccessor;
 import dev.jpe.optimizer.mixin.GradientNoiseAccessor;
-import dev.jpe.optimizer.mixin.NoiseStackLayersAccessor;
 import dev.jpe.optimizer.mixin.NoiseStackLayerAccessor;
 import net.minecraft.SharedConstants;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
@@ -11,12 +10,14 @@ import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
 import net.minecraft.world.level.levelgen.synth.PerlinNoise;
 import net.minecraft.world.level.levelgen.synth.Noise;
 import net.minecraft.world.level.levelgen.synth.NoiseStack;
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.LongAdder;
 
 /** Opt-in bridge that runs Perlin volume work on the Rust worker pool / C++ backend. */
 public final class NativePerlinNoiseBackend {
+    private static final Field NOISE_STACK_LAYERS = findNoiseStackLayersField();
     private static final ThreadLocal<Boolean> LAST_CALL_NATIVE = ThreadLocal.withInitial(() -> false);
     private static final ThreadLocal<Boolean> BYPASS = ThreadLocal.withInitial(() -> false);
     private static volatile NativeRuntime runtime;
@@ -90,7 +91,7 @@ public final class NativePerlinNoiseBackend {
         boolean interrupted = false;
         boolean terminal = false;
         try {
-            Object[] sourceLayers = (Object[]) ((NoiseStackLayersAccessor) (Object) stack).jpe$getLayers();
+            Object[] sourceLayers = readNoiseStackLayers(stack);
             if (sourceLayers.length == 0 || sourceLayers.length > 64) {
                 INVALID_DIMENSIONS.increment();
                 return false;
@@ -360,6 +361,26 @@ public final class NativePerlinNoiseBackend {
             if (!success) FALLBACKS.increment();
             TOTAL_NANOS.add(System.nanoTime() - started);
             if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+
+    private static Field findNoiseStackLayersField() {
+        try {
+            Field field = NoiseStack.class.getDeclaredField("layers");
+            if (!field.trySetAccessible()) {
+                throw new IllegalStateException("NoiseStack.layers is not reflectively accessible");
+            }
+            return field;
+        } catch (ReflectiveOperationException failure) {
+            throw new ExceptionInInitializerError(failure);
+        }
+    }
+
+    private static Object[] readNoiseStackLayers(NoiseStack stack) {
+        try {
+            return (Object[]) NOISE_STACK_LAYERS.get(stack);
+        } catch (IllegalAccessException failure) {
+            throw new IllegalStateException("Unable to read NoiseStack.layers", failure);
         }
     }
 
