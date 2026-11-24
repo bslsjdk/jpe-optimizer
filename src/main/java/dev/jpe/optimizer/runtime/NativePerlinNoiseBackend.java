@@ -3,7 +3,7 @@ package dev.jpe.optimizer.runtime;
 import dev.jpe.optimizer.JPEOptimizer;
 import dev.jpe.optimizer.mixin.DensityBufferAccessor;
 import dev.jpe.optimizer.mixin.GradientNoiseAccessor;
-import net.minecraft.world.level.levelgen.synth.NoiseStackLayersAccessor;
+import dev.jpe.optimizer.mixin.NoiseStackLayersAccessor;
 import dev.jpe.optimizer.mixin.NoiseStackLayerAccessor;
 import net.minecraft.SharedConstants;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
@@ -90,7 +90,7 @@ public final class NativePerlinNoiseBackend {
         boolean interrupted = false;
         boolean terminal = false;
         try {
-            Object[] sourceLayers = ((NoiseStackLayersAccessor) (Object) stack).jpe$getLayers();
+            Object[] sourceLayers = (Object[]) ((NoiseStackLayersAccessor) (Object) stack).jpe$getLayers();
             if (sourceLayers.length == 0 || sourceLayers.length > 64) {
                 INVALID_DIMENSIONS.increment();
                 return false;
