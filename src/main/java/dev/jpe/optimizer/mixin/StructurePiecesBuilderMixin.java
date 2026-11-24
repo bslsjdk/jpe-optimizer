@@ -35,7 +35,7 @@ public abstract class StructurePiecesBuilderMixin {
 
         StructureSpatialIndex index = this.jpe$spatialIndex;
         if (index == null) {
-            BoundingBox[] initialBoxes = new BoundingBox[this.pieces.size()];
+            StructureSpatialIndex.Box[] initialBoxes = new StructureSpatialIndex.Box[this.pieces.size()];
             for (int i = 0; i < initialBoxes.length; ++i) {
                 StructurePiece piece = this.pieces.get(i);
                 initialBoxes[i] = piece == null ? null : jpe$copyBox(piece.getBoundingBox());
