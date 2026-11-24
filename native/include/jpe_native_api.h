@@ -13,8 +13,10 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* ABI v2. Lengths are element counts, not byte counts. */
+/* ABI v4. Lengths are element counts, not byte counts. Configure workers before first submit. */
 JPE_API uint32_t jpe_runtime_abi_version(void);
+/* requested=0 selects all process-visible CPUs; positive values are capped to that count. */
+JPE_API int32_t jpe_runtime_configure_workers(uint32_t requested);
 JPE_API int32_t jpe_runtime_add_f32(const float *input, float *output, uint32_t length);
 /* Synchronous entry retained for exact parity tests. */
 JPE_API int32_t jpe_runtime_perlin_add_volume(
