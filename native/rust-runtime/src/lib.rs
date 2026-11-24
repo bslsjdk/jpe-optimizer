@@ -6,7 +6,7 @@ use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-const ABI_VERSION: u32 = 4;
+const ABI_VERSION: u32 = 5;
 const STATUS_OK: i32 = 0;
 const STATUS_INVALID_ARGUMENT: i32 = 1;
 const STATUS_CPP_FAILURE: i32 = 2;
@@ -23,8 +23,10 @@ const MAX_TRACKED_JOBS: usize = 32;
 unsafe extern "C" {
     fn jpe_cpp_add_f32(input: *const f32, output: *mut f32, length: u32) -> i32;
     fn jpe_cpp_perlin_add_volume(
-        permutation: *const u8, block_x: *const i32, block_y: *const i32, block_z: *const i32,
+        permutation: *const u8,
         size_x: u32, size_y: u32, size_z: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    step_x: i32, step_y: i32, step_z: i32,
         offset_x: f64, offset_y: f64, offset_z: f64,
         xz_scale: f64, y_scale: f64, amplitude: f32,
         output: *mut f32, output_length: u64, flags: u32,
@@ -42,11 +44,12 @@ enum JobStatus { Pending, Running, Complete(Vec<f32>), Failed(i32), Cancelled }
 struct PerlinTask {
     state: Arc<JobState>,
     permutation: Vec<u8>,
-    block_x: Vec<i32>,
-    block_y: Vec<i32>,
-    block_z: Vec<i32>,
+    min_x: i32, min_y: i32, min_z: i32,
+    step_x: i32, step_y: i32, step_z: i32,
     output: Vec<f32>,
     size_x: u32, size_y: u32, size_z: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    step_x: i32, step_y: i32, step_z: i32,
     offset_x: f64, offset_y: f64, offset_z: f64,
     xz_scale: f64, y_scale: f64, amplitude: f32, flags: u32,
 }
@@ -96,8 +99,9 @@ fn scheduler() -> &'static Scheduler {
                     let result = catch_unwind(AssertUnwindSafe(|| unsafe {
                         jpe_cpp_perlin_add_volume(
                             task.permutation.as_ptr(),
-                            task.block_x.as_ptr(), task.block_y.as_ptr(), task.block_z.as_ptr(),
                             task.size_x, task.size_y, task.size_z,
+                            task.min_x, task.min_y, task.min_z,
+                            task.step_x, task.step_y, task.step_z,
                             task.offset_x, task.offset_y, task.offset_z,
                             task.xz_scale, task.y_scale, task.amplitude,
                             task.output.as_mut_ptr(), task.output.len() as u64, task.flags,
@@ -143,14 +147,16 @@ pub unsafe extern "C" fn jpe_runtime_add_f32(input: *const f32, output: *mut f32
 
 #[no_mangle]
 pub unsafe extern "C" fn jpe_runtime_perlin_add_volume(
-    permutation: *const u8, block_x: *const i32, block_y: *const i32, block_z: *const i32,
+    permutation: *const u8,
     size_x: u32, size_y: u32, size_z: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    step_x: i32, step_y: i32, step_z: i32,
     offset_x: f64, offset_y: f64, offset_z: f64,
     xz_scale: f64, y_scale: f64, amplitude: f32,
     output: *mut f32, output_length: u64, flags: u32,
 ) -> i32 {
-    if size_x == 0 || size_y == 0 || size_z == 0 || permutation.is_null()
-        || block_x.is_null() || block_y.is_null() || block_z.is_null() || output.is_null() {
+    if size_x == 0 || size_y == 0 || size_z == 0 || permutation.is_null() || output.is_null()
+        || step_x == 0 || step_y == 0 || step_z == 0 {
         return STATUS_INVALID_ARGUMENT;
     }
     let expected = match (size_x as u64).checked_mul(size_y as u64).and_then(|n| n.checked_mul(size_z as u64)) {
@@ -158,7 +164,8 @@ pub unsafe extern "C" fn jpe_runtime_perlin_add_volume(
     };
     if expected != output_length || expected as u128 > MAX_VOLUME_ELEMENTS as u128 { return STATUS_INVALID_ARGUMENT; }
     match catch_unwind(AssertUnwindSafe(|| unsafe {
-        jpe_cpp_perlin_add_volume(permutation, block_x, block_y, block_z, size_x, size_y, size_z,
+        jpe_cpp_perlin_add_volume(permutation, size_x, size_y, size_z,
+            min_x, min_y, min_z, step_x, step_y, step_z,
             offset_x, offset_y, offset_z, xz_scale, y_scale, amplitude, output, output_length, flags)
     })) {
         Ok(STATUS_OK) => STATUS_OK,
@@ -171,15 +178,17 @@ pub unsafe extern "C" fn jpe_runtime_perlin_add_volume(
 /// Copies all inputs into Rust-owned memory before returning. Workers never retain caller pointers.
 #[no_mangle]
 pub unsafe extern "C" fn jpe_runtime_submit_perlin_volume(
-    permutation: *const u8, block_x: *const i32, block_y: *const i32, block_z: *const i32,
+    permutation: *const u8,
     size_x: u32, size_y: u32, size_z: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    step_x: i32, step_y: i32, step_z: i32,
     offset_x: f64, offset_y: f64, offset_z: f64,
     xz_scale: f64, y_scale: f64, amplitude: f32,
     initial_output: *const f32, output_length: u64, flags: u32,
 ) -> u64 {
     catch_unwind(AssertUnwindSafe(|| {
-        if size_x == 0 || size_y == 0 || size_z == 0 || permutation.is_null()
-            || block_x.is_null() || block_y.is_null() || block_z.is_null() || initial_output.is_null() {
+        if size_x == 0 || size_y == 0 || size_z == 0 || permutation.is_null() || initial_output.is_null()
+            || step_x == 0 || step_y == 0 || step_z == 0 {
             return 0;
         }
         let expected = match (size_x as u64).checked_mul(size_y as u64).and_then(|n| n.checked_mul(size_z as u64)) {
@@ -194,9 +203,7 @@ pub unsafe extern "C" fn jpe_runtime_submit_perlin_volume(
                     changed: Condvar::new(),
                 }),
                 permutation: slice::from_raw_parts(permutation, 256).to_vec(),
-                block_x: slice::from_raw_parts(block_x, size_x as usize).to_vec(),
-                block_y: slice::from_raw_parts(block_y, size_y as usize).to_vec(),
-                block_z: slice::from_raw_parts(block_z, size_z as usize).to_vec(),
+                min_x, min_y, min_z, step_x, step_y, step_z,
                 output: slice::from_raw_parts(initial_output, output_length as usize).to_vec(),
                 size_x, size_y, size_z, offset_x, offset_y, offset_z, xz_scale, y_scale, amplitude, flags,
             }
@@ -313,7 +320,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exports_expected_abi_version() { assert_eq!(jpe_runtime_abi_version(), 4); }
+    fn exports_expected_abi_version() { assert_eq!(jpe_runtime_abi_version(), 5); }
 
     #[test]
     fn bulk_boundary_calls_cpp_kernel() {
@@ -326,9 +333,10 @@ mod tests {
 
     #[test]
     fn perlin_volume_rejects_bad_output_length() {
-        let permutation = [0_u8; 256]; let axis = [0_i32]; let mut output = [0.0_f32; 2];
-        let status = unsafe { jpe_cpp_perlin_add_volume(permutation.as_ptr(), axis.as_ptr(), axis.as_ptr(), axis.as_ptr(),
-            1, 1, 1, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, output.as_mut_ptr(), 2, 0) };
+        let permutation = [0_u8; 256]; let mut output = [0.0_f32; 2];
+        let status = unsafe { jpe_cpp_perlin_add_volume(permutation.as_ptr(),
+            1, 1, 1, 0, 0, 0, 1, 1, 1,
+            0.0, 0.0, 0.0, 1.0, 1.0, 1.0, output.as_mut_ptr(), 2, 0) };
         assert_eq!(status, STATUS_INVALID_ARGUMENT);
     }
 
@@ -344,9 +352,10 @@ mod tests {
 
     #[test]
     fn async_perlin_job_returns_owned_result() {
-        let permutation = [0_u8; 256]; let axis = [0_i32]; let initial = [0.0_f32];
-        let id = unsafe { jpe_runtime_submit_perlin_volume(permutation.as_ptr(), axis.as_ptr(), axis.as_ptr(),
-            axis.as_ptr(), 1, 1, 1, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, initial.as_ptr(), 1, 0) };
+        let permutation = [0_u8; 256]; let initial = [0.0_f32];
+        let id = unsafe { jpe_runtime_submit_perlin_volume(permutation.as_ptr(),
+            1, 1, 1, 0, 0, 0, 1, 1, 1,
+            0.0, 0.0, 0.0, 1.0, 1.0, 1.0, initial.as_ptr(), 1, 0) };
         assert_ne!(id, 0);
         let status = jpe_runtime_wait_job(id, 2_000_000_000);
         if status == JOB_COMPLETE {

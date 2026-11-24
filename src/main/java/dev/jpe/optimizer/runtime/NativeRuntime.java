@@ -22,7 +22,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * Completed jobs must be explicitly released before this runtime can be closed.
  */
 public final class NativeRuntime implements AutoCloseable {
-    public static final int EXPECTED_ABI_VERSION = 4;
+    public static final int EXPECTED_ABI_VERSION = 5;
 
     public static final int JOB_COMPLETE = 0;
     public static final int JOB_PENDING = 1;
@@ -57,33 +57,14 @@ public final class NativeRuntime implements AutoCloseable {
     private static final class PerlinScratch implements AutoCloseable {
         private final Arena arena = Arena.ofShared();
         private MemorySegment permutation;
-        private MemorySegment blockX;
-        private MemorySegment blockY;
-        private MemorySegment blockZ;
         private MemorySegment output;
         private int permutationCapacity;
-        private int xCapacity;
-        private int yCapacity;
-        private int zCapacity;
         private int outputCapacity;
 
-        private void ensureCapacity(int permutationLength, int xLength, int yLength,
-                                    int zLength, int outputLength) {
+        private void ensureCapacity(int permutationLength, int outputLength) {
             if (permutationCapacity < permutationLength) {
                 permutation = allocateBytes(arena, permutationLength);
                 permutationCapacity = permutationLength;
-            }
-            if (xCapacity < xLength) {
-                blockX = allocateInts(arena, xLength);
-                xCapacity = xLength;
-            }
-            if (yCapacity < yLength) {
-                blockY = allocateInts(arena, yLength);
-                yCapacity = yLength;
-            }
-            if (zCapacity < zLength) {
-                blockZ = allocateInts(arena, zLength);
-                zCapacity = zLength;
             }
             if (outputCapacity < outputLength) {
                 output = allocateFloats(arena, outputLength);
@@ -136,7 +117,9 @@ public final class NativeRuntime implements AutoCloseable {
             MethodHandle perlin = linker.downcallHandle(
                     lookup.find("jpe_runtime_perlin_add_volume").orElseThrow(() -> new IllegalStateException("Missing Perlin volume symbol")),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT,
-                            ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                            ValueLayout.ADDRESS,
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
                             ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
                             ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_DOUBLE,
                             ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_FLOAT,
@@ -144,7 +127,9 @@ public final class NativeRuntime implements AutoCloseable {
             MethodHandle submit = linker.downcallHandle(
                     lookup.find("jpe_runtime_submit_perlin_volume").orElseThrow(() -> new IllegalStateException("Missing async Perlin submit symbol")),
                     FunctionDescriptor.of(ValueLayout.JAVA_LONG,
-                            ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                            ValueLayout.ADDRESS,
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
                             ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
                             ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_DOUBLE,
                             ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_FLOAT,
@@ -223,108 +208,89 @@ public final class NativeRuntime implements AutoCloseable {
         }
     }
 
-    /** Synchronous bulk Perlin entry; live mode runs it on Minecraft's existing worldgen worker. */
-    public void perlinAddVolume(byte[] permutation, int[] blockX, int[] blockY, int[] blockZ,
+    /** Synchronous bulk Perlin entry; axis coordinates are generated natively from DensityVolume metadata. */
+    public void perlinAddVolume(byte[] permutation,
+                                int sizeX, int sizeY, int sizeZ,
+                                int minX, int minY, int minZ,
+                                int stepX, int stepY, int stepZ,
                                 double offsetX, double offsetY, double offsetZ,
                                 double xzScale, double yScale, float amplitude,
                                 float[] output, boolean farLands) {
         lifecycle.readLock().lock();
         try {
-        ensureOpen();
-        int outputLength = validatePerlinInputs(permutation, blockX, blockY, blockZ, output);
-        try {
-            PerlinScratch scratch = perlinScratch.get();
-            if (scratch == null) {
-                // More than eight distinct worldgen workers: keep the memory cap
-                // and use a temporary confined arena for the overflow workers.
-                try (Arena arena = Arena.ofConfined()) {
-                    MemorySegment p = allocateBytes(arena, permutation.length);
-                    MemorySegment x = allocateInts(arena, blockX.length);
-                    MemorySegment y = allocateInts(arena, blockY.length);
-                    MemorySegment z = allocateInts(arena, blockZ.length);
-                    MemorySegment out = allocateFloats(arena, outputLength);
-                    copy(permutation, p);
-                    copy(blockX, x);
-                    copy(blockY, y);
-                    copy(blockZ, z);
-                    copyPrefix(output, outputLength, out);
-                    invokePerlin(p, x, y, z, blockX.length, blockY.length, blockZ.length,
-                            offsetX, offsetY, offsetZ, xzScale, yScale, amplitude, out, output, outputLength, farLands);
-                }
-            } else {
-                scratch.ensureCapacity(permutation.length, blockX.length, blockY.length,
-                        blockZ.length, outputLength);
+            ensureOpen();
+            int outputLength = validatePerlinInputs(permutation, sizeX, sizeY, sizeZ, stepX, stepY, stepZ, output);
+            try {
+                PerlinScratch scratch = perlinScratch.get();
+                scratch.ensureCapacity(permutation.length, outputLength);
                 copy(permutation, scratch.permutation);
-                copy(blockX, scratch.blockX);
-                copy(blockY, scratch.blockY);
-                copy(blockZ, scratch.blockZ);
                 copyPrefix(output, outputLength, scratch.output);
-                invokePerlin(scratch.permutation, scratch.blockX, scratch.blockY, scratch.blockZ,
-                        blockX.length, blockY.length, blockZ.length,
+                int status = (int) perlinAddVolume.invokeExact(
+                        scratch.permutation, sizeX, sizeY, sizeZ,
+                        minX, minY, minZ, stepX, stepY, stepZ,
                         offsetX, offsetY, offsetZ, xzScale, yScale, amplitude,
-                        scratch.output, output, outputLength, farLands);
+                        scratch.output, (long) outputLength, farLands ? 1 : 0);
+                checkStatus(status, "perlin-add-volume");
+                copyPrefix(scratch.output, output, outputLength);
+            } catch (Throwable failure) {
+                throw rethrow("Native Perlin volume call failed", failure);
             }
-        } catch (Throwable failure) {
-            throw rethrow("Native Perlin volume call failed", failure);
-        }
-    
         } finally {
             lifecycle.readLock().unlock();
         }
     }
 
-    private void invokePerlin(MemorySegment p, MemorySegment x, MemorySegment y, MemorySegment z,
-                              int sizeX, int sizeY, int sizeZ,
-                              double offsetX, double offsetY, double offsetZ,
-                              double xzScale, double yScale, float amplitude,
-                              MemorySegment nativeOutput, float[] javaOutput, int outputLength, boolean farLands) throws Throwable {
-        int status = (int) perlinAddVolume.invokeExact(p, x, y, z,
-                sizeX, sizeY, sizeZ, offsetX, offsetY, offsetZ,
-                xzScale, yScale, amplitude, nativeOutput, (long) outputLength,
-                farLands ? 1 : 0);
-        checkStatus(status, "perlin-add-volume");
-        copyPrefix(nativeOutput, javaOutput, outputLength);
-    }
-
-    /**
-     * Submits a bulk Perlin volume to the Rust worker pool.
-     * The native side copies every input before this method returns.
-     * Returns null when the bounded native queue has no capacity.
-     */
-    public NativeJob submitPerlinVolume(byte[] permutation, int[] blockX, int[] blockY, int[] blockZ,
+    /** Submits one complete volume; C++ reconstructs all axis coordinates from metadata. */
+    public NativeJob submitPerlinVolume(byte[] permutation,
+                                        int sizeX, int sizeY, int sizeZ,
+                                        int minX, int minY, int minZ,
+                                        int stepX, int stepY, int stepZ,
                                         double offsetX, double offsetY, double offsetZ,
                                         double xzScale, double yScale, float amplitude,
                                         float[] initialOutput, boolean farLands) {
         lifecycle.readLock().lock();
         try {
-        ensureOpen();
-        int outputLength = validatePerlinInputs(permutation, blockX, blockY, blockZ, initialOutput);
-        try (Arena arena = Arena.ofConfined()) {
-            MemorySegment p = allocateBytes(arena, permutation.length);
-            MemorySegment x = allocateInts(arena, blockX.length);
-            MemorySegment y = allocateInts(arena, blockY.length);
-            MemorySegment z = allocateInts(arena, blockZ.length);
-            MemorySegment initial = allocateFloats(arena, outputLength);
-            copy(permutation, p);
-            copy(blockX, x);
-            copy(blockY, y);
-            copy(blockZ, z);
-            copyPrefix(initialOutput, outputLength, initial);
-            long id = (long) submitPerlinVolume.invokeExact(
-                    p, x, y, z, blockX.length, blockY.length, blockZ.length,
-                    offsetX, offsetY, offsetZ, xzScale, yScale, amplitude,
-                    initial, (long) outputLength, farLands ? 1 : 0);
-            if (id == 0L) return null;
-            NativeJob job = new NativeJob(this, id, outputLength);
-            jobs.put(id, job);
-            return job;
-        } catch (Throwable failure) {
-            throw rethrow("Unable to submit native Perlin job", failure);
-        }
-    
+            ensureOpen();
+            int outputLength = validatePerlinInputs(permutation, sizeX, sizeY, sizeZ, stepX, stepY, stepZ, initialOutput);
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment p = allocateBytes(arena, permutation.length);
+                MemorySegment initial = allocateFloats(arena, outputLength);
+                copy(permutation, p);
+                copyPrefix(initialOutput, outputLength, initial);
+                long id = (long) submitPerlinVolume.invokeExact(
+                        p, sizeX, sizeY, sizeZ,
+                        minX, minY, minZ, stepX, stepY, stepZ,
+                        offsetX, offsetY, offsetZ, xzScale, yScale, amplitude,
+                        initial, (long) outputLength, farLands ? 1 : 0);
+                if (id == 0L) return null;
+                NativeJob job = new NativeJob(this, id, outputLength);
+                jobs.put(id, job);
+                return job;
+            } catch (Throwable failure) {
+                throw rethrow("Unable to submit native Perlin job", failure);
+            }
         } finally {
             lifecycle.readLock().unlock();
         }
+    }
+
+    private void ensureOpen() {
+        if (closed) throw new IllegalStateException("Native runtime is closed");
+    }
+
+    static int validatePerlinInputs(byte[] permutation,
+                                    int sizeX, int sizeY, int sizeZ,
+                                    int stepX, int stepY, int stepZ,
+                                    float[] output) {
+        Objects.requireNonNull(permutation, "permutation");
+        Objects.requireNonNull(output, "output");
+        if (permutation.length != 256) throw new IllegalArgumentException("Permutation table must contain 256 bytes");
+        if (sizeX <= 0 || sizeY <= 0 || sizeZ <= 0) throw new IllegalArgumentException("Perlin dimensions must be non-zero");
+        if (stepX == 0 || stepY == 0 || stepZ == 0) throw new IllegalArgumentException("Perlin axis steps must be non-zero");
+        long expected = Math.multiplyExact(Math.multiplyExact((long) sizeX, sizeY), sizeZ);
+        if (expected > output.length) throw new IllegalArgumentException("Output buffer is smaller than the requested volume");
+        if (expected > 1_048_576L) throw new IllegalArgumentException("Perlin volume exceeds native 1,048,576-element limit");
+        return Math.toIntExact(expected);
     }
 
     private void ensureOpen() {
@@ -351,17 +317,11 @@ public final class NativeRuntime implements AutoCloseable {
     private static MemorySegment allocateBytes(Arena arena, int length) {
         return arena.allocate(length, ValueLayout.JAVA_BYTE.byteAlignment());
     }
-    private static MemorySegment allocateInts(Arena arena, int length) {
-        return arena.allocate(Math.multiplyExact((long) length, ValueLayout.JAVA_INT.byteSize()), ValueLayout.JAVA_INT.byteAlignment());
-    }
     private static MemorySegment allocateFloats(Arena arena, int length) {
         return arena.allocate(Math.multiplyExact((long) length, ValueLayout.JAVA_FLOAT.byteSize()), ValueLayout.JAVA_FLOAT.byteAlignment());
     }
     private static void copy(byte[] source, MemorySegment target) {
         MemorySegment.copy(source, 0, target, ValueLayout.JAVA_BYTE, 0L, source.length);
-    }
-    private static void copy(int[] source, MemorySegment target) {
-        MemorySegment.copy(source, 0, target, ValueLayout.JAVA_INT, 0L, source.length);
     }
     private static void copy(float[] source, MemorySegment target) {
         MemorySegment.copy(source, 0, target, ValueLayout.JAVA_FLOAT, 0L, source.length);

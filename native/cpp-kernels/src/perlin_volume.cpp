@@ -1,5 +1,6 @@
 #include "jpe_native_api.h"
 
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -11,6 +12,11 @@ constexpr int kGradientY[16] = {1,1,-1,-1,0,0,0,0,1,-1,1,-1,1,-1,1,-1};
 constexpr int kGradientZ[16] = {0,0,0,0,1,1,-1,-1,1,1,-1,-1,0,1,0,-1};
 const double kHalfRoundOff = std::nextafter(16777216.0, -std::numeric_limits<double>::infinity());
 constexpr double kRoundOff = 33554432.0;
+
+inline int32_t axis_coordinate(int32_t minimum, uint32_t index, int32_t step) noexcept {
+    const uint32_t bits = static_cast<uint32_t>(minimum) + index * static_cast<uint32_t>(step);
+    return std::bit_cast<int32_t>(bits);
+}
 
 inline double wrap_coordinate(double value, bool far_lands) noexcept {
     if (far_lands) return value;
@@ -53,12 +59,11 @@ inline void corner(const uint8_t* p, uint32_t hash, float rx, float rz,
 
 int32_t perlin_add_volume(
     const uint8_t* permutation,
-    const int32_t* block_x,
-    const int32_t* block_y,
-    const int32_t* block_z,
     uint32_t size_x,
     uint32_t size_y,
     uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
     double offset_x,
     double offset_y,
     double offset_z,
@@ -70,8 +75,7 @@ int32_t perlin_add_volume(
     uint32_t flags
 ) noexcept {
     if (size_x == 0 || size_y == 0 || size_z == 0) return 1;
-    if (permutation == nullptr || block_x == nullptr || block_y == nullptr
-        || block_z == nullptr || output == nullptr) return 1;
+    if (permutation == nullptr || output == nullptr || step_x == 0 || step_y == 0 || step_z == 0) return 1;
 
     const uint64_t max_u64 = std::numeric_limits<uint64_t>::max();
     if (static_cast<uint64_t>(size_x) > max_u64 / size_y) return 1;
@@ -84,13 +88,13 @@ int32_t perlin_add_volume(
     const bool far_lands = (flags & 1U) != 0U;
 
     for (uint32_t iz = 0; iz < size_z; ++iz) {
-        const double z = wrap_coordinate(static_cast<double>(block_z[iz]) * xz_scale, far_lands) + offset_z;
+        const double z = wrap_coordinate(static_cast<double>(axis_coordinate(min_z, iz, step_z)) * xz_scale, far_lands) + offset_z;
         const int32_t floor_z = floor_to_i32(z);
         const float relative_z = static_cast<float>(z - static_cast<double>(floor_z));
         const float alpha_z = smoothstep(relative_z);
 
         for (uint32_t ix = 0; ix < size_x; ++ix) {
-            const double x = wrap_coordinate(static_cast<double>(block_x[ix]) * xz_scale, far_lands) + offset_x;
+            const double x = wrap_coordinate(static_cast<double>(axis_coordinate(min_x, ix, step_x)) * xz_scale, far_lands) + offset_x;
             const int32_t floor_x = floor_to_i32(x);
             const float relative_x = static_cast<float>(x - static_cast<double>(floor_x));
             const float alpha_x = smoothstep(relative_x);
@@ -105,7 +109,7 @@ int32_t perlin_add_volume(
                 // coordinate. Reuse them for the whole contiguous run that maps
                 // to the same lattice cell (common when y_scale is below 1).
                 const double first_y_coord = wrap_coordinate(
-                    static_cast<double>(block_y[iy]) * y_scale, far_lands) + offset_y;
+                    static_cast<double>(axis_coordinate(min_y, iy, step_y)) * y_scale, far_lands) + offset_y;
                 const int32_t floor_y = floor_to_i32(first_y_coord);
 
                 const int32_t xy00 = static_cast<int32_t>(permute_sum(permutation, x0, floor_y));
@@ -157,7 +161,7 @@ int32_t perlin_add_volume(
                     ++iy;
                     if (iy < size_y) {
                         y_coord = wrap_coordinate(
-                            static_cast<double>(block_y[iy]) * y_scale, far_lands) + offset_y;
+                            static_cast<double>(axis_coordinate(min_y, iy, step_y)) * y_scale, far_lands) + offset_y;
                     }
                 }
             }
@@ -169,12 +173,11 @@ int32_t perlin_add_volume(
 
 extern "C" int32_t jpe_cpp_perlin_add_volume(
     const uint8_t* permutation,
-    const int32_t* block_x,
-    const int32_t* block_y,
-    const int32_t* block_z,
     uint32_t size_x,
     uint32_t size_y,
     uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
     double offset_x,
     double offset_y,
     double offset_z,
@@ -185,7 +188,7 @@ extern "C" int32_t jpe_cpp_perlin_add_volume(
     uint64_t output_length,
     uint32_t flags
 ) noexcept {
-    return perlin_add_volume(permutation, block_x, block_y, block_z,
-        size_x, size_y, size_z, offset_x, offset_y, offset_z,
+    return perlin_add_volume(permutation,
+        size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
         xz_scale, y_scale, amplitude, output, output_length, flags);
 }

@@ -29,21 +29,6 @@ public final class NativePerlinNoiseBackend {
     private static final LongAdder ASYNC_QUEUE_REJECTIONS = new LongAdder();
     private static final LongAdder NATIVE_JOB_FAILURES = new LongAdder();
     private static final LongAdder NATIVE_EXCEPTIONS = new LongAdder();
-    private static final ThreadLocal<CoordinateScratch> COORDINATES =
-            ThreadLocal.withInitial(CoordinateScratch::new);
-
-    private static final class CoordinateScratch {
-        private int[] x = new int[0];
-        private int[] y = new int[0];
-        private int[] z = new int[0];
-
-        private void prepare(int sizeX, int sizeY, int sizeZ) {
-            if (x.length != sizeX) x = new int[sizeX];
-            if (y.length != sizeY) y = new int[sizeY];
-            if (z.length != sizeZ) z = new int[sizeZ];
-        }
-    }
-
     public record Metrics(long attempts, long completed, long fallbacks, long samples,
                           long totalNanos, long synchronousCalls,
                           long invalidDimensions, long axisVolumeMismatches, long bufferVolumeMismatches,
@@ -135,15 +120,6 @@ public final class NativePerlinNoiseBackend {
         boolean terminal = false;
         try {
             GradientNoiseAccessor access = (GradientNoiseAccessor) (Object) noise;
-            CoordinateScratch coordinates = COORDINATES.get();
-            coordinates.prepare(volume.sizeX(), volume.sizeY(), volume.sizeZ());
-            int[] blockX = coordinates.x;
-            int[] blockY = coordinates.y;
-            int[] blockZ = coordinates.z;
-            for (int i = 0; i < blockX.length; ++i) blockX[i] = volume.blockX(i);
-            for (int i = 0; i < blockY.length; ++i) blockY[i] = volume.blockY(i);
-            for (int i = 0; i < blockZ.length; ++i) blockZ[i] = volume.blockZ(i);
-
             float[] target = ((DensityBufferAccessor) buffer).jpe$values();
             if (target.length < expectedElements) {
                 BUFFER_VOLUME_MISMATCHES.increment();
@@ -155,7 +131,9 @@ public final class NativePerlinNoiseBackend {
             // Keep the asynchronous path available for an apples-to-apples ABBA comparison.
             if (Boolean.getBoolean("jpe.nativePerlinSynchronous")) {
                 nativeRuntime.perlinAddVolume(
-                        access.jpe$perms(), blockX, blockY, blockZ,
+                        access.jpe$perms(), sizeX, sizeY, sizeZ,
+                        volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
+                        volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ(),
                         access.jpe$offsetX(), access.jpe$offsetY(), access.jpe$offsetZ(),
                         xzScale, yScale, amplitude, target,
                         SharedConstants.DEBUG_ENABLE_FARLANDS
@@ -171,7 +149,9 @@ public final class NativePerlinNoiseBackend {
             // before returning. Passing the live array is safe: workers never retain it.
             // Output is copied back only after the native job reaches JOB_COMPLETE.
             job = nativeRuntime.submitPerlinVolume(
-                    access.jpe$perms(), blockX, blockY, blockZ,
+                    access.jpe$perms(), sizeX, sizeY, sizeZ,
+                    volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
+                    volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ(),
                     access.jpe$offsetX(), access.jpe$offsetY(), access.jpe$offsetZ(),
                     xzScale, yScale, amplitude, target,
                     SharedConstants.DEBUG_ENABLE_FARLANDS

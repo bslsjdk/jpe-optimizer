@@ -1,6 +1,6 @@
 # Native world-generation backend architecture
 
-Status: foundation experiment. ABI v4 provides a bounded asynchronous Rust worker pool for bulk native Perlin jobs, configurable against process-visible CPU parallelism. Minecraft production world generation remains opt-in and is not yet a wholesale replacement for vanilla Java.
+Status: foundation experiment. ABI v5 provides a bounded asynchronous Rust worker pool for bulk native Perlin jobs, configurable against process-visible CPU parallelism. Minecraft production world generation remains opt-in and is not yet a wholesale replacement for vanilla Java.
 
 ## Runtime responsibilities
 
@@ -10,9 +10,9 @@ Status: foundation experiment. ABI v4 provides a bounded asynchronous Rust worke
 
 Java should submit large immutable batches, not orchestrate each voxel. Unsupported custom logic remains an explicit Java callback boundary or vanilla fallback.
 
-## ABI v4 asynchronous task API
+## ABI v5 asynchronous task API
 
-The asynchronous Perlin API copies all caller input arrays into Rust-owned vectors before returning. Worker threads never retain Java/FFM pointers or references to mutable Minecraft objects.
+The asynchronous Perlin API copies the permutation and initial output into Rust-owned buffers before returning. Axis coordinates are represented by min/step metadata and reconstructed inside C++. Worker threads never retain Java/FFM pointers or references to mutable Minecraft objects.
 
 Resource bounds:
 - Worker count: configured before the scheduler starts. The Java bridge defaults to `max(1, availableProcessors - jpe.nativeWorkerReserve)` with a default reserve of one core. `-Djpe.nativeWorkers=N` selects an explicit count; requests are capped to process-visible CPU parallelism. `auto` is the default. The old fixed eight-worker cap has been removed.

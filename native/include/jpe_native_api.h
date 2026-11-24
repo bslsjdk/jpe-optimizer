@@ -13,22 +13,26 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* ABI v4. Lengths are element counts, not byte counts. Configure workers before first submit. */
+/* ABI v5. Axis coordinates use min + index * step with Java int wrap semantics. */
 JPE_API uint32_t jpe_runtime_abi_version(void);
 /* requested=0 selects all process-visible CPUs; positive values are capped to that count. */
 JPE_API int32_t jpe_runtime_configure_workers(uint32_t requested);
 JPE_API int32_t jpe_runtime_add_f32(const float *input, float *output, uint32_t length);
 /* Synchronous entry retained for exact parity tests. */
 JPE_API int32_t jpe_runtime_perlin_add_volume(
-    const uint8_t *permutation, const int32_t *block_x, const int32_t *block_y, const int32_t *block_z,
+    const uint8_t *permutation,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
     double offset_x, double offset_y, double offset_z, double xz_scale, double y_scale,
     float amplitude, float *output, uint64_t output_length, uint32_t flags
 );
 /* Async API: submit copies input into bounded Rust-owned buffers. Zero means rejected/full. */
 JPE_API uint64_t jpe_runtime_submit_perlin_volume(
-    const uint8_t *permutation, const int32_t *block_x, const int32_t *block_y, const int32_t *block_z,
+    const uint8_t *permutation,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
     double offset_x, double offset_y, double offset_z, double xz_scale, double y_scale,
     float amplitude, const float *initial_output, uint64_t output_length, uint32_t flags
 );
