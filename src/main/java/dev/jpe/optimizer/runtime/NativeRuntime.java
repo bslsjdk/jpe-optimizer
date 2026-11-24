@@ -251,16 +251,17 @@ public final class NativeRuntime implements AutoCloseable {
         try {
             ensureOpen();
             int outputLength = validatePerlinInputs(permutation, sizeX, sizeY, sizeZ, stepX, stepY, stepZ, initialOutput);
-            try (Arena arena = Arena.ofConfined()) {
-                MemorySegment p = allocateBytes(arena, permutation.length);
-                MemorySegment initial = allocateFloats(arena, outputLength);
-                copy(permutation, p);
-                copyPrefix(initialOutput, outputLength, initial);
+            try {
+                PerlinScratch scratch = perlinScratch.get();
+                scratch.ensureCapacity(permutation.length, outputLength);
+                copy(permutation, scratch.permutation);
+                copyPrefix(initialOutput, outputLength, scratch.output);
+                // Rust copies both segments into owned vectors before this call returns.
                 long id = (long) submitPerlinVolume.invokeExact(
-                        p, sizeX, sizeY, sizeZ,
+                        scratch.permutation, sizeX, sizeY, sizeZ,
                         minX, minY, minZ, stepX, stepY, stepZ,
                         offsetX, offsetY, offsetZ, xzScale, yScale, amplitude,
-                        initial, (long) outputLength, farLands ? 1 : 0);
+                        scratch.output, (long) outputLength, farLands ? 1 : 0);
                 if (id == 0L) return null;
                 NativeJob job = new NativeJob(this, id, outputLength);
                 jobs.put(id, job);
@@ -429,14 +430,15 @@ public final class NativeRuntime implements AutoCloseable {
             if (destination.length < outputLength) {
                 throw new IllegalArgumentException("Destination buffer is smaller than " + outputLength);
             }
-            try (Arena arena = Arena.ofConfined()) {
-                MemorySegment out = allocateFloats(arena, outputLength);
-                int result = (int) runtime.copyJobOutput.invokeExact(id, out, (long) outputLength);
+            try {
+                PerlinScratch scratch = runtime.perlinScratch.get();
+                scratch.ensureCapacity(256, outputLength);
+                int result = (int) runtime.copyJobOutput.invokeExact(id, scratch.output, (long) outputLength);
                 if (result == JOB_PENDING || result == JOB_RUNNING) {
                     throw new IllegalStateException("Native job is not complete yet; status=" + result);
                 }
                 checkStatus(result, "copy-job-output");
-                copyPrefix(out, destination, outputLength);
+                copyPrefix(scratch.output, destination, outputLength);
             } catch (Throwable failure) {
                 throw rethrow("Unable to copy native job output", failure);
             }

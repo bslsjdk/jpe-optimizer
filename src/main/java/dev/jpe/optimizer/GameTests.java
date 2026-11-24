@@ -293,7 +293,7 @@ public final class GameTests {
         }
 
         PerlinNoise noise = new PerlinNoise(RandomSource.create(0x4A50454C263L));
-        DensityVolume volume = new DensityVolume(3, 64, 2, -16, -64, 32);
+        DensityVolume volume = new DensityVolume(3, 64, 2, -16, -64, 32, 4, 2, 8);
         DensityBuffer vanilla = DensityBuffer.createUnpooled(volume.size());
 
         PerlinNoiseVectorizer.setVanillaBypass(true);
@@ -303,19 +303,14 @@ public final class GameTests {
             PerlinNoiseVectorizer.setVanillaBypass(false);
         }
 
-        int[] blockX = new int[volume.sizeX()];
-        int[] blockY = new int[volume.sizeY()];
-        int[] blockZ = new int[volume.sizeZ()];
-        for (int i = 0; i < blockX.length; i++) blockX[i] = volume.blockX(i);
-        for (int i = 0; i < blockY.length; i++) blockY[i] = volume.blockY(i);
-        for (int i = 0; i < blockZ.length; i++) blockZ[i] = volume.blockZ(i);
-
         float[] expected = ((DensityBufferAccessor) vanilla).jpe$values();
         float[] synchronous = new float[volume.size()];
         GradientNoiseAccessor access = (GradientNoiseAccessor) (Object) noise;
         try (NativeRuntime runtime = NativeRuntime.load(java.nio.file.Path.of(library))) {
             runtime.perlinAddVolume(
-                    access.jpe$perms(), blockX, blockY, blockZ,
+                    access.jpe$perms(), volume.sizeX(), volume.sizeY(), volume.sizeZ(),
+                    volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
+                    volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ(),
                     access.jpe$offsetX(), access.jpe$offsetY(), access.jpe$offsetZ(),
                     0.25, 0.0625, 0.75F, synchronous,
                     net.minecraft.SharedConstants.DEBUG_ENABLE_FARLANDS
@@ -323,7 +318,9 @@ public final class GameTests {
             assertNativePerlinParity(expected, synchronous, "synchronous");
 
             NativeRuntime.NativeJob job = runtime.submitPerlinVolume(
-                    access.jpe$perms(), blockX, blockY, blockZ,
+                    access.jpe$perms(), volume.sizeX(), volume.sizeY(), volume.sizeZ(),
+                    volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
+                    volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ(),
                     access.jpe$offsetX(), access.jpe$offsetY(), access.jpe$offsetZ(),
                     0.25, 0.0625, 0.75F, new float[volume.size()],
                     net.minecraft.SharedConstants.DEBUG_ENABLE_FARLANDS
