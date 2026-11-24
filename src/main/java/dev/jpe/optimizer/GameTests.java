@@ -178,12 +178,13 @@ public final class GameTests {
         long blockFillNanos = worldgenAfter.blockFillNanos() - worldgenBefore.blockFillNanos();
         long doFillSamples = worldgenAfter.samples() - worldgenBefore.samples();
         JPEOptimizer.LOGGER.info(
-                "JPE_SERVER_WORLDGEN_BENCH seed={} mode={} chunks=24 meanMs={} medianMs={} p95Ms={} " +
+                "JPE_SERVER_WORLDGEN_BENCH seed={} generator={} mode={} chunks=24 meanMs={} medianMs={} p95Ms={} " +
                 "serverThreadCpuMs={} processCpuMs={} serverThreadAllocatedMiB={} gcCollections={} gcMs={} warmupChunks=8 " +
                 "doFillCalls={} doFillDensityMs={} doFillBlockMs={} doFillSamples={} " +
                 "structureQueries={} structureIndexBuilds={} structureIndexedPieces={} structureCandidateChecks={} " +
                 "structureLinearFallbacks={} structureVanillaLinearChecks={}",
                 seed,
+                level.getChunkSource().getGenerator().getClass().getName(),
                 dev.jpe.optimizer.vector.DensityVectorRuntime.enabled() ? "vector" : "scalar",
                 String.format(java.util.Locale.ROOT, "%.3f", total / 24_000_000.0),
                 String.format(java.util.Locale.ROOT, "%.3f", (sorted[11] + sorted[12]) / 2_000_000.0),

@@ -2,9 +2,10 @@ package dev.jpe.optimizer.benchmark;
 
 import dev.jpe.optimizer.math.BiomeZoomMath;
 
+import java.util.Arrays;
 import java.util.Random;
 
-/** Deterministic microbenchmark for the exact BiomeManager zoom arithmetic. */
+/** Paired ABBA microbenchmark for the exact BiomeManager zoom arithmetic. */
 public final class BiomeZoomBenchmark {
     private static final long MULTIPLIER = 6364136223846793005L;
     private static final long INCREMENT = 1442695040888963407L;
@@ -34,30 +35,69 @@ public final class BiomeZoomBenchmark {
             dz[i] = OFFSETS[random.nextInt(8)];
         }
 
-        runVariant("vanilla", warmup, iterations, seeds, xs, ys, zs, dx, dy, dz, false);
-        runVariant("lookup", warmup, iterations, seeds, xs, ys, zs, dx, dy, dz, true);
+        for (int i = 0; i < warmup; i++) {
+            if ((i & 1) == 0) {
+                execute(seeds, xs, ys, zs, dx, dy, dz, false);
+                execute(seeds, xs, ys, zs, dx, dy, dz, true);
+            } else {
+                execute(seeds, xs, ys, zs, dx, dy, dz, true);
+                execute(seeds, xs, ys, zs, dx, dy, dz, false);
+            }
+        }
+
+        double[] vanillaNs = new double[iterations];
+        double[] lookupNs = new double[iterations];
+        long checksum = 0L;
+        for (int i = 0; i < iterations; i++) {
+            long vanillaResult;
+            long lookupResult;
+            long vanillaElapsed;
+            long lookupElapsed;
+
+            if ((i & 1) == 0) {
+                long start = System.nanoTime();
+                vanillaResult = execute(seeds, xs, ys, zs, dx, dy, dz, false);
+                vanillaElapsed = System.nanoTime() - start;
+                start = System.nanoTime();
+                lookupResult = execute(seeds, xs, ys, zs, dx, dy, dz, true);
+                lookupElapsed = System.nanoTime() - start;
+            } else {
+                long start = System.nanoTime();
+                lookupResult = execute(seeds, xs, ys, zs, dx, dy, dz, true);
+                lookupElapsed = System.nanoTime() - start;
+                start = System.nanoTime();
+                vanillaResult = execute(seeds, xs, ys, zs, dx, dy, dz, false);
+                vanillaElapsed = System.nanoTime() - start;
+            }
+
+            if (vanillaResult != lookupResult) {
+                throw new AssertionError("Biome zoom benchmark checksums differ: vanilla="
+                        + Long.toUnsignedString(vanillaResult) + ", lookup="
+                        + Long.toUnsignedString(lookupResult));
+            }
+            checksum ^= vanillaResult;
+            vanillaNs[i] = (double) vanillaElapsed / samples;
+            lookupNs[i] = (double) lookupElapsed / samples;
+        }
+
+        double vanillaMedian = percentile(vanillaNs, 0.50);
+        double lookupMedian = percentile(lookupNs, 0.50);
+        System.out.printf(
+                "biome_zoom samples=%d rounds=%d vanilla_median_ns=%.3f vanilla_p95_ns=%.3f "
+                        + "lookup_median_ns=%.3f lookup_p95_ns=%.3f speedup=%.3fx checksum=%016x%n",
+                samples, iterations,
+                vanillaMedian, percentile(vanillaNs, 0.95),
+                lookupMedian, percentile(lookupNs, 0.95),
+                vanillaMedian / lookupMedian, checksum
+        );
     }
 
-    private static void runVariant(
-            String name, int warmup, int iterations,
-            long[] seeds, int[] xs, int[] ys, int[] zs,
-            double[] dx, double[] dy, double[] dz, boolean lookup
-    ) {
-        long checksum = 0L;
-        for (int i = 0; i < warmup; i++) {
-            checksum ^= execute(seeds, xs, ys, zs, dx, dy, dz, lookup);
-        }
-        long elapsed = 0L;
-        for (int i = 0; i < iterations; i++) {
-            long start = System.nanoTime();
-            checksum ^= execute(seeds, xs, ys, zs, dx, dy, dz, lookup);
-            elapsed += System.nanoTime() - start;
-        }
-        double ns = (double) elapsed / ((long) iterations * seeds.length);
-        System.out.printf(
-                "biome_zoom_%s ns_per_corner=%.3f corners_per_second=%.0f checksum=%016x%n",
-                name, ns, 1.0e9 / ns, checksum
-        );
+    private static double percentile(double[] values, double percentile) {
+        double[] sorted = values.clone();
+        Arrays.sort(sorted);
+        int index = Math.min(sorted.length - 1,
+                Math.max(0, (int) Math.ceil(percentile * sorted.length) - 1));
+        return sorted[index];
     }
 
     private static long execute(

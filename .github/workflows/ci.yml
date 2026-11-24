@@ -33,7 +33,10 @@ jobs:
         run: gradle test --no-daemon --stacktrace
 
       - name: Math microbenchmark
-        run: gradle benchmark --no-daemon --stacktrace
+        run: |
+          mkdir -p build/math-benchmark
+          set -o pipefail
+          gradle benchmark --no-daemon --stacktrace | tee build/math-benchmark/result.txt
 
       - name: Vector API scalar comparison and standalone JAR
         env:
@@ -84,6 +87,7 @@ jobs:
           path: |
             build/libs/
             build/vector-probe/
+            build/math-benchmark/
             build/server-benchmark/
             build/reports/tests/
             build/test-results/

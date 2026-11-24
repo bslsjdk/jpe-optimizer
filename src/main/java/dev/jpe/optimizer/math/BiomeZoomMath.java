@@ -81,8 +81,9 @@ public final class BiomeZoomMath {
     }
 
     private static int offsetBase(double distance) {
-        int quarterOffset = (int) (distance * 4.0);
-        int tableOffset = quarterOffset < 0 ? quarterOffset + 8 : quarterOffset;
-        return tableOffset * FIDDLE_COUNT;
+        // The eight vanilla offsets are quarter steps in [-1.0, 0.75].
+        // Two's-complement masking maps negative quarter steps to table slots
+        // without a branch or an add.
+        return (((int) (distance * 4.0)) & (OFFSET_COUNT - 1)) << 10;
     }
 }
