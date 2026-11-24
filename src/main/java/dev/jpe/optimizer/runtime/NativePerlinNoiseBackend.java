@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.LongAdder;
 
 /** Opt-in bridge that runs Perlin volume work on the Rust worker pool / C++ backend. */
 public final class NativePerlinNoiseBackend {
-    private static final Field NOISE_STACK_LAYERS = findNoiseStackLayersField();
+    private static volatile Field noiseStackLayersField;
     private static final ThreadLocal<Boolean> LAST_CALL_NATIVE = ThreadLocal.withInitial(() -> false);
     private static final ThreadLocal<Boolean> BYPASS = ThreadLocal.withInitial(() -> false);
     private static volatile NativeRuntime runtime;
@@ -364,22 +364,23 @@ public final class NativePerlinNoiseBackend {
         }
     }
 
-    private static Field findNoiseStackLayersField() {
-        try {
-            Field field = NoiseStack.class.getDeclaredField("layers");
-            if (!field.trySetAccessible()) {
-                throw new IllegalStateException("NoiseStack.layers is not reflectively accessible");
-            }
-            return field;
-        } catch (ReflectiveOperationException failure) {
-            throw new ExceptionInInitializerError(failure);
-        }
-    }
-
     private static Object[] readNoiseStackLayers(NoiseStack stack) {
         try {
-            return (Object[]) NOISE_STACK_LAYERS.get(stack);
-        } catch (IllegalAccessException failure) {
+            Field field = noiseStackLayersField;
+            if (field == null) {
+                synchronized (NativePerlinNoiseBackend.class) {
+                    field = noiseStackLayersField;
+                    if (field == null) {
+                        field = NoiseStack.class.getDeclaredField("layers");
+                        if (!field.trySetAccessible()) {
+                            throw new IllegalStateException("NoiseStack.layers is not reflectively accessible");
+                        }
+                        noiseStackLayersField = field;
+                    }
+                }
+            }
+            return (Object[]) field.get(stack);
+        } catch (ReflectiveOperationException failure) {
             throw new IllegalStateException("Unable to read NoiseStack.layers", failure);
         }
     }
