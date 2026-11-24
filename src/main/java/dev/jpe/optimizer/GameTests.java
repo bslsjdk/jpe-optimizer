@@ -246,6 +246,20 @@ public final class GameTests {
             }
             ++queries;
         }
+
+        // A piece can move directly, outside StructurePiecesBuilder's own movement methods.
+        // The cached broadphase must be invalidated when its mutable BoundingBox changes.
+        StructurePiece movedPiece = pieces.get(pieces.size() - 1);
+        movedPiece.move(20_000, 0, 20_000);
+        BoundingBox movedQuery = movedPiece.getBoundingBox();
+        StructurePiece movedExpected = StructurePiece.findCollisionPiece(pieces, movedQuery);
+        StructurePiece movedActual = builder.findCollisionPiece(movedQuery);
+        if (movedActual != movedExpected) {
+            throw new AssertionError("Moving a piece left a stale spatial index: expected="
+                    + movedExpected + ", actual=" + movedActual);
+        }
+        ++queries;
+
         long elapsedNs = System.nanoTime() - start;
         var after = dev.jpe.optimizer.worldgen.StructureSpatialIndex.metricsSnapshot();
 
@@ -253,8 +267,9 @@ public final class GameTests {
         long candidateChecks = after.candidateChecks() - before.candidateChecks();
         long vanillaChecks = after.vanillaLinearChecks() - before.vanillaLinearChecks();
         if (Boolean.parseBoolean(System.getProperty("jpe.structureIndexEnabled", "true"))
-                && indexBuilds == 0) {
-            throw new AssertionError("StructurePiecesBuilder Mixin did not build the spatial index");
+                && indexBuilds < 2) {
+            throw new AssertionError("Spatial index was not rebuilt after a direct piece move: builds="
+                    + indexBuilds);
         }
         if (candidateChecks >= vanillaChecks) {
             throw new AssertionError("Spatial index did not reduce candidate checks: candidates="

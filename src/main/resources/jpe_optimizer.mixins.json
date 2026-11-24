@@ -9,7 +9,8 @@
     "RangeChoiceConstSamplerMixin",
     "RangeChoiceSamplerMixin",
     "BinaryFunctionMinMaxMixin",
-    "StructurePiecesBuilderMixin"
+    "StructurePiecesBuilderMixin",
+    "BoundingBoxMixin"
   ],
   "injectors": {
     "defaultRequire": 1

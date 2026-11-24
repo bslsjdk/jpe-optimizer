@@ -3,6 +3,7 @@ package dev.jpe.optimizer.worldgen;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
@@ -16,6 +17,7 @@ public final class StructureSpatialIndex {
     public static final int MIN_INDEXED_PIECES = 24;
 
     private static final boolean METRICS_ENABLED = Boolean.getBoolean("jpe.structureIndexMetrics");
+    private static final AtomicLong PIECE_MOVEMENT_EPOCH = new AtomicLong();
     private static final LongAdder METRIC_QUERIES = new LongAdder();
     private static final LongAdder METRIC_BUILDS = new LongAdder();
     private static final LongAdder METRIC_INDEXED_PIECES = new LongAdder();
@@ -26,6 +28,16 @@ public final class StructureSpatialIndex {
     public record Metrics(long queries, long builds, long indexedPieces,
                           long candidateChecks, long linearFallbacks,
                           long vanillaLinearChecks) {}
+
+    /** Global mutation epoch; moving any structure bounding box invalidates cached broadphases. */
+    public static long movementEpoch() {
+        return PIECE_MOVEMENT_EPOCH.get();
+    }
+
+    /** Called by the BoundingBox mutation mixin. Mutations are rare compared with collision queries. */
+    public static void noteBoundsMutation() {
+        PIECE_MOVEMENT_EPOCH.incrementAndGet();
+    }
 
     public static Metrics metricsSnapshot() {
         return new Metrics(METRIC_QUERIES.sum(), METRIC_BUILDS.sum(),

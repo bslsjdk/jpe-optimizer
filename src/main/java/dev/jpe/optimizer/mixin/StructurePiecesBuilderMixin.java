@@ -26,6 +26,9 @@ public abstract class StructurePiecesBuilderMixin {
     @Unique
     private StructureSpatialIndex jpe$spatialIndex;
 
+    @Unique
+    private long jpe$indexEpoch = Long.MIN_VALUE;
+
     @Inject(method = "findCollisionPiece", at = @At("HEAD"), cancellable = true)
     private void jpe$findCollisionPiece(BoundingBox query,
                                         CallbackInfoReturnable<StructurePiece> callback) {
@@ -35,18 +38,34 @@ public abstract class StructurePiecesBuilderMixin {
             return;
         }
 
+        long currentEpoch = StructureSpatialIndex.movementEpoch();
         StructureSpatialIndex index = this.jpe$spatialIndex;
+        if (index != null && this.jpe$indexEpoch != currentEpoch) {
+            index = null;
+            this.jpe$spatialIndex = null;
+        }
         if (index == null) {
+            long buildEpoch = currentEpoch;
             StructureSpatialIndex.Box[] initialBoxes = new StructureSpatialIndex.Box[this.pieces.size()];
             for (int i = 0; i < initialBoxes.length; ++i) {
                 StructurePiece piece = this.pieces.get(i);
                 initialBoxes[i] = piece == null ? null : jpe$copyBox(piece.getBoundingBox());
             }
             index = new StructureSpatialIndex(initialBoxes);
+            // If another thread moved a box during the snapshot, use vanilla for this query.
+            if (StructureSpatialIndex.movementEpoch() != buildEpoch) {
+                return;
+            }
             this.jpe$spatialIndex = index;
+            this.jpe$indexEpoch = buildEpoch;
         }
 
         int collisionIndex = index.findFirst(jpe$copyBox(query));
+        // Do not return a result from a snapshot invalidated while the query was running.
+        if (StructureSpatialIndex.movementEpoch() != this.jpe$indexEpoch) {
+            this.jpe$spatialIndex = null;
+            return;
+        }
         callback.setReturnValue(collisionIndex < 0 ? null : this.pieces.get(collisionIndex));
     }
 
