@@ -85,6 +85,7 @@ public final class ClimateRTreeBenchmark {
                     1_000_000_000.0 / medianNs, searchSamples[variant].length, checksums[variant]
             );
         }
+        runCoherentWorkload(source, queryCount, perRoundWarmup, measuredIterations);
     }
 
     private static long execute(
@@ -102,6 +103,84 @@ public final class ClimateRTreeBenchmark {
             checksum += actual;
         }
         return checksum;
+    }
+
+    /**
+     * Replays a smooth six-dimensional random walk. This is deliberately a
+     * synthetic locality stress test for RTree.lastResult, not a captured
+     * Minecraft climate trace.
+     */
+    private static void runCoherentWorkload(
+            Climate.ParameterList<Integer> source,
+            int queryCount,
+            int perRoundWarmup,
+            int measuredIterations
+    ) {
+        List<Climate.TargetPoint> queries = createCoherentQueries(queryCount);
+        Climate.ParameterList<Integer> reference = source.rebuildWithChildrenPerNode(19);
+        int[] expected = new int[queryCount];
+        for (int i = 0; i < queryCount; i++) {
+            expected[i] = reference.findValueIndex(queries.get(i));
+        }
+
+        double[][] searchSamples = new double[FAN_OUTS.length][MEASUREMENT_ROUNDS * measuredIterations];
+        double[][] buildSamples = new double[FAN_OUTS.length][MEASUREMENT_ROUNDS];
+        int[] order = new int[FAN_OUTS.length];
+        long[] checksums = new long[FAN_OUTS.length];
+        for (int i = 0; i < order.length; i++) order[i] = i;
+        Random orderRandom = new Random(0x2630_C0E2L);
+
+        System.out.printf(
+                "JPE_CLIMATE_RTREE_BENCH workload=coherent-random-walk queries=%d rounds=%d iterationsPerRound=%d localityStep=0.025%n",
+                queryCount, MEASUREMENT_ROUNDS, measuredIterations
+        );
+
+        for (int round = 0; round < MEASUREMENT_ROUNDS; round++) {
+            shuffle(order, orderRandom);
+            for (int variant : order) {
+                Climate.ParameterList<Integer> candidate = source.rebuildWithChildrenPerNode(FAN_OUTS[variant]);
+                long buildStart = System.nanoTime();
+                buildSamples[variant][round] = System.nanoTime() - buildStart;
+
+                for (int i = 0; i < perRoundWarmup; i++) {
+                    checksums[variant] += execute(candidate, queries, expected);
+                }
+                for (int i = 0; i < measuredIterations; i++) {
+                    long start = System.nanoTime();
+                    checksums[variant] += execute(candidate, queries, expected);
+                    searchSamples[variant][round * measuredIterations + i] =
+                            (System.nanoTime() - start) / (double) queryCount;
+                }
+            }
+        }
+
+        for (int variant = 0; variant < FAN_OUTS.length; variant++) {
+            double medianNs = percentile(searchSamples[variant], 0.50);
+            double p95Ns = percentile(searchSamples[variant], 0.95);
+            double medianBuildMs = percentile(buildSamples[variant], 0.50) / 1_000_000.0;
+            System.out.printf(
+                    "workload=coherent-random-walk fanOut=%d buildMedianMs=%.3f nsPerQueryMedian=%.3f "
+                            + "nsPerQueryP95=%.3f queriesPerSecondMedian=%.0f samples=%d checksum=%d%n",
+                    FAN_OUTS[variant], medianBuildMs, medianNs, p95Ns,
+                    1_000_000_000.0 / medianNs, searchSamples[variant].length, checksums[variant]
+            );
+        }
+    }
+
+    private static List<Climate.TargetPoint> createCoherentQueries(int count) {
+        Random random = new Random(0x2630_10CA11L);
+        float[] state = new float[6];
+        for (int d = 0; d < state.length; d++) state[d] = coordinate(random);
+        List<Climate.TargetPoint> queries = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            for (int d = 0; d < state.length; d++) {
+                state[d] = Math.max(-2.0F, Math.min(2.0F,
+                        state[d] + (random.nextFloat() - 0.5F) * 0.05F));
+            }
+            queries.add(Climate.target(state[0], state[1], state[2],
+                    state[3], state[4], state[5]));
+        }
+        return queries;
     }
 
     private static void verifyDuplicateTieResults() {
