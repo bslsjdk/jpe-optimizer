@@ -71,15 +71,12 @@ struct PerlinTask {
     xz_scale: f64, y_scale: f64, amplitude: f32, flags: u32,
 }
 
-struct PerlinStackLayer {
-    permutation: Vec<u8>,
-    offset_x: f64, offset_y: f64, offset_z: f64,
-    xz_scale: f64, y_scale: f64, amplitude: f32,
-}
-
 struct PerlinStackTask {
     state: Arc<JobState>,
-    layers: Vec<PerlinStackLayer>,
+    // Borrowed from the caller's shared FFM arena. The Java NativeJob lease
+    // keeps descriptors and every permutation alive until this task is terminal.
+    layers_address: usize,
+    layer_count: u32,
     output_address: usize,
     output_length: usize,
     size_x: u32, size_y: u32, size_z: u32,
@@ -163,13 +160,8 @@ fn scheduler() -> &'static Scheduler {
                                 task.output_address as *mut f32, task.output_length as u64, task.flags,
                             ),
                             NativeTask::Stack(task) => {
-                                let descriptors: Vec<JpePerlinLayer> = task.layers.iter().map(|layer| JpePerlinLayer {
-                                    permutation: layer.permutation.as_ptr(),
-                                    offset_x: layer.offset_x, offset_y: layer.offset_y, offset_z: layer.offset_z,
-                                    xz_scale: layer.xz_scale, y_scale: layer.y_scale, amplitude: layer.amplitude,
-                                }).collect();
                                 jpe_cpp_perlin_add_stack(
-                                    descriptors.as_ptr(), descriptors.len() as u32,
+                                    task.layers_address as *const JpePerlinLayer, task.layer_count,
                                     task.size_x, task.size_y, task.size_z,
                                     task.min_x, task.min_y, task.min_z,
                                     task.step_x, task.step_y, task.step_z,
@@ -284,8 +276,10 @@ pub unsafe extern "C" fn jpe_runtime_perlin_add_stack(
     }
 }
 
-/// Submits an ordered Perlin stack. Permutations are copied into Rust-owned task memory;
-/// output_buffer is borrowed until the job reaches a terminal status and is released.
+/// Submits an ordered Perlin stack without copying descriptors or permutations.
+/// The caller must keep the descriptor array, each 256-byte permutation, and
+/// output_buffer valid and exclusively reserved until the job reaches terminal
+/// status and is released. Java enforces this with its NativeJob scratch lease.
 #[no_mangle]
 pub unsafe extern "C" fn jpe_runtime_submit_perlin_stack(
     layers: *const JpePerlinLayer, layer_count: u32,
@@ -306,23 +300,15 @@ pub unsafe extern "C" fn jpe_runtime_submit_perlin_stack(
         };
         if expected != output_length || expected as usize > MAX_VOLUME_ELEMENTS { return 0; }
         let source = unsafe { slice::from_raw_parts(layers, layer_count as usize) };
-        let mut owned_layers = Vec::with_capacity(layer_count as usize);
-        for layer in source {
-            if layer.permutation.is_null() { return 0; }
-            let permutation = unsafe { slice::from_raw_parts(layer.permutation, 256) }.to_vec();
-            owned_layers.push(PerlinStackLayer {
-                permutation,
-                offset_x: layer.offset_x, offset_y: layer.offset_y, offset_z: layer.offset_z,
-                xz_scale: layer.xz_scale, y_scale: layer.y_scale, amplitude: layer.amplitude,
-            });
-        }
+        if source.iter().any(|layer| layer.permutation.is_null()) { return 0; }
         let task = PerlinStackTask {
             state: Arc::new(JobState {
                 cancelled: AtomicBool::new(false),
                 status: Mutex::new(JobStatus::Pending),
                 changed: Condvar::new(),
             }),
-            layers: owned_layers,
+            layers_address: layers as usize,
+            layer_count,
             output_address: output_buffer as usize,
             output_length: output_length as usize,
             size_x, size_y, size_z,
