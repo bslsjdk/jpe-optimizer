@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::slice;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-const ABI_VERSION: u32 = 3;
+const ABI_VERSION: u32 = 4;
 const STATUS_OK: i32 = 0;
 const STATUS_INVALID_ARGUMENT: i32 = 1;
 const STATUS_CPP_FAILURE: i32 = 2;
@@ -58,12 +58,26 @@ struct Scheduler {
 }
 
 static SCHEDULER: OnceLock<Scheduler> = OnceLock::new();
+static CONFIGURED_WORKERS: AtomicUsize = AtomicUsize::new(0);
+
+/// Configures the worker count before the scheduler is first used. Zero selects
+/// the process-visible CPU count. Explicit requests are capped to that count.
+#[no_mangle]
+pub extern "C" fn jpe_runtime_configure_workers(requested: u32) -> i32 {
+    if SCHEDULER.get().is_some() { return -1; }
+    let available = thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
+    let selected = if requested == 0 { available } else { (requested as usize).min(available).max(1) };
+    CONFIGURED_WORKERS.store(selected, Ordering::Release);
+    selected.min(i32::MAX as usize) as i32
+}
 
 fn scheduler() -> &'static Scheduler {
     SCHEDULER.get_or_init(|| {
         let (sender, receiver) = mpsc::sync_channel::<PerlinTask>(QUEUE_CAPACITY);
         let receiver = Arc::new(Mutex::new(receiver));
-        let workers = thread::available_parallelism().map(|n| n.get()).unwrap_or(1).clamp(1, 8);
+        let detected = thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1);
+        let configured = CONFIGURED_WORKERS.load(Ordering::Acquire);
+        let workers = if configured == 0 { detected } else { configured.min(detected).max(1) };
         for worker_index in 0..workers {
             let receiver = Arc::clone(&receiver);
             thread::Builder::new().name(format!("jpe-native-worldgen-{worker_index}"))
@@ -299,7 +313,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exports_expected_abi_version() { assert_eq!(jpe_runtime_abi_version(), 3); }
+    fn exports_expected_abi_version() { assert_eq!(jpe_runtime_abi_version(), 4); }
 
     #[test]
     fn bulk_boundary_calls_cpp_kernel() {

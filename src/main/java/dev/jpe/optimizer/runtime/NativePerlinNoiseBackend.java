@@ -254,7 +254,7 @@ public final class NativePerlinNoiseBackend {
             if (path == null || path.isBlank()) return null;
             try {
                 runtime = NativeRuntime.load(java.nio.file.Path.of(path));
-                JPEOptimizer.LOGGER.info("Native Perlin backend loaded from {}", path);
+                JPEOptimizer.LOGGER.info("Native Perlin backend loaded from {} with {} workers", path, runtime.workerCount());
                 return runtime;
             } catch (Exception | LinkageError failure) {
                 JPEOptimizer.LOGGER.warn("Native Perlin backend unavailable; using Java fallback: {}", failure.toString());

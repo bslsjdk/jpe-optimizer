@@ -13,7 +13,6 @@ import java.nio.file.Path;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
@@ -23,7 +22,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * Completed jobs must be explicitly released before this runtime can be closed.
  */
 public final class NativeRuntime implements AutoCloseable {
-    public static final int EXPECTED_ABI_VERSION = 3;
+    public static final int EXPECTED_ABI_VERSION = 4;
 
     public static final int JOB_COMPLETE = 0;
     public static final int JOB_PENDING = 1;
@@ -32,6 +31,8 @@ public final class NativeRuntime implements AutoCloseable {
     public static final int JOB_CANCELLED = 4;
 
     private final Arena libraryArena;
+    private final MethodHandle configureWorkers;
+    private final int workerCount;
     private final MethodHandle addF32;
     private final MethodHandle perlinAddVolume;
     private final MethodHandle submitPerlinVolume;
@@ -42,16 +43,11 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle releaseJob;
     private final ConcurrentHashMap<Long, NativeJob> jobs = new ConcurrentHashMap<>();
     private final ReentrantReadWriteLock lifecycle = new ReentrantReadWriteLock();
-    // Reuse FFM buffers on the existing Minecraft worldgen workers. Keep the
-    // retained native scratch bounded even on machines with large worker pools.
-    private static final int MAX_REUSABLE_PERLIN_WORKERS = 8;
-    private final AtomicInteger perlinScratchCount = new AtomicInteger();
+    // Keep one reusable FFM scratch arena per calling worldgen worker. The
+    // previous fixed limit of eight forced higher-core machines into repeated
+    // temporary allocations.
     private final ConcurrentLinkedQueue<PerlinScratch> perlinScratchArenas = new ConcurrentLinkedQueue<>();
     private final ThreadLocal<PerlinScratch> perlinScratch = ThreadLocal.withInitial(() -> {
-        if (perlinScratchCount.getAndIncrement() >= MAX_REUSABLE_PERLIN_WORKERS) {
-            perlinScratchCount.decrementAndGet();
-            return null;
-        }
         PerlinScratch scratch = new PerlinScratch();
         perlinScratchArenas.add(scratch);
         return scratch;
@@ -101,9 +97,12 @@ public final class NativeRuntime implements AutoCloseable {
         }
     }
 
-    private NativeRuntime(Arena arena, MethodHandle add, MethodHandle perlin,
-                          MethodHandle submit, MethodHandle status, MethodHandle wait,
-                          MethodHandle copy, MethodHandle cancel, MethodHandle release) {
+    private NativeRuntime(Arena arena, MethodHandle configureWorkers, int workerCount,
+                          MethodHandle add, MethodHandle perlin, MethodHandle submit,
+                          MethodHandle status, MethodHandle wait, MethodHandle copy,
+                          MethodHandle cancel, MethodHandle release) {
+        this.configureWorkers = configureWorkers;
+        this.workerCount = workerCount;
         this.libraryArena = arena;
         this.addF32 = add;
         this.perlinAddVolume = perlin;
@@ -128,6 +127,9 @@ public final class NativeRuntime implements AutoCloseable {
             MethodHandle version = linker.downcallHandle(
                     lookup.find("jpe_runtime_abi_version").orElseThrow(() -> new IllegalStateException("Missing ABI version symbol")),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT));
+            MethodHandle configureWorkers = linker.downcallHandle(
+                    lookup.find("jpe_runtime_configure_workers").orElseThrow(() -> new IllegalStateException("Missing worker configuration symbol")),
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_INT));
             MethodHandle add = linker.downcallHandle(
                     lookup.find("jpe_runtime_add_f32").orElseThrow(() -> new IllegalStateException("Missing bulk kernel symbol")),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT));
@@ -167,11 +169,34 @@ public final class NativeRuntime implements AutoCloseable {
             if (actual != EXPECTED_ABI_VERSION) {
                 throw new IllegalStateException("Native ABI mismatch: expected " + EXPECTED_ABI_VERSION + ", got " + actual);
             }
-            return new NativeRuntime(arena, add, perlin, submit, status, wait, copy, cancel, release);
+            int requestedWorkers = requestedNativeWorkers();
+            int actualWorkers = (int) configureWorkers.invokeExact(requestedWorkers);
+            if (actualWorkers < 1) throw new IllegalStateException("Unable to configure native workers: " + actualWorkers);
+            return new NativeRuntime(arena, configureWorkers, actualWorkers, add, perlin, submit, status, wait, copy, cancel, release);
         } catch (Throwable failure) {
             arena.close();
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
         }
+    }
+
+    /** Number of native workers selected during runtime initialization. */
+    public int workerCount() { return workerCount; }
+
+    private static int requestedNativeWorkers() {
+        int available = Math.max(1, Runtime.getRuntime().availableProcessors());
+        String configured = System.getProperty("jpe.nativeWorkers", "auto").trim();
+        if (configured.equalsIgnoreCase("auto") || configured.equals("0")) {
+            int reserve = Math.max(0, Integer.getInteger("jpe.nativeWorkerReserve", 1));
+            return Math.max(1, available - reserve);
+        }
+        final int requested;
+        try {
+            requested = Integer.parseInt(configured);
+        } catch (NumberFormatException invalid) {
+            throw new IllegalArgumentException("jpe.nativeWorkers must be 'auto' or a positive integer", invalid);
+        }
+        if (requested < 1) throw new IllegalArgumentException("jpe.nativeWorkers must be 'auto' or a positive integer");
+        return Math.min(requested, available);
     }
 
     public float[] addEachValueToItself(float[] input) {
