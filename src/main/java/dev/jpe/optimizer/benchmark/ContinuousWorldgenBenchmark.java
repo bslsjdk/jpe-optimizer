@@ -330,7 +330,7 @@ public final class ContinuousWorldgenBenchmark {
                             + "poolHits={} poolMisses={} poolRequestedElements={} poolReusedCapacityElements={} "
                             + "nativePerlinEnabled={} nativePerlinMode={} nativeCalls={} nativeCompleted={} nativeFallbacks={} nativeSyncCalls={} nativeSamples={} nativeTotalMs={}",
                     level.getSeed(), level.getChunkSource().getGenerator().getClass().getName(),
-                    NativePerlinNoiseBackend.enabled() ? "native-perlin" : (DensityVectorRuntime.enabled() ? "vector" : "scalar"),
+                    NativePerlinNoiseBackend.enabled() ? NativePerlinNoiseBackend.mode() : (DensityVectorRuntime.enabled() ? "vector" : "scalar"),
                     format(320.0 / TICKS_PER_CHUNK_COLUMN),
                     VIEW_RADIUS_CHUNKS, MEASURED_ROWS, requested, completed, failed,
                     format(completed / (elapsedNanos / 1_000_000_000.0)),
