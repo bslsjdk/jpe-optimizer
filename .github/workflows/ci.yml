@@ -21,8 +21,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Detect changed areas
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            java:
+              - 'src/main/java/**'
+              - 'src/main/resources/**'
+              - 'src/test/java/**'
+              - 'build.gradle*'
+              - 'settings.gradle*'
+              - 'gradle/**'
+              - 'gradle.properties'
+              - 'scripts/audit_minecraft_26_3_sources.py'
+            benchmark:
+              - '.github/workflows/ci.yml'
+
       - name: Set up Java 25
-        uses: actions/setup-java@v4
+        if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         with:
           distribution: temurin
           java-version: "25"
@@ -37,20 +54,24 @@ jobs:
           cargo build --release --manifest-path native/rust-runtime/Cargo.toml
 
       - name: Set up Gradle 9.2.1
+        if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "9.2.1"
 
       - name: Unit correctness tests
+        if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         run: gradle test --no-daemon --stacktrace
 
       - name: Math microbenchmark
+        if: github.event_name == 'workflow_dispatch'
         run: |
           mkdir -p build/math-benchmark
           set -o pipefail
           gradle benchmark --no-daemon --stacktrace | tee build/math-benchmark/result.txt
 
       - name: Vector API scalar comparison and standalone JAR
+        if: github.event_name == 'workflow_dispatch'
         env:
           JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector
         run: |
@@ -59,6 +80,7 @@ jobs:
           gradle vectorBenchmark --no-daemon --stacktrace | tee build/vector-probe/result.txt
 
       - name: GameTest correctness suite
+        if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         env:
           JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.perlinVectorEnabled=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=true -Djpe.nativePerlinEnabled=true -Djpe.paletteHashEnabled=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
         run: |
@@ -74,6 +96,7 @@ jobs:
           exit "$test_status"
 
       - name: Real overworld Climate R-tree benchmark (six fan-outs, vanilla result parity)
+        if: github.event_name == 'workflow_dispatch'
         run: |
           mkdir -p build/climate-rtree-benchmark
           rm -rf run
@@ -99,6 +122,7 @@ jobs:
           test "$(grep -c 'JPE_CLIMATE_RTREE_REAL fanOut=' build/climate-rtree-benchmark/overworld.log)" -eq 6
 
       - name: Dedicated continuous run-worldgen benchmark (scalar/vector ABBA, four fresh servers)
+        if: github.event_name == 'workflow_dispatch'
         run: |
           mkdir -p build/server-benchmark
           set -euo pipefail
@@ -204,15 +228,18 @@ jobs:
           find build/server-benchmark -maxdepth 1 -name 'profile-*.jfr' -print -exec jfr summary {} \; | tee build/server-benchmark/jfr-summary.txt
 
       - name: Build mod
+        if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         run: gradle build --no-daemon --stacktrace
 
       - name: Cache pinned Vineflower decompiler
+        if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         uses: actions/cache@v4
         with:
           path: build/source-audit/vineflower-1.12.0.jar
           key: vineflower-1.12.0-1dfcfe974395734fa467ce620661c7623d05ba83670de0529b1fbd63ff548b9d
 
       - name: Verify and decompile exact Minecraft 26.3 artifacts
+        if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         run: python3 scripts/audit_minecraft_26_3_sources.py
 
       - name: Upload build, reports, and server benchmark logs
