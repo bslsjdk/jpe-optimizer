@@ -21,7 +21,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 /**
  * Optional Java 25 FFM bridge. Native worldgen is not loaded or enabled automatically.
  *
- * Async submission copies the permutation and initial output into native-owned memory before returning.
+ * Async jobs borrow leased shared FFM buffers until terminal status and explicit release.
  * Completed jobs must be explicitly released before this runtime can be closed.
  */
 public final class NativeRuntime implements AutoCloseable {
