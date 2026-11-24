@@ -65,6 +65,15 @@ unsafe extern "C" {
         xz_scale: f64, y_scale: f64, amplitude: f32,
         output: *mut f32, output_length: u64, flags: u32,
     ) -> i32;
+    fn jpe_cpp_perlin_add_volume_uncached_xy(
+        permutation: *const u8,
+        size_x: u32, size_y: u32, size_z: u32,
+        min_x: i32, min_y: i32, min_z: i32,
+        step_x: i32, step_y: i32, step_z: i32,
+        offset_x: f64, offset_y: f64, offset_z: f64,
+        xz_scale: f64, y_scale: f64, amplitude: f32,
+        output: *mut f32, output_length: u64, flags: u32,
+    ) -> i32;
 }
 
 struct JobState {
@@ -715,6 +724,41 @@ mod tests {
     }
 
     #[test]
+    fn xy_permutation_cache_matches_uncached_xy_reference_bit_for_bit() {
+        let permutations: [[u8; 256]; 4] = std::array::from_fn(|layer| {
+            std::array::from_fn(|i| ((i * (29 + layer * 10) + 23 + layer * 7) & 255) as u8)
+        });
+        let layers: [JpePerlinLayer; 4] = std::array::from_fn(|i| JpePerlinLayer {
+            permutation: permutations[i].as_ptr(),
+            offset_x: 0.11 * (i as f64 + 1.0),
+            offset_y: -0.21 * (i as f64 + 1.0),
+            offset_z: 0.31 * (i as f64 + 1.0),
+            xz_scale: 0.41 * (i as f64 + 1.0),
+            y_scale: 0.61 * (i as f64 + 1.0),
+            amplitude: 0.5_f32.powi(i as i32 + 1),
+        });
+        for flags in [0_u32, 1_u32] {
+            let mut expected = vec![0.25_f32; 32 * 64 * 16];
+            let mut actual = expected.clone();
+            for layer in &layers {
+                assert_eq!(unsafe { jpe_cpp_perlin_add_volume_uncached_xy(
+                    layer.permutation, 32, 64, 16, -257, -129, 193,
+                    1, 1, -1, layer.offset_x, layer.offset_y, layer.offset_z,
+                    layer.xz_scale, layer.y_scale, layer.amplitude,
+                    expected.as_mut_ptr(), expected.len() as u64, flags
+                ) }, STATUS_OK);
+            }
+            assert_eq!(unsafe { jpe_cpp_perlin_add_stack(
+                layers.as_ptr(), layers.len() as u32,
+                32, 64, 16, -257, -129, 193, 1, 1, -1,
+                actual.as_mut_ptr(), actual.len() as u64, flags
+            ) }, STATUS_OK);
+            assert_eq!(actual.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                       expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
     fn perlin_y_cache_native_microbenchmark_large_volume() {
         use std::time::Instant;
         const SX: usize = 32;
@@ -790,6 +834,89 @@ mod tests {
         let uncached_median = uncached_ns[ROUNDS / 2];
         eprintln!(
             "JPE_PERLIN_Y_CACHE_LARGE_BENCH dims={}x{}x{} layers={} repeats={} rounds={} uncached_median_ms={:.3} cached_median_ms={:.3} cached_speedup={:.3}x",
+            SX, SY, SZ, LAYERS, REPEATS, ROUNDS,
+            uncached_median as f64 / 1_000_000.0,
+            cached_median as f64 / 1_000_000.0,
+            uncached_median as f64 / cached_median as f64
+        );
+    }
+
+    #[test]
+    fn perlin_xy_cache_native_microbenchmark_large_volume() {
+        use std::time::Instant;
+        const SX: usize = 32;
+        const SY: usize = 64;
+        const SZ: usize = 32;
+        const LAYERS: usize = 8;
+        const ROUNDS: usize = 15;
+        const REPEATS: usize = 3;
+        let permutations: [[u8; 256]; LAYERS] = std::array::from_fn(|layer| {
+            std::array::from_fn(|i| ((i * (37 + layer * 6) + 11 + layer * 17) & 255) as u8)
+        });
+        let layers: [JpePerlinLayer; LAYERS] = std::array::from_fn(|i| JpePerlinLayer {
+            permutation: permutations[i].as_ptr(),
+            offset_x: 0.13 * (i as f64 + 1.0),
+            offset_y: -0.17 * (i as f64 + 1.0),
+            offset_z: 0.23 * (i as f64 + 1.0),
+            xz_scale: 0.375 * (i as f64 + 1.0),
+            y_scale: 0.625 * (i as f64 + 1.0),
+            amplitude: 0.5_f32.powi(i as i32 + 1),
+        });
+        let len = SX * SY * SZ;
+        let mut cached = vec![0.125_f32; len];
+        let mut uncached = cached.clone();
+        let run_cached = |out: &mut [f32]| {
+            for _ in 0..REPEATS {
+                out.fill(0.125);
+                assert_eq!(unsafe { jpe_cpp_perlin_add_stack(
+                    layers.as_ptr(), LAYERS as u32,
+                    SX as u32, SY as u32, SZ as u32,
+                    -256, -128, 192, 1, 1, 1,
+                    out.as_mut_ptr(), len as u64, 0
+                ) }, STATUS_OK);
+            }
+        };
+        let run_uncached = |out: &mut [f32]| {
+            for _ in 0..REPEATS {
+                out.fill(0.125);
+                for layer in &layers {
+                    assert_eq!(unsafe { jpe_cpp_perlin_add_volume_uncached_xy(
+                        layer.permutation, SX as u32, SY as u32, SZ as u32,
+                        -256, -128, 192, 1, 1, 1,
+                        layer.offset_x, layer.offset_y, layer.offset_z,
+                        layer.xz_scale, layer.y_scale, layer.amplitude,
+                        out.as_mut_ptr(), len as u64, 0
+                    ) }, STATUS_OK);
+                }
+            }
+        };
+        for _ in 0..2 {
+            run_cached(&mut cached);
+            run_uncached(&mut uncached);
+        }
+        let mut cached_ns = Vec::with_capacity(ROUNDS);
+        let mut uncached_ns = Vec::with_capacity(ROUNDS);
+        for round in 0..ROUNDS {
+            if round % 2 == 0 {
+                let start = Instant::now(); run_cached(&mut cached);
+                cached_ns.push(start.elapsed().as_nanos());
+                let start = Instant::now(); run_uncached(&mut uncached);
+                uncached_ns.push(start.elapsed().as_nanos());
+            } else {
+                let start = Instant::now(); run_uncached(&mut uncached);
+                uncached_ns.push(start.elapsed().as_nanos());
+                let start = Instant::now(); run_cached(&mut cached);
+                cached_ns.push(start.elapsed().as_nanos());
+            }
+        }
+        assert_eq!(cached.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                   uncached.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+        cached_ns.sort_unstable();
+        uncached_ns.sort_unstable();
+        let cached_median = cached_ns[ROUNDS / 2];
+        let uncached_median = uncached_ns[ROUNDS / 2];
+        eprintln!(
+            "JPE_PERLIN_XY_CACHE_LARGE_BENCH dims={}x{}x{} layers={} repeats={} rounds={} uncached_median_ms={:.3} cached_median_ms={:.3} cached_speedup={:.3}x",
             SX, SY, SZ, LAYERS, REPEATS, ROUNDS,
             uncached_median as f64 / 1_000_000.0,
             cached_median as f64 / 1_000_000.0,
