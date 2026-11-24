@@ -196,12 +196,6 @@ jobs:
           grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin-sync.*nativeSyncCalls=[1-9][0-9]*' build/server-benchmark/native_sync_a.log
           grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin-sync.*nativeSyncCalls=[1-9][0-9]*' build/server-benchmark/native_sync_b.log
 
-          # One diagnostic-only fresh-world run records actual Perlin Y-floor run lengths.
-          # It is intentionally excluded from all timing comparisons because profiling scans Y.
-          native_profile_option="$native_option -Djpe.nativePerlinProfile=true"
-          run_worldgen native_profile scalar "$native_profile_option"
-          grep 'JPE_PERLIN_Y_PROFILE' build/server-benchmark/native_profile.log
-
           # Isolate the material-rule density-buffer reuse experiment with a fresh-world ABBA.
           # All four runs use the same vector density kernels; only the scoped buffer lease changes.
           run_worldgen material_pool_off_a vector "-Djpe.densityBufferMetrics=true"
