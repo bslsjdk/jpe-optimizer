@@ -10,6 +10,7 @@ import net.minecraft.world.level.levelgen.synth.PerlinNoise;
 
 /** SIMD implementation of the contiguous Y-axis interpolation pass in Perlin volume sampling. */
 public final class PerlinNoiseVectorizer {
+    private static final boolean ENABLED = Boolean.getBoolean("jpe.perlinVectorEnabled");
     private static final int MAX_LANES = 64;
     private static final int[] GX = {1,-1,1,-1,1,-1,1,-1,0,0,0,0,1,0,-1,0};
     private static final int[] GY = {1,1,-1,-1,0,0,0,0,1,-1,1,-1,1,-1,1,-1};
@@ -21,6 +22,7 @@ public final class PerlinNoiseVectorizer {
     private static final ThreadLocal<Boolean> LAST_VECTOR = ThreadLocal.withInitial(() -> false);
 
     private PerlinNoiseVectorizer() {}
+    public static boolean enabled() { return ENABLED; }
     public static void setVanillaBypass(boolean value) { VANILLA_BYPASS.set(value); }
     public static boolean vanillaBypass() { return VANILLA_BYPASS.get(); }
     public static boolean wasLastCallVectorized() { return LAST_VECTOR.get(); }
