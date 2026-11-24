@@ -274,10 +274,6 @@ public final class NativeRuntime implements AutoCloseable {
         }
     }
 
-    private void ensureOpen() {
-        if (closed) throw new IllegalStateException("Native runtime is closed");
-    }
-
     static int validatePerlinInputs(byte[] permutation,
                                     int sizeX, int sizeY, int sizeZ,
                                     int stepX, int stepY, int stepZ,
