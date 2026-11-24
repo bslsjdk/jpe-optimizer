@@ -14,6 +14,7 @@ import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** Opt-in bridge that runs Perlin volume work on the Rust worker pool / C++ backend. */
 public final class NativePerlinNoiseBackend {
@@ -36,6 +37,7 @@ public final class NativePerlinNoiseBackend {
     private static final LongAdder ASYNC_QUEUE_REJECTIONS = new LongAdder();
     private static final LongAdder NATIVE_JOB_FAILURES = new LongAdder();
     private static final LongAdder NATIVE_EXCEPTIONS = new LongAdder();
+    private static final AtomicLong PROFILE_CALLS = new AtomicLong();
     public record Metrics(long attempts, long completed, long fallbacks, long samples,
                           long totalNanos, long synchronousCalls,
                           long invalidDimensions, long axisVolumeMismatches, long bufferVolumeMismatches,
@@ -124,6 +126,9 @@ public final class NativePerlinNoiseBackend {
             if (expectedElements != volume.size()) {
                 AXIS_VOLUME_MISMATCHES.increment();
                 return false;
+            }
+            if (Boolean.getBoolean("jpe.nativePerlinProfile")) {
+                profilePerlinYRuns(layers, volume);
             }
             if (expectedElements > 1_048_576L) {
                 OVERSIZED_VOLUMES.increment();
@@ -362,6 +367,93 @@ public final class NativePerlinNoiseBackend {
             TOTAL_NANOS.add(System.nanoTime() - started);
             if (interrupted) Thread.currentThread().interrupt();
         }
+    }
+
+
+    /**
+     * Opt-in diagnostic for real Minecraft DensityVolume calls. It mirrors the native
+     * Y-coordinate wrapping/floor grouping and reports how much work can enter the
+     * current eight-wide AVX2 loop. Disabled by default; profiling itself scans Y.
+     */
+    private static void profilePerlinYRuns(List<NativeRuntime.PerlinLayer> layers,
+                                           DensityVolume volume) {
+        long sequence = PROFILE_CALLS.incrementAndGet();
+        // Sample every 32nd volume to keep diagnostic overhead bounded on busy worldgen.
+        if ((sequence & 31L) != 1L) return;
+
+        int sizeY = volume.sizeY();
+        int minY = volume.minBlockY();
+        int stepY = volume.stepBlockY();
+        long totalRuns = 0;
+        long totalSamples = 0;
+        long candidateVectors = 0;
+        long candidateSamples = 0;
+        long eligibleLayers = 0;
+        int maxRun = 0;
+        int minRun = Integer.MAX_VALUE;
+        double minScale = Double.POSITIVE_INFINITY;
+        double maxScale = Double.NEGATIVE_INFINITY;
+        boolean farLands = SharedConstants.DEBUG_ENABLE_FARLANDS;
+
+        for (NativeRuntime.PerlinLayer layer : layers) {
+            double scale = layer.yScale();
+            minScale = Math.min(minScale, scale);
+            maxScale = Math.max(maxScale, scale);
+            boolean eligible = Math.abs((double) stepY * scale) <= (1.0 / 16.0);
+            if (eligible) eligibleLayers++;
+
+            int runLength = 0;
+            int previousFloor = 0;
+            for (int iy = 0; iy < sizeY; iy++) {
+                int blockY = minY + iy * stepY;
+                double y = (double) blockY * scale;
+                if (!farLands && (y < -Math.nextDown(16_777_216.0)
+                        || y >= Math.nextDown(16_777_216.0))) {
+                    y -= Math.floor(y / 33_554_432.0 + 0.5) * 33_554_432.0;
+                }
+                y += layer.offsetY();
+                double floored = Math.floor(y);
+                int floorY = floored >= Integer.MAX_VALUE ? Integer.MAX_VALUE
+                        : floored <= Integer.MIN_VALUE ? Integer.MIN_VALUE : (int) floored;
+
+                if (iy == 0 || floorY == previousFloor) {
+                    runLength++;
+                } else {
+                    totalRuns++;
+                    totalSamples += runLength;
+                    minRun = Math.min(minRun, runLength);
+                    maxRun = Math.max(maxRun, runLength);
+                    if (eligible) {
+                        long vectors = runLength / 8;
+                        candidateVectors += vectors;
+                        candidateSamples += vectors * 8;
+                    }
+                    runLength = 1;
+                }
+                previousFloor = floorY;
+            }
+            if (runLength > 0) {
+                totalRuns++;
+                totalSamples += runLength;
+                minRun = Math.min(minRun, runLength);
+                maxRun = Math.max(maxRun, runLength);
+                if (eligible) {
+                    long vectors = runLength / 8;
+                    candidateVectors += vectors;
+                    candidateSamples += vectors * 8;
+                }
+            }
+        }
+
+        long scalarTailSamples = totalSamples - candidateSamples;
+        JPEOptimizer.LOGGER.info(
+                "JPE_PERLIN_Y_PROFILE sample={} origin=({}, {}, {}) volume={}x{}x{} stepY={} layers={} yScaleRange=[{},{}] eligibleLayers={} floorRuns={} avgRun={} minRun={} maxRun={} avx2CandidateVectors={} avx2CandidateSamples={} scalarOrTailSamples={} farLands={}",
+                sequence, volume.minBlockX(), minY, volume.minBlockZ(),
+                volume.sizeX(), sizeY, volume.sizeZ(), stepY, layers.size(),
+                minScale, maxScale, eligibleLayers, totalRuns,
+                totalRuns == 0 ? 0.0 : (double) totalSamples / totalRuns,
+                minRun == Integer.MAX_VALUE ? 0 : minRun, maxRun,
+                candidateVectors, candidateSamples, scalarTailSamples, farLands);
     }
 
     private static Object[] readNoiseStackLayers(NoiseStack stack) {
