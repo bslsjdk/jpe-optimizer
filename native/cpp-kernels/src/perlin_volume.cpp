@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <limits>
 #include <vector>
-#if defined(__x86_64__) || defined(__i386__)
+#if (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
 #include <immintrin.h>
 #endif
 
@@ -70,7 +70,7 @@ struct XyPermutationCache {
     uint8_t xy11;
 };
 
-#if defined(__x86_64__) || defined(__i386__)
+#if (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
 __attribute__((target("avx2")))
 inline void perlin_evaluate_8_avx2(
     const float* relative_y, const float* alpha_y, float* output,
@@ -137,7 +137,7 @@ int32_t perlin_add_volume_impl(
     if (expected > static_cast<uint64_t>(std::numeric_limits<size_t>::max() / sizeof(float))) return 1;
 
     const bool far_lands = (flags & 1U) != 0U;
-#if defined(__x86_64__) || defined(__i386__)
+#if (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
     __builtin_cpu_init();
     const bool use_avx2 = __builtin_cpu_supports("avx2");
 #endif
@@ -267,7 +267,7 @@ int32_t perlin_add_volume_impl(
                 corner(permutation, static_cast<uint32_t>(xy01) + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F, corner_xz[6], corner_y[6]);
                 corner(permutation, static_cast<uint32_t>(xy11) + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F, corner_xz[7], corner_y[7]);
 
-#if defined(__x86_64__) || defined(__i386__)
+#if (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
                 if constexpr (CacheY) {
                     if (use_avx2) {
                         uint32_t run_end = iy + 1;
