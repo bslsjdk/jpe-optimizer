@@ -30,7 +30,9 @@ public final class NativeRuntime implements AutoCloseable {
     public static final int JOB_FAILED = 3;
     public static final int JOB_CANCELLED = 4;
 
-    private final Arena libraryArena;
+    // Rust's scheduler owns process-lifetime worker threads, so the native library
+    // must remain loaded until JVM exit even when an individual bridge is closed.
+    private static final Arena LIBRARY_ARENA = Arena.global();
     private final MethodHandle configureWorkers;
     private final int workerCount;
     private final MethodHandle addF32;
@@ -77,13 +79,12 @@ public final class NativeRuntime implements AutoCloseable {
         }
     }
 
-    private NativeRuntime(Arena arena, MethodHandle configureWorkers, int workerCount,
+    private NativeRuntime(MethodHandle configureWorkers, int workerCount,
                           MethodHandle add, MethodHandle perlin, MethodHandle submit,
                           MethodHandle status, MethodHandle wait, MethodHandle copy,
                           MethodHandle cancel, MethodHandle release) {
         this.configureWorkers = configureWorkers;
         this.workerCount = workerCount;
-        this.libraryArena = arena;
         this.addF32 = add;
         this.perlinAddVolume = perlin;
         this.submitPerlinVolume = submit;
@@ -100,10 +101,9 @@ public final class NativeRuntime implements AutoCloseable {
         if (!Files.isRegularFile(absolutePath)) {
             throw new IOException("Native runtime library does not exist: " + absolutePath);
         }
-        Arena arena = Arena.ofShared();
         try {
             Linker linker = Linker.nativeLinker();
-            SymbolLookup lookup = SymbolLookup.libraryLookup(absolutePath, arena);
+            SymbolLookup lookup = SymbolLookup.libraryLookup(absolutePath, LIBRARY_ARENA);
             MethodHandle version = linker.downcallHandle(
                     lookup.find("jpe_runtime_abi_version").orElseThrow(() -> new IllegalStateException("Missing ABI version symbol")),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT));
@@ -156,9 +156,8 @@ public final class NativeRuntime implements AutoCloseable {
             int requestedWorkers = requestedNativeWorkers();
             int actualWorkers = (int) configureWorkers.invokeExact(requestedWorkers);
             if (actualWorkers < 1) throw new IllegalStateException("Unable to configure native workers: " + actualWorkers);
-            return new NativeRuntime(arena, configureWorkers, actualWorkers, add, perlin, submit, status, wait, copy, cancel, release);
+            return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, submit, status, wait, copy, cancel, release);
         } catch (Throwable failure) {
-            arena.close();
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
         }
     }
@@ -356,7 +355,7 @@ public final class NativeRuntime implements AutoCloseable {
         while ((scratch = perlinScratchArenas.poll()) != null) {
             scratch.close();
         }
-        libraryArena.close();
+        // The global FFM arena intentionally keeps the Rust library loaded until JVM exit.
     
         } finally {
             lifecycle.writeLock().unlock();
