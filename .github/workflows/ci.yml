@@ -59,10 +59,10 @@ jobs:
 
           # ABBA order balances first/last-run bias. Each invocation launches a
           # separate GameTestServer and deletes its prior world before starting.
-          run_worldgen vector_a "--add-modules=jdk.incubator.vector -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=true"
-          run_worldgen scalar_a "--add-modules=jdk.incubator.vector -Djpe.forceScalar=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=false"
-          run_worldgen scalar_b "--add-modules=jdk.incubator.vector -Djpe.forceScalar=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=false"
-          run_worldgen vector_b "--add-modules=jdk.incubator.vector -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=true"
+          run_worldgen baseline_a "--add-modules=jdk.incubator.vector -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=false"
+          run_worldgen indexed_a "--add-modules=jdk.incubator.vector -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=true"
+          run_worldgen indexed_b "--add-modules=jdk.incubator.vector -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=true"
+          run_worldgen baseline_b "--add-modules=jdk.incubator.vector -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=false"
 
       - name: Build mod
         run: gradle build --no-daemon --stacktrace
