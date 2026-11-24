@@ -332,7 +332,7 @@ public final class GameTests {
                 boolean timedOut = false;
                 boolean interrupted = false;
                 do {
-                    status = job.status();
+                    status = job.waitForStatus(10_000_000L);
                     if (status == NativeRuntime.JOB_COMPLETE
                             || status == NativeRuntime.JOB_FAILED
                             || status == NativeRuntime.JOB_CANCELLED) break;

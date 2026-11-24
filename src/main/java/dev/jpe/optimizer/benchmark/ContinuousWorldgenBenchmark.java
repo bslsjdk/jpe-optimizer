@@ -340,7 +340,7 @@ public final class ContinuousWorldgenBenchmark {
                             + "structureCandidateChecks={} structureVanillaLinearChecks={} "
                             + "densityMetricsEnabled={} unpooledCalls={} unpooledElements={} "
                             + "poolHits={} poolMisses={} poolRequestedElements={} poolReusedCapacityElements={} "
-                            + "nativePerlinEnabled={} nativePerlinMode={} nativeCalls={} nativeCompleted={} nativeFallbacks={} nativeSyncCalls={} nativeSamples={} nativeTotalMs={} "
+                            + "nativePerlinEnabled={} nativePerlinMode={} nativeWorkers={} nativeCalls={} nativeCompleted={} nativeFallbacks={} nativeSyncCalls={} nativeSamples={} nativeTotalMs={} "
                             + "nativeInvalidDimensions={} nativeAxisMismatches={} nativeBufferMismatches={} nativeOversizedVolumes={} "
                             + "nativeRuntimeUnavailable={} nativeQueueRejections={} nativeJobFailures={} nativeExceptions={}",
                     level.getSeed(), level.getChunkSource().getGenerator().getClass().getName(),
@@ -376,7 +376,7 @@ public final class ContinuousWorldgenBenchmark {
                     densityBufferDelta.unpooledElements(), densityBufferDelta.poolHits(),
                     densityBufferDelta.poolMisses(), densityBufferDelta.poolRequestedElements(),
                     densityBufferDelta.poolReusedCapacityElements(), NativePerlinNoiseBackend.enabled(),
-                    NativePerlinNoiseBackend.mode(), nativeCalls, nativeCompleted, nativeFallbacks,
+                    NativePerlinNoiseBackend.mode(), nativeAfter.nativeWorkers(), nativeCalls, nativeCompleted, nativeFallbacks,
                     nativeSyncCalls, nativeSamples,
                     format(nativeNanos / 1_000_000.0),
                     nativeInvalidDimensions, nativeAxisMismatches, nativeBufferMismatches,

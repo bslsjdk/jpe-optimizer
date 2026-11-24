@@ -33,14 +33,15 @@ public final class NativePerlinNoiseBackend {
                           long totalNanos, long synchronousCalls,
                           long invalidDimensions, long axisVolumeMismatches, long bufferVolumeMismatches,
                           long oversizedVolumes, long runtimeUnavailable, long asyncQueueRejections,
-                          long nativeJobFailures, long nativeExceptions) {}
+                          long nativeJobFailures, long nativeExceptions, int nativeWorkers) {}
 
     public static Metrics metricsSnapshot() {
+        NativeRuntime current = runtime;
         return new Metrics(ATTEMPTS.sum(), COMPLETED.sum(), FALLBACKS.sum(), SAMPLES.sum(),
                 TOTAL_NANOS.sum(), SYNCHRONOUS_CALLS.sum(), INVALID_DIMENSIONS.sum(),
                 AXIS_VOLUME_MISMATCHES.sum(), BUFFER_VOLUME_MISMATCHES.sum(), OVERSIZED_VOLUMES.sum(),
                 RUNTIME_UNAVAILABLE.sum(), ASYNC_QUEUE_REJECTIONS.sum(), NATIVE_JOB_FAILURES.sum(),
-                NATIVE_EXCEPTIONS.sum());
+                NATIVE_EXCEPTIONS.sum(), current == null ? 0 : current.workerCount());
     }
 
     public static String mode() {

@@ -50,4 +50,4 @@ The scheduler is in-process. It is not a daemon, does not use shared-memory IPC,
 
 ## Validation and next steps
 
-Run cargo tests and release build, then Gradle unit tests, GameTests and the dedicated server benchmark. After CI, expose the async API through Java FFM and benchmark the complete input-copy + queue + compute + result-copy path against vanilla. Only a measured end-to-end win justifies connecting this kernel to a live worldgen stage.
+Run cargo tests and release build, then Gradle unit tests, GameTests and the dedicated server benchmark. After CI, compare one-worker and auto-sized worker configurations on fresh servers, then benchmark the complete input-copy + queue + compute + result-copy path against vanilla. Only a measured end-to-end win justifies connecting this kernel to a live worldgen stage.
