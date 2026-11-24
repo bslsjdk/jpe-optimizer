@@ -29,6 +29,21 @@ JPE_API int32_t jpe_runtime_perlin_add_volume(
     double offset_x, double offset_y, double offset_z, double xz_scale, double y_scale,
     float amplitude, float *output, uint64_t output_length, uint32_t flags
 );
+/* One ordered octave/layer descriptor. The permutation is borrowed for the duration of the call. */
+typedef struct JpePerlinLayer {
+    const uint8_t *permutation;
+    double offset_x, offset_y, offset_z;
+    double xz_scale, y_scale;
+    float amplitude;
+} JpePerlinLayer;
+/* Batch a complete ordered stack into one output volume. */
+JPE_API int32_t jpe_runtime_perlin_add_stack(
+    const JpePerlinLayer *layers, uint32_t layer_count,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    float *output, uint64_t output_length, uint32_t flags
+);
 /* Async API copies the permutation but borrows output_buffer until terminal job status.
  * Caller must keep it valid and exclusively reserved until release. Zero means rejected/full. */
 JPE_API uint64_t jpe_runtime_submit_perlin_volume(
