@@ -160,9 +160,27 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
         }
 
         for (; i < length; ++i) {
-            ScalarDensityKernel.INSTANCE.perlinLerpAdd(values, outputOffset + i,
-                    relativeY, 1, alphaX, alphaZ, amplitude, cornerXZ, cornerY);
+            perlinLerpAddOne(values, outputOffset + i, relativeY[i],
+                    alphaX, alphaZ, amplitude, cornerXZ, cornerY);
         }
+    }
+
+    private static void perlinLerpAddOne(float[] values, int outputIndex, float ry,
+                                         float alphaX, float alphaZ, float amplitude,
+                                         float[] cornerXZ, float[] cornerY) {
+        float ry1 = ry - 1.0F;
+        float x000 = cornerXZ[0] + cornerY[0] * ry;
+        float x100 = cornerXZ[1] + cornerY[1] * ry;
+        float x010 = cornerXZ[2] + cornerY[2] * ry1;
+        float x110 = cornerXZ[3] + cornerY[3] * ry1;
+        float x001 = cornerXZ[4] + cornerY[4] * ry;
+        float x101 = cornerXZ[5] + cornerY[5] * ry;
+        float x011 = cornerXZ[6] + cornerY[6] * ry1;
+        float x111 = cornerXZ[7] + cornerY[7] * ry1;
+        float alphaY = ry * ry * ry * (ry * (ry * 6.0F - 15.0F) + 10.0F);
+        float lower = lerp(alphaY, lerp(alphaX, x000, x100), lerp(alphaX, x010, x110));
+        float upper = lerp(alphaY, lerp(alphaX, x001, x101), lerp(alphaX, x011, x111));
+        values[outputIndex] = values[outputIndex] + amplitude * lerp(alphaZ, lower, upper);
     }
 
     private static FloatVector lerp(FloatVector alpha, FloatVector x, FloatVector y) {
