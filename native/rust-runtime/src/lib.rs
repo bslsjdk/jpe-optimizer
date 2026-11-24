@@ -227,7 +227,8 @@ pub unsafe extern "C" fn jpe_runtime_copy_job_output(job_id: u64, destination: *
             STATUS_OK
         }
         JobStatus::Pending | JobStatus::Running => JOB_PENDING,
-        JobStatus::Failed(code) => *code,
+        // Keep job-state values disjoint from native API error codes.
+        JobStatus::Failed(_) => JOB_FAILED,
         JobStatus::Cancelled => JOB_CANCELLED,
     };
     result
