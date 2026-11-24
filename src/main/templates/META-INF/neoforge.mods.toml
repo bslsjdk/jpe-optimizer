@@ -6,8 +6,6 @@ version="${mod_version}"
 displayName="${mod_name}"
 description='''Lean-Heap: lookup-table math + allocation telemetry for faster worldgen.'''
 
-[[mixins]]
-config="leanheap.mixins.json"
 
 [[dependencies.${mod_id}]]
 modId="neoforge"

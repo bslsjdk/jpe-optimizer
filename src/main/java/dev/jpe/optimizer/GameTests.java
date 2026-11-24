@@ -56,30 +56,6 @@ public final class GameTests {
         if (Float.floatToIntBits(reference) != Float.floatToIntBits(candidate)) {
             throw new AssertionError("Float32 CSE candidate mismatch: " + reference + " vs " + candidate);
         }
-
-        // Verify the FastMath Mth.smoothstep @Overwrite mixin actually applied.
-        // Sample many points and count bit differences from the exact polynomial.
-        // The LUT approximation differs on most points (~1e-6, far above one
-        // float ULP); if the mixin never loaded, all bits are identical.
-        int differing = 0;
-        int derivDiffering = 0;
-        int total = 0;
-        for (int i = 1; i < 100; i++) {
-            float v = i / 100.0f;
-            float live = net.minecraft.util.Mth.smoothstep(v);
-            float exact = v * v * v * (v * (v * 6.0f - 15.0f) + 10.0f);
-            total++;
-            if (Float.floatToIntBits(live) != Float.floatToIntBits(exact)) differing++;
-            float dLive = net.minecraft.util.Mth.smoothstepDerivative(v);
-            float dExact = 30.0f * v * v * (v - 1.0f) * (v - 1.0f);
-            if (Float.floatToIntBits(dLive) != Float.floatToIntBits(dExact)) derivDiffering++;
-        }
-        if (differing == 0) {
-            throw new AssertionError("Mth.smoothstep mixin did not apply (all bits identical)");
-        }
-        if (derivDiffering == 0) {
-            throw new AssertionError("Mth.smoothstepDerivative mixin did not apply (all bits identical)");
-        }
         helper.succeed();
     }
 }

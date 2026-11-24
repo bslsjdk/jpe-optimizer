@@ -1,16 +1,17 @@
 package dev.jpe.optimizer.math;
 
 /**
- * Fast smoothstep via a precomputed lookup table, the "memory for speed" trade
- * Rust-style. Vanilla: x*x*x*(x*(x*6-15)+10) for x in [0,1].
+ * Experimental lookup-table smoothstep (kept as benchmark evidence only).
  *
- * The table has 4097 entries over [0,1] with linear interpolation between
- * neighbours, giving max abs error < 1e-6 (visually identical terrain). For x
- * outside [0,1] we defer to the exact polynomial, preserving vanilla behavior
- * at the boundaries.
+ * Vanilla polynomial: x*x*x*(x*(x*6-15)+10) for x in [0,1].
  *
- * This is intended for Mixin @Redirect into net.minecraft.util.Mth.smoothstep,
- * which is called billions of times during world generation.
+ * A 4097-entry interpolated table plus a 65536-entry single-read table were
+ * measured against the polynomial with a trusted harness (volatile sink +
+ * min-of-N). HotSpot JIT-compiles the polynomial to ~0.48 ns/call, while even
+ * the single-read table costs ~0.69 ns/call and the interpolated table ~1.03
+ * ns/call -- the LUT is a net LOSS on the JVM. Consequently this class is NOT
+ * wired into any production Mixin; it remains only so the benchmark can
+ * demonstrate the finding.
  */
 public final class FastMath {
     private FastMath() {}
