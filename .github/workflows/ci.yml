@@ -103,7 +103,7 @@ jobs:
 
           # Separate diagnostic run: JFR sampling identifies real hot methods without
           # contaminating the four-run scalar/vector performance comparison.
-          run_worldgen profile vector "-XX:StartFlightRecording=filename=${GITHUB_WORKSPACE}/build/server-benchmark/profile-%p.jfr,settings=profile,dumponexit=true"
+          run_worldgen profile vector "-XX:StartFlightRecording=filename=${GITHUB_WORKSPACE}/build/server-benchmark/profile-%p.jfr,settings=profile,dumponexit=true -Djpe.densityBufferMetrics=true"
           find build/server-benchmark -maxdepth 1 -name 'profile-*.jfr' -print -exec jfr summary {} \; | tee build/server-benchmark/jfr-summary.txt
 
       - name: Build mod
