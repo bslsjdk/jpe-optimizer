@@ -32,6 +32,13 @@ pub struct JpePerlinLayer {
 }
 
 unsafe extern "C" {
+    fn jpe_cpp_perlin_add_stack_fused(
+        layers: *const JpePerlinLayer, layer_count: u32,
+        size_x: u32, size_y: u32, size_z: u32,
+        min_x: i32, min_y: i32, min_z: i32,
+        step_x: i32, step_y: i32, step_z: i32,
+        output: *mut f32, output_length: u64, flags: u32,
+    ) -> i32;
     fn jpe_cpp_perlin_add_stack(
         layers: *const JpePerlinLayer, layer_count: u32,
         size_x: u32, size_y: u32, size_z: u32,
@@ -543,6 +550,40 @@ mod tests {
             actual.as_mut_ptr(), actual.len() as u64, 0
         ) };
         assert_eq!(status, STATUS_OK);
+        assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
+    }
+
+    #[test]
+    fn fused_perlin_stack_matches_ordered_individual_calls_bit_for_bit() {
+        let permutation_a: [u8; 256] = std::array::from_fn(|i| ((i * 37 + 11) & 255) as u8);
+        let permutation_b: [u8; 256] = std::array::from_fn(|i| ((i * 19 + 73) & 255) as u8);
+        let permutation_c: [u8; 256] = std::array::from_fn(|i| ((i * 53 + 29) & 255) as u8);
+        let layers = [
+            JpePerlinLayer { permutation: permutation_a.as_ptr(),
+                offset_x: 0.13, offset_y: 0.29, offset_z: 0.41,
+                xz_scale: 0.75, y_scale: 1.25, amplitude: 0.5 },
+            JpePerlinLayer { permutation: permutation_b.as_ptr(),
+                offset_x: -0.31, offset_y: 0.17, offset_z: 0.23,
+                xz_scale: 1.5, y_scale: 0.625, amplitude: -0.125 },
+            JpePerlinLayer { permutation: permutation_c.as_ptr(),
+                offset_x: 0.07, offset_y: -0.33, offset_z: 0.19,
+                xz_scale: 0.375, y_scale: 2.0, amplitude: 0.0625 },
+        ];
+        let mut expected = [0.375_f32; 60];
+        let mut actual = expected;
+        for layer in &layers {
+            assert_eq!(unsafe { jpe_cpp_perlin_add_volume(
+                layer.permutation, 3, 4, 5, -17, -11, 13, 2, 1, 3,
+                layer.offset_x, layer.offset_y, layer.offset_z,
+                layer.xz_scale, layer.y_scale, layer.amplitude,
+                expected.as_mut_ptr(), expected.len() as u64, 0
+            ) }, STATUS_OK);
+        }
+        assert_eq!(unsafe { jpe_cpp_perlin_add_stack_fused(
+            layers.as_ptr(), layers.len() as u32,
+            3, 4, 5, -17, -11, 13, 2, 1, 3,
+            actual.as_mut_ptr(), actual.len() as u64, 0
+        ) }, STATUS_OK);
         assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
     }
 
