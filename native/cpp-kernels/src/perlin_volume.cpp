@@ -99,24 +99,26 @@ int32_t perlin_add_volume_impl(
     thread_local std::vector<int32_t> y_floors;
     thread_local std::vector<float> y_relative;
     thread_local std::vector<float> y_alpha;
-    if (y_coordinates.size() < size_y) {
-        y_coordinates.resize(size_y);
+    if (y_floors.size() < size_y) {
         y_floors.resize(size_y);
         if constexpr (CacheY) {
             y_relative.resize(size_y);
             y_alpha.resize(size_y);
+        } else {
+            y_coordinates.resize(size_y);
         }
     }
     for (uint32_t iy = 0; iy < size_y; ++iy) {
         const double y = wrap_coordinate(
             static_cast<double>(axis_coordinate(min_y, iy, step_y)) * y_scale, far_lands) + offset_y;
         const int32_t floor_y = floor_to_i32(y);
-        y_coordinates[iy] = y;
         y_floors[iy] = floor_y;
         if constexpr (CacheY) {
             const float relative_y = static_cast<float>(y - static_cast<double>(floor_y));
             y_relative[iy] = relative_y;
             y_alpha[iy] = smoothstep(relative_y);
+        } else {
+            y_coordinates[iy] = y;
         }
     }
 
