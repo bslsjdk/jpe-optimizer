@@ -15,7 +15,7 @@
     "MaterialRuleContextBufferMixin",
     "MaterialSystemBufferPoolMixin",
     "GradientNoiseAccessor",
-    "net.minecraft.world.level.levelgen.synth.NoiseStackLayersAccessor",
+    "NoiseStackLayersAccessor",
     "NoiseStackLayerAccessor",
     "NoiseStackPerlinMixin",
     "PerlinNoiseVolumeMixin",
