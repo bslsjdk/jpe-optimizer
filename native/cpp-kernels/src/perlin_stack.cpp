@@ -57,64 +57,19 @@ inline void corner(const uint8_t* p, uint32_t hash, float rx, float rz,
     y = static_cast<float>(kGradientY[gradient]);
 }
 
-inline float sample_perlin(
-    const JpePerlinLayer& layer,
-    int32_t block_x, int32_t block_y, int32_t block_z,
-    uint32_t flags
-) noexcept {
-    const bool far_lands = (flags & 1U) != 0U;
-    const uint8_t* permutation = layer.permutation;
+struct LayerWorkspace {
+    std::vector<float> x_relative;
+    std::vector<float> x_alpha;
+    std::vector<int32_t> x_lattice0;
+    std::vector<int32_t> x_lattice1;
+    std::vector<double> y_coordinates;
+    std::vector<int32_t> y_floors;
+    double z_coordinate = 0.0;
+    int32_t z_floor = 0;
+    float z_relative = 0.0F;
+    float z_alpha = 0.0F;
+};
 
-    const double x = wrap_coordinate(static_cast<double>(block_x) * layer.xz_scale, far_lands) + layer.offset_x;
-    const double y = wrap_coordinate(static_cast<double>(block_y) * layer.y_scale, far_lands) + layer.offset_y;
-    const double z = wrap_coordinate(static_cast<double>(block_z) * layer.xz_scale, far_lands) + layer.offset_z;
-
-    const int32_t floor_x = floor_to_i32(x);
-    const int32_t floor_y = floor_to_i32(y);
-    const int32_t floor_z = floor_to_i32(z);
-    const float relative_x = static_cast<float>(x - static_cast<double>(floor_x));
-    const float relative_y = static_cast<float>(y - static_cast<double>(floor_y));
-    const float relative_z = static_cast<float>(z - static_cast<double>(floor_z));
-    const float alpha_x = smoothstep(relative_x);
-    const float alpha_y = smoothstep(relative_y);
-    const float alpha_z = smoothstep(relative_z);
-
-    const int32_t x0 = static_cast<int32_t>(permute_sum(permutation, floor_x));
-    const int32_t x1 = static_cast<int32_t>(permute_sum(permutation, floor_x, 1));
-    const int32_t xy00 = static_cast<int32_t>(permute_sum(permutation, x0, floor_y));
-    const int32_t xy01 = static_cast<int32_t>(permute_sum(permutation, x0, floor_y, 1));
-    const int32_t xy10 = static_cast<int32_t>(permute_sum(permutation, x1, floor_y));
-    const int32_t xy11 = static_cast<int32_t>(permute_sum(permutation, x1, floor_y, 1));
-
-    float corner_xz[8];
-    float corner_y[8];
-    corner(permutation, static_cast<uint32_t>(xy00) + static_cast<uint32_t>(floor_z), relative_x, relative_z, corner_xz[0], corner_y[0]);
-    corner(permutation, static_cast<uint32_t>(xy10) + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z, corner_xz[1], corner_y[1]);
-    corner(permutation, static_cast<uint32_t>(xy01) + static_cast<uint32_t>(floor_z), relative_x, relative_z, corner_xz[2], corner_y[2]);
-    corner(permutation, static_cast<uint32_t>(xy11) + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z, corner_xz[3], corner_y[3]);
-    corner(permutation, static_cast<uint32_t>(xy00) + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F, corner_xz[4], corner_y[4]);
-    corner(permutation, static_cast<uint32_t>(xy10) + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F, corner_xz[5], corner_y[5]);
-    corner(permutation, static_cast<uint32_t>(xy01) + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F, corner_xz[6], corner_y[6]);
-    corner(permutation, static_cast<uint32_t>(xy11) + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F, corner_xz[7], corner_y[7]);
-
-    const float relative_y1 = relative_y - 1.0F;
-    const float x000 = corner_xz[0] + corner_y[0] * relative_y;
-    const float x100 = corner_xz[1] + corner_y[1] * relative_y;
-    const float x010 = corner_xz[2] + corner_y[2] * relative_y1;
-    const float x110 = corner_xz[3] + corner_y[3] * relative_y1;
-    const float x001 = corner_xz[4] + corner_y[4] * relative_y;
-    const float x101 = corner_xz[5] + corner_y[5] * relative_y;
-    const float x011 = corner_xz[6] + corner_y[6] * relative_y1;
-    const float x111 = corner_xz[7] + corner_y[7] * relative_y1;
-
-    const float lower = lerp(alpha_y,
-        lerp(alpha_x, x000, x100),
-        lerp(alpha_x, x010, x110));
-    const float upper = lerp(alpha_y,
-        lerp(alpha_x, x001, x101),
-        lerp(alpha_x, x011, x111));
-    return layer.amplitude * lerp(alpha_z, lower, upper);
-}
 
 bool validate_stack(
     const JpePerlinLayer* layers, uint32_t layer_count,
@@ -160,21 +115,119 @@ extern "C" int32_t jpe_cpp_perlin_add_stack_fused(
     if (!validate_stack(layers, layer_count, size_x, size_y, size_z,
                         step_x, step_y, step_z, output, output_length)) return 1;
 
-    // Voxel-major fusion: each output element is visited once, and its layer
-    // additions retain the exact original layer order. This avoids one full
-    // output-volume traversal per octave. Kept separate from the old kernel
-    // until parity and worldgen benchmarks establish that it is a win.
+    const bool far_lands = (flags & 1U) != 0U;
+    thread_local std::vector<LayerWorkspace> workspaces;
+    if (workspaces.size() < layer_count) workspaces.resize(layer_count);
+
+    // Cache each layer's invariant X/Y transforms once. The cache is worker-local,
+    // reused across jobs, and sized only when a larger volume arrives.
+    for (uint32_t li = 0; li < layer_count; ++li) {
+        const JpePerlinLayer& layer = layers[li];
+        LayerWorkspace& ws = workspaces[li];
+        if (ws.x_relative.size() < size_x) {
+            ws.x_relative.resize(size_x);
+            ws.x_alpha.resize(size_x);
+            ws.x_lattice0.resize(size_x);
+            ws.x_lattice1.resize(size_x);
+        }
+        if (ws.y_coordinates.size() < size_y) {
+            ws.y_coordinates.resize(size_y);
+            ws.y_floors.resize(size_y);
+        }
+        for (uint32_t ix = 0; ix < size_x; ++ix) {
+            const double x = wrap_coordinate(
+                static_cast<double>(axis_coordinate(min_x, ix, step_x)) * layer.xz_scale,
+                far_lands) + layer.offset_x;
+            const int32_t floor_x = floor_to_i32(x);
+            const float relative_x = static_cast<float>(x - static_cast<double>(floor_x));
+            ws.x_relative[ix] = relative_x;
+            ws.x_alpha[ix] = smoothstep(relative_x);
+            ws.x_lattice0[ix] = static_cast<int32_t>(permute_sum(layer.permutation, floor_x));
+            ws.x_lattice1[ix] = static_cast<int32_t>(permute_sum(layer.permutation, floor_x, 1));
+        }
+        for (uint32_t iy = 0; iy < size_y; ++iy) {
+            const double y = wrap_coordinate(
+                static_cast<double>(axis_coordinate(min_y, iy, step_y)) * layer.y_scale,
+                far_lands) + layer.offset_y;
+            ws.y_coordinates[iy] = y;
+            ws.y_floors[iy] = floor_to_i32(y);
+        }
+    }
+
+    float corner_xz[64][8];
+    float corner_y[64][8];
+    int32_t cached_floor_y[64];
+    bool corner_valid[64] = {};
+
     for (uint32_t iz = 0; iz < size_z; ++iz) {
         const int32_t block_z = axis_coordinate(min_z, iz, step_z);
+        for (uint32_t li = 0; li < layer_count; ++li) {
+            const JpePerlinLayer& layer = layers[li];
+            LayerWorkspace& ws = workspaces[li];
+            const double z = wrap_coordinate(
+                static_cast<double>(block_z) * layer.xz_scale, far_lands) + layer.offset_z;
+            ws.z_coordinate = z;
+            ws.z_floor = floor_to_i32(z);
+            ws.z_relative = static_cast<float>(z - static_cast<double>(ws.z_floor));
+            ws.z_alpha = smoothstep(ws.z_relative);
+        }
+
         for (uint32_t ix = 0; ix < size_x; ++ix) {
-            const int32_t block_x = axis_coordinate(min_x, ix, step_x);
+            for (uint32_t li = 0; li < layer_count; ++li) corner_valid[li] = false;
             const uint64_t base = (static_cast<uint64_t>(iz) * size_x + ix) * size_y;
+            const int32_t block_x = axis_coordinate(min_x, ix, step_x);
+            (void)block_x;
+
+            // Y is contiguous in the output layout. Visit each voxel once and
+            // accumulate layers in the original order to preserve float results.
             for (uint32_t iy = 0; iy < size_y; ++iy) {
-                const int32_t block_y = axis_coordinate(min_y, iy, step_y);
                 float value = output[base + iy];
-                for (uint32_t layer_index = 0; layer_index < layer_count; ++layer_index) {
-                    const float sample = sample_perlin(
-                        layers[layer_index], block_x, block_y, block_z, flags);
+                for (uint32_t li = 0; li < layer_count; ++li) {
+                    const JpePerlinLayer& layer = layers[li];
+                    LayerWorkspace& ws = workspaces[li];
+                    const int32_t floor_y = ws.y_floors[iy];
+                    if (!corner_valid[li] || cached_floor_y[li] != floor_y) {
+                        const int32_t x0 = ws.x_lattice0[ix];
+                        const int32_t x1 = ws.x_lattice1[ix];
+                        const int32_t xy00 = static_cast<int32_t>(permute_sum(layer.permutation, x0, floor_y));
+                        const int32_t xy01 = static_cast<int32_t>(permute_sum(layer.permutation, x0, floor_y, 1));
+                        const int32_t xy10 = static_cast<int32_t>(permute_sum(layer.permutation, x1, floor_y));
+                        const int32_t xy11 = static_cast<int32_t>(permute_sum(layer.permutation, x1, floor_y, 1));
+                        const float rx = ws.x_relative[ix];
+                        const float rz = ws.z_relative;
+                        const uint32_t fz = static_cast<uint32_t>(ws.z_floor);
+                        corner(layer.permutation, static_cast<uint32_t>(xy00) + fz, rx, rz, corner_xz[li][0], corner_y[li][0]);
+                        corner(layer.permutation, static_cast<uint32_t>(xy10) + fz, rx - 1.0F, rz, corner_xz[li][1], corner_y[li][1]);
+                        corner(layer.permutation, static_cast<uint32_t>(xy01) + fz, rx, rz, corner_xz[li][2], corner_y[li][2]);
+                        corner(layer.permutation, static_cast<uint32_t>(xy11) + fz, rx - 1.0F, rz, corner_xz[li][3], corner_y[li][3]);
+                        corner(layer.permutation, static_cast<uint32_t>(xy00) + fz + 1U, rx, rz - 1.0F, corner_xz[li][4], corner_y[li][4]);
+                        corner(layer.permutation, static_cast<uint32_t>(xy10) + fz + 1U, rx - 1.0F, rz - 1.0F, corner_xz[li][5], corner_y[li][5]);
+                        corner(layer.permutation, static_cast<uint32_t>(xy01) + fz + 1U, rx, rz - 1.0F, corner_xz[li][6], corner_y[li][6]);
+                        corner(layer.permutation, static_cast<uint32_t>(xy11) + fz + 1U, rx - 1.0F, rz - 1.0F, corner_xz[li][7], corner_y[li][7]);
+                        cached_floor_y[li] = floor_y;
+                        corner_valid[li] = true;
+                    }
+
+                    const float relative_y = static_cast<float>(
+                        ws.y_coordinates[iy] - static_cast<double>(floor_y));
+                    const float relative_y1 = relative_y - 1.0F;
+                    const float x000 = corner_xz[li][0] + corner_y[li][0] * relative_y;
+                    const float x100 = corner_xz[li][1] + corner_y[li][1] * relative_y;
+                    const float x010 = corner_xz[li][2] + corner_y[li][2] * relative_y1;
+                    const float x110 = corner_xz[li][3] + corner_y[li][3] * relative_y1;
+                    const float x001 = corner_xz[li][4] + corner_y[li][4] * relative_y;
+                    const float x101 = corner_xz[li][5] + corner_y[li][5] * relative_y;
+                    const float x011 = corner_xz[li][6] + corner_y[li][6] * relative_y1;
+                    const float x111 = corner_xz[li][7] + corner_y[li][7] * relative_y1;
+                    const float alpha_y = smoothstep(relative_y);
+                    const float alpha_x = ws.x_alpha[ix];
+                    const float lower = lerp(alpha_y,
+                        lerp(alpha_x, x000, x100),
+                        lerp(alpha_x, x010, x110));
+                    const float upper = lerp(alpha_y,
+                        lerp(alpha_x, x001, x101),
+                        lerp(alpha_x, x011, x111));
+                    const float sample = layer.amplitude * lerp(ws.z_alpha, lower, upper);
                     value = value + sample;
                 }
                 output[base + iy] = value;
