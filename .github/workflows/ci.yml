@@ -12,7 +12,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,26 +46,48 @@ jobs:
           set -o pipefail
           gradle vectorBenchmark --no-daemon --stacktrace | tee build/vector-probe/result.txt
 
-      - name: Dedicated GameTestServer worldgen benchmark (ABBA, four fresh servers)
+      - name: GameTest correctness suite
+        run: gradle runGameTestServer --no-daemon --stacktrace
+
+      - name: Dedicated normal-world generation benchmark (ABBA, four fresh servers)
         run: |
           mkdir -p build/server-benchmark
           set -euo pipefail
 
           run_worldgen() {
             local label="$1"
-            local java_options="$2"
-            echo "===== WORLDGEN BENCHMARK ${label} ====="
-            rm -rf run/gametest
-            JAVA_TOOL_OPTIONS="${java_options}" gradle runGameTestServer --no-daemon --stacktrace 2>&1 | tee "build/server-benchmark/${label}.log"
+            local index_enabled="$2"
+            echo "===== NORMAL WORLDGEN BENCHMARK ${label} ====="
+            rm -rf run/server
+            mkdir -p run/server
+            printf 'eula=true\n' > run/server/eula.txt
+            cat > run/server/server.properties <<'PROPERTIES'
+          level-seed=12648430
+          level-type=minecraft:normal
+          generate-structures=true
+          online-mode=false
+          server-ip=127.0.0.1
+          server-port=25566
+          enable-query=false
+          enable-rcon=false
+          spawn-protection=0
+          view-distance=2
+          simulation-distance=2
+          max-tick-time=-1
+          sync-chunk-writes=false
+          PROPERTIES
+            JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector -Djpe.serverWorldgenBenchmark=true -Djpe.worldgenMetrics=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=${index_enabled}" \
+              gradle runServer --no-daemon --stacktrace 2>&1 | tee "build/server-benchmark/${label}.log"
             grep 'JPE_SERVER_WORLDGEN_BENCH' "build/server-benchmark/${label}.log"
+            grep -E 'generator=net\\.minecraft\\.world\\.level\\.levelgen\\.NoiseBasedChunkGenerator.*doFillCalls=[2-9][0-9]*' \
+              "build/server-benchmark/${label}.log"
           }
 
-          # ABBA order balances first/last-run bias. Each invocation launches a
-          # separate GameTestServer and deletes its prior world before starting.
-          run_worldgen baseline_a "--add-modules=jdk.incubator.vector -Djpe.worldgenMetrics=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=false"
-          run_worldgen indexed_a "--add-modules=jdk.incubator.vector -Djpe.worldgenMetrics=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=true"
-          run_worldgen indexed_b "--add-modules=jdk.incubator.vector -Djpe.worldgenMetrics=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=true"
-          run_worldgen baseline_b "--add-modules=jdk.incubator.vector -Djpe.worldgenMetrics=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=false"
+          # ABBA order balances first/last-run bias. Every run gets a new normal world.
+          run_worldgen baseline_a false
+          run_worldgen indexed_a true
+          run_worldgen indexed_b true
+          run_worldgen baseline_b false
 
       - name: Build mod
         run: gradle build --no-daemon --stacktrace
@@ -92,6 +114,6 @@ jobs:
             build/reports/tests/
             build/test-results/
             build/source-audit/report.txt
-            run/gametest/logs/
+            run/server/logs/
           if-no-files-found: warn
           retention-days: 7
