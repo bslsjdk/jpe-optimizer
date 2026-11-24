@@ -75,3 +75,12 @@ Then load the library explicitly with NativeRuntime.load(Path.of("/absolute/path
 6. Extend support to Aquifer, surface rules, carvers, structures and features incrementally, with explicit Java mod callback fallback at every unsupported boundary.
 
 Do not enable native world generation by default until output equivalence and mod-compatibility coverage are demonstrated on the target device.
+
+
+## First real kernel: Perlin volume accumulation
+
+The first native worldgen candidate is the bulk equivalent of the existing Java Perlin volume vectorizer. The ABI accepts the 256-entry permutation table, block-coordinate axes, offsets/scales, amplitude and one contiguous output volume. It performs one call per volume, not one call per sample.
+
+The C++ implementation deliberately starts scalar. It preserves the Java float expression order and disables compiler FP contraction/fast-math. The GameTest creates the same seeded Minecraft PerlinNoise instance, obtains its permutation/offset state through the existing Mixin accessor, computes a vanilla reference volume with the optimized path bypassed, and compares every output using raw float bits against the Rust/C++ result.
+
+This test is a gate, not a claim of speed. The Java bridge currently copies arrays into a call-scoped native Arena; this is intentionally simple and correct first. If the kernel passes parity, the next optimization is reusable per-thread native buffers and then C++ SIMD, with end-to-end chunk benchmarks. Do not route production world generation to this kernel until both parity and throughput tests pass.

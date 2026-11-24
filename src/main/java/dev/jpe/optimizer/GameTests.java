@@ -28,6 +28,8 @@ import net.minecraft.world.level.levelgen.structure.structures.MineshaftStructur
 import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredRegister;
 import dev.jpe.optimizer.mixin.DensityBufferAccessor;
+import dev.jpe.optimizer.mixin.GradientNoiseAccessor;
+import dev.jpe.optimizer.runtime.NativeRuntime;
 import dev.jpe.optimizer.vector.DensityVectorRuntime;
 import dev.jpe.optimizer.vector.PerlinNoiseVectorizer;
 
@@ -51,6 +53,9 @@ public final class GameTests {
 
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> PERLIN_VECTOR_PARITY =
             TEST_FUNCTIONS.register("perlin_vector_parity", () -> GameTests::perlinVectorParity);
+
+    public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> PERLIN_NATIVE_PARITY =
+            TEST_FUNCTIONS.register("perlin_native_parity", () -> GameTests::perlinNativeParity);
 
     public static void registerFunctions(net.neoforged.bus.api.IEventBus modEventBus) {
         TEST_FUNCTIONS.register(modEventBus);
@@ -86,6 +91,10 @@ public final class GameTests {
         event.registerTest(
                 Identifier.parse("jpe_optimizer:perlin_vector_parity"),
                 new FunctionGameTestInstance(PERLIN_VECTOR_PARITY.getKey(), data)
+        );
+        event.registerTest(
+                Identifier.parse("jpe_optimizer:perlin_native_parity"),
+                new FunctionGameTestInstance(PERLIN_NATIVE_PARITY.getKey(), data)
         );
     }
 
@@ -266,6 +275,56 @@ public final class GameTests {
         }
         JPEOptimizer.LOGGER.info("JPE_PERLIN_VECTOR_PARITY samples={} bitExact=true",
                 expected.length);
+        helper.succeed();
+    }
+
+
+    /** Compares the Rust/C++ Perlin volume backend against vanilla output bit-for-bit. */
+    private static void perlinNativeParity(GameTestHelper helper) {
+        String library = System.getProperty("jpe.nativeLibraryPath");
+        if (library == null || library.isBlank()) {
+            throw new AssertionError("Set -Djpe.nativeLibraryPath to the freshly built native runtime library");
+        }
+
+        PerlinNoise noise = new PerlinNoise(RandomSource.create(0x4A50454C263L));
+        DensityVolume volume = new DensityVolume(3, 64, 2, -16, -64, 32);
+        DensityBuffer vanilla = DensityBuffer.createUnpooled(volume.size());
+
+        PerlinNoiseVectorizer.setVanillaBypass(true);
+        try {
+            noise.addToVolume(vanilla, volume, 0.25, 0.0625, 0.75F);
+        } finally {
+            PerlinNoiseVectorizer.setVanillaBypass(false);
+        }
+
+        int[] blockX = new int[volume.sizeX()];
+        int[] blockY = new int[volume.sizeY()];
+        int[] blockZ = new int[volume.sizeZ()];
+        for (int i = 0; i < blockX.length; i++) blockX[i] = volume.blockX(i);
+        for (int i = 0; i < blockY.length; i++) blockY[i] = volume.blockY(i);
+        for (int i = 0; i < blockZ.length; i++) blockZ[i] = volume.blockZ(i);
+
+        float[] actual = new float[volume.size()];
+        GradientNoiseAccessor access = (GradientNoiseAccessor) (Object) noise;
+        try (NativeRuntime runtime = NativeRuntime.load(java.nio.file.Path.of(library))) {
+            runtime.perlinAddVolume(
+                    access.jpe$perms(), blockX, blockY, blockZ,
+                    access.jpe$offsetX(), access.jpe$offsetY(), access.jpe$offsetZ(),
+                    0.25, 0.0625, 0.75F, actual,
+                    net.minecraft.SharedConstants.DEBUG_ENABLE_FARLANDS
+            );
+        } catch (Exception failure) {
+            throw new AssertionError("Unable to execute native Perlin parity test", failure);
+        }
+
+        float[] expected = ((DensityBufferAccessor) vanilla).jpe$values();
+        for (int i = 0; i < expected.length; ++i) {
+            if (Float.floatToRawIntBits(expected[i]) != Float.floatToRawIntBits(actual[i])) {
+                throw new AssertionError("Native Perlin mismatch at index " + i
+                        + ": vanilla=" + expected[i] + ", native=" + actual[i]);
+            }
+        }
+        JPEOptimizer.LOGGER.info("JPE_NATIVE_PERLIN_PARITY samples={} bitExact=true", expected.length);
         helper.succeed();
     }
 
