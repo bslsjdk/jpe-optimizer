@@ -108,11 +108,58 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
     @Override
     public void perlinLerpAdd(float[] values, int outputOffset, float[] relativeY, int length,
                               float alphaX, float alphaZ, float amplitude, float[] cornerXZ, float[] cornerY) {
-        ScalarDensityKernel.INSTANCE.perlinLerpAdd(values, outputOffset, relativeY, length,
-                alphaX, alphaZ, amplitude, cornerXZ, cornerY);
+        Objects.checkFromIndexSize(outputOffset, length, values.length);
+        Objects.checkFromIndexSize(0, length, relativeY.length);
+        Objects.checkFromIndexSize(0, 8, cornerXZ.length);
+        Objects.checkFromIndexSize(0, 8, cornerY.length);
+
+        FloatVector ax = FloatVector.broadcast(SPECIES, alphaX);
+        FloatVector az = FloatVector.broadcast(SPECIES, alphaZ);
+        FloatVector amp = FloatVector.broadcast(SPECIES, amplitude);
+        float c0 = cornerXZ[0], c1 = cornerXZ[1], c2 = cornerXZ[2], c3 = cornerXZ[3];
+        float c4 = cornerXZ[4], c5 = cornerXZ[5], c6 = cornerXZ[6], c7 = cornerXZ[7];
+        float y0 = cornerY[0], y1 = cornerY[1], y2 = cornerY[2], y3 = cornerY[3];
+        float y4 = cornerY[4], y5 = cornerY[5], y6 = cornerY[6], y7 = cornerY[7];
+        FloatVector one = FloatVector.broadcast(SPECIES, 1.0F);
+        FloatVector six = FloatVector.broadcast(SPECIES, 6.0F);
+        FloatVector fifteen = FloatVector.broadcast(SPECIES, 15.0F);
+        FloatVector ten = FloatVector.broadcast(SPECIES, 10.0F);
+        int bound = SPECIES.loopBound(length), i = 0;
+
+        for (; i < bound; i += SPECIES.length()) {
+            FloatVector ry = FloatVector.fromArray(SPECIES, relativeY, i);
+            FloatVector ry1 = ry.sub(one);
+            FloatVector x000 = FloatVector.broadcast(SPECIES, c0).add(ry.mul(y0));
+            FloatVector x100 = FloatVector.broadcast(SPECIES, c1).add(ry.mul(y1));
+            FloatVector x010 = FloatVector.broadcast(SPECIES, c2).add(ry1.mul(y2));
+            FloatVector x110 = FloatVector.broadcast(SPECIES, c3).add(ry1.mul(y3));
+            FloatVector x001 = FloatVector.broadcast(SPECIES, c4).add(ry.mul(y4));
+            FloatVector x101 = FloatVector.broadcast(SPECIES, c5).add(ry.mul(y5));
+            FloatVector x011 = FloatVector.broadcast(SPECIES, c6).add(ry1.mul(y6));
+            FloatVector x111 = FloatVector.broadcast(SPECIES, c7).add(ry1.mul(y7));
+
+            FloatVector ry2 = ry.mul(ry);
+            FloatVector alphaY = ry2.mul(ry).mul(
+                    ry.mul(ry.mul(six).sub(fifteen)).add(ten));
+
+            FloatVector lower = lerp(alphaY,
+                    lerp(ax, x000, x100), lerp(ax, x010, x110));
+            FloatVector upper = lerp(alphaY,
+                    lerp(ax, x001, x101), lerp(ax, x011, x111));
+            FloatVector contribution = amp.mul(lerp(az, lower, upper));
+            FloatVector current = FloatVector.fromArray(SPECIES, values, outputOffset + i);
+            current.add(contribution).intoArray(values, outputOffset + i);
+        }
+
+        for (; i < length; ++i) {
+            ScalarDensityKernel.INSTANCE.perlinLerpAdd(values, outputOffset + i,
+                    relativeY, 1, alphaX, alphaZ, amplitude, cornerXZ, cornerY);
+        }
     }
 
-        private static FloatVector lerp(FloatVector a, FloatVector x, FloatVector y) { return x.add(a.mul(y.sub(x))); }
+    private static FloatVector lerp(FloatVector alpha, FloatVector x, FloatVector y) {
+        return x.add(alpha.mul(y.sub(x)));
+    }
     private static float lerp(float a, float x, float y) { return x + a * (y - x); }
     @Override public int lanes() { return SPECIES.length(); }
     @Override
