@@ -283,8 +283,7 @@ public final class GameTests {
         long indexBuilds = after.builds() - before.builds();
         long candidateChecks = after.candidateChecks() - before.candidateChecks();
         long vanillaChecks = after.vanillaLinearChecks() - before.vanillaLinearChecks();
-        if (Boolean.parseBoolean(System.getProperty("jpe.structureIndexEnabled", "true"))
-                && indexBuilds < 2) {
+        if (dev.jpe.optimizer.worldgen.StructureSpatialIndex.enabled() && indexBuilds < 2) {
             throw new AssertionError("Spatial index was not rebuilt after a direct piece move: builds="
                     + indexBuilds);
         }
