@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <vector>
 
 namespace {
 constexpr int kGradientX[16] = {1,-1,1,-1,1,-1,1,-1,0,0,0,0,1,0,-1,0};
@@ -89,6 +90,23 @@ int32_t perlin_add_volume(
 
     const bool far_lands = (flags & 1U) != 0U;
 
+    // Y coordinates are identical for every X/Z column in this volume.
+    // Cache them once per worker thread instead of repeating wrap/floor work
+    // for every column. The stored values preserve the exact scalar operation
+    // order used by the original inner loop.
+    thread_local std::vector<double> y_coordinates;
+    thread_local std::vector<int32_t> y_floors;
+    if (y_coordinates.size() < size_y) {
+        y_coordinates.resize(size_y);
+        y_floors.resize(size_y);
+    }
+    for (uint32_t iy = 0; iy < size_y; ++iy) {
+        const double y = wrap_coordinate(
+            static_cast<double>(axis_coordinate(min_y, iy, step_y)) * y_scale, far_lands) + offset_y;
+        y_coordinates[iy] = y;
+        y_floors[iy] = floor_to_i32(y);
+    }
+
     for (uint32_t iz = 0; iz < size_z; ++iz) {
         const double z = wrap_coordinate(static_cast<double>(axis_coordinate(min_z, iz, step_z)) * xz_scale, far_lands) + offset_z;
         const int32_t floor_z = floor_to_i32(z);
@@ -109,10 +127,8 @@ int32_t perlin_add_volume(
             while (iy < size_y) {
                 // Gradient corners depend on floor(Y), not on the fractional Y
                 // coordinate. Reuse them for the whole contiguous run that maps
-                // to the same lattice cell (common when y_scale is below 1).
-                const double first_y_coord = wrap_coordinate(
-                    static_cast<double>(axis_coordinate(min_y, iy, step_y)) * y_scale, far_lands) + offset_y;
-                const int32_t floor_y = floor_to_i32(first_y_coord);
+                // to the same lattice cell.
+                const int32_t floor_y = y_floors[iy];
 
                 const int32_t xy00 = static_cast<int32_t>(permute_sum(permutation, x0, floor_y));
                 const int32_t xy01 = static_cast<int32_t>(permute_sum(permutation, x0, floor_y, 1));
@@ -130,15 +146,9 @@ int32_t perlin_add_volume(
                 corner(permutation, static_cast<uint32_t>(xy01) + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F, corner_xz[6], corner_y[6]);
                 corner(permutation, static_cast<uint32_t>(xy11) + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F, corner_xz[7], corner_y[7]);
 
-                double y_coord = first_y_coord;
-                while (iy < size_y) {
-                    const int32_t sample_floor_y = floor_to_i32(y_coord);
-                    if (sample_floor_y != floor_y) {
-                        break;
-                    }
-
+                while (iy < size_y && y_floors[iy] == floor_y) {
                     const float relative_y = static_cast<float>(
-                        y_coord - static_cast<double>(floor_y));
+                        y_coordinates[iy] - static_cast<double>(floor_y));
                     const float relative_y1 = relative_y - 1.0F;
 
                     const float x000 = corner_xz[0] + corner_y[0] * relative_y;
@@ -159,12 +169,7 @@ int32_t perlin_add_volume(
                         lerp(alpha_x, x011, x111));
                     const float sample = amplitude * lerp(alpha_z, lower, upper);
                     output[base + iy] = output[base + iy] + sample;
-
                     ++iy;
-                    if (iy < size_y) {
-                        y_coord = wrap_coordinate(
-                            static_cast<double>(axis_coordinate(min_y, iy, step_y)) * y_scale, far_lands) + offset_y;
-                    }
                 }
             }
         }
