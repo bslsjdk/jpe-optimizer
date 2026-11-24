@@ -5,8 +5,6 @@ import dev.jpe.optimizer.worldgen.StructureSpatialIndex;
 import dev.jpe.optimizer.worldgen.WorldgenMetrics;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.world.level.chunk.ChunkAccess;
-import net.minecraft.world.level.chunk.ChunkStatus;
 import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 
@@ -130,12 +128,13 @@ public final class ServerWorldgenBenchmark {
         );
     }
 
-    private static ChunkAccess requireFullChunk(ServerLevel level, int x, int z) {
-        ChunkAccess chunk = level.getChunkSource().getChunk(x, z, ChunkStatus.FULL, true);
-        if (chunk == null || !chunk.getStatus().isOrAfter(ChunkStatus.FULL)) {
-            throw new IllegalStateException("Chunk " + x + "," + z + " did not reach FULL status");
+    private static void requireFullChunk(ServerLevel level, int x, int z) {
+        // ServerLevel#getChunk returns a fully promoted LevelChunk in 26.3.
+        var chunk = level.getChunk(x, z);
+        if (chunk.getPos().x() != x || chunk.getPos().z() != z) {
+            throw new IllegalStateException("Server returned wrong chunk for " + x + "," + z
+                    + ": " + chunk.getPos());
         }
-        return chunk;
     }
 
     private static String format(double value) {
