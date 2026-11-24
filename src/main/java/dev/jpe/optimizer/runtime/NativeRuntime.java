@@ -71,8 +71,9 @@ public final class NativeRuntime implements AutoCloseable {
     public float[] addEachValueToItself(float[] input) {
         Objects.requireNonNull(input, "input");
         try (Arena callArena = Arena.ofConfined()) {
-            MemorySegment nativeInput = callArena.allocateArray(ValueLayout.JAVA_FLOAT, input.length);
-            MemorySegment nativeOutput = callArena.allocateArray(ValueLayout.JAVA_FLOAT, input.length);
+            long bufferBytes = Math.multiplyExact((long) input.length, ValueLayout.JAVA_FLOAT.byteSize());
+            MemorySegment nativeInput = callArena.allocate(bufferBytes, ValueLayout.JAVA_FLOAT.byteAlignment());
+            MemorySegment nativeOutput = callArena.allocate(bufferBytes, ValueLayout.JAVA_FLOAT.byteAlignment());
             for (int i = 0; i < input.length; i++) {
                 nativeInput.setAtIndex(ValueLayout.JAVA_FLOAT, i, input[i]);
             }
