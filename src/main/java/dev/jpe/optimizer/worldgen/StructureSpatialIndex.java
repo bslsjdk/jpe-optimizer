@@ -117,10 +117,10 @@ public final class StructureSpatialIndex {
                     }
                     seen[candidate] = stamp;
                     Box candidateBox = boxes[candidate];
+                    if (candidateBox != null && METRICS_ENABLED) {
+                        METRIC_CANDIDATE_CHECKS.increment();
+                    }
                     if (candidateBox != null && candidateBox.intersects(query)) {
-                        if (METRICS_ENABLED) {
-                            METRIC_CANDIDATE_CHECKS.increment();
-                        }
                         best = candidate;
                         if (best == 0) {
                             return 0;
@@ -137,10 +137,10 @@ public final class StructureSpatialIndex {
             }
             seen[candidate] = stamp;
             Box candidateBox = boxes[candidate];
+            if (candidateBox != null && METRICS_ENABLED) {
+                METRIC_CANDIDATE_CHECKS.increment();
+            }
             if (candidateBox != null && candidateBox.intersects(query)) {
-                if (METRICS_ENABLED) {
-                    METRIC_CANDIDATE_CHECKS.increment();
-                }
                 best = candidate;
                 if (best == 0) {
                     return 0;
