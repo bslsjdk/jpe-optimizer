@@ -29,7 +29,9 @@ public abstract class StructurePiecesBuilderMixin {
     @Inject(method = "findCollisionPiece", at = @At("HEAD"), cancellable = true)
     private void jpe$findCollisionPiece(BoundingBox query,
                                         CallbackInfoReturnable<StructurePiece> callback) {
-        if (this.pieces.size() < StructureSpatialIndex.MIN_INDEXED_PIECES) {
+        if (!Boolean.getBoolean("jpe.structureIndexEnabled")
+                || this.pieces.size() < StructureSpatialIndex.MIN_INDEXED_PIECES) {
+            StructureSpatialIndex.recordVanillaLinearQuery(this.pieces.size());
             return;
         }
 
