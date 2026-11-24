@@ -81,7 +81,7 @@ jobs:
             JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector -Djpe.serverWorldgenBenchmark=true -Djpe.worldgenMetrics=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=${index_enabled}" \
               gradle runServer --no-daemon --stacktrace 2>&1 | tee "build/server-benchmark/${label}.log"
             grep 'JPE_SERVER_WORLDGEN_BENCH' "build/server-benchmark/${label}.log"
-            grep -E 'generator=net\\.minecraft\\.world\\.level\\.levelgen\\.NoiseBasedChunkGenerator.*doFillCalls=[2-9][0-9]*' \
+            grep -E 'generator=net\.minecraft\.world\.level\.levelgen\.NoiseBasedChunkGenerator.*doFillCalls=[2-9][0-9]*' \
               "build/server-benchmark/${label}.log"
           }
 
