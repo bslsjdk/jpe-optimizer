@@ -6,7 +6,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
  * Opt-in replacement for the one temporary long[7] created per biome lookup.
@@ -16,12 +16,12 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(targets = "net.minecraft.world.level.biome.Climate$RTree")
 public abstract class ClimateRTreeTargetArrayMixin {
     @Inject(method = "search", at = @At("HEAD"))
-    private void jpe$enterSearch(CallbackInfo ci) {
+    private void jpe$enterSearch(CallbackInfoReturnable<?> cir) {
         ClimateTargetArrayReuse.enterSearch();
     }
 
     @Inject(method = "search", at = @At("RETURN"))
-    private void jpe$exitSearch(CallbackInfo ci) {
+    private void jpe$exitSearch(CallbackInfoReturnable<?> cir) {
         ClimateTargetArrayReuse.exitSearch();
     }
 
