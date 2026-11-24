@@ -1,6 +1,6 @@
 # Native world-generation backend architecture
 
-Status: foundation experiment. ABI v2 introduces a bounded asynchronous Rust worker pool for bulk native Perlin jobs. Minecraft production world generation is still vanilla Java; this change does not claim otherwise.
+Status: foundation experiment. ABI v4 provides a bounded asynchronous Rust worker pool for bulk native Perlin jobs, configurable against process-visible CPU parallelism. Minecraft production world generation remains opt-in and is not yet a wholesale replacement for vanilla Java.
 
 ## Runtime responsibilities
 
@@ -10,18 +10,18 @@ Status: foundation experiment. ABI v2 introduces a bounded asynchronous Rust wor
 
 Java should submit large immutable batches, not orchestrate each voxel. Unsupported custom logic remains an explicit Java callback boundary or vanilla fallback.
 
-## ABI v2 asynchronous task API
+## ABI v4 asynchronous task API
 
 The asynchronous Perlin API copies all caller input arrays into Rust-owned vectors before returning. Worker threads never retain Java/FFM pointers or references to mutable Minecraft objects.
 
 Resource bounds:
-- Worker count: detected CPU parallelism, clamped to 1..8.
+- Worker count: configured before the scheduler starts. The Java bridge defaults to `max(1, availableProcessors - jpe.nativeWorkerReserve)` with a default reserve of one core. `-Djpe.nativeWorkers=N` selects an explicit count; requests are capped to process-visible CPU parallelism. `auto` is the default. The old fixed eight-worker cap has been removed.
 - Waiting task queue: 16 tasks.
 - Tracked jobs: at most 32 pending, running or completed-but-not-released jobs.
 - Per-job output: at most 1,048,576 floats (4 MiB).
 - The theoretical retained output ceiling is therefore 128 MiB, excluding small axis and job metadata buffers.
 
-The submit function returns a 64-bit job ID, or zero if validation fails or capacity is exhausted. Job status reports pending, running, complete, failed or cancelled. Completed results are copied into caller-owned memory. Callers must release every completed or abandoned job.
+The submit function returns a 64-bit job ID, or zero if validation fails or capacity is exhausted. Job status reports pending, running, complete, failed or cancelled. Java can wait on a native condition variable with a bounded timeout instead of polling at a fixed 1 ms interval. Completed results are copied into caller-owned memory. Callers must release every completed or abandoned job.
 
 Cancellation prevents queued work from starting. A running C++ kernel is not interrupted mid-call; its result is discarded after the kernel returns. This limitation is explicit and must be improved before cancellation is used for rapidly changing chunk demand.
 
@@ -41,8 +41,9 @@ The scheduler is in-process. It is not a daemon, does not use shared-memory IPC,
 ## Current implementation status
 
 - Synchronous C++ Perlin volume call: present and used by the exact-parity GameTest.
-- Rust asynchronous Perlin worker pool: added in ABI v2, with bounded queue, bounded job table, copied inputs, polling, result copy, cancellation state and release.
-- Java FFM bridge: updated to accept ABI v2, but async job methods are not yet exposed.
+- Rust asynchronous Perlin worker pool: bounded queue and job table, copied inputs, configurable worker count, condition-variable completion wait, result copy, cancellation state and release.
+- Java FFM bridge: exposes synchronous and asynchronous Perlin calls, condition-variable waits, job lifecycle management and per-calling-thread reusable scratch arenas. Scratch arenas are no longer capped at eight threads.
+
 - Minecraft production chunk generation: not redirected.
 - Aquifer, density graph, surface rules, carvers, structures and features: not migrated.
 - Persistent daemon, shared-memory ring and Vulkan backend: not implemented.
