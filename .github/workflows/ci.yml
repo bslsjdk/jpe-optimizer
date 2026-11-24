@@ -85,14 +85,15 @@ jobs:
           max-tick-time=-1
           sync-chunk-writes=false
           PROPERTIES
-            JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector ${kernel_option} ${extra_jvm_option} -Djpe.benchmark.ticksPerColumn=22 -Djpe.continuousWorldgenBenchmark=true -Djpe.worldgenMetrics=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=false -Djpe.perlinVectorEnabled=true" \
+            JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector ${kernel_option} ${extra_jvm_option} -Djpe.benchmark.ticksPerColumn=22 -Djpe.continuousWorldgenBenchmark=true -Djpe.worldgenMetrics=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=false -Djpe.perlinVectorEnabled=false" \
               gradle runServer --no-daemon --stacktrace 2>&1 | tee "build/server-benchmark/${label}.log"
             grep 'JPE_CONTINUOUS_WORLDGEN_BENCH' "build/server-benchmark/${label}.log"
             grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*completedChunks=340.*failedChunks=0.*doFillCalls=([3-9][0-9]{2,}|[1-9][0-9]{3,})' \
               "build/server-benchmark/${label}.log"
           }
 
-          # ABBA order isolates Vector API from scalar execution and balances run-order bias.
+          # ABBA measures the default vector density kernels; experimental Perlin interception stays off.
+          # Its independent bit-parity GameTest above still enables it explicitly.
           # Structure indexing is disabled because this terrain workload never reaches its build threshold.
           # Every run gets a fresh normal world with the same seed and Java 25 runtime.
           run_worldgen scalar_a scalar
