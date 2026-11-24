@@ -235,9 +235,12 @@ pub extern "C" fn jpe_runtime_cancel_job(job_id: u64) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn jpe_runtime_release_job(job_id: u64) -> i32 {
-    if scheduler().jobs.lock().unwrap_or_else(|p| p.into_inner()).remove(&job_id).is_some() {
-        STATUS_OK
-    } else { STATUS_INVALID_ARGUMENT }
+    let mut jobs = scheduler().jobs.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(state) = jobs.get(&job_id) else { return STATUS_INVALID_ARGUMENT };
+    let terminal = matches!(*lock_status(state), JobStatus::Complete(_) | JobStatus::Failed(_) | JobStatus::Cancelled);
+    if !terminal { return JOB_RUNNING; }
+    jobs.remove(&job_id);
+    STATUS_OK
 }
 
 #[cfg(test)]
