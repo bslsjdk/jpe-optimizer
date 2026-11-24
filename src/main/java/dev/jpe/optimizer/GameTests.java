@@ -16,6 +16,11 @@ import net.minecraft.gametest.framework.TestData;
 import net.minecraft.gametest.framework.TestEnvironmentDefinition;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.level.block.Rotation;
+import net.minecraft.world.level.levelgen.structure.BoundingBox;
+import net.minecraft.world.level.levelgen.structure.StructurePiece;
+import net.minecraft.world.level.levelgen.structure.pieces.StructurePiecesBuilder;
+import net.minecraft.world.level.levelgen.structure.structures.MineshaftPieces;
+import net.minecraft.world.level.levelgen.structure.structures.MineshaftStructure;
 import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
@@ -33,6 +38,9 @@ public final class GameTests {
 
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> SERVER_WORLDGEN_BENCHMARK =
             TEST_FUNCTIONS.register("server_worldgen_benchmark", () -> GameTests::serverWorldgenBenchmark);
+
+    public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> STRUCTURE_INDEX_BENCHMARK =
+            TEST_FUNCTIONS.register("structure_index_benchmark", () -> GameTests::structureIndexBenchmark);
 
     public static void registerFunctions(net.neoforged.bus.api.IEventBus modEventBus) {
         TEST_FUNCTIONS.register(modEventBus);
@@ -64,6 +72,10 @@ public final class GameTests {
         event.registerTest(
                 Identifier.parse("jpe_optimizer:server_worldgen_benchmark"),
                 new FunctionGameTestInstance(SERVER_WORLDGEN_BENCHMARK.getKey(), data)
+        );
+        event.registerTest(
+                Identifier.parse("jpe_optimizer:structure_index_benchmark"),
+                new FunctionGameTestInstance(STRUCTURE_INDEX_BENCHMARK.getKey(), data)
         );
     }
 
@@ -185,6 +197,78 @@ public final class GameTests {
                 structureMetrics.candidateChecks(),
                 structureMetrics.linearFallbacks(),
                 structureMetrics.vanillaLinearChecks()
+        );
+        helper.succeed();
+    }
+
+    /**
+     * Exercises the actual Minecraft StructurePiecesBuilder Mixin using real
+     * mineshaft room pieces. The expected answer is independently computed by
+     * vanilla's static linear scan, so this checks both hook execution and
+     * first-match equivalence rather than only testing the standalone index.
+     */
+    private static void structureIndexBenchmark(GameTestHelper helper) {
+        StructurePiecesBuilder builder = new StructurePiecesBuilder();
+        List<StructurePiece> pieces = new ArrayList<>();
+        var random = net.minecraft.util.RandomSource.create(0x4A50454CL);
+
+        for (int i = 0; i < 64; ++i) {
+            int x = (i % 8) * 128;
+            int z = (i / 8) * 128;
+            StructurePiece piece = new MineshaftPieces.MineShaftRoom(
+                    0, random, x, z, MineshaftStructure.Type.NORMAL
+            );
+            pieces.add(piece);
+            builder.addPiece(piece);
+        }
+
+        var before = dev.jpe.optimizer.worldgen.StructureSpatialIndex.metricsSnapshot();
+        long start = System.nanoTime();
+        int queries = 0;
+        for (int i = 0; i < pieces.size(); ++i) {
+            BoundingBox query = pieces.get(i).getBoundingBox();
+            StructurePiece expected = StructurePiece.findCollisionPiece(pieces, query);
+            StructurePiece actual = builder.findCollisionPiece(query);
+            if (actual != expected) {
+                throw new AssertionError("Structure index changed vanilla first-match result at query " + i
+                        + ": expected=" + expected + ", actual=" + actual);
+            }
+            ++queries;
+
+            BoundingBox miss = new BoundingBox(
+                    8192 + i * 64, -64, 8192 + i * 64,
+                    8192 + i * 64 + 2, 320, 8192 + i * 64 + 2
+            );
+            expected = StructurePiece.findCollisionPiece(pieces, miss);
+            actual = builder.findCollisionPiece(miss);
+            if (actual != expected) {
+                throw new AssertionError("Structure index changed vanilla miss result at query " + i);
+            }
+            ++queries;
+        }
+        long elapsedNs = System.nanoTime() - start;
+        var after = dev.jpe.optimizer.worldgen.StructureSpatialIndex.metricsSnapshot();
+
+        long indexBuilds = after.builds() - before.builds();
+        long candidateChecks = after.candidateChecks() - before.candidateChecks();
+        long vanillaChecks = after.vanillaLinearChecks() - before.vanillaLinearChecks();
+        if (Boolean.parseBoolean(System.getProperty("jpe.structureIndexEnabled", "true"))
+                && indexBuilds == 0) {
+            throw new AssertionError("StructurePiecesBuilder Mixin did not build the spatial index");
+        }
+        if (candidateChecks >= vanillaChecks) {
+            throw new AssertionError("Spatial index did not reduce candidate checks: candidates="
+                    + candidateChecks + ", vanillaLinear=" + vanillaChecks);
+        }
+
+        JPEOptimizer.LOGGER.info(
+                "JPE_STRUCTURE_INDEX_BENCH pieces={} queries={} builds={} indexedPieces={} " +
+                "candidateChecks={} vanillaLinearChecks={} linearFallbacks={} elapsedMs={}",
+                pieces.size(), queries, indexBuilds,
+                after.indexedPieces() - before.indexedPieces(),
+                candidateChecks, vanillaChecks,
+                after.linearFallbacks() - before.linearFallbacks(),
+                String.format(java.util.Locale.ROOT, "%.3f", elapsedNs / 1_000_000.0)
         );
         helper.succeed();
     }
