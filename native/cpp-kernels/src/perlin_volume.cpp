@@ -6,6 +6,9 @@
 #include <cstdint>
 #include <limits>
 #include <vector>
+#if defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
+#endif
 
 namespace {
 constexpr int kGradientX[16] = {1,-1,1,-1,1,-1,1,-1,0,0,0,0,1,0,-1,0};
@@ -67,6 +70,43 @@ struct XyPermutationCache {
     uint8_t xy11;
 };
 
+#if defined(__x86_64__) || defined(__i386__)
+__attribute__((target("avx2")))
+inline void perlin_evaluate_8_avx2(
+    const float* relative_y, const float* alpha_y, float* output,
+    const float* corner_xz, const float* corner_y,
+    float alpha_x, float alpha_z, float amplitude
+) noexcept {
+    const __m256 ry = _mm256_loadu_ps(relative_y);
+    const __m256 ay = _mm256_loadu_ps(alpha_y);
+    const __m256 one = _mm256_set1_ps(1.0F);
+    const __m256 ax = _mm256_set1_ps(alpha_x);
+    const __m256 az = _mm256_set1_ps(alpha_z);
+    const __m256 amp = _mm256_set1_ps(amplitude);
+    const __m256 ry1 = _mm256_sub_ps(ry, one);
+
+    const __m256 x000 = _mm256_add_ps(_mm256_set1_ps(corner_xz[0]), _mm256_mul_ps(_mm256_set1_ps(corner_y[0]), ry));
+    const __m256 x100 = _mm256_add_ps(_mm256_set1_ps(corner_xz[1]), _mm256_mul_ps(_mm256_set1_ps(corner_y[1]), ry));
+    const __m256 x010 = _mm256_add_ps(_mm256_set1_ps(corner_xz[2]), _mm256_mul_ps(_mm256_set1_ps(corner_y[2]), ry1));
+    const __m256 x110 = _mm256_add_ps(_mm256_set1_ps(corner_xz[3]), _mm256_mul_ps(_mm256_set1_ps(corner_y[3]), ry1));
+    const __m256 x001 = _mm256_add_ps(_mm256_set1_ps(corner_xz[4]), _mm256_mul_ps(_mm256_set1_ps(corner_y[4]), ry));
+    const __m256 x101 = _mm256_add_ps(_mm256_set1_ps(corner_xz[5]), _mm256_mul_ps(_mm256_set1_ps(corner_y[5]), ry));
+    const __m256 x011 = _mm256_add_ps(_mm256_set1_ps(corner_xz[6]), _mm256_mul_ps(_mm256_set1_ps(corner_y[6]), ry1));
+    const __m256 x111 = _mm256_add_ps(_mm256_set1_ps(corner_xz[7]), _mm256_mul_ps(_mm256_set1_ps(corner_y[7]), ry1));
+
+    const __m256 lower0 = _mm256_add_ps(_mm256_mul_ps(_mm256_sub_ps(x100, x000), ax), x000);
+    const __m256 lower1 = _mm256_add_ps(_mm256_mul_ps(_mm256_sub_ps(x110, x010), ax), x010);
+    const __m256 upper0 = _mm256_add_ps(_mm256_mul_ps(_mm256_sub_ps(x101, x001), ax), x001);
+    const __m256 upper1 = _mm256_add_ps(_mm256_mul_ps(_mm256_sub_ps(x111, x011), ax), x011);
+    const __m256 lower = _mm256_add_ps(_mm256_mul_ps(_mm256_sub_ps(lower1, lower0), ay), lower0);
+    const __m256 upper = _mm256_add_ps(_mm256_mul_ps(_mm256_sub_ps(upper1, upper0), ay), upper0);
+    const __m256 interpolated = _mm256_add_ps(_mm256_mul_ps(_mm256_sub_ps(upper, lower), az), lower);
+    const __m256 sample = _mm256_mul_ps(amp, interpolated);
+    const __m256 old_output = _mm256_loadu_ps(output);
+    _mm256_storeu_ps(output, _mm256_add_ps(old_output, sample));
+}
+#endif
+
 template<bool CacheY, bool CacheXY>
 int32_t perlin_add_volume_impl(
     const uint8_t* permutation,
@@ -97,6 +137,10 @@ int32_t perlin_add_volume_impl(
     if (expected > static_cast<uint64_t>(std::numeric_limits<size_t>::max() / sizeof(float))) return 1;
 
     const bool far_lands = (flags & 1U) != 0U;
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_cpu_init();
+    const bool use_avx2 = __builtin_cpu_supports("avx2");
+#endif
 
     // Y coordinates are identical for every X/Z column in this volume.
     // Cache them once per worker thread instead of repeating wrap/floor work
@@ -223,6 +267,21 @@ int32_t perlin_add_volume_impl(
                 corner(permutation, static_cast<uint32_t>(xy01) + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F, corner_xz[6], corner_y[6]);
                 corner(permutation, static_cast<uint32_t>(xy11) + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F, corner_xz[7], corner_y[7]);
 
+#if defined(__x86_64__) || defined(__i386__)
+                if constexpr (CacheY) {
+                    if (use_avx2) {
+                        uint32_t run_end = iy + 1;
+                        while (run_end < size_y && y_floors[run_end] == floor_y) ++run_end;
+                        while (iy + 8 <= run_end) {
+                            perlin_evaluate_8_avx2(
+                                y_relative.data() + iy, y_alpha.data() + iy,
+                                output + base + iy, corner_xz, corner_y,
+                                alpha_x, alpha_z, amplitude);
+                            iy += 8;
+                        }
+                    }
+                }
+#endif
                 while (iy < size_y && y_floors[iy] == floor_y) {
                     float relative_y;
                     float alpha_y;
