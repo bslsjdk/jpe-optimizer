@@ -168,14 +168,15 @@ public final class NativeRuntime implements AutoCloseable {
                             ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_DOUBLE,
                             ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_FLOAT,
                             ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT));
-            MethodHandle submitStack = linker.downcallHandle(
-                    lookup.find("jpe_runtime_submit_perlin_stack").orElseThrow(() -> new IllegalStateException("Missing async Perlin stack symbol")),
-                    FunctionDescriptor.of(ValueLayout.JAVA_LONG,
-                            ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
-                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
-                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
-                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
-                            ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT));
+            MethodHandle submitStack = lookup.find("jpe_runtime_submit_perlin_stack")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_LONG,
+                                    ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT)))
+                    .orElse(null);
             MethodHandle status = linker.downcallHandle(
                     lookup.find("jpe_runtime_job_status").orElseThrow(() -> new IllegalStateException("Missing async job status symbol")),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG));
@@ -316,11 +317,14 @@ public final class NativeRuntime implements AutoCloseable {
     }
 
     /** Submits a complete Perlin stack with one descriptor array and one shared output buffer. */
+    public boolean supportsPerlinStack() { return submitPerlinStack != null; }
+
     public NativeJob submitPerlinStack(List<PerlinLayer> layers,
                                        int sizeX, int sizeY, int sizeZ,
                                        int minX, int minY, int minZ,
                                        int stepX, int stepY, int stepZ,
                                        float[] initialOutput, boolean farLands) {
+        if (submitPerlinStack == null) return null;
         lifecycle.readLock().lock();
         PerlinScratch scratch = null;
         boolean transferred = false;
