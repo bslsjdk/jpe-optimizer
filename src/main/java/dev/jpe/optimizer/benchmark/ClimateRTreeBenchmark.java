@@ -1,6 +1,12 @@
 package dev.jpe.optimizer.benchmark;
 
 import com.mojang.datafixers.util.Pair;
+import net.minecraft.core.Holder;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.level.biome.MultiNoiseBiomeSource;
+import net.minecraft.world.level.levelgen.densityfunction.SamplerContext;
+import dev.jpe.optimizer.mixin.MultiNoiseBiomeSourceInvoker;
 import net.minecraft.world.level.biome.Climate;
 
 import java.util.ArrayList;
@@ -86,6 +92,107 @@ public final class ClimateRTreeBenchmark {
             );
         }
         runCoherentWorkload(source, queryCount, perRoundWarmup, measuredIterations);
+    }
+
+    /**
+     * Measures the exact overworld biome parameter list against climate points
+     * sampled from this server's real seed and noise router. Query order is a
+     * contiguous quart-grid sweep so the RTree's per-thread last-result hint
+     * sees realistic spatial locality.
+     */
+    public static void runActualOverworld(ServerLevel level, int warmupIterations, int iterations) {
+        var generator = level.getChunkSource().getGenerator();
+        if (!(generator.getBiomeSource() instanceof MultiNoiseBiomeSource biomeSource)) {
+            throw new IllegalStateException("Expected MultiNoiseBiomeSource, got "
+                    + generator.getBiomeSource().getClass().getName());
+        }
+
+        Climate.ParameterList<Holder<Biome>> source =
+                ((MultiNoiseBiomeSourceInvoker) biomeSource).jpe$getParameters();
+        Climate.Sampler sampler = level.getChunkSource().randomState()
+                .createClimateSampler(SamplerContext.EMPTY_UNCACHED);
+
+        int side = 64;
+        int quartY = 0;
+        int startQuartX = 512;
+        int startQuartZ = 512;
+        List<Climate.TargetPoint> queries = new ArrayList<>(side * side);
+        for (int z = 0; z < side; z++) {
+            for (int x = 0; x < side; x++) {
+                queries.add(sampler.sample(startQuartX + x, quartY, startQuartZ + z));
+            }
+        }
+
+        Climate.ParameterList<Holder<Biome>> reference = source.rebuildWithChildrenPerNode(19);
+        List<Holder<Biome>> expected = new ArrayList<>(queries.size());
+        for (Climate.TargetPoint query : queries) {
+            expected.add(reference.findValueIndex(query));
+        }
+
+        double[][] samples = new double[FAN_OUTS.length][MEASUREMENT_ROUNDS * Math.max(1, iterations)];
+        double[][] builds = new double[FAN_OUTS.length][MEASUREMENT_ROUNDS];
+        long[] checksums = new long[FAN_OUTS.length];
+        int[] order = new int[FAN_OUTS.length];
+        for (int i = 0; i < order.length; i++) order[i] = i;
+        Random orderRandom = new Random(0x2630_26A3L);
+        int warmup = Math.max(1, warmupIterations);
+        int measured = Math.max(1, iterations);
+
+        System.out.printf(
+                "JPE_CLIMATE_RTREE_REAL points=%d queries=%d seed=%d fanOuts=%s rounds=%d iterationsPerRound=%d trace=overworld-climate-quart-grid%n",
+                source.values().size(), queries.size(), level.getSeed(), Arrays.toString(FAN_OUTS),
+                MEASUREMENT_ROUNDS, measured
+        );
+
+        for (int round = 0; round < MEASUREMENT_ROUNDS; round++) {
+            shuffle(order, orderRandom);
+            for (int variant : order) {
+                long buildStart = System.nanoTime();
+                Climate.ParameterList<Holder<Biome>> candidate =
+                        source.rebuildWithChildrenPerNode(FAN_OUTS[variant]);
+                builds[variant][round] = System.nanoTime() - buildStart;
+
+                for (int i = 0; i < warmup; i++) {
+                    checksums[variant] += executeActual(candidate, queries, expected);
+                }
+                for (int i = 0; i < measured; i++) {
+                    long start = System.nanoTime();
+                    checksums[variant] += executeActual(candidate, queries, expected);
+                    samples[variant][round * measured + i] =
+                            (System.nanoTime() - start) / (double) queries.size();
+                }
+            }
+        }
+
+        for (int variant = 0; variant < FAN_OUTS.length; variant++) {
+            double medianNs = percentile(samples[variant], 0.50);
+            double p95Ns = percentile(samples[variant], 0.95);
+            System.out.printf(
+                    "JPE_CLIMATE_RTREE_REAL fanOut=%d buildMedianMs=%.3f nsPerQueryMedian=%.3f "
+                            + "nsPerQueryP95=%.3f queriesPerSecondMedian=%.0f samples=%d checksum=%d%n",
+                    FAN_OUTS[variant], percentile(builds[variant], 0.50) / 1_000_000.0,
+                    medianNs, p95Ns, 1_000_000_000.0 / medianNs,
+                    samples[variant].length, checksums[variant]
+            );
+        }
+    }
+
+    private static long executeActual(
+            Climate.ParameterList<Holder<Biome>> candidate,
+            List<Climate.TargetPoint> queries,
+            List<Holder<Biome>> expected
+    ) {
+        long checksum = 0;
+        for (int i = 0; i < queries.size(); i++) {
+            Holder<Biome> actual = candidate.findValueIndex(queries.get(i));
+            Holder<Biome> expectedBiome = expected.get(i);
+            if (!actual.equals(expectedBiome)) {
+                throw new IllegalStateException("Climate.RTree fan-out changed real overworld biome result: query="
+                        + i + " expected=" + expectedBiome + " actual=" + actual);
+            }
+            checksum += actual.hashCode();
+        }
+        return checksum;
     }
 
     private static long execute(
