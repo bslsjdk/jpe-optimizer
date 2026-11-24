@@ -3,6 +3,7 @@ package dev.jpe.optimizer.worldgen;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import java.util.Arrays;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
  * XZ broadphase for structure-piece collision checks.
@@ -13,6 +14,32 @@ import java.util.Arrays;
  */
 public final class StructureSpatialIndex {
     public static final int MIN_INDEXED_PIECES = 24;
+
+    private static final boolean METRICS_ENABLED = Boolean.getBoolean("jpe.structureIndexMetrics");
+    private static final LongAdder METRIC_QUERIES = new LongAdder();
+    private static final LongAdder METRIC_BUILDS = new LongAdder();
+    private static final LongAdder METRIC_INDEXED_PIECES = new LongAdder();
+    private static final LongAdder METRIC_CANDIDATE_CHECKS = new LongAdder();
+    private static final LongAdder METRIC_LINEAR_FALLBACKS = new LongAdder();
+    private static final LongAdder METRIC_VANILLA_LINEAR_CHECKS = new LongAdder();
+
+    public record Metrics(long queries, long builds, long indexedPieces,
+                          long candidateChecks, long linearFallbacks,
+                          long vanillaLinearChecks) {}
+
+    public static Metrics metricsSnapshot() {
+        return new Metrics(METRIC_QUERIES.sum(), METRIC_BUILDS.sum(),
+                METRIC_INDEXED_PIECES.sum(), METRIC_CANDIDATE_CHECKS.sum(),
+                METRIC_LINEAR_FALLBACKS.sum(), METRIC_VANILLA_LINEAR_CHECKS.sum());
+    }
+
+    /** Records the work the vanilla linear scan would perform when the index is disabled or below threshold. */
+    public static void recordVanillaLinearQuery(int pieceCount) {
+        if (METRICS_ENABLED) {
+            METRIC_QUERIES.increment();
+            METRIC_VANILLA_LINEAR_CHECKS.add(Math.max(0, pieceCount));
+        }
+    }
 
     private static final int CELL_SHIFT = 5;
     private static final int MAX_CELLS_PER_BOX = 256;
@@ -30,6 +57,10 @@ public final class StructureSpatialIndex {
         this.boxes = Arrays.copyOf(initialBoxes, Math.max(16, initialBoxes.length));
         this.seen = new int[this.boxes.length];
         this.size = initialBoxes.length;
+        if (METRICS_ENABLED) {
+            METRIC_BUILDS.increment();
+            METRIC_INDEXED_PIECES.add(initialBoxes.length);
+        }
         for (int i = 0; i < initialBoxes.length; ++i) {
             indexBox(initialBoxes[i], i);
         }
@@ -49,6 +80,10 @@ public final class StructureSpatialIndex {
      * empty grid cells would cost more than testing the current piece list.
      */
     public int findFirst(Box query) {
+        if (METRICS_ENABLED) {
+            METRIC_QUERIES.increment();
+            METRIC_VANILLA_LINEAR_CHECKS.add(size);
+        }
         if (query == null || size == 0) {
             return -1;
         }
@@ -60,6 +95,9 @@ public final class StructureSpatialIndex {
         long cellCount = ((long) maxCellX - minCellX + 1L)
                 * ((long) maxCellZ - minCellZ + 1L);
         if (cellCount > MAX_QUERY_CELLS) {
+            if (METRICS_ENABLED) {
+                METRIC_LINEAR_FALLBACKS.increment();
+            }
             return linearFindFirst(query);
         }
 
@@ -80,6 +118,9 @@ public final class StructureSpatialIndex {
                     seen[candidate] = stamp;
                     Box candidateBox = boxes[candidate];
                     if (candidateBox != null && candidateBox.intersects(query)) {
+                        if (METRICS_ENABLED) {
+                            METRIC_CANDIDATE_CHECKS.increment();
+                        }
                         best = candidate;
                         if (best == 0) {
                             return 0;
@@ -97,6 +138,9 @@ public final class StructureSpatialIndex {
             seen[candidate] = stamp;
             Box candidateBox = boxes[candidate];
             if (candidateBox != null && candidateBox.intersects(query)) {
+                if (METRICS_ENABLED) {
+                    METRIC_CANDIDATE_CHECKS.increment();
+                }
                 best = candidate;
                 if (best == 0) {
                     return 0;
@@ -110,6 +154,11 @@ public final class StructureSpatialIndex {
     private int linearFindFirst(Box query) {
         for (int i = 0; i < size; ++i) {
             Box candidate = boxes[i];
+            if (candidate != null) {
+                if (METRICS_ENABLED) {
+                    METRIC_CANDIDATE_CHECKS.increment();
+                }
+            }
             if (candidate != null && candidate.intersects(query)) {
                 return i;
             }
