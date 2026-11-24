@@ -56,6 +56,16 @@ unsafe extern "C" {
         xz_scale: f64, y_scale: f64, amplitude: f32,
         output: *mut f32, output_length: u64, flags: u32,
     ) -> i32;
+    fn jpe_cpp_perlin_add_volume_scalar_cached_y(
+        permutation: *const u8,
+        size_x: u32, size_y: u32, size_z: u32,
+        min_x: i32, min_y: i32, min_z: i32,
+        step_x: i32, step_y: i32, step_z: i32,
+        offset_x: f64, offset_y: f64, offset_z: f64,
+        xz_scale: f64, y_scale: f64, amplitude: f32,
+        output: *mut f32, output_length: u64, flags: u32,
+    ) -> i32;
+    fn jpe_cpp_perlin_avx2_supported() -> i32;
     fn jpe_cpp_perlin_add_volume_uncached_y(
         permutation: *const u8,
         size_x: u32, size_y: u32, size_z: u32,
