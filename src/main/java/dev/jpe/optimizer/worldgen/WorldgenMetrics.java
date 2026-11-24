@@ -17,6 +17,13 @@ public final class WorldgenMetrics {
     private static final LongAdder BLOCK_FILL_NANOS = new LongAdder();
     private static final LongAdder SAMPLES = new LongAdder();
 
+    public record Snapshot(long calls, long densitySampleNanos, long blockFillNanos, long samples) {}
+
+    public static Snapshot snapshot() {
+        return new Snapshot(DO_FILL_CALLS.get(), DENSITY_SAMPLE_NANOS.sum(),
+                BLOCK_FILL_NANOS.sum(), SAMPLES.sum());
+    }
+
     private WorldgenMetrics() {}
 
     public static boolean enabled() {

@@ -31,6 +31,7 @@ PATCHED_JAR = Path("build/moddev/artifacts") / f"minecraft-patched-{NEOFORGE_VER
 NESTED_SERVER_JAR = f"META-INF/versions/{VERSION}/server-{VERSION}.jar"
 TARGET_CLASSES = (
     "net/minecraft/world/level/levelgen/NoiseBasedChunkGenerator",
+    "net/minecraft/world/level/biome/BiomeManager",
     "net/minecraft/world/level/levelgen/NoiseChunk",
     "net/minecraft/world/level/levelgen/densityfunction/DensitySampler",
     "net/minecraft/world/level/levelgen/densityfunction/DensityFunctionCompiler",
@@ -222,6 +223,14 @@ def compare_method_inventories(
         for class_name in class_names:
             old = class_method_inventory(vanilla.read(class_name))
             new = class_method_inventory(patched.read(class_name))
+            if class_name == "net/minecraft/world/level/biome/BiomeManager.class":
+                expected = ("getFiddledDistance", "(JIIIDDD)D")
+                for label, methods in (("vanilla", old), ("NeoForge-patched", new)):
+                    if expected not in methods:
+                        raise RuntimeError(f"{label} BiomeManager is missing expected method {expected}")
+                    if methods[expected]["access"] & 0x000A != 0x000A:
+                        raise RuntimeError(f"{label} BiomeManager.getFiddledDistance is not private static")
+                lines.append("  verified exact private static target getFiddledDistance(JIIIDDD)D")
             added = sorted(set(new) - set(old))
             removed = sorted(set(old) - set(new))
             common = sorted(set(old) & set(new))

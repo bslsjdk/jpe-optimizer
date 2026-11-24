@@ -16,7 +16,8 @@ public abstract class PerlinNoiseVolumeMixin {
     @Inject(method = "addToVolume", at = @At("HEAD"), cancellable = true)
     private void jpe$addToVolume(DensityBuffer buffer, DensityVolume volume,
                                  double xzScale, double yScale, float amplitude, CallbackInfo callback) {
-        if (!DensityVectorRuntime.enabled() || PerlinNoiseVectorizer.vanillaBypass()) return;
+        if (!DensityVectorRuntime.enabled() || !PerlinNoiseVectorizer.enabled()
+                || PerlinNoiseVectorizer.vanillaBypass()) return;
         if (PerlinNoiseVectorizer.addToVolume((PerlinNoise) (Object) this,
                 buffer, volume, xzScale, yScale, amplitude)) callback.cancel();
     }

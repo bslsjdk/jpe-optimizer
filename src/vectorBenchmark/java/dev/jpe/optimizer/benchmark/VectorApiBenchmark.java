@@ -34,14 +34,11 @@ public final class VectorApiBenchmark {
             kernelClass.getMethod("run", String[].class).invoke(null, (Object) args);
         } catch (java.lang.reflect.InvocationTargetException exception) {
             Throwable cause = exception.getCause();
-            if (cause instanceof RuntimeException runtimeException) {
-                throw runtimeException;
-            }
-            if (cause instanceof Error error) {
-                throw error;
-            }
+            if (cause instanceof RuntimeException runtimeException) throw runtimeException;
+            if (cause instanceof Error error) throw error;
             throw new IllegalStateException("Vector API benchmark failed", cause);
         }
         DensityKernelProbe.run(args);
+        GradientLookupProbe.run(args);
     }
 }

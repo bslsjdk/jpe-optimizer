@@ -5,12 +5,15 @@
   "compatibilityLevel": "JAVA_25",
   "mixins": [
     "NoiseBasedChunkGeneratorMixin",
+    "BiomeManagerZoomMixin",
     "DensityBufferAccessor",
+    "GradientNoiseAccessor",
+    "PerlinNoiseVolumeMixin",
     "RangeChoiceConstSamplerMixin",
     "RangeChoiceSamplerMixin",
     "BinaryFunctionMinMaxMixin",
-    "GradientNoiseAccessor",
-    "PerlinNoiseVolumeMixin"
+    "StructurePiecesBuilderMixin",
+    "BoundingBoxMixin"
   ],
   "injectors": {
     "defaultRequire": 1

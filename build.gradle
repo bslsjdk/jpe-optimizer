@@ -49,6 +49,8 @@ dependencies {
     testImplementation platform('org.junit:junit-bom:5.12.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    // NeoForge supplies FastUtil to the game runtime; plain Gradle tests need it explicitly.
+    testRuntimeOnly 'it.unimi.dsi:fastutil:8.5.15'
 }
 tasks.withType(Test).configureEach {
     useJUnitPlatform()
