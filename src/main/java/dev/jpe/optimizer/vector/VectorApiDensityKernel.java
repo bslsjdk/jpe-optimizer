@@ -94,6 +94,10 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
     public void binary(float[] left, float[] right, int length, BinaryOp operation) {
         Objects.checkFromIndexSize(0, length, left.length);
         Objects.checkFromIndexSize(0, length, right.length);
+        if (containsNaN(left, length) || containsNaN(right, length)) {
+            ScalarDensityKernel.INSTANCE.binary(left, right, length, operation);
+            return;
+        }
         int bound = SPECIES.loopBound(length), i = 0;
         for (; i < bound; i += SPECIES.length()) {
             FloatVector a = FloatVector.fromArray(SPECIES, left, i);
@@ -105,8 +109,26 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
                 case DIVIDE -> a.div(b);
             };
             if (result.compare(VectorOperators.NE, result).anyTrue()) {
-                // Earlier lanes are already committed; recompute this and remaining lanes scalarly.
-                for (; i < length; ++i) left[i] = scalarBinary(left[i], right[i], operation);
+                for (int lane = 0; lane < SPECIES.length(); ++lane) {
+                    int index = i + lane;
+                    float aValue = left[index], bValue = right[index];
+                    left[index] = switch (operation) {
+                        case ADD -> aValue + bValue;
+                        case SUBTRACT -> aValue - bValue;
+                        case MULTIPLY -> aValue * bValue;
+                        case DIVIDE -> aValue / bValue;
+                    };
+                }
+                i += SPECIES.length();
+                for (; i < length; ++i) {
+                    float aValue = left[i], bValue = right[i];
+                    left[i] = switch (operation) {
+                        case ADD -> aValue + bValue;
+                        case SUBTRACT -> aValue - bValue;
+                        case MULTIPLY -> aValue * bValue;
+                        case DIVIDE -> aValue / bValue;
+                    };
+                }
                 return;
             }
             result.intoArray(left, i);
@@ -125,6 +147,10 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
     @Override
     public void binaryConst(float[] values, int length, float operand, BinaryOp operation) {
         Objects.checkFromIndexSize(0, length, values.length);
+        if (Float.isNaN(operand) || containsNaN(values, length)) {
+            ScalarDensityKernel.INSTANCE.binaryConst(values, length, operand, operation);
+            return;
+        }
         FloatVector constant = FloatVector.broadcast(SPECIES, operand);
         int bound = SPECIES.loopBound(length), i = 0;
         for (; i < bound; i += SPECIES.length()) {
@@ -136,9 +162,25 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
                 case DIVIDE -> current.div(constant);
             };
             if (result.compare(VectorOperators.NE, result).anyTrue()) {
+                for (int lane = 0; lane < SPECIES.length(); ++lane) {
+                    int index = i + lane;
+                    float currentValue = values[index];
+                    values[index] = switch (operation) {
+                        case ADD -> currentValue + operand;
+                        case SUBTRACT -> currentValue - operand;
+                        case MULTIPLY -> currentValue * operand;
+                        case DIVIDE -> currentValue / operand;
+                    };
+                }
+                i += SPECIES.length();
                 for (; i < length; ++i) {
                     float currentValue = values[i];
-                    values[i] = scalarBinary(currentValue, operand, operation);
+                    values[i] = switch (operation) {
+                        case ADD -> currentValue + operand;
+                        case SUBTRACT -> currentValue - operand;
+                        case MULTIPLY -> currentValue * operand;
+                        case DIVIDE -> currentValue / operand;
+                    };
                 }
                 return;
             }
@@ -158,6 +200,10 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
     @Override
     public void binaryConstLeft(float[] values, int length, float operand, BinaryOp operation) {
         Objects.checkFromIndexSize(0, length, values.length);
+        if (Float.isNaN(operand) || containsNaN(values, length)) {
+            ScalarDensityKernel.INSTANCE.binaryConstLeft(values, length, operand, operation);
+            return;
+        }
         FloatVector constant = FloatVector.broadcast(SPECIES, operand);
         int bound = SPECIES.loopBound(length), i = 0;
         for (; i < bound; i += SPECIES.length()) {
@@ -169,9 +215,25 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
                 case DIVIDE -> constant.div(current);
             };
             if (result.compare(VectorOperators.NE, result).anyTrue()) {
+                for (int lane = 0; lane < SPECIES.length(); ++lane) {
+                    int index = i + lane;
+                    float currentValue = values[index];
+                    values[index] = switch (operation) {
+                        case ADD -> operand + currentValue;
+                        case SUBTRACT -> operand - currentValue;
+                        case MULTIPLY -> operand * currentValue;
+                        case DIVIDE -> operand / currentValue;
+                    };
+                }
+                i += SPECIES.length();
                 for (; i < length; ++i) {
                     float currentValue = values[i];
-                    values[i] = scalarBinary(operand, currentValue, operation);
+                    values[i] = switch (operation) {
+                        case ADD -> operand + currentValue;
+                        case SUBTRACT -> operand - currentValue;
+                        case MULTIPLY -> operand * currentValue;
+                        case DIVIDE -> operand / currentValue;
+                    };
                 }
                 return;
             }
@@ -188,13 +250,11 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
         }
     }
 
-    private static float scalarBinary(float left, float right, BinaryOp operation) {
-        return switch (operation) {
-            case ADD -> left + right;
-            case SUBTRACT -> left - right;
-            case MULTIPLY -> left * right;
-            case DIVIDE -> left / right;
-        };
+    private static boolean containsNaN(float[] values, int length) {
+        for (int i = 0; i < length; ++i) {
+            if (Float.isNaN(values[i])) return true;
+        }
+        return false;
     }
 
     @Override
