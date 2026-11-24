@@ -1,6 +1,7 @@
 package dev.jpe.optimizer.benchmark;
 
 import dev.jpe.optimizer.JPEOptimizer;
+import dev.jpe.optimizer.runtime.NativePerlinNoiseBackend;
 import dev.jpe.optimizer.worldgen.DensityBufferMetrics;
 import dev.jpe.optimizer.vector.DensityVectorRuntime;
 import dev.jpe.optimizer.worldgen.StructureSpatialIndex;
@@ -111,6 +112,7 @@ public final class ContinuousWorldgenBenchmark {
         private long maxRequestSubmissionNanos;
         private long requestSubmissionCount;
         private WorldgenMetrics.Snapshot worldgenBefore;
+        private NativePerlinNoiseBackend.Metrics nativeBefore;
         private DensityBufferMetrics.Snapshot densityBuffersBefore;
         private StructureSpatialIndex.Metrics structureBefore;
         private volatile boolean finished;
@@ -265,6 +267,7 @@ public final class ContinuousWorldgenBenchmark {
             maxRequestSubmissionNanos = 0L;
             requestSubmissionCount = 0L;
             worldgenBefore = WorldgenMetrics.snapshot();
+            nativeBefore = NativePerlinNoiseBackend.metricsSnapshot();
             densityBuffersBefore = DensityBufferMetrics.snapshot();
             structureBefore = StructureSpatialIndex.metricsSnapshot();
             serverCpuBefore = currentThreadCpuTime();
@@ -294,10 +297,16 @@ public final class ContinuousWorldgenBenchmark {
             Collections.sort(ticks);
 
             WorldgenMetrics.Snapshot worldgenAfter = WorldgenMetrics.snapshot();
+            NativePerlinNoiseBackend.Metrics nativeAfter = NativePerlinNoiseBackend.metricsSnapshot();
             DensityBufferMetrics.Snapshot densityBufferDelta = DensityBufferMetrics.delta(
                     DensityBufferMetrics.snapshot(), densityBuffersBefore);
             StructureSpatialIndex.Metrics structureAfter = StructureSpatialIndex.metricsSnapshot();
             long doFillCalls = worldgenAfter.calls() - worldgenBefore.calls();
+            long nativeCalls = nativeAfter.attempts() - nativeBefore.attempts();
+            long nativeCompleted = nativeAfter.completed() - nativeBefore.completed();
+            long nativeFallbacks = nativeAfter.fallbacks() - nativeBefore.fallbacks();
+            long nativeSamples = nativeAfter.samples() - nativeBefore.samples();
+            long nativeNanos = nativeAfter.totalNanos() - nativeBefore.totalNanos();
             long requested = (long) MEASURED_ROWS * FRONTIER_WIDTH;
             int completed = measuredCompleted.get();
             int failed = measuredFailed.get();
@@ -317,9 +326,10 @@ public final class ContinuousWorldgenBenchmark {
                             + "structureQueries={} structureIndexBuilds={} structureIndexedPieces={} "
                             + "structureCandidateChecks={} structureVanillaLinearChecks={} "
                             + "densityMetricsEnabled={} unpooledCalls={} unpooledElements={} "
-                            + "poolHits={} poolMisses={} poolRequestedElements={} poolReusedCapacityElements={}",
+                            + "poolHits={} poolMisses={} poolRequestedElements={} poolReusedCapacityElements={} "
+                            + "nativePerlinEnabled={} nativeCalls={} nativeCompleted={} nativeFallbacks={} nativeSamples={} nativeTotalMs={}",
                     level.getSeed(), level.getChunkSource().getGenerator().getClass().getName(),
-                    DensityVectorRuntime.enabled() ? "vector" : "scalar",
+                    NativePerlinNoiseBackend.enabled() ? "native-perlin" : (DensityVectorRuntime.enabled() ? "vector" : "scalar"),
                     format(320.0 / TICKS_PER_CHUNK_COLUMN),
                     VIEW_RADIUS_CHUNKS, MEASURED_ROWS, requested, completed, failed,
                     format(completed / (elapsedNanos / 1_000_000_000.0)),
@@ -348,7 +358,9 @@ public final class ContinuousWorldgenBenchmark {
                     DensityBufferMetrics.enabled(), densityBufferDelta.unpooledCalls(),
                     densityBufferDelta.unpooledElements(), densityBufferDelta.poolHits(),
                     densityBufferDelta.poolMisses(), densityBufferDelta.poolRequestedElements(),
-                    densityBufferDelta.poolReusedCapacityElements()
+                    densityBufferDelta.poolReusedCapacityElements(), NativePerlinNoiseBackend.enabled(),
+                    nativeCalls, nativeCompleted, nativeFallbacks, nativeSamples,
+                    format(nativeNanos / 1_000_000.0)
             );
 
             if (completed != requested || failed != 0 || inFlight.get() != 0 || doFillCalls < requested) {

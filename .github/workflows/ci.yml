@@ -119,6 +119,15 @@ jobs:
           run_worldgen vector_b vector
           run_worldgen scalar_b scalar
 
+          # Native Perlin vs scalar Java Perlin, bracketed by fresh scalar servers.
+          native_option="-Djpe.nativePerlinEnabled=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so"
+          run_worldgen native_scalar_a scalar
+          run_worldgen native_a scalar "$native_option"
+          run_worldgen native_b scalar "$native_option"
+          run_worldgen native_scalar_b scalar
+          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin.*nativeCompleted=[1-9][0-9]*' build/server-benchmark/native_a.log
+          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin.*nativeCompleted=[1-9][0-9]*' build/server-benchmark/native_b.log
+
           # Isolate the material-rule density-buffer reuse experiment with a fresh-world ABBA.
           # All four runs use the same vector density kernels; only the scoped buffer lease changes.
           run_worldgen material_pool_off_a vector "-Djpe.densityBufferMetrics=true"

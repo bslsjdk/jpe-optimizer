@@ -7,6 +7,7 @@ import net.minecraft.SharedConstants;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
 import net.minecraft.world.level.levelgen.synth.PerlinNoise;
+import java.util.concurrent.atomic.LongAdder;
 
 /** Opt-in bridge that runs Perlin volume work on the Rust worker pool / C++ backend. */
 public final class NativePerlinNoiseBackend {
@@ -14,6 +15,17 @@ public final class NativePerlinNoiseBackend {
     private static final ThreadLocal<Boolean> BYPASS = ThreadLocal.withInitial(() -> false);
     private static volatile NativeRuntime runtime;
     private static volatile boolean loadAttempted;
+    private static final LongAdder ATTEMPTS = new LongAdder();
+    private static final LongAdder COMPLETED = new LongAdder();
+    private static final LongAdder FALLBACKS = new LongAdder();
+    private static final LongAdder SAMPLES = new LongAdder();
+    private static final LongAdder TOTAL_NANOS = new LongAdder();
+
+    public record Metrics(long attempts, long completed, long fallbacks, long samples, long totalNanos) {}
+
+    public static Metrics metricsSnapshot() {
+        return new Metrics(ATTEMPTS.sum(), COMPLETED.sum(), FALLBACKS.sum(), SAMPLES.sum(), TOTAL_NANOS.sum());
+    }
 
     private NativePerlinNoiseBackend() {}
 
@@ -39,8 +51,16 @@ public final class NativePerlinNoiseBackend {
         LAST_CALL_NATIVE.set(false);
         if (BYPASS.get() || !enabled()) return false;
 
+        ATTEMPTS.increment();
+        SAMPLES.add(volume.size());
+        long started = System.nanoTime();
+        boolean success = false;
         NativeRuntime nativeRuntime = runtime();
-        if (nativeRuntime == null) return false;
+        if (nativeRuntime == null) {
+            FALLBACKS.increment();
+            TOTAL_NANOS.add(System.nanoTime() - started);
+            return false;
+        }
 
         NativeRuntime.NativeJob job = null;
         boolean interrupted = false;
@@ -56,8 +76,6 @@ public final class NativePerlinNoiseBackend {
 
             float[] target = ((DensityBufferAccessor) buffer).jpe$values();
             if (target.length != volume.size()) return false;
-            // The native submit call snapshots this array before returning. Keep the live
-            // Minecraft buffer untouched until the complete result is ready to commit.
             float[] candidate = target.clone();
             job = nativeRuntime.submitPerlinVolume(
                     access.jpe$perms(), blockX, blockY, blockZ,
@@ -105,6 +123,8 @@ public final class NativePerlinNoiseBackend {
             job.copyOutputInto(candidate);
             System.arraycopy(candidate, 0, target, 0, target.length);
             LAST_CALL_NATIVE.set(true);
+            success = true;
+            COMPLETED.increment();
             return true;
         } catch (RuntimeException | LinkageError failure) {
             JPEOptimizer.LOGGER.warn("Native Perlin backend failed; using Java fallback: {}", failure.toString());
@@ -127,6 +147,8 @@ public final class NativePerlinNoiseBackend {
                     JPEOptimizer.LOGGER.error("Unable to release native Perlin job safely", cleanupFailure);
                 }
             }
+            if (!success) FALLBACKS.increment();
+            TOTAL_NANOS.add(System.nanoTime() - started);
             if (interrupted) Thread.currentThread().interrupt();
         }
     }
