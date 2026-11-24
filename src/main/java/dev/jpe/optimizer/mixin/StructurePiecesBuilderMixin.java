@@ -38,20 +38,20 @@ public abstract class StructurePiecesBuilderMixin {
             BoundingBox[] initialBoxes = new BoundingBox[this.pieces.size()];
             for (int i = 0; i < initialBoxes.length; ++i) {
                 StructurePiece piece = this.pieces.get(i);
-                initialBoxes[i] = piece == null ? null : piece.getBoundingBox();
+                initialBoxes[i] = piece == null ? null : jpe$copyBox(piece.getBoundingBox());
             }
             index = new StructureSpatialIndex(initialBoxes);
             this.jpe$spatialIndex = index;
         }
 
-        int collisionIndex = index.findFirst(query);
+        int collisionIndex = index.findFirst(jpe$copyBox(query));
         callback.setReturnValue(collisionIndex < 0 ? null : this.pieces.get(collisionIndex));
     }
 
     @Inject(method = "addPiece", at = @At("TAIL"))
     private void jpe$addPiece(StructurePiece piece, CallbackInfo callback) {
         if (this.jpe$spatialIndex != null) {
-            this.jpe$spatialIndex.add(piece == null ? null : piece.getBoundingBox());
+            this.jpe$spatialIndex.add(piece == null ? null : jpe$copyBox(piece.getBoundingBox()));
         }
     }
 
@@ -70,6 +70,13 @@ public abstract class StructurePiecesBuilderMixin {
     private void jpe$afterMoveBelowSeaLevel(int seaLevel, int minY, RandomSource random,
                                              int offset, CallbackInfoReturnable<Integer> callback) {
         this.jpe$spatialIndex = null;
+    }
+
+    @Unique
+    private static StructureSpatialIndex.Box jpe$copyBox(BoundingBox box) {
+        return box == null ? null : new StructureSpatialIndex.Box(
+                box.minX(), box.minY(), box.minZ(), box.maxX(), box.maxY(), box.maxZ()
+        );
     }
 
     @Inject(method = "clear", at = @At("TAIL"))
