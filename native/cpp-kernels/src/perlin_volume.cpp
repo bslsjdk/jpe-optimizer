@@ -60,7 +60,8 @@ inline void corner(const uint8_t* p, uint32_t hash, float rx, float rz,
     y = static_cast<float>(kGradientY[gradient]);
 }
 
-int32_t perlin_add_volume(
+template<bool CacheY>
+int32_t perlin_add_volume_impl(
     const uint8_t* permutation,
     uint32_t size_x,
     uint32_t size_y,
@@ -101,18 +102,22 @@ int32_t perlin_add_volume(
     if (y_coordinates.size() < size_y) {
         y_coordinates.resize(size_y);
         y_floors.resize(size_y);
-        y_relative.resize(size_y);
-        y_alpha.resize(size_y);
+        if constexpr (CacheY) {
+            y_relative.resize(size_y);
+            y_alpha.resize(size_y);
+        }
     }
     for (uint32_t iy = 0; iy < size_y; ++iy) {
         const double y = wrap_coordinate(
             static_cast<double>(axis_coordinate(min_y, iy, step_y)) * y_scale, far_lands) + offset_y;
         const int32_t floor_y = floor_to_i32(y);
-        const float relative_y = static_cast<float>(y - static_cast<double>(floor_y));
         y_coordinates[iy] = y;
         y_floors[iy] = floor_y;
-        y_relative[iy] = relative_y;
-        y_alpha[iy] = smoothstep(relative_y);
+        if constexpr (CacheY) {
+            const float relative_y = static_cast<float>(y - static_cast<double>(floor_y));
+            y_relative[iy] = relative_y;
+            y_alpha[iy] = smoothstep(relative_y);
+        }
     }
 
     // X coordinates and their lattice lookups are also invariant across Z.
@@ -175,7 +180,16 @@ int32_t perlin_add_volume(
                 corner(permutation, static_cast<uint32_t>(xy11) + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F, corner_xz[7], corner_y[7]);
 
                 while (iy < size_y && y_floors[iy] == floor_y) {
-                    const float relative_y = y_relative[iy];
+                    float relative_y;
+                    float alpha_y;
+                    if constexpr (CacheY) {
+                        relative_y = y_relative[iy];
+                        alpha_y = y_alpha[iy];
+                    } else {
+                        relative_y = static_cast<float>(
+                            y_coordinates[iy] - static_cast<double>(floor_y));
+                        alpha_y = smoothstep(relative_y);
+                    }
                     const float relative_y1 = relative_y - 1.0F;
 
                     const float x000 = corner_xz[0] + corner_y[0] * relative_y;
@@ -187,7 +201,6 @@ int32_t perlin_add_volume(
                     const float x011 = corner_xz[6] + corner_y[6] * relative_y1;
                     const float x111 = corner_xz[7] + corner_y[7] * relative_y1;
 
-                    const float alpha_y = y_alpha[iy];
                     const float lower = lerp(alpha_y,
                         lerp(alpha_x, x000, x100),
                         lerp(alpha_x, x010, x110));
@@ -222,7 +235,21 @@ extern "C" int32_t jpe_cpp_perlin_add_volume(
     uint64_t output_length,
     uint32_t flags
 ) noexcept {
-    return perlin_add_volume(permutation,
+    return perlin_add_volume_impl<true>(permutation,
+        size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
+        xz_scale, y_scale, amplitude, output, output_length, flags);
+}
+
+extern "C" int32_t jpe_cpp_perlin_add_volume_uncached_y(
+    const uint8_t* permutation,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    double offset_x, double offset_y, double offset_z,
+    double xz_scale, double y_scale, float amplitude,
+    float* output, uint64_t output_length, uint32_t flags
+) noexcept {
+    return perlin_add_volume_impl<false>(permutation,
         size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
         xz_scale, y_scale, amplitude, output, output_length, flags);
 }
