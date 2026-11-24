@@ -195,9 +195,12 @@ pub unsafe extern "C" fn jpe_runtime_submit_perlin_volume(
 
 #[no_mangle]
 pub extern "C" fn jpe_runtime_job_status(job_id: u64) -> i32 {
-    let jobs = scheduler().jobs.lock().unwrap_or_else(|p| p.into_inner());
-    let Some(state) = jobs.get(&job_id) else { return -1 };
-    match &*lock_status(state) {
+    let state = {
+        let jobs = scheduler().jobs.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(state) = jobs.get(&job_id) else { return -1 };
+        Arc::clone(state)
+    };
+    match &*lock_status(&state) {
         JobStatus::Pending => JOB_PENDING,
         JobStatus::Running => JOB_RUNNING,
         JobStatus::Complete(_) => JOB_COMPLETE,
@@ -209,9 +212,12 @@ pub extern "C" fn jpe_runtime_job_status(job_id: u64) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn jpe_runtime_copy_job_output(job_id: u64, destination: *mut f32, capacity: u64) -> i32 {
     if destination.is_null() { return STATUS_INVALID_ARGUMENT; }
-    let jobs = scheduler().jobs.lock().unwrap_or_else(|p| p.into_inner());
-    let Some(state) = jobs.get(&job_id) else { return STATUS_INVALID_ARGUMENT };
-    match &*lock_status(state) {
+    let state = {
+        let jobs = scheduler().jobs.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(state) = jobs.get(&job_id) else { return STATUS_INVALID_ARGUMENT };
+        Arc::clone(state)
+    };
+    match &*lock_status(&state) {
         JobStatus::Complete(output) => {
             if capacity < output.len() as u64 { return STATUS_INVALID_ARGUMENT; }
             unsafe { slice::from_raw_parts_mut(destination, output.len()).copy_from_slice(output); }
@@ -225,10 +231,13 @@ pub unsafe extern "C" fn jpe_runtime_copy_job_output(job_id: u64, destination: *
 
 #[no_mangle]
 pub extern "C" fn jpe_runtime_cancel_job(job_id: u64) -> i32 {
-    let jobs = scheduler().jobs.lock().unwrap_or_else(|p| p.into_inner());
-    let Some(state) = jobs.get(&job_id) else { return STATUS_INVALID_ARGUMENT };
+    let state = {
+        let jobs = scheduler().jobs.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(state) = jobs.get(&job_id) else { return STATUS_INVALID_ARGUMENT };
+        Arc::clone(state)
+    };
     state.cancelled.store(true, Ordering::Release);
-    let mut status = lock_status(state);
+    let mut status = lock_status(&state);
     if matches!(*status, JobStatus::Pending) { *status = JobStatus::Cancelled; }
     STATUS_OK
 }
