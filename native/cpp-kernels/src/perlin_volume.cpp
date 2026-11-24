@@ -137,13 +137,6 @@ int32_t perlin_add_volume_impl(
     if (expected > static_cast<uint64_t>(std::numeric_limits<size_t>::max() / sizeof(float))) return 1;
 
     const bool far_lands = (flags & 1U) != 0U;
-#if (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
-    __builtin_cpu_init();
-    // SIMD only pays off when each Y lattice run is long enough to amortize
-    // run discovery and vector setup. Short runs stay on the scalar path.
-    const double y_step_magnitude = std::abs(static_cast<double>(step_y) * y_scale);
-    const bool use_avx2 = __builtin_cpu_supports("avx2") && y_step_magnitude <= (1.0 / 16.0);
-#endif
 
     // Y coordinates are identical for every X/Z column in this volume.
     // Cache them once per worker thread instead of repeating wrap/floor work
@@ -272,16 +265,14 @@ int32_t perlin_add_volume_impl(
 
 #if (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
                 if constexpr (CacheY && UseAvx2) {
-                    if (use_avx2) {
-                        uint32_t run_end = iy + 1;
-                        while (run_end < size_y && y_floors[run_end] == floor_y) ++run_end;
-                        while (iy + 8 <= run_end) {
-                            perlin_evaluate_8_avx2(
-                                y_relative.data() + iy, y_alpha.data() + iy,
-                                output + base + iy, corner_xz, corner_y,
-                                alpha_x, alpha_z, amplitude);
-                            iy += 8;
-                        }
+                    uint32_t run_end = iy + 1;
+                    while (run_end < size_y && y_floors[run_end] == floor_y) ++run_end;
+                    while (iy + 8 <= run_end) {
+                        perlin_evaluate_8_avx2(
+                            y_relative.data() + iy, y_alpha.data() + iy,
+                            output + base + iy, corner_xz, corner_y,
+                            alpha_x, alpha_z, amplitude);
+                        iy += 8;
                     }
                 }
 #endif
@@ -341,7 +332,16 @@ extern "C" int32_t jpe_cpp_perlin_add_volume(
     uint64_t output_length,
     uint32_t flags
 ) noexcept {
-    return perlin_add_volume_impl<true, false, true>(permutation,
+#if (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
+    __builtin_cpu_init();
+    const double y_step_magnitude = std::abs(static_cast<double>(step_y) * y_scale);
+    if (__builtin_cpu_supports("avx2") && y_step_magnitude <= (1.0 / 16.0)) {
+        return perlin_add_volume_impl<true, false, true>(permutation,
+            size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
+            xz_scale, y_scale, amplitude, output, output_length, flags);
+    }
+#endif
+    return perlin_add_volume_impl<true, false, false>(permutation,
         size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
         xz_scale, y_scale, amplitude, output, output_length, flags);
 }
