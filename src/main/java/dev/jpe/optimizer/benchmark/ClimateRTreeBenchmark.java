@@ -20,6 +20,7 @@ public final class ClimateRTreeBenchmark {
 
     public static void run(int warmupIterations, int iterations, int requestedQueries) {
         int queryCount = Math.max(4_096, Math.min(32_768, requestedQueries / 8));
+        verifyDuplicateTieResults();
         Climate.ParameterList<Integer> source = createParameterList();
         List<Climate.TargetPoint> queries = createQueries(queryCount);
         Climate.ParameterList<Integer> reference = source.rebuildWithChildrenPerNode(19);
@@ -72,6 +73,31 @@ public final class ClimateRTreeBenchmark {
             checksum += actual;
         }
         return checksum;
+    }
+
+    private static void verifyDuplicateTieResults() {
+        List<Pair<Climate.ParameterPoint, Integer>> values = new ArrayList<>();
+        Climate.ParameterPoint repeated = Climate.parameters(
+                0.25F, -0.5F, 0.75F, -1.0F, 0.0F, 1.25F, 0.5F);
+        for (int i = 0; i < 64; i++) {
+            values.add(Pair.of(repeated, i));
+        }
+        for (int i = 64; i < PARAMETER_POINTS; i++) {
+            float value = (i - 160) / 100.0F;
+            values.add(Pair.of(Climate.parameters(value, value, value, value, value, value, 0.0F), i));
+        }
+
+        Climate.ParameterList<Integer> source = new Climate.ParameterList<>(values);
+        int expected = source.rebuildWithChildrenPerNode(19).findValueIndex(
+                Climate.target(0.25F, -0.5F, 0.75F, -1.0F, 0.0F, 1.25F));
+        for (int fanOut : FAN_OUTS) {
+            int actual = source.rebuildWithChildrenPerNode(fanOut).findValueIndex(
+                    Climate.target(0.25F, -0.5F, 0.75F, -1.0F, 0.0F, 1.25F));
+            if (actual != expected) {
+                throw new IllegalStateException("Climate.RTree fan-out changed duplicate-point tie result: "
+                        + "fanOut=" + fanOut + " expected=" + expected + " actual=" + actual);
+            }
+        }
     }
 
     private static Climate.ParameterList<Integer> createParameterList() {
