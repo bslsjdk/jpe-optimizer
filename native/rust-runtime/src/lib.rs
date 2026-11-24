@@ -20,7 +20,25 @@ const MAX_VOLUME_ELEMENTS: usize = 1024 * 1024;
 const QUEUE_CAPACITY: usize = 16;
 const MAX_TRACKED_JOBS: usize = 32;
 
+#[repr(C)]
+pub struct JpePerlinLayer {
+    pub permutation: *const u8,
+    pub offset_x: f64,
+    pub offset_y: f64,
+    pub offset_z: f64,
+    pub xz_scale: f64,
+    pub y_scale: f64,
+    pub amplitude: f32,
+}
+
 unsafe extern "C" {
+    fn jpe_cpp_perlin_add_stack(
+        layers: *const JpePerlinLayer, layer_count: u32,
+        size_x: u32, size_y: u32, size_z: u32,
+        min_x: i32, min_y: i32, min_z: i32,
+        step_x: i32, step_y: i32, step_z: i32,
+        output: *mut f32, output_length: u64, flags: u32,
+    ) -> i32;
     fn jpe_cpp_add_f32(input: *const f32, output: *mut f32, length: u32) -> i32;
     fn jpe_cpp_perlin_add_volume(
         permutation: *const u8,
@@ -175,6 +193,47 @@ pub unsafe extern "C" fn jpe_runtime_perlin_add_volume(
         jpe_cpp_perlin_add_volume(permutation, size_x, size_y, size_z,
             min_x, min_y, min_z, step_x, step_y, step_z,
             offset_x, offset_y, offset_z, xz_scale, y_scale, amplitude, output, output_length, flags)
+    })) {
+        Ok(STATUS_OK) => STATUS_OK,
+        Ok(STATUS_INVALID_ARGUMENT) => STATUS_INVALID_ARGUMENT,
+        Ok(_) => STATUS_CPP_FAILURE,
+        Err(_) => STATUS_RUST_PANIC,
+    }
+}
+
+/// Executes an ordered Perlin layer stack with one native boundary crossing.
+/// The descriptor array and every 256-byte permutation remain borrowed for this call only.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_perlin_add_stack(
+    layers: *const JpePerlinLayer, layer_count: u32,
+    size_x: u32, size_y: u32, size_z: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    step_x: i32, step_y: i32, step_z: i32,
+    output: *mut f32, output_length: u64, flags: u32,
+) -> i32 {
+    if layers.is_null() || output.is_null() || layer_count == 0 || layer_count > 64
+        || size_x == 0 || size_y == 0 || size_z == 0
+        || step_x == 0 || step_y == 0 || step_z == 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    let expected = match (size_x as u64).checked_mul(size_y as u64)
+        .and_then(|n| n.checked_mul(size_z as u64)) {
+        Some(value) => value,
+        None => return STATUS_INVALID_ARGUMENT,
+    };
+    if expected != output_length || expected as usize > MAX_VOLUME_ELEMENTS {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    let descriptors = unsafe { slice::from_raw_parts(layers, layer_count as usize) };
+    if descriptors.iter().any(|layer| layer.permutation.is_null()) {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        jpe_cpp_perlin_add_stack(
+            layers, layer_count, size_x, size_y, size_z,
+            min_x, min_y, min_z, step_x, step_y, step_z,
+            output, output_length, flags,
+        )
     })) {
         Ok(STATUS_OK) => STATUS_OK,
         Ok(STATUS_INVALID_ARGUMENT) => STATUS_INVALID_ARGUMENT,
@@ -367,6 +426,57 @@ mod tests {
         assert_eq!(actual, expected);
         assert_ne!(actual[0], 0.75_f32);
         assert_eq!(jpe_runtime_release_job(id), STATUS_OK);
+    }
+
+    #[test]
+    fn batched_perlin_stack_matches_ordered_individual_calls_bit_for_bit() {
+        let permutation_a: [u8; 256] = std::array::from_fn(|i| ((i * 37 + 11) & 255) as u8);
+        let permutation_b: [u8; 256] = std::array::from_fn(|i| ((i * 19 + 73) & 255) as u8);
+        let layers = [
+            JpePerlinLayer { permutation: permutation_a.as_ptr(),
+                offset_x: 0.13, offset_y: 0.29, offset_z: 0.41,
+                xz_scale: 0.75, y_scale: 1.25, amplitude: 0.5 },
+            JpePerlinLayer { permutation: permutation_b.as_ptr(),
+                offset_x: -0.31, offset_y: 0.17, offset_z: 0.23,
+                xz_scale: 1.5, y_scale: 0.625, amplitude: -0.125 },
+        ];
+        let mut expected = [0.375_f32; 24];
+        let mut actual = expected;
+        for layer in &layers {
+            let status = unsafe { jpe_cpp_perlin_add_volume(
+                layer.permutation, 2, 3, 4, -7, -11, 13, 1, 2, 1,
+                layer.offset_x, layer.offset_y, layer.offset_z,
+                layer.xz_scale, layer.y_scale, layer.amplitude,
+                expected.as_mut_ptr(), expected.len() as u64, 0
+            ) };
+            assert_eq!(status, STATUS_OK);
+        }
+        let status = unsafe { jpe_runtime_perlin_add_stack(
+            layers.as_ptr(), layers.len() as u32,
+            2, 3, 4, -7, -11, 13, 1, 2, 1,
+            actual.as_mut_ptr(), actual.len() as u64, 0
+        ) };
+        assert_eq!(status, STATUS_OK);
+        assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
+    }
+
+    #[test]
+    fn batched_perlin_stack_rejects_invalid_layer_count_and_output_size() {
+        let permutation = [0_u8; 256];
+        let layer = JpePerlinLayer { permutation: permutation.as_ptr(),
+            offset_x: 0.0, offset_y: 0.0, offset_z: 0.0,
+            xz_scale: 1.0, y_scale: 1.0, amplitude: 1.0 };
+        let mut output = [0.0_f32; 2];
+        let no_layers = unsafe { jpe_runtime_perlin_add_stack(
+            &layer, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1,
+            output.as_mut_ptr(), 1, 0
+        ) };
+        assert_eq!(no_layers, STATUS_INVALID_ARGUMENT);
+        let bad_length = unsafe { jpe_runtime_perlin_add_stack(
+            &layer, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1,
+            output.as_mut_ptr(), 2, 0
+        ) };
+        assert_eq!(bad_length, STATUS_INVALID_ARGUMENT);
     }
 
     #[test]
