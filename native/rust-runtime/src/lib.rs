@@ -65,6 +65,15 @@ unsafe extern "C" {
         xz_scale: f64, y_scale: f64, amplitude: f32,
         output: *mut f32, output_length: u64, flags: u32,
     ) -> i32;
+    fn jpe_cpp_perlin_add_volume_cached_xy(
+        permutation: *const u8,
+        size_x: u32, size_y: u32, size_z: u32,
+        min_x: i32, min_y: i32, min_z: i32,
+        step_x: i32, step_y: i32, step_z: i32,
+        offset_x: f64, offset_y: f64, offset_z: f64,
+        xz_scale: f64, y_scale: f64, amplitude: f32,
+        output: *mut f32, output_length: u64, flags: u32,
+    ) -> i32;
     fn jpe_cpp_perlin_add_volume_uncached_xy(
         permutation: *const u8,
         size_x: u32, size_y: u32, size_z: u32,
@@ -748,11 +757,14 @@ mod tests {
                     expected.as_mut_ptr(), expected.len() as u64, flags
                 ) }, STATUS_OK);
             }
-            assert_eq!(unsafe { jpe_cpp_perlin_add_stack(
-                layers.as_ptr(), layers.len() as u32,
-                32, 64, 16, -257, -129, 193, 1, 1, -1,
-                actual.as_mut_ptr(), actual.len() as u64, flags
-            ) }, STATUS_OK);
+            for layer in &layers {
+                assert_eq!(unsafe { jpe_cpp_perlin_add_volume_cached_xy(
+                    layer.permutation, 32, 64, 16, -257, -129, 193,
+                    1, 1, -1, layer.offset_x, layer.offset_y, layer.offset_z,
+                    layer.xz_scale, layer.y_scale, layer.amplitude,
+                    actual.as_mut_ptr(), actual.len() as u64, flags
+                ) }, STATUS_OK);
+            }
             assert_eq!(actual.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
                        expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
         }
@@ -868,12 +880,15 @@ mod tests {
         let run_cached = |out: &mut [f32]| {
             for _ in 0..REPEATS {
                 out.fill(0.125);
-                assert_eq!(unsafe { jpe_cpp_perlin_add_stack(
-                    layers.as_ptr(), LAYERS as u32,
-                    SX as u32, SY as u32, SZ as u32,
-                    -256, -128, 192, 1, 1, 1,
-                    out.as_mut_ptr(), len as u64, 0
-                ) }, STATUS_OK);
+                for layer in &layers {
+                    assert_eq!(unsafe { jpe_cpp_perlin_add_volume_cached_xy(
+                        layer.permutation, SX as u32, SY as u32, SZ as u32,
+                        -256, -128, 192, 1, 1, 1,
+                        layer.offset_x, layer.offset_y, layer.offset_z,
+                        layer.xz_scale, layer.y_scale, layer.amplitude,
+                        out.as_mut_ptr(), len as u64, 0
+                    ) }, STATUS_OK);
+                }
             }
         };
         let run_uncached = |out: &mut [f32]| {
