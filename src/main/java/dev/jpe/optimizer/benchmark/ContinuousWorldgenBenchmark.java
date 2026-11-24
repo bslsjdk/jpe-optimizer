@@ -37,7 +37,8 @@ public final class ContinuousWorldgenBenchmark {
     private static final int WARMUP_ROWS = 3;
     private static final int MEASURED_ROWS = 20;
     private static final int MAX_DRAIN_TICKS = 400;
-    private static final int START_CHUNK_X = 4096;
+    private static final int WARMUP_START_CHUNK_X = 4096;
+    private static final int MEASURE_START_CHUNK_X = 8192;
     private static final int START_CHUNK_Z = 4096;
 
     private static final AtomicReference<State> STATE = new AtomicReference<>();
@@ -91,7 +92,6 @@ public final class ContinuousWorldgenBenchmark {
         private int nextIssueTick = 1;
         private int warmupRowsIssued;
         private int measuredRowsIssued;
-        private int nextColumn;
         private int drainTicks;
         private long lastTickNanos;
         private long measurementStartNanos;
@@ -130,6 +130,9 @@ public final class ContinuousWorldgenBenchmark {
 
                 if (warmupRowsIssued == WARMUP_ROWS && inFlight.get() == 0) {
                     beginMeasurement(now);
+                } else if (warmupRowsIssued == WARMUP_ROWS
+                        && tick > WARMUP_ROWS * TICKS_PER_CHUNK_COLUMN + MAX_DRAIN_TICKS) {
+                    throw new IllegalStateException("Warmup chunk futures did not drain; inFlight=" + inFlight.get());
                 }
                 return;
             }
@@ -150,7 +153,8 @@ public final class ContinuousWorldgenBenchmark {
         }
 
         private void issueFrontierRow(boolean measured) {
-            int chunkX = START_CHUNK_X + nextColumn++;
+            int rowIndex = measured ? measuredRowsIssued : warmupRowsIssued;
+            int chunkX = (measured ? MEASURE_START_CHUNK_X : WARMUP_START_CHUNK_X) + rowIndex;
             for (int offset = -VIEW_RADIUS_CHUNKS; offset <= VIEW_RADIUS_CHUNKS; offset++) {
                 requestFullChunk(chunkX, START_CHUNK_Z + offset, measured);
             }
@@ -277,10 +281,10 @@ public final class ContinuousWorldgenBenchmark {
                     structureAfter.vanillaLinearChecks() - structureBefore.vanillaLinearChecks()
             );
 
-            if (completed != requested || failed != 0 || inFlight.get() != 0) {
+            if (completed != requested || failed != 0 || inFlight.get() != 0 || doFillCalls < requested) {
                 JPEOptimizer.LOGGER.error(
-                        "JPE continuous benchmark incomplete: requested={} completed={} failed={} inFlight={} drainTicks={}",
-                        requested, completed, failed, inFlight.get(), drainTicks
+                        "JPE continuous benchmark incomplete: requested={} completed={} failed={} inFlight={} drainTicks={} doFillCalls={}",
+                        requested, completed, failed, inFlight.get(), drainTicks, doFillCalls
                 );
             }
             server.halt(false);
