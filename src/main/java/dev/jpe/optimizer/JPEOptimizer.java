@@ -7,7 +7,7 @@ import dev.jpe.optimizer.vector.DensityVectorRuntime;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.neoforge.common.NeoForge;
-import net.neoforged.neoforge.event.server.ServerStartedEvent;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import org.slf4j.Logger;
 
 @Mod(JPEOptimizer.MOD_ID)
@@ -18,7 +18,7 @@ public final class JPEOptimizer {
     public JPEOptimizer(IEventBus modEventBus) {
         GameTests.registerFunctions(modEventBus);
         modEventBus.addListener(GameTests::register);
-        NeoForge.EVENT_BUS.addListener(ServerStartedEvent.class, ServerWorldgenBenchmark::onServerStarted);
+        NeoForge.EVENT_BUS.addListener(ServerTickEvent.Post.class, ServerWorldgenBenchmark::onServerTick);
         LOGGER.info("JPE Optimizer initialized for Minecraft 26.3");
         JavaRuntimeDiagnostics.logRuntimeCapabilities();
         LOGGER.info("JPE density kernels: {}", DensityVectorRuntime.initialize());

@@ -6,7 +6,9 @@ import dev.jpe.optimizer.worldgen.WorldgenMetrics;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
-import net.neoforged.neoforge.event.server.ServerStartedEvent;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
+
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
@@ -21,14 +23,17 @@ import java.util.List;
 public final class ServerWorldgenBenchmark {
     private static final int WARMUP_CHUNKS = 8;
     private static final int MEASURED_CHUNKS = 24;
+    private static final AtomicBoolean STARTED = new AtomicBoolean();
 
     private ServerWorldgenBenchmark() {}
 
-    public static void onServerStarted(ServerStartedEvent event) {
-        if (!Boolean.getBoolean("jpe.serverWorldgenBenchmark")) {
+    public static void onServerTick(ServerTickEvent.Post event) {
+        if (!Boolean.getBoolean("jpe.serverWorldgenBenchmark") || !STARTED.compareAndSet(false, true)) {
             return;
         }
 
+        // ServerStartedEvent fires before the first normal server tick. Defer until
+        // the first post-tick so startup tasks and spawn initialization have settled.
         MinecraftServer server = event.getServer();
         try {
             run(server);
