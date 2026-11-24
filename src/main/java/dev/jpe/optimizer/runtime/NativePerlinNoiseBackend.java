@@ -269,6 +269,13 @@ public final class NativePerlinNoiseBackend {
         boolean terminal = false;
         try {
             GradientNoiseAccessor access = (GradientNoiseAccessor) (Object) noise;
+            if (Boolean.getBoolean("jpe.nativePerlinProfile")) {
+                profilePerlinYRuns(List.of(new NativeRuntime.PerlinLayer(
+                        access.jpe$perms(),
+                        access.jpe$offsetX(), access.jpe$offsetY(), access.jpe$offsetZ(),
+                        xzScale, yScale, amplitude
+                )), volume);
+            }
             float[] target = ((DensityBufferAccessor) buffer).jpe$values();
             if (target.length < expectedElements) {
                 BUFFER_VOLUME_MISMATCHES.increment();
@@ -394,6 +401,7 @@ public final class NativePerlinNoiseBackend {
         double minScale = Double.POSITIVE_INFINITY;
         double maxScale = Double.NEGATIVE_INFINITY;
         boolean farLands = SharedConstants.DEBUG_ENABLE_FARLANDS;
+        int layerIndex = 0;
 
         for (NativeRuntime.PerlinLayer layer : layers) {
             double scale = layer.yScale();
@@ -402,6 +410,12 @@ public final class NativePerlinNoiseBackend {
             boolean eligible = Math.abs((double) stepY * scale) <= (1.0 / 16.0);
             if (eligible) eligibleLayers++;
 
+            long layerRuns = 0;
+            long layerSamples = 0;
+            long layerCandidateVectors = 0;
+            long layerCandidateSamples = 0;
+            int layerMaxRun = 0;
+            int layerMinRun = Integer.MAX_VALUE;
             int runLength = 0;
             int previousFloor = 0;
             for (int iy = 0; iy < sizeY; iy++) {
@@ -419,30 +433,45 @@ public final class NativePerlinNoiseBackend {
                 if (iy == 0 || floorY == previousFloor) {
                     runLength++;
                 } else {
-                    totalRuns++;
-                    totalSamples += runLength;
-                    minRun = Math.min(minRun, runLength);
-                    maxRun = Math.max(maxRun, runLength);
+                    layerRuns++;
+                    layerSamples += runLength;
+                    layerMinRun = Math.min(layerMinRun, runLength);
+                    layerMaxRun = Math.max(layerMaxRun, runLength);
                     if (eligible) {
                         long vectors = runLength / 8;
-                        candidateVectors += vectors;
-                        candidateSamples += vectors * 8;
+                        layerCandidateVectors += vectors;
+                        layerCandidateSamples += vectors * 8;
                     }
                     runLength = 1;
                 }
                 previousFloor = floorY;
             }
             if (runLength > 0) {
-                totalRuns++;
-                totalSamples += runLength;
-                minRun = Math.min(minRun, runLength);
-                maxRun = Math.max(maxRun, runLength);
+                layerRuns++;
+                layerSamples += runLength;
+                layerMinRun = Math.min(layerMinRun, runLength);
+                layerMaxRun = Math.max(layerMaxRun, runLength);
                 if (eligible) {
                     long vectors = runLength / 8;
-                    candidateVectors += vectors;
-                    candidateSamples += vectors * 8;
+                    layerCandidateVectors += vectors;
+                    layerCandidateSamples += vectors * 8;
                 }
             }
+
+            totalRuns += layerRuns;
+            totalSamples += layerSamples;
+            candidateVectors += layerCandidateVectors;
+            candidateSamples += layerCandidateSamples;
+            minRun = Math.min(minRun, layerMinRun);
+            maxRun = Math.max(maxRun, layerMaxRun);
+
+            JPEOptimizer.LOGGER.info(
+                    "JPE_PERLIN_Y_PROFILE_LAYER sample={} layer={} yScale={} eligible={} floorRuns={} avgRun={} minRun={} maxRun={} avx2CandidateVectors={} avx2CandidateSamples={} scalarOrTailSamples={} stepY={} farLands={}",
+                    sequence, layerIndex++, scale, eligible, layerRuns,
+                    layerRuns == 0 ? 0.0 : (double) layerSamples / layerRuns,
+                    layerMinRun == Integer.MAX_VALUE ? 0 : layerMinRun, layerMaxRun,
+                    layerCandidateVectors, layerCandidateSamples,
+                    layerSamples - layerCandidateSamples, stepY, farLands);
         }
 
         long scalarTailSamples = totalSamples - candidateSamples;
