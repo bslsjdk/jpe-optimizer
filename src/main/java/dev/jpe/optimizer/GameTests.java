@@ -70,10 +70,6 @@ public final class GameTests {
                 new FunctionGameTestInstance(TERRAIN_GENERATION_SMOKE.getKey(), data)
         );
         event.registerTest(
-                Identifier.parse("jpe_optimizer:server_worldgen_benchmark"),
-                new FunctionGameTestInstance(SERVER_WORLDGEN_BENCHMARK.getKey(), data)
-        );
-        event.registerTest(
                 Identifier.parse("jpe_optimizer:structure_index_benchmark"),
                 new FunctionGameTestInstance(STRUCTURE_INDEX_BENCHMARK.getKey(), data)
         );

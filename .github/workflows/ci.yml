@@ -47,6 +47,8 @@ jobs:
           gradle vectorBenchmark --no-daemon --stacktrace | tee build/vector-probe/result.txt
 
       - name: GameTest correctness suite
+        env:
+          JAVA_TOOL_OPTIONS: -Djpe.structureIndexMetrics=true
         run: gradle runGameTestServer --no-daemon --stacktrace
 
       - name: Dedicated normal-world generation benchmark (ABBA, four fresh servers)
