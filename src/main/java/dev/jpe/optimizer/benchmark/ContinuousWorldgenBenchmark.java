@@ -266,6 +266,7 @@ public final class ContinuousWorldgenBenchmark {
             requestSubmissionNanos = 0L;
             maxRequestSubmissionNanos = 0L;
             requestSubmissionCount = 0L;
+            WorldgenMetrics.resetConcurrentPeak();
             worldgenBefore = WorldgenMetrics.snapshot();
             nativeBefore = NativePerlinNoiseBackend.metricsSnapshot();
             densityBuffersBefore = DensityBufferMetrics.snapshot();
@@ -331,7 +332,7 @@ public final class ContinuousWorldgenBenchmark {
                     "JPE_CONTINUOUS_WORLDGEN_BENCH seed={} generator={} mode={} speedBlocksPerSecond={} "
                             + "viewRadiusChunks={} rows={} requestedChunks={} completedChunks={} failedChunks={} "
                             + "throughputChunksPerSecond={} meanChunkLatencyMs={} medianChunkLatencyMs={} p95ChunkLatencyMs={} "
-                            + "p95ServerTickMs={} maxInFlight={} maxPendingTasks={} maxLoadedChunks={} "
+                            + "p95ServerTickMs={} maxInFlight={} maxPendingTasks={} maxLoadedChunks={} maxConcurrentDoFill={} "
                             + "avgGetChunkFutureCallMs={} maxGetChunkFutureCallMs={} elapsedSeconds={} "
                             + "serverThreadCpuMs={} processCpuMs={} serverThreadAllocatedMiB={} gcCollections={} gcMs={} "
                             + "doFillCalls={} doFillDensityMs={} doFillBlockMs={} doFillSamples={} "
@@ -352,7 +353,7 @@ public final class ContinuousWorldgenBenchmark {
                     format(percentile(latencies, 0.50) / 1_000_000.0),
                     format(percentile(latencies, 0.95) / 1_000_000.0),
                     format(percentile(ticks, 0.95) / 1_000_000.0),
-                    maxInFlight.get(), maxPendingTasks.get(), maxLoadedChunks.get(),
+                    maxInFlight.get(), maxPendingTasks.get(), maxLoadedChunks.get(), worldgenAfter.maxConcurrentDoFill(),
                     format(requestSubmissionCount == 0 ? 0.0 : requestSubmissionNanos / (double) requestSubmissionCount / 1_000_000.0),
                     format(maxRequestSubmissionNanos / 1_000_000.0),
                     format(elapsedNanos / 1_000_000_000.0),

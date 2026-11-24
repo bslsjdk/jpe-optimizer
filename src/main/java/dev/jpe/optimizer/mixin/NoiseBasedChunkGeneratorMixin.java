@@ -54,6 +54,9 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                 .get(generatorSettings.noiseRouter().finalDensity());
 
         boolean profile = WorldgenMetrics.enabled();
+        if (profile) {
+            WorldgenMetrics.beginDoFill();
+        }
         long densityStart = profile ? System.nanoTime() : 0L;
         long densityNanos = 0L;
         long fillStart = 0L;
@@ -140,6 +143,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
         }
 
         if (profile) {
+            WorldgenMetrics.endDoFill();
             WorldgenMetrics.record(densityNanos, System.nanoTime() - fillStart, volume.size(),
                     sampledAquiferNanos, sampledPlacementNanos, timingSampleCount);
         }

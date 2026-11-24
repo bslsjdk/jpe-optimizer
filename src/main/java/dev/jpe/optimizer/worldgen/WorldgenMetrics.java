@@ -1,6 +1,7 @@
 package dev.jpe.optimizer.worldgen;
 
 import dev.jpe.optimizer.JPEOptimizer;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 
@@ -13,6 +14,8 @@ public final class WorldgenMetrics {
     private static final long LOG_INTERVAL = 64L;
 
     private static final AtomicLong DO_FILL_CALLS = new AtomicLong();
+    private static final AtomicInteger ACTIVE_DO_FILL = new AtomicInteger();
+    private static final AtomicInteger MAX_CONCURRENT_DO_FILL = new AtomicInteger();
     private static final LongAdder DENSITY_SAMPLE_NANOS = new LongAdder();
     private static final LongAdder BLOCK_FILL_NANOS = new LongAdder();
     private static final LongAdder SAMPLES = new LongAdder();
@@ -21,15 +24,29 @@ public final class WorldgenMetrics {
     private static final LongAdder TIMING_SAMPLE_COUNT = new LongAdder();
 
     public record Snapshot(long calls, long densitySampleNanos, long blockFillNanos, long samples,
-                           long sampledAquiferNanos, long sampledPlacementNanos, long timingSamples) {}
+                           long sampledAquiferNanos, long sampledPlacementNanos, long timingSamples,
+                           int maxConcurrentDoFill) {}
 
     public static Snapshot snapshot() {
         return new Snapshot(DO_FILL_CALLS.get(), DENSITY_SAMPLE_NANOS.sum(),
                 BLOCK_FILL_NANOS.sum(), SAMPLES.sum(), SAMPLED_AQUIFER_NANOS.sum(),
-                SAMPLED_PLACEMENT_NANOS.sum(), TIMING_SAMPLE_COUNT.sum());
+                SAMPLED_PLACEMENT_NANOS.sum(), TIMING_SAMPLE_COUNT.sum(), MAX_CONCURRENT_DO_FILL.get());
     }
 
     private WorldgenMetrics() {}
+
+    public static void beginDoFill() {
+        int active = ACTIVE_DO_FILL.incrementAndGet();
+        MAX_CONCURRENT_DO_FILL.accumulateAndGet(active, Math::max);
+    }
+
+    public static void endDoFill() {
+        ACTIVE_DO_FILL.decrementAndGet();
+    }
+
+    public static void resetConcurrentPeak() {
+        MAX_CONCURRENT_DO_FILL.set(ACTIVE_DO_FILL.get());
+    }
 
     public static boolean enabled() {
         return ENABLED;
