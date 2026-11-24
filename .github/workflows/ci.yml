@@ -93,7 +93,8 @@ jobs:
           sync-chunk-writes=false
           PROPERTIES
           set -o pipefail
-          env JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector -Djpe.serverWorldgenBenchmark=true -Djpe.climateRTreeBenchmark=true -Djpe.climateRTreeBenchmarkOnly=true" gradle runServer --no-daemon --stacktrace 2>&1 | tee build/climate-rtree-benchmark/overworld.log
+          env JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector -Djpe.serverWorldgenBenchmark=true -Djpe.climateRTreeBenchmark=true -Djpe.climateRTreeBenchmarkOnly=true -Djpe.climateTargetArrayReuse=true" gradle runServer --no-daemon --stacktrace 2>&1 | tee build/climate-rtree-benchmark/overworld.log
+          grep -F 'JPE_CLIMATE_TARGET_ARRAY_REUSE enabled=true' build/climate-rtree-benchmark/overworld.log
           grep 'JPE_CLIMATE_RTREE_REAL points=' build/climate-rtree-benchmark/overworld.log
           test "$(grep -c 'JPE_CLIMATE_RTREE_REAL fanOut=' build/climate-rtree-benchmark/overworld.log)" -eq 6
 
