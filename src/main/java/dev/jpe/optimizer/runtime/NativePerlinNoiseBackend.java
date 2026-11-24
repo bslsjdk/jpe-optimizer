@@ -3,10 +3,16 @@ package dev.jpe.optimizer.runtime;
 import dev.jpe.optimizer.JPEOptimizer;
 import dev.jpe.optimizer.mixin.DensityBufferAccessor;
 import dev.jpe.optimizer.mixin.GradientNoiseAccessor;
+import dev.jpe.optimizer.mixin.NoiseStackAccessor;
+import dev.jpe.optimizer.mixin.NoiseStackLayerAccessor;
 import net.minecraft.SharedConstants;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
 import net.minecraft.world.level.levelgen.synth.PerlinNoise;
+import net.minecraft.world.level.levelgen.synth.Noise;
+import net.minecraft.world.level.levelgen.synth.NoiseStack;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.LongAdder;
 
 /** Opt-in bridge that runs Perlin volume work on the Rust worker pool / C++ backend. */
@@ -66,6 +72,142 @@ public final class NativePerlinNoiseBackend {
 
     public static boolean bypassed() {
         return BYPASS.get();
+    }
+
+    /**
+     * Batches the exact 26.3 NoiseStack.Perlin layer list into one Rust job.
+     * Unsupported layer implementations deliberately fall back to vanilla dispatch.
+     */
+    public static boolean tryAddToStack(NoiseStack stack, DensityBuffer buffer, DensityVolume volume,
+                                        double xzScale, double yScale, float amplitude) {
+        LAST_CALL_NATIVE.set(false);
+        if (BYPASS.get() || !enabled()) return false;
+        ATTEMPTS.increment();
+        SAMPLES.add(volume.size());
+        long started = System.nanoTime();
+        boolean success = false;
+        NativeRuntime.NativeJob job = null;
+        boolean interrupted = false;
+        boolean terminal = false;
+        try {
+            Object[] sourceLayers = ((NoiseStackAccessor) (Object) stack).jpe$layers();
+            if (sourceLayers.length == 0 || sourceLayers.length > 64) {
+                INVALID_DIMENSIONS.increment();
+                return false;
+            }
+            List<NativeRuntime.PerlinLayer> layers = new ArrayList<>(sourceLayers.length);
+            for (Object sourceLayer : sourceLayers) {
+                NoiseStackLayerAccessor layer = (NoiseStackLayerAccessor) sourceLayer;
+                Noise layerNoise = layer.jpe$noise();
+                // NoiseStack.Perlin is only valid for exact PerlinNoise layers. Keep a hard
+                // runtime check so modded or altered layer contents never enter the wrong kernel.
+                if (layerNoise == null || layerNoise.getClass() != PerlinNoise.class) return false;
+                GradientNoiseAccessor noise = (GradientNoiseAccessor) layerNoise;
+                double frequency = layer.jpe$frequency();
+                layers.add(new NativeRuntime.PerlinLayer(
+                        noise.jpe$perms(),
+                        noise.jpe$offsetX(), noise.jpe$offsetY(), noise.jpe$offsetZ(),
+                        xzScale * frequency, yScale * frequency,
+                        amplitude * layer.jpe$amplitude()
+                ));
+            }
+
+            int sizeX = volume.sizeX();
+            int sizeY = volume.sizeY();
+            int sizeZ = volume.sizeZ();
+            if (sizeX <= 0 || sizeY <= 0 || sizeZ <= 0) {
+                INVALID_DIMENSIONS.increment();
+                return false;
+            }
+            long expectedElements = Math.multiplyExact(Math.multiplyExact((long) sizeX, sizeY), sizeZ);
+            if (expectedElements != volume.size()) {
+                AXIS_VOLUME_MISMATCHES.increment();
+                return false;
+            }
+            if (expectedElements > 1_048_576L) {
+                OVERSIZED_VOLUMES.increment();
+                return false;
+            }
+            float[] target = ((DensityBufferAccessor) buffer).jpe$values();
+            if (target.length < expectedElements) {
+                BUFFER_VOLUME_MISMATCHES.increment();
+                return false;
+            }
+
+            NativeRuntime nativeRuntime = runtime();
+            if (nativeRuntime == null) {
+                RUNTIME_UNAVAILABLE.increment();
+                return false;
+            }
+            job = nativeRuntime.submitPerlinStack(layers,
+                    sizeX, sizeY, sizeZ,
+                    volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
+                    volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ(),
+                    target, SharedConstants.DEBUG_ENABLE_FARLANDS);
+            if (job == null) {
+                ASYNC_QUEUE_REJECTIONS.increment();
+                return false;
+            }
+
+            long deadline = System.nanoTime() + 30_000_000_000L;
+            boolean cancelRequested = false;
+            int status;
+            while (true) {
+                status = job.waitForStatus(10_000_000L);
+                if (status == NativeRuntime.JOB_COMPLETE
+                        || status == NativeRuntime.JOB_FAILED
+                        || status == NativeRuntime.JOB_CANCELLED) {
+                    terminal = true;
+                    break;
+                }
+                if (Thread.interrupted()) {
+                    interrupted = true;
+                    if (!cancelRequested) {
+                        job.cancel();
+                        cancelRequested = true;
+                    }
+                }
+                if (!cancelRequested && System.nanoTime() >= deadline) {
+                    JPEOptimizer.LOGGER.warn("Native Perlin stack job exceeded 30 seconds; cancelling if still queued and waiting for a safe terminal state");
+                    job.cancel();
+                    cancelRequested = true;
+                }
+            }
+            if (status != NativeRuntime.JOB_COMPLETE) {
+                NATIVE_JOB_FAILURES.increment();
+                return false;
+            }
+            job.copyOutputInto(target);
+            LAST_CALL_NATIVE.set(true);
+            success = true;
+            COMPLETED.increment();
+            return true;
+        } catch (RuntimeException | LinkageError failure) {
+            NATIVE_EXCEPTIONS.increment();
+            JPEOptimizer.LOGGER.warn("Native Perlin stack backend failed; using vanilla layer dispatch: {}", failure.toString());
+            return false;
+        } finally {
+            if (job != null) {
+                try {
+                    if (!terminal) {
+                        job.cancel();
+                        int cleanupStatus;
+                        do {
+                            cleanupStatus = job.waitForStatus(10_000_000L);
+                            if (Thread.interrupted()) interrupted = true;
+                        } while (cleanupStatus != NativeRuntime.JOB_COMPLETE
+                                && cleanupStatus != NativeRuntime.JOB_FAILED
+                                && cleanupStatus != NativeRuntime.JOB_CANCELLED);
+                    }
+                    job.close();
+                } catch (RuntimeException | LinkageError cleanupFailure) {
+                    JPEOptimizer.LOGGER.error("Unable to release native Perlin stack job safely", cleanupFailure);
+                }
+            }
+            if (!success) FALLBACKS.increment();
+            TOTAL_NANOS.add(System.nanoTime() - started);
+            if (interrupted) Thread.currentThread().interrupt();
+        }
     }
 
     public static boolean tryAddToVolume(PerlinNoise noise, DensityBuffer buffer, DensityVolume volume,
