@@ -1,6 +1,7 @@
 package dev.jpe.optimizer.benchmark;
 
 import dev.jpe.optimizer.JPEOptimizer;
+import dev.jpe.optimizer.worldgen.DensityBufferMetrics;
 import dev.jpe.optimizer.vector.DensityVectorRuntime;
 import dev.jpe.optimizer.worldgen.StructureSpatialIndex;
 import dev.jpe.optimizer.worldgen.WorldgenMetrics;
@@ -107,6 +108,7 @@ public final class ContinuousWorldgenBenchmark {
         private long maxRequestSubmissionNanos;
         private long requestSubmissionCount;
         private WorldgenMetrics.Snapshot worldgenBefore;
+        private DensityBufferMetrics.Snapshot densityBuffersBefore;
         private StructureSpatialIndex.Metrics structureBefore;
         private volatile boolean finished;
 
@@ -228,6 +230,7 @@ public final class ContinuousWorldgenBenchmark {
             maxRequestSubmissionNanos = 0L;
             requestSubmissionCount = 0L;
             worldgenBefore = WorldgenMetrics.snapshot();
+            densityBuffersBefore = DensityBufferMetrics.snapshot();
             structureBefore = StructureSpatialIndex.metricsSnapshot();
             serverCpuBefore = currentThreadCpuTime();
             processCpuBefore = processCpuTime();
@@ -256,6 +259,8 @@ public final class ContinuousWorldgenBenchmark {
             Collections.sort(ticks);
 
             WorldgenMetrics.Snapshot worldgenAfter = WorldgenMetrics.snapshot();
+            DensityBufferMetrics.Snapshot densityBufferDelta = DensityBufferMetrics.delta(
+                    DensityBufferMetrics.snapshot(), densityBuffersBefore);
             StructureSpatialIndex.Metrics structureAfter = StructureSpatialIndex.metricsSnapshot();
             long doFillCalls = worldgenAfter.calls() - worldgenBefore.calls();
             long requested = (long) MEASURED_ROWS * FRONTIER_WIDTH;
@@ -275,7 +280,9 @@ public final class ContinuousWorldgenBenchmark {
                             + "serverThreadCpuMs={} processCpuMs={} serverThreadAllocatedMiB={} gcCollections={} gcMs={} "
                             + "doFillCalls={} doFillDensityMs={} doFillBlockMs={} doFillSamples={} "
                             + "structureQueries={} structureIndexBuilds={} structureIndexedPieces={} "
-                            + "structureCandidateChecks={} structureVanillaLinearChecks={}",
+                            + "structureCandidateChecks={} structureVanillaLinearChecks={} "
+                            + "densityMetricsEnabled={} unpooledCalls={} unpooledElements={} "
+                            + "poolHits={} poolMisses={} poolRequestedElements={} poolReusedCapacityElements={}",
                     level.getSeed(), level.getChunkSource().getGenerator().getClass().getName(),
                     DensityVectorRuntime.enabled() ? "vector" : "scalar",
                     format(320.0 / TICKS_PER_CHUNK_COLUMN),
@@ -302,7 +309,11 @@ public final class ContinuousWorldgenBenchmark {
                     structureAfter.builds() - structureBefore.builds(),
                     structureAfter.indexedPieces() - structureBefore.indexedPieces(),
                     structureAfter.candidateChecks() - structureBefore.candidateChecks(),
-                    structureAfter.vanillaLinearChecks() - structureBefore.vanillaLinearChecks()
+                    structureAfter.vanillaLinearChecks() - structureBefore.vanillaLinearChecks(),
+                    DensityBufferMetrics.enabled(), densityBufferDelta.unpooledCalls(),
+                    densityBufferDelta.unpooledElements(), densityBufferDelta.poolHits(),
+                    densityBufferDelta.poolMisses(), densityBufferDelta.poolRequestedElements(),
+                    densityBufferDelta.poolReusedCapacityElements()
             );
 
             if (completed != requested || failed != 0 || inFlight.get() != 0 || doFillCalls < requested) {
