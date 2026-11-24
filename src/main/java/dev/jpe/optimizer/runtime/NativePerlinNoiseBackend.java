@@ -287,8 +287,7 @@ public final class NativePerlinNoiseBackend {
                 return true;
             }
 
-            // The permutation is copied into Rust-owned memory. The output points to a
-            // leased shared FFM buffer that remains alive and untouched until job completion.
+            // The single-layer permutation is copied into Rust-owned memory; output remains leased.
             job = nativeRuntime.submitPerlinVolume(
                     access.jpe$perms(), sizeX, sizeY, sizeZ,
                     volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
