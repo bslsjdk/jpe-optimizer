@@ -43,7 +43,7 @@ public final class ClimateRTreeBenchmark {
         int[] order = new int[FAN_OUTS.length];
         for (int i = 0; i < order.length; i++) order[i] = i;
         Random orderRandom = new Random(0x2630_0D3L);
-        long checksum = 0;
+        long[] checksums = new long[FAN_OUTS.length];
 
         System.out.printf(
                 "JPE_CLIMATE_RTREE_BENCH points=%d queries=%d fanOuts=%s rounds=%d iterationsPerRound=%d order=randomized distribution=uniform%n",
@@ -61,7 +61,7 @@ public final class ClimateRTreeBenchmark {
                 buildSamples[variant][round] = System.nanoTime() - buildStart;
 
                 for (int i = 0; i < perRoundWarmup; i++) {
-                    checksum += execute(candidate, queries, expected);
+                    checksums[variant] += execute(candidate, queries, expected);
                 }
 
                 for (int i = 0; i < measuredIterations; i++) {
@@ -82,7 +82,7 @@ public final class ClimateRTreeBenchmark {
                     "fanOut=%d buildMedianMs=%.3f nsPerQueryMedian=%.3f nsPerQueryP95=%.3f "
                             + "queriesPerSecondMedian=%.0f samples=%d checksum=%d%n",
                     FAN_OUTS[variant], medianBuildMs, medianNs, p95Ns,
-                    1_000_000_000.0 / medianNs, searchSamples[variant].length, checksum
+                    1_000_000_000.0 / medianNs, searchSamples[variant].length, checksums[variant]
             );
         }
     }
