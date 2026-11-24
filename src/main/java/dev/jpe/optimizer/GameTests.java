@@ -260,6 +260,14 @@ public final class GameTests {
         }
         ++queries;
 
+        // The first query after movement must safely use vanilla; the second may rebuild.
+        movedExpected = StructurePiece.findCollisionPiece(pieces, movedQuery);
+        movedActual = builder.findCollisionPiece(movedQuery);
+        if (movedActual != movedExpected) {
+            throw new AssertionError("Rebuilt spatial index changed the post-move result");
+        }
+        ++queries;
+
         long elapsedNs = System.nanoTime() - start;
         var after = dev.jpe.optimizer.worldgen.StructureSpatialIndex.metricsSnapshot();
 

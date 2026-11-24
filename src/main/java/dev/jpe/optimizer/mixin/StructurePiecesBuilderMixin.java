@@ -29,6 +29,15 @@ public abstract class StructurePiecesBuilderMixin {
     @Unique
     private long jpe$indexEpoch = Long.MIN_VALUE;
 
+    @Unique
+    private long jpe$observedMovementEpoch = Long.MIN_VALUE;
+
+    @Unique
+    private int jpe$queriesSinceInvalidation;
+
+    @Unique
+    private static final int JPE_QUERIES_BEFORE_INDEX_BUILD = 2;
+
     @Inject(method = "findCollisionPiece", at = @At("HEAD"), cancellable = true)
     private void jpe$findCollisionPiece(BoundingBox query,
                                         CallbackInfoReturnable<StructurePiece> callback) {
@@ -39,10 +48,17 @@ public abstract class StructurePiecesBuilderMixin {
         }
 
         long currentEpoch = StructureSpatialIndex.movementEpoch();
-        StructureSpatialIndex index = this.jpe$spatialIndex;
-        if (index != null && this.jpe$indexEpoch != currentEpoch) {
-            index = null;
+        if (this.jpe$observedMovementEpoch != currentEpoch) {
             this.jpe$spatialIndex = null;
+            this.jpe$observedMovementEpoch = currentEpoch;
+            this.jpe$queriesSinceInvalidation = 0;
+        }
+
+        StructureSpatialIndex index = this.jpe$spatialIndex;
+        if (index == null && ++this.jpe$queriesSinceInvalidation < JPE_QUERIES_BEFORE_INDEX_BUILD) {
+            // One-off and low-frequency structures avoid paying the index construction cost.
+            StructureSpatialIndex.recordVanillaLinearQuery(this.pieces.size());
+            return;
         }
         if (index == null) {
             long buildEpoch = currentEpoch;
@@ -54,6 +70,9 @@ public abstract class StructurePiecesBuilderMixin {
             index = new StructureSpatialIndex(initialBoxes);
             // If another thread moved a box during the snapshot, use vanilla for this query.
             if (StructureSpatialIndex.movementEpoch() != buildEpoch) {
+                this.jpe$spatialIndex = null;
+                this.jpe$observedMovementEpoch = StructureSpatialIndex.movementEpoch();
+                this.jpe$queriesSinceInvalidation = 0;
                 return;
             }
             this.jpe$spatialIndex = index;
@@ -64,6 +83,8 @@ public abstract class StructurePiecesBuilderMixin {
         // Do not return a result from a snapshot invalidated while the query was running.
         if (StructureSpatialIndex.movementEpoch() != this.jpe$indexEpoch) {
             this.jpe$spatialIndex = null;
+            this.jpe$observedMovementEpoch = StructureSpatialIndex.movementEpoch();
+            this.jpe$queriesSinceInvalidation = 0;
             return;
         }
         callback.setReturnValue(collisionIndex < 0 ? null : this.pieces.get(collisionIndex));
@@ -103,5 +124,7 @@ public abstract class StructurePiecesBuilderMixin {
     @Inject(method = "clear", at = @At("TAIL"))
     private void jpe$afterClear(CallbackInfo callback) {
         this.jpe$spatialIndex = null;
+        this.jpe$queriesSinceInvalidation = 0;
+        this.jpe$observedMovementEpoch = StructureSpatialIndex.movementEpoch();
     }
 }
