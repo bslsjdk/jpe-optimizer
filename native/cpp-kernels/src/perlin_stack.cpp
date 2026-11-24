@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <vector>
 
 namespace {
 constexpr int kGradientX[16] = {1,-1,1,-1,1,-1,1,-1,0,0,0,0,1,0,-1,0};
@@ -64,7 +65,6 @@ struct LayerWorkspace {
     std::vector<int32_t> x_lattice1;
     std::vector<double> y_coordinates;
     std::vector<int32_t> y_floors;
-    double z_coordinate = 0.0;
     int32_t z_floor = 0;
     float z_relative = 0.0F;
     float z_alpha = 0.0F;
@@ -166,7 +166,6 @@ extern "C" int32_t jpe_cpp_perlin_add_stack_fused(
             LayerWorkspace& ws = workspaces[li];
             const double z = wrap_coordinate(
                 static_cast<double>(block_z) * layer.xz_scale, far_lands) + layer.offset_z;
-            ws.z_coordinate = z;
             ws.z_floor = floor_to_i32(z);
             ws.z_relative = static_cast<float>(z - static_cast<double>(ws.z_floor));
             ws.z_alpha = smoothstep(ws.z_relative);
@@ -175,8 +174,6 @@ extern "C" int32_t jpe_cpp_perlin_add_stack_fused(
         for (uint32_t ix = 0; ix < size_x; ++ix) {
             for (uint32_t li = 0; li < layer_count; ++li) corner_valid[li] = false;
             const uint64_t base = (static_cast<uint64_t>(iz) * size_x + ix) * size_y;
-            const int32_t block_x = axis_coordinate(min_x, ix, step_x);
-            (void)block_x;
 
             // Y is contiguous in the output layout. Visit each voxel once and
             // accumulate layers in the original order to preserve float results.
