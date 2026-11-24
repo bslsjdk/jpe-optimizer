@@ -105,13 +105,11 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
                 case DIVIDE -> a.div(b);
             };
             if (result.compare(VectorOperators.NE, result).anyTrue()) {
-                // Preserve original scalar NaN payloads and invalid-operation behavior.
-                for (int lane = 0; lane < SPECIES.length(); ++lane) {
-                    left[i + lane] = scalarBinary(left[i + lane], right[i + lane], operation);
-                }
-            } else {
-                result.intoArray(left, i);
+                // Use the exact scalar reference for this buffer when any lane is NaN.
+                ScalarDensityKernel.INSTANCE.binary(left, length, operation);
+                return;
             }
+            result.intoArray(left, i);
         }
         for (; i < length; ++i) {
             float a = left[i], b = right[i];
@@ -138,12 +136,10 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
                 case DIVIDE -> current.div(constant);
             };
             if (result.compare(VectorOperators.NE, result).anyTrue()) {
-                for (int lane = 0; lane < SPECIES.length(); ++lane) {
-                    values[i + lane] = scalarBinary(values[i + lane], operand, operation);
-                }
-            } else {
-                result.intoArray(values, i);
+                ScalarDensityKernel.INSTANCE.binaryConst(values, length, operand, operation);
+                return;
             }
+            result.intoArray(values, i);
         }
         for (; i < length; ++i) {
             float current = values[i];
@@ -170,12 +166,10 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
                 case DIVIDE -> constant.div(current);
             };
             if (result.compare(VectorOperators.NE, result).anyTrue()) {
-                for (int lane = 0; lane < SPECIES.length(); ++lane) {
-                    values[i + lane] = scalarBinary(operand, values[i + lane], operation);
-                }
-            } else {
-                result.intoArray(values, i);
+                ScalarDensityKernel.INSTANCE.binaryConstLeft(values, length, operand, operation);
+                return;
             }
+            result.intoArray(values, i);
         }
         for (; i < length; ++i) {
             float current = values[i];
