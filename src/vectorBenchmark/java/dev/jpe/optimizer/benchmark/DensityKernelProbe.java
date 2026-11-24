@@ -12,6 +12,7 @@ public final class DensityKernelProbe {
     private static final int[] SIZES = {256, 1024, 4096, 16384, 65536};
     private static final int[] OUTSIDE_PERCENT = {0, 25, 50, 75, 100};
     private static final int WARMUP = 40;
+    private static final int JIT_WARMUP_CALLS = 10_000;
     private static final int ITERATIONS = 41;
 
     private DensityKernelProbe() {}
@@ -21,8 +22,10 @@ public final class DensityKernelProbe {
         DensityVectorKernel vector = VectorApiDensityKernel.INSTANCE;
         System.out.println("Density kernel probe: sizes=" + Arrays.toString(SIZES)
                 + ", outsideRatios=" + Arrays.toString(OUTSIDE_PERCENT)
-                + ", warmupPairs=" + WARMUP + ", measuredPairs=" + ITERATIONS
+                + ", warmupPairs=" + WARMUP + ", jitWarmupCalls=" + JIT_WARMUP_CALLS
+                + ", measuredPairs=" + ITERATIONS
                 + ", order=alternating-SV/VS, " + vector.description());
+        warmUpKernels(scalar, vector);
 
         for (int size : SIZES) {
             for (int outsidePercent : OUTSIDE_PERCENT) {
@@ -34,9 +37,34 @@ public final class DensityKernelProbe {
             for (DensityVectorKernel.BinaryOp operation : DensityVectorKernel.BinaryOp.values()) {
                 runBinary(size, scalar, vector, operation);
                 runBinaryConst(size, scalar, vector, operation);
+                runBinaryConstLeft(size, scalar, vector, operation);
             }
+            runPerlinLerpAdd(size, scalar, vector);
         }
         System.out.println("Density kernel checksum=" + blackhole);
+    }
+
+    private static void warmUpKernels(DensityVectorKernel scalar, DensityVectorKernel vector) {
+        int n = 256;
+        float[] in = new float[n], out = new float[n], a = new float[n], b = new float[n], ry = new float[n];
+        float[] cx = {0.125F,-0.75F,1.25F,-1.5F,0.875F,-0.25F,1.75F,-1.125F};
+        float[] cy = {-0.5F,0.25F,0.75F,-1.0F,0.375F,1.125F,-0.625F,0.875F};
+        Arrays.fill(in, 0.5F); Arrays.fill(out, -0.25F); Arrays.fill(b, 1.0F);
+        for (int i = 0; i < n; ++i) ry[i] = (i % 101) / 100.0F;
+        for (int i = 0; i < JIT_WARMUP_CALLS; ++i) {
+            scalar.rangeChoice(a, in, out, n, 0.0F, 1.0F); vector.rangeChoice(b, in, out, n, 0.0F, 1.0F);
+            scalar.rangeChoiceConst(a, n, 0.0F, 1.0F, 0.75F, -0.25F); vector.rangeChoiceConst(b, n, 0.0F, 1.0F, 0.75F, -0.25F);
+            scalar.minMax(a, b, n, true); vector.minMax(b, a, n, true);
+            scalar.minMaxConst(a, n, 0.25F, false); vector.minMaxConst(b, n, 0.25F, false);
+            for (DensityVectorKernel.BinaryOp op : DensityVectorKernel.BinaryOp.values()) {
+                scalar.binary(a, b, n, op); vector.binary(b, a, n, op);
+                scalar.binaryConst(a, n, 1.0F, op); vector.binaryConst(b, n, 1.0F, op);
+                scalar.binaryConstLeft(a, n, 1.0F, op); vector.binaryConstLeft(b, n, 1.0F, op);
+            }
+            scalar.perlinLerpAdd(a, 0, ry, n, 0.37F, 0.61F, 0.85F, cx, cy);
+            vector.perlinLerpAdd(b, 0, ry, n, 0.37F, 0.61F, 0.85F, cx, cy);
+        }
+        blackhole += checksum(a) + checksum(b);
     }
 
     private static void runRangeChoice(int size, int outsidePercent,
@@ -140,6 +168,26 @@ public final class DensityKernelProbe {
                 vectorValues);
         compare("binary-constant-" + operation, scalarValues, vectorValues);
         report("binaryConst " + operation, result, size);
+    }
+
+    private static void runBinaryConstLeft(int size, DensityVectorKernel scalar, DensityVectorKernel vector, DensityVectorKernel.BinaryOp op) {
+        float[] initial = new float[size], sv = new float[size], vv = new float[size];
+        for (int i = 0; i < size; ++i) initial[i] = (i % 2001) * 0.001F - 1.0F;
+        PairResult r = measurePair(() -> System.arraycopy(initial,0,sv,0,size), () -> scalar.binaryConstLeft(sv,size,0.375F,op), sv,
+                () -> System.arraycopy(initial,0,vv,0,size), () -> vector.binaryConstLeft(vv,size,0.375F,op), vv);
+        compare("binary-constant-left-" + op, sv, vv); report("binaryConstLeft " + op, r, size);
+    }
+
+    private static void runPerlinLerpAdd(int size, DensityVectorKernel scalar, DensityVectorKernel vector) {
+        float[] initial = new float[size], ry = new float[size], sv = new float[size], vv = new float[size];
+        float[] cx = {0.125F,-0.75F,1.25F,-1.5F,0.875F,-0.25F,1.75F,-1.125F};
+        float[] cy = {-0.5F,0.25F,0.75F,-1.0F,0.375F,1.125F,-0.625F,0.875F};
+        for (int i = 0; i < size; ++i) { initial[i] = (i % 31) * 0.01F; ry[i] = (i % 101) / 100.0F; }
+        PairResult r = measurePair(() -> System.arraycopy(initial,0,sv,0,size),
+                () -> scalar.perlinLerpAdd(sv,0,ry,size,0.37F,0.61F,0.85F,cx,cy), sv,
+                () -> System.arraycopy(initial,0,vv,0,size),
+                () -> vector.perlinLerpAdd(vv,0,ry,size,0.37F,0.61F,0.85F,cx,cy), vv);
+        compare("perlin-lerp-add", sv, vv); report("perlinLerpAdd", r, size);
     }
 
     private static PairResult measurePair(Runnable scalarReset, Runnable scalarOperation, float[] scalarOutput,

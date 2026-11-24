@@ -10,5 +10,7 @@ public interface DensityVectorKernel {
     void binary(float[] left, float[] right, int length, BinaryOp operation);
     void binaryConst(float[] values, int length, float operand, BinaryOp operation);
     void binaryConstLeft(float[] values, int length, float operand, BinaryOp operation);
+    void perlinLerpAdd(float[] values, int outputOffset, float[] relativeY, int length, float alphaX, float alphaZ, float amplitude, float[] cornerXZ, float[] cornerY);
+    int lanes();
     String description();
 }

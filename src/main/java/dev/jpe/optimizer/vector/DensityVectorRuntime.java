@@ -50,6 +50,7 @@ public final class DensityVectorRuntime {
     }
 
     public static boolean enabled() { return activeKernel != null; }
+    public static int laneCount() { DensityVectorKernel k = activeKernel; return k == null ? 1 : k.lanes(); }
     public static String diagnostic() { return diagnostic; }
 
     public static void rangeChoiceConst(float[] values, int length, float minInclusive, float maxExclusive,
@@ -154,6 +155,13 @@ public final class DensityVectorRuntime {
         }
     }
 
+    public static void perlinLerpAdd(float[] values, int offset, float[] relativeY, int length, float ax, float az, float amplitude, float[] cornerXZ, float[] cornerY) {
+        DensityVectorKernel k = activeKernel;
+        if (k == null) { ScalarDensityKernel.INSTANCE.perlinLerpAdd(values, offset, relativeY, length, ax, az, amplitude, cornerXZ, cornerY); return; }
+        try { k.perlinLerpAdd(values, offset, relativeY, length, ax, az, amplitude, cornerXZ, cornerY); }
+        catch (RuntimeException | LinkageError e) { disable(e); ScalarDensityKernel.INSTANCE.perlinLerpAdd(values, offset, relativeY, length, ax, az, amplitude, cornerXZ, cornerY); }
+    }
+
     private static synchronized void disable(Throwable failure) {
         if (activeKernel != null) {
             activeKernel = null;
@@ -217,6 +225,16 @@ public final class DensityVectorRuntime {
                     if (mismatch != null) return mismatch;
                 }
             }
+
+            float[] ry = new float[length + 3], expectedP = new float[length + 7], actualP = new float[length + 7];
+            float[] cx = {0.125F,-0.75F,1.25F,-1.5F,0.875F,-0.25F,1.75F,-1.125F};
+            float[] cy = {-0.5F,0.25F,0.75F,-1.0F,0.375F,1.125F,-0.625F,0.875F};
+            for (int i = 0; i < ry.length; ++i) ry[i] = (i % 17) / 16.0F;
+            for (int i = 0; i < expectedP.length; ++i) expectedP[i] = actualP[i] = canary + i * 0.125F;
+            ScalarDensityKernel.INSTANCE.perlinLerpAdd(expectedP, 2, ry, length, 0.37F, 0.61F, 0.85F, cx, cy);
+            candidate.perlinLerpAdd(actualP, 2, ry, length, 0.37F, 0.61F, 0.85F, cx, cy);
+            mismatch = compare("perlin-lerp-add", length, expectedP, actualP);
+            if (mismatch != null) return mismatch;
 
             for (boolean minimum : new boolean[]{true, false}) {
                 expected = source.clone(); actual = source.clone();

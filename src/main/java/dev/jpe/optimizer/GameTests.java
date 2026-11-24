@@ -8,6 +8,8 @@ import java.util.List;
 import java.util.function.Consumer;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.util.RandomSource;
+import net.minecraft.util.RandomSource;
 import net.minecraft.core.Holder;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.gametest.framework.FunctionGameTestInstance;
@@ -16,6 +18,16 @@ import net.minecraft.gametest.framework.TestData;
 import net.minecraft.gametest.framework.TestEnvironmentDefinition;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.level.block.Rotation;
+import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
+import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
+import net.minecraft.world.level.levelgen.synth.PerlinNoise;
+import net.minecraft.world.level.levelgen.synth.PerlinNoiseVectorizer;
+import dev.jpe.optimizer.mixin.DensityBufferAccessor;
+import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
+import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
+import net.minecraft.world.level.levelgen.synth.PerlinNoise;
+import net.minecraft.world.level.levelgen.synth.PerlinNoiseVectorizer;
+import dev.jpe.optimizer.mixin.DensityBufferAccessor;
 import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
@@ -117,6 +129,8 @@ public final class GameTests {
      * emitted with timings for scalar/SIMD A/B comparison.
      */
     private static void serverWorldgenBenchmark(GameTestHelper helper) {
+        verifyPerlinVectorMatchesVanilla();
+        verifyPerlinVectorMatchesVanilla();
         var level = helper.getLevel();
         long seed = level.getSeed();
         long threadId = Thread.currentThread().threadId();
@@ -178,6 +192,56 @@ public final class GameTests {
                 gcTimeAfter - gcTimeBefore
         );
         helper.succeed();
+    }
+
+    private static void verifyPerlinVectorMatchesVanilla() {
+        if (!dev.jpe.optimizer.vector.DensityVectorRuntime.enabled()) return;
+        PerlinNoise noise = new PerlinNoise(RandomSource.create(0x4a50454cL));
+        DensityVolume volume = new DensityVolume(2, 64, 2, -16, -64, 32);
+        DensityBuffer vanilla = DensityBuffer.createUnpooled(volume.size());
+        DensityBuffer vector = DensityBuffer.createUnpooled(volume.size());
+        PerlinNoiseVectorizer.setVanillaBypass(true);
+        try {
+            noise.addToVolume(vanilla, volume, 0.25, 0.125, 0.75F);
+        } finally {
+            PerlinNoiseVectorizer.setVanillaBypass(false);
+        }
+        noise.addToVolume(vector, volume, 0.25, 0.125, 0.75F);
+        if (!PerlinNoiseVectorizer.wasLastCallVectorized()) {
+            throw new AssertionError("Perlin SIMD equivalence test did not exercise a vector batch");
+        }
+        float[] expected = ((DensityBufferAccessor) vanilla).jpe$values();
+        float[] actual = ((DensityBufferAccessor) vector).jpe$values();
+        for (int i = 0; i < volume.size(); ++i) {
+            if (Float.floatToRawIntBits(expected[i]) != Float.floatToRawIntBits(actual[i])) {
+                throw new AssertionError("Perlin SIMD mismatch at density index " + i);
+            }
+        }
+    }
+
+    private static void verifyPerlinVectorMatchesVanilla() {
+        if (!dev.jpe.optimizer.vector.DensityVectorRuntime.enabled()) return;
+        PerlinNoise noise = new PerlinNoise(RandomSource.create(0x4a50454cL));
+        DensityVolume volume = new DensityVolume(2, 64, 2, -16, -64, 32);
+        DensityBuffer vanilla = DensityBuffer.createUnpooled(volume.size());
+        DensityBuffer vector = DensityBuffer.createUnpooled(volume.size());
+        PerlinNoiseVectorizer.setVanillaBypass(true);
+        try {
+            noise.addToVolume(vanilla, volume, 0.25, 0.125, 0.75F);
+        } finally {
+            PerlinNoiseVectorizer.setVanillaBypass(false);
+        }
+        noise.addToVolume(vector, volume, 0.25, 0.125, 0.75F);
+        if (!PerlinNoiseVectorizer.wasLastCallVectorized()) {
+            throw new AssertionError("Perlin SIMD equivalence test did not exercise a vector batch");
+        }
+        float[] expected = ((DensityBufferAccessor) vanilla).jpe$values();
+        float[] actual = ((DensityBufferAccessor) vector).jpe$values();
+        for (int i = 0; i < volume.size(); ++i) {
+            if (Float.floatToRawIntBits(expected[i]) != Float.floatToRawIntBits(actual[i])) {
+                throw new AssertionError("Perlin SIMD mismatch at density index " + i);
+            }
+        }
     }
 
     private static long processCpuTime() {
