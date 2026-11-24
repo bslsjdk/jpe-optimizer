@@ -30,6 +30,7 @@ import net.neoforged.neoforge.registries.DeferredRegister;
 import dev.jpe.optimizer.mixin.DensityBufferAccessor;
 import dev.jpe.optimizer.mixin.GradientNoiseAccessor;
 import dev.jpe.optimizer.runtime.NativeRuntime;
+import dev.jpe.optimizer.runtime.NativePerlinNoiseBackend;
 import dev.jpe.optimizer.vector.DensityVectorRuntime;
 import dev.jpe.optimizer.vector.PerlinNoiseVectorizer;
 
@@ -358,7 +359,16 @@ public final class GameTests {
             throw new AssertionError("Unable to execute native Perlin parity test", failure);
         }
 
-        JPEOptimizer.LOGGER.info("JPE_NATIVE_PERLIN_PARITY samples={} synchronous=true asynchronous=true bitExact=true",
+        if (!NativePerlinNoiseBackend.enabled()) {
+            throw new AssertionError("Live native Perlin GameTest requires -Djpe.nativePerlinEnabled=true");
+        }
+        DensityBuffer liveNative = DensityBuffer.createUnpooled(volume.size());
+        noise.addToVolume(liveNative, volume, 0.25, 0.0625, 0.75F);
+        if (!NativePerlinNoiseBackend.wasLastCallNative()) {
+            throw new AssertionError("PerlinNoise.addToVolume did not dispatch through the live native backend");
+        }
+        assertNativePerlinParity(expected, ((DensityBufferAccessor) liveNative).jpe$values(), "live-native");
+        JPEOptimizer.LOGGER.info("JPE_NATIVE_PERLIN_PARITY samples={} synchronous=true asynchronous=true liveWorldgen=true bitExact=true",
                 expected.length);
         helper.succeed();
     }
