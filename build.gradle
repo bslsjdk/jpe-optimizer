@@ -88,6 +88,7 @@ def vectorProbeJar = tasks.register('vectorProbeJar', Jar) {
     from sourceSets.vectorBenchmark.output
     from(sourceSets.main.output) {
         include 'dev/jpe/optimizer/vector/DensityVectorKernel.class'
+        include 'dev/jpe/optimizer/vector/DensityVectorKernel$BinaryOp.class'
         include 'dev/jpe/optimizer/vector/ScalarDensityKernel.class'
         include 'dev/jpe/optimizer/vector/VectorApiDensityKernel.class'
     }
