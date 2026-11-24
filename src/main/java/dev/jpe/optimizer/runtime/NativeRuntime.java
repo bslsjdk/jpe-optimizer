@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
+import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
@@ -11,6 +12,7 @@ import java.lang.invoke.MethodHandle;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Objects;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -24,6 +26,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  */
 public final class NativeRuntime implements AutoCloseable {
     public static final int EXPECTED_ABI_VERSION = 6;
+    private static final long PERLIN_LAYER_SIZE = 56L;
 
     public static final int JOB_COMPLETE = 0;
     public static final int JOB_PENDING = 1;
@@ -39,6 +42,7 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle addF32;
     private final MethodHandle perlinAddVolume;
     private final MethodHandle submitPerlinVolume;
+    private final MethodHandle submitPerlinStack;
     private final MethodHandle jobStatus;
     private final MethodHandle waitJob;
     private final MethodHandle cancelJob;
@@ -61,6 +65,9 @@ public final class NativeRuntime implements AutoCloseable {
         private MemorySegment output;
         private int permutationCapacity;
         private int outputCapacity;
+        private MemorySegment layerDescriptors;
+        private MemorySegment layerPermutations;
+        private int layerCapacity;
         private final AtomicBoolean leased = new AtomicBoolean();
 
         private boolean tryAcquire() { return leased.compareAndSet(false, true); }
@@ -78,6 +85,15 @@ public final class NativeRuntime implements AutoCloseable {
             if (outputCapacity < outputLength) {
                 output = allocateFloats(arena, outputLength);
                 outputCapacity = outputLength;
+            }
+        }
+
+        private void ensureStackCapacity(int layerCount, int outputLength) {
+            ensureCapacity(256, outputLength);
+            if (layerCapacity < layerCount) {
+                layerDescriptors = arena.allocate(Math.multiplyExact((long) layerCount, PERLIN_LAYER_SIZE), 8);
+                layerPermutations = allocateBytes(arena, Math.multiplyExact(layerCount, 256));
+                layerCapacity = layerCount;
             }
         }
 
@@ -99,7 +115,7 @@ public final class NativeRuntime implements AutoCloseable {
     }
 
     private NativeRuntime(MethodHandle configureWorkers, int workerCount,
-                          MethodHandle add, MethodHandle perlin, MethodHandle submit,
+                          MethodHandle add, MethodHandle perlin, MethodHandle submit, MethodHandle submitStack,
                           MethodHandle status, MethodHandle wait,
                           MethodHandle cancel, MethodHandle release) {
         this.configureWorkers = configureWorkers;
@@ -107,6 +123,7 @@ public final class NativeRuntime implements AutoCloseable {
         this.addF32 = add;
         this.perlinAddVolume = perlin;
         this.submitPerlinVolume = submit;
+        this.submitPerlinStack = submitStack;
         this.jobStatus = status;
         this.waitJob = wait;
         this.cancelJob = cancel;
@@ -151,6 +168,14 @@ public final class NativeRuntime implements AutoCloseable {
                             ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_DOUBLE,
                             ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_FLOAT,
                             ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT));
+            MethodHandle submitStack = linker.downcallHandle(
+                    lookup.find("jpe_runtime_submit_perlin_stack").orElseThrow(() -> new IllegalStateException("Missing async Perlin stack symbol")),
+                    FunctionDescriptor.of(ValueLayout.JAVA_LONG,
+                            ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                            ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT));
             MethodHandle status = linker.downcallHandle(
                     lookup.find("jpe_runtime_job_status").orElseThrow(() -> new IllegalStateException("Missing async job status symbol")),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG));
@@ -171,7 +196,7 @@ public final class NativeRuntime implements AutoCloseable {
             int requestedWorkers = requestedNativeWorkers();
             int actualWorkers = (int) configureWorkers.invokeExact(requestedWorkers);
             if (actualWorkers < 1) throw new IllegalStateException("Unable to configure native workers: " + actualWorkers);
-            return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, submit, status, wait, cancel, release);
+            return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, submit, submitStack, status, wait, cancel, release);
         } catch (Throwable failure) {
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
         }
@@ -288,6 +313,91 @@ public final class NativeRuntime implements AutoCloseable {
             if (scratch != null && !transferred) scratch.release();
             lifecycle.readLock().unlock();
         }
+    }
+
+    /** Submits a complete Perlin stack with one descriptor array and one shared output buffer. */
+    public NativeJob submitPerlinStack(List<PerlinLayer> layers,
+                                       int sizeX, int sizeY, int sizeZ,
+                                       int minX, int minY, int minZ,
+                                       int stepX, int stepY, int stepZ,
+                                       float[] initialOutput, boolean farLands) {
+        lifecycle.readLock().lock();
+        PerlinScratch scratch = null;
+        boolean transferred = false;
+        try {
+            ensureOpen();
+            int outputLength = validatePerlinStackInputs(layers, sizeX, sizeY, sizeZ,
+                    stepX, stepY, stepZ, initialOutput);
+            scratch = acquirePerlinScratch();
+            scratch.ensureStackCapacity(layers.size(), outputLength);
+            copyPrefix(initialOutput, outputLength, scratch.output);
+            writePerlinLayers(layers, scratch);
+            long id = (long) submitPerlinStack.invokeExact(
+                    scratch.layerDescriptors, layers.size(),
+                    sizeX, sizeY, sizeZ,
+                    minX, minY, minZ, stepX, stepY, stepZ,
+                    scratch.output, (long) outputLength, farLands ? 1 : 0);
+            if (id == 0L) return null;
+            NativeJob job = new NativeJob(this, id, outputLength, scratch);
+            jobs.put(id, job);
+            transferred = true;
+            return job;
+        } catch (Throwable failure) {
+            throw rethrow("Unable to submit native Perlin stack job", failure);
+        } finally {
+            if (scratch != null && !transferred) scratch.release();
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    private static void writePerlinLayers(List<PerlinLayer> layers, PerlinScratch scratch) {
+        for (int i = 0; i < layers.size(); ++i) {
+            PerlinLayer layer = Objects.requireNonNull(layers.get(i), "layer");
+            byte[] permutation = layer.permutation();
+            if (permutation == null || permutation.length != 256) {
+                throw new IllegalArgumentException("Each Perlin layer permutation must contain 256 bytes");
+            }
+            long base = Math.multiplyExact((long) i, PERLIN_LAYER_SIZE);
+            MemorySegment permutationSlice = scratch.layerPermutations.asSlice((long) i * 256L, 256L);
+            copy(permutation, permutationSlice);
+            scratch.layerDescriptors.set(ValueLayout.ADDRESS, base, permutationSlice);
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 8L, layer.offsetX());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 16L, layer.offsetY());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 24L, layer.offsetZ());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 32L, layer.xzScale());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 40L, layer.yScale());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_FLOAT, base + 48L, layer.amplitude());
+        }
+    }
+
+    public record PerlinLayer(byte[] permutation, double offsetX, double offsetY, double offsetZ,
+                              double xzScale, double yScale, float amplitude) {}
+
+    static int validatePerlinStackInputs(List<PerlinLayer> layers,
+                                         int sizeX, int sizeY, int sizeZ,
+                                         int stepX, int stepY, int stepZ,
+                                         float[] output) {
+        Objects.requireNonNull(layers, "layers");
+        Objects.requireNonNull(output, "output");
+        if (layers.isEmpty() || layers.size() > 64) {
+            throw new IllegalArgumentException("Perlin stack must contain between 1 and 64 layers");
+        }
+        if (sizeX <= 0 || sizeY <= 0 || sizeZ <= 0) {
+            throw new IllegalArgumentException("Perlin dimensions must be non-zero");
+        }
+        if (stepX == 0 || stepY == 0 || stepZ == 0) {
+            throw new IllegalArgumentException("Perlin axis steps must be non-zero");
+        }
+        for (PerlinLayer layer : layers) {
+            Objects.requireNonNull(layer, "layer");
+            if (layer.permutation() == null || layer.permutation().length != 256) {
+                throw new IllegalArgumentException("Each Perlin layer permutation must contain 256 bytes");
+            }
+        }
+        long expected = Math.multiplyExact(Math.multiplyExact((long) sizeX, sizeY), sizeZ);
+        if (expected > output.length) throw new IllegalArgumentException("Output buffer is smaller than the requested volume");
+        if (expected > 1_048_576L) throw new IllegalArgumentException("Perlin volume exceeds native 1,048,576-element limit");
+        return Math.toIntExact(expected);
     }
 
     static int validatePerlinInputs(byte[] permutation,
