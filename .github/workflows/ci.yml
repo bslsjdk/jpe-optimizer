@@ -186,6 +186,17 @@ jobs:
           run_worldgen palette_hash_on_b scalar "-Djpe.paletteHashEnabled=true"
           run_worldgen palette_hash_off_b scalar
 
+          # Isolate reuse of Climate.TargetPoint's temporary long[7] query vector.
+          # Scalar density kernels are fixed; only the opt-in thread-local scratch buffer changes.
+          run_worldgen target_array_off_a scalar "-Djpe.climateTargetArrayReuse=false"
+          run_worldgen target_array_on_a scalar "-Djpe.climateTargetArrayReuse=true"
+          run_worldgen target_array_on_b scalar "-Djpe.climateTargetArrayReuse=true"
+          run_worldgen target_array_off_b scalar "-Djpe.climateTargetArrayReuse=false"
+          grep -F 'JPE_CLIMATE_TARGET_ARRAY_REUSE enabled=false' build/server-benchmark/target_array_off_a.log
+          grep -F 'JPE_CLIMATE_TARGET_ARRAY_REUSE enabled=true' build/server-benchmark/target_array_on_a.log
+          grep -F 'JPE_CLIMATE_TARGET_ARRAY_REUSE enabled=true' build/server-benchmark/target_array_on_b.log
+          grep -F 'JPE_CLIMATE_TARGET_ARRAY_REUSE enabled=false' build/server-benchmark/target_array_off_b.log
+
           # Separate diagnostic run: JFR sampling identifies real hot methods without
           # contaminating the four-run scalar/vector performance comparison.
           run_worldgen profile vector "-XX:StartFlightRecording=filename=${GITHUB_WORKSPACE}/build/server-benchmark/profile-%p.jfr,settings=profile,dumponexit=true -Djpe.densityBufferMetrics=true"
