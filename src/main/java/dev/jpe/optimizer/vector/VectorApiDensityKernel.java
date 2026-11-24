@@ -104,7 +104,15 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
                 case MULTIPLY -> a.mul(b);
                 case DIVIDE -> a.div(b);
             };
+            VectorMask<Float> nanResults = result.compare(VectorOperators.NE, result);
             result.intoArray(left, i);
+            // Vector hardware may canonicalize NaN payload/sign bits. Recompute only
+            // NaN lanes with Java scalar operators to preserve vanilla raw-bit behavior.
+            for (int lane = 0; lane < SPECIES.length(); ++lane) {
+                if (nanResults.laneIsSet(lane)) {
+                    left[i + lane] = scalarBinary(a.lane(lane), b.lane(lane), operation);
+                }
+            }
         }
         for (; i < length; ++i) {
             float a = left[i], b = right[i];
@@ -130,7 +138,13 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
                 case MULTIPLY -> current.mul(constant);
                 case DIVIDE -> current.div(constant);
             };
+            VectorMask<Float> nanResults = result.compare(VectorOperators.NE, result);
             result.intoArray(values, i);
+            for (int lane = 0; lane < SPECIES.length(); ++lane) {
+                if (nanResults.laneIsSet(lane)) {
+                    values[i + lane] = scalarBinary(current.lane(lane), operand, operation);
+                }
+            }
         }
         for (; i < length; ++i) {
             float current = values[i];
@@ -156,7 +170,13 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
                 case MULTIPLY -> constant.mul(current);
                 case DIVIDE -> constant.div(current);
             };
+            VectorMask<Float> nanResults = result.compare(VectorOperators.NE, result);
             result.intoArray(values, i);
+            for (int lane = 0; lane < SPECIES.length(); ++lane) {
+                if (nanResults.laneIsSet(lane)) {
+                    values[i + lane] = scalarBinary(operand, current.lane(lane), operation);
+                }
+            }
         }
         for (; i < length; ++i) {
             float current = values[i];
@@ -167,6 +187,15 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
                 case DIVIDE -> operand / current;
             };
         }
+    }
+
+    private static float scalarBinary(float left, float right, BinaryOp operation) {
+        return switch (operation) {
+            case ADD -> left + right;
+            case SUBTRACT -> left - right;
+            case MULTIPLY -> left * right;
+            case DIVIDE -> left / right;
+        };
     }
 
     @Override
