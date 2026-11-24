@@ -138,8 +138,8 @@ public final class ClimateRTreeBenchmark {
         for (int round = 0; round < MEASUREMENT_ROUNDS; round++) {
             shuffle(order, orderRandom);
             for (int variant : order) {
-                Climate.ParameterList<Integer> candidate = source.rebuildWithChildrenPerNode(FAN_OUTS[variant]);
                 long buildStart = System.nanoTime();
+                Climate.ParameterList<Integer> candidate = source.rebuildWithChildrenPerNode(FAN_OUTS[variant]);
                 buildSamples[variant][round] = System.nanoTime() - buildStart;
 
                 for (int i = 0; i < perRoundWarmup; i++) {
