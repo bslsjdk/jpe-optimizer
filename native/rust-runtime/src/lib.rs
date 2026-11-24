@@ -594,5 +594,43 @@ mod tests {
     }
 
     #[test]
+    fn perlin_stack_validates_all_descriptors_before_mutating_output() {
+        let permutation = [0_u8; 256];
+        let layers = [
+            JpePerlinLayer { permutation: permutation.as_ptr(),
+                offset_x: 0.0, offset_y: 0.0, offset_z: 0.0,
+                xz_scale: 1.0, y_scale: 1.0, amplitude: 1.0 },
+            JpePerlinLayer { permutation: std::ptr::null(),
+                offset_x: 0.0, offset_y: 0.0, offset_z: 0.0,
+                xz_scale: 1.0, y_scale: 1.0, amplitude: 1.0 },
+        ];
+        let mut output = [0.375_f32; 8];
+        let before = output;
+        let status = unsafe { jpe_cpp_perlin_add_stack(
+            layers.as_ptr(), layers.len() as u32,
+            2, 2, 2, 0, 0, 0, 1, 1, 1,
+            output.as_mut_ptr(), output.len() as u64, 0
+        ) };
+        assert_eq!(status, STATUS_INVALID_ARGUMENT);
+        assert_eq!(output.map(f32::to_bits), before.map(f32::to_bits));
+    }
+
+    #[test]
+    fn perlin_stack_rejects_invalid_dimensions_without_mutating_output() {
+        let permutation = [0_u8; 256];
+        let layer = JpePerlinLayer { permutation: permutation.as_ptr(),
+            offset_x: 0.0, offset_y: 0.0, offset_z: 0.0,
+            xz_scale: 1.0, y_scale: 1.0, amplitude: 1.0 };
+        let mut output = [0.625_f32; 1];
+        let before = output;
+        let status = unsafe { jpe_cpp_perlin_add_stack(
+            &layer, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1,
+            output.as_mut_ptr(), output.len() as u64, 0
+        ) };
+        assert_eq!(status, STATUS_INVALID_ARGUMENT);
+        assert_eq!(output.map(f32::to_bits), before.map(f32::to_bits));
+    }
+
+    #[test]
     fn unknown_job_ids_are_rejected() { assert_eq!(jpe_runtime_job_status(u64::MAX), -1); }
 }
