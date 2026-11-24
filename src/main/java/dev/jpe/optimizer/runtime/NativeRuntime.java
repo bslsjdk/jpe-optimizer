@@ -301,7 +301,7 @@ public final class NativeRuntime implements AutoCloseable {
         if (closed) throw new IllegalStateException("Native runtime is closed");
     }
 
-    private static void validatePerlinInputs(byte[] permutation, int[] blockX, int[] blockY,
+    static int validatePerlinInputs(byte[] permutation, int[] blockX, int[] blockY,
                                              int[] blockZ, float[] output) {
         Objects.requireNonNull(permutation, "permutation");
         Objects.requireNonNull(blockX, "blockX");
