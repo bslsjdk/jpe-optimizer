@@ -128,6 +128,16 @@ jobs:
           grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin.*nativeCompleted=[1-9][0-9]*' build/server-benchmark/native_a.log
           grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin.*nativeCompleted=[1-9][0-9]*' build/server-benchmark/native_b.log
 
+          # Compare synchronous C++ calls on Minecraft's own worldgen workers.
+          # This removes the second native pool and its task-copy/polling overhead.
+          native_sync_option="-Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so"
+          run_worldgen native_sync_scalar_a scalar
+          run_worldgen native_sync_a scalar "$native_sync_option"
+          run_worldgen native_sync_b scalar "$native_sync_option"
+          run_worldgen native_sync_scalar_b scalar
+          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin-sync.*nativeSyncCalls=[1-9][0-9]*' build/server-benchmark/native_sync_a.log
+          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin-sync.*nativeSyncCalls=[1-9][0-9]*' build/server-benchmark/native_sync_b.log
+
           # Isolate the material-rule density-buffer reuse experiment with a fresh-world ABBA.
           # All four runs use the same vector density kernels; only the scoped buffer lease changes.
           run_worldgen material_pool_off_a vector "-Djpe.densityBufferMetrics=true"

@@ -372,7 +372,21 @@ public final class GameTests {
         if (!NativePerlinNoiseBackend.wasLastCallNative()) {
             throw new AssertionError("PerlinNoise.addToVolume did not dispatch through the live native backend");
         }
-        assertNativePerlinParity(expected, ((DensityBufferAccessor) liveNative).jpe$values(), "live-native");
+        assertNativePerlinParity(expected, ((DensityBufferAccessor) liveNative).jpe$values(), "live-native-async");
+
+        String previousMode = System.getProperty("jpe.nativePerlinSynchronous");
+        try {
+            System.setProperty("jpe.nativePerlinSynchronous", "true");
+            DensityBuffer liveSynchronous = DensityBuffer.createUnpooled(volume.size());
+            noise.addToVolume(liveSynchronous, volume, 0.25, 0.0625, 0.75F);
+            if (!NativePerlinNoiseBackend.wasLastCallNative()) {
+                throw new AssertionError("PerlinNoise.addToVolume did not dispatch through synchronous native mode");
+            }
+            assertNativePerlinParity(expected, ((DensityBufferAccessor) liveSynchronous).jpe$values(), "live-native-sync");
+        } finally {
+            if (previousMode == null) System.clearProperty("jpe.nativePerlinSynchronous");
+            else System.setProperty("jpe.nativePerlinSynchronous", previousMode);
+        }
         JPEOptimizer.LOGGER.info("JPE_NATIVE_PERLIN_PARITY samples={} synchronous=true asynchronous=true liveWorldgen=true bitExact=true",
                 expected.length);
         helper.succeed();

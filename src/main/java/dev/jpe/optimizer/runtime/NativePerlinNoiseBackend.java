@@ -20,6 +20,7 @@ public final class NativePerlinNoiseBackend {
     private static final LongAdder FALLBACKS = new LongAdder();
     private static final LongAdder SAMPLES = new LongAdder();
     private static final LongAdder TOTAL_NANOS = new LongAdder();
+    private static final LongAdder SYNCHRONOUS_CALLS = new LongAdder();
     private static final ThreadLocal<CoordinateScratch> COORDINATES =
             ThreadLocal.withInitial(CoordinateScratch::new);
 
@@ -35,10 +36,17 @@ public final class NativePerlinNoiseBackend {
         }
     }
 
-    public record Metrics(long attempts, long completed, long fallbacks, long samples, long totalNanos) {}
+    public record Metrics(long attempts, long completed, long fallbacks, long samples,
+                          long totalNanos, long synchronousCalls) {}
 
     public static Metrics metricsSnapshot() {
-        return new Metrics(ATTEMPTS.sum(), COMPLETED.sum(), FALLBACKS.sum(), SAMPLES.sum(), TOTAL_NANOS.sum());
+        return new Metrics(ATTEMPTS.sum(), COMPLETED.sum(), FALLBACKS.sum(), SAMPLES.sum(),
+                TOTAL_NANOS.sum(), SYNCHRONOUS_CALLS.sum());
+    }
+
+    public static String mode() {
+        return Boolean.getBoolean("jpe.nativePerlinSynchronous")
+                ? "native-perlin-sync" : "native-perlin-async";
     }
 
     private NativePerlinNoiseBackend() {}
@@ -92,6 +100,24 @@ public final class NativePerlinNoiseBackend {
 
             float[] target = ((DensityBufferAccessor) buffer).jpe$values();
             if (target.length != volume.size()) return false;
+
+            // Experiment: run the C++ kernel inline on Minecraft's existing worldgen worker.
+            // This avoids a second thread pool, Rust task copies, job tracking and 1 ms polling.
+            // Keep the asynchronous path available for an apples-to-apples ABBA comparison.
+            if (Boolean.getBoolean("jpe.nativePerlinSynchronous")) {
+                nativeRuntime.perlinAddVolume(
+                        access.jpe$perms(), blockX, blockY, blockZ,
+                        access.jpe$offsetX(), access.jpe$offsetY(), access.jpe$offsetZ(),
+                        xzScale, yScale, amplitude, target,
+                        SharedConstants.DEBUG_ENABLE_FARLANDS
+                );
+                SYNCHRONOUS_CALLS.increment();
+                LAST_CALL_NATIVE.set(true);
+                success = true;
+                COMPLETED.increment();
+                return true;
+            }
+
             // submitPerlinVolume copies the input into FFM memory and then Rust-owned memory
             // before returning. Passing the live array is safe: workers never retain it.
             // Output is copied back only after the native job reaches JOB_COMPLETE.

@@ -307,6 +307,7 @@ public final class ContinuousWorldgenBenchmark {
             long nativeFallbacks = nativeAfter.fallbacks() - nativeBefore.fallbacks();
             long nativeSamples = nativeAfter.samples() - nativeBefore.samples();
             long nativeNanos = nativeAfter.totalNanos() - nativeBefore.totalNanos();
+            long nativeSyncCalls = nativeAfter.synchronousCalls() - nativeBefore.synchronousCalls();
             long requested = (long) MEASURED_ROWS * FRONTIER_WIDTH;
             int completed = measuredCompleted.get();
             int failed = measuredFailed.get();
@@ -327,7 +328,7 @@ public final class ContinuousWorldgenBenchmark {
                             + "structureCandidateChecks={} structureVanillaLinearChecks={} "
                             + "densityMetricsEnabled={} unpooledCalls={} unpooledElements={} "
                             + "poolHits={} poolMisses={} poolRequestedElements={} poolReusedCapacityElements={} "
-                            + "nativePerlinEnabled={} nativeCalls={} nativeCompleted={} nativeFallbacks={} nativeSamples={} nativeTotalMs={}",
+                            + "nativePerlinEnabled={} nativePerlinMode={} nativeCalls={} nativeCompleted={} nativeFallbacks={} nativeSyncCalls={} nativeSamples={} nativeTotalMs={}",
                     level.getSeed(), level.getChunkSource().getGenerator().getClass().getName(),
                     NativePerlinNoiseBackend.enabled() ? "native-perlin" : (DensityVectorRuntime.enabled() ? "vector" : "scalar"),
                     format(320.0 / TICKS_PER_CHUNK_COLUMN),
@@ -359,7 +360,8 @@ public final class ContinuousWorldgenBenchmark {
                     densityBufferDelta.unpooledElements(), densityBufferDelta.poolHits(),
                     densityBufferDelta.poolMisses(), densityBufferDelta.poolRequestedElements(),
                     densityBufferDelta.poolReusedCapacityElements(), NativePerlinNoiseBackend.enabled(),
-                    nativeCalls, nativeCompleted, nativeFallbacks, nativeSamples,
+                    NativePerlinNoiseBackend.mode(), nativeCalls, nativeCompleted, nativeFallbacks,
+                    nativeSyncCalls, nativeSamples,
                     format(nativeNanos / 1_000_000.0)
             );
 
