@@ -30,15 +30,16 @@ jobs:
 
       - name: Benchmark GC configurations
         run: |
-          echo "=== GC flag comparison: MC-like tiny-object allocation, -Xmx512m (phone-like small heap) ==="
-          echo "5 runs per config; report ALL runs. Lower gcTotalMs / fewer gcCount is better."
-          echo "NOTE: x86 CI trend only; final call must be A/B tested on the actual phone."
+          echo "=== GC comparison: tiny-object flood, phone-like -Xmx128m, heavy load ==="
+          echo "Metrics: gcTotalMs (cumulative pause), gcCount, worstRoundMs (hitch), allocMbPerSec."
+          echo "3 runs/config, report ALL. Lower worstRoundMs & gcTotalMs is better."
+          echo "NOTE: x86 CI trend only; final choice must be A/B tested on the real phone."
           echo
           run_cfg() {
             local name="$1"; shift
             echo "--- CONFIG: $name | flags: $* ---"
-            for i in 1 2 3 4 5; do
-              java -Xms256m -Xmx512m "$@" -cp build/gc GcStress 400000 12 | tee -a "build/gc/$name.txt"
+            for i in 1 2 3; do
+              java -Xms64m -Xmx128m "$@" -cp build/gc GcStress 300000 60 | tee -a "build/gc/$name.txt"
             done
             echo
           }
