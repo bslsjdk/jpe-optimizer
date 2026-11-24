@@ -139,6 +139,8 @@ public final class GameTests {
             level.getChunk(8192 + i * 96, -8192 - (i % 2) * 96);
         }
 
+        // Phase counters begin after warmup and describe the same measured batch.
+        var worldgenBefore = dev.jpe.optimizer.worldgen.WorldgenMetrics.snapshot();
         // All resource counters begin after warmup and cover exactly the same 24 measured chunks.
         List<Long> elapsed = new ArrayList<>();
         long processCpuBefore = processCpuTime();
@@ -170,9 +172,15 @@ public final class GameTests {
         long[] sorted = elapsed.stream().mapToLong(Long::longValue).sorted().toArray();
 
         var structureMetrics = dev.jpe.optimizer.worldgen.StructureSpatialIndex.metricsSnapshot();
+        var worldgenAfter = dev.jpe.optimizer.worldgen.WorldgenMetrics.snapshot();
+        long doFillCalls = worldgenAfter.calls() - worldgenBefore.calls();
+        long densitySampleNanos = worldgenAfter.densitySampleNanos() - worldgenBefore.densitySampleNanos();
+        long blockFillNanos = worldgenAfter.blockFillNanos() - worldgenBefore.blockFillNanos();
+        long doFillSamples = worldgenAfter.samples() - worldgenBefore.samples();
         JPEOptimizer.LOGGER.info(
                 "JPE_SERVER_WORLDGEN_BENCH seed={} mode={} chunks=24 meanMs={} medianMs={} p95Ms={} " +
                 "serverThreadCpuMs={} processCpuMs={} serverThreadAllocatedMiB={} gcCollections={} gcMs={} warmupChunks=8 " +
+                "doFillCalls={} doFillDensityMs={} doFillBlockMs={} doFillSamples={} " +
                 "structureQueries={} structureIndexBuilds={} structureIndexedPieces={} structureCandidateChecks={} " +
                 "structureLinearFallbacks={} structureVanillaLinearChecks={}",
                 seed,
@@ -191,6 +199,10 @@ public final class GameTests {
                         : "unsupported",
                 gcCountAfter - gcCountBefore,
                 gcTimeAfter - gcTimeBefore,
+                doFillCalls,
+                String.format(java.util.Locale.ROOT, "%.3f", densitySampleNanos / 1_000_000.0),
+                String.format(java.util.Locale.ROOT, "%.3f", blockFillNanos / 1_000_000.0),
+                doFillSamples,
                 structureMetrics.queries(),
                 structureMetrics.builds(),
                 structureMetrics.indexedPieces(),
