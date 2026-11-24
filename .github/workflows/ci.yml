@@ -57,7 +57,17 @@ jobs:
       - name: GameTest correctness suite
         env:
           JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.perlinVectorEnabled=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
-        run: gradle runGameTestServer --no-daemon --stacktrace
+        run: |
+          mkdir -p build/gametest
+          set +e
+          gradle runGameTestServer --no-daemon --stacktrace
+          test_status=$?
+          set -e
+          # Preserve the GameTest server log before later benchmark runs recreate run/.
+          if [ -d run/logs ]; then
+            cp -a run/logs build/gametest/
+          fi
+          exit "$test_status"
 
       - name: Dedicated continuous run-worldgen benchmark (scalar/vector ABBA, four fresh servers)
         run: |
@@ -143,6 +153,7 @@ jobs:
             build/vector-probe/
             build/math-benchmark/
             build/server-benchmark/
+            build/gametest/
             build/reports/tests/
             build/test-results/
             build/source-audit/report.txt
