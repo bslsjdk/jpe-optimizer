@@ -201,7 +201,7 @@ public final class NativeRuntime implements AutoCloseable {
         lifecycle.readLock().lock();
         try {
         ensureOpen();
-        validatePerlinInputs(permutation, blockX, blockY, blockZ, output);
+        int outputLength = validatePerlinInputs(permutation, blockX, blockY, blockZ, output);
         try {
             PerlinScratch scratch = perlinScratch.get();
             if (scratch == null) {
@@ -212,14 +212,14 @@ public final class NativeRuntime implements AutoCloseable {
                     MemorySegment x = allocateInts(arena, blockX.length);
                     MemorySegment y = allocateInts(arena, blockY.length);
                     MemorySegment z = allocateInts(arena, blockZ.length);
-                    MemorySegment out = allocateFloats(arena, output.length);
+                    MemorySegment out = allocateFloats(arena, outputLength);
                     copy(permutation, p);
                     copy(blockX, x);
                     copy(blockY, y);
                     copy(blockZ, z);
-                    copy(output, out);
+                    copyPrefix(output, outputLength, out);
                     invokePerlin(p, x, y, z, blockX.length, blockY.length, blockZ.length,
-                            offsetX, offsetY, offsetZ, xzScale, yScale, amplitude, out, output, farLands);
+                            offsetX, offsetY, offsetZ, xzScale, yScale, amplitude, out, output, outputLength, farLands);
                 }
             } else {
                 scratch.ensureCapacity(permutation.length, blockX.length, blockY.length,
@@ -228,11 +228,11 @@ public final class NativeRuntime implements AutoCloseable {
                 copy(blockX, scratch.blockX);
                 copy(blockY, scratch.blockY);
                 copy(blockZ, scratch.blockZ);
-                copy(output, scratch.output);
+                copyPrefix(output, outputLength, scratch.output);
                 invokePerlin(scratch.permutation, scratch.blockX, scratch.blockY, scratch.blockZ,
                         blockX.length, blockY.length, blockZ.length,
                         offsetX, offsetY, offsetZ, xzScale, yScale, amplitude,
-                        scratch.output, output, farLands);
+                        scratch.output, output, outputLength, farLands);
             }
         } catch (Throwable failure) {
             throw rethrow("Native Perlin volume call failed", failure);
@@ -247,13 +247,13 @@ public final class NativeRuntime implements AutoCloseable {
                               int sizeX, int sizeY, int sizeZ,
                               double offsetX, double offsetY, double offsetZ,
                               double xzScale, double yScale, float amplitude,
-                              MemorySegment nativeOutput, float[] javaOutput, boolean farLands) throws Throwable {
+                              MemorySegment nativeOutput, float[] javaOutput, int outputLength, boolean farLands) throws Throwable {
         int status = (int) perlinAddVolume.invokeExact(p, x, y, z,
                 sizeX, sizeY, sizeZ, offsetX, offsetY, offsetZ,
-                xzScale, yScale, amplitude, nativeOutput, (long) javaOutput.length,
+                xzScale, yScale, amplitude, nativeOutput, (long) outputLength,
                 farLands ? 1 : 0);
         checkStatus(status, "perlin-add-volume");
-        copy(nativeOutput, javaOutput);
+        copyPrefix(nativeOutput, javaOutput, outputLength);
     }
 
     /**
@@ -268,24 +268,24 @@ public final class NativeRuntime implements AutoCloseable {
         lifecycle.readLock().lock();
         try {
         ensureOpen();
-        validatePerlinInputs(permutation, blockX, blockY, blockZ, initialOutput);
+        int outputLength = validatePerlinInputs(permutation, blockX, blockY, blockZ, initialOutput);
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment p = allocateBytes(arena, permutation.length);
             MemorySegment x = allocateInts(arena, blockX.length);
             MemorySegment y = allocateInts(arena, blockY.length);
             MemorySegment z = allocateInts(arena, blockZ.length);
-            MemorySegment initial = allocateFloats(arena, initialOutput.length);
+            MemorySegment initial = allocateFloats(arena, outputLength);
             copy(permutation, p);
             copy(blockX, x);
             copy(blockY, y);
             copy(blockZ, z);
-            copy(initialOutput, initial);
+            copyPrefix(initialOutput, outputLength, initial);
             long id = (long) submitPerlinVolume.invokeExact(
                     p, x, y, z, blockX.length, blockY.length, blockZ.length,
                     offsetX, offsetY, offsetZ, xzScale, yScale, amplitude,
-                    initial, (long) initialOutput.length, farLands ? 1 : 0);
+                    initial, (long) outputLength, farLands ? 1 : 0);
             if (id == 0L) return null;
-            NativeJob job = new NativeJob(this, id, initialOutput.length);
+            NativeJob job = new NativeJob(this, id, outputLength);
             jobs.put(id, job);
             return job;
         } catch (Throwable failure) {
@@ -313,8 +313,9 @@ public final class NativeRuntime implements AutoCloseable {
             throw new IllegalArgumentException("Perlin dimensions must be non-zero");
         }
         long expected = Math.multiplyExact(Math.multiplyExact((long) blockX.length, blockY.length), blockZ.length);
-        if (expected != output.length) throw new IllegalArgumentException("Output length does not match volume dimensions");
+        if (expected > output.length) throw new IllegalArgumentException("Output buffer is smaller than the requested volume");
         if (expected > 1_048_576L) throw new IllegalArgumentException("Perlin volume exceeds native 1,048,576-element limit");
+        return Math.toIntExact(expected);
     }
 
     private static MemorySegment allocateBytes(Arena arena, int length) {
@@ -337,6 +338,12 @@ public final class NativeRuntime implements AutoCloseable {
     }
     private static void copy(MemorySegment source, float[] target) {
         MemorySegment.copy(source, ValueLayout.JAVA_FLOAT, 0L, target, 0, target.length);
+    }
+    private static void copyPrefix(float[] source, int length, MemorySegment target) {
+        MemorySegment.copy(source, 0, target, ValueLayout.JAVA_FLOAT, 0L, length);
+    }
+    private static void copyPrefix(MemorySegment source, float[] target, int length) {
+        MemorySegment.copy(source, ValueLayout.JAVA_FLOAT, 0L, target, 0, length);
     }
     private static void checkStatus(int status, String operation) {
         if (status != 0) throw new IllegalStateException("Native " + operation + " failed with status " + status);
@@ -419,8 +426,8 @@ public final class NativeRuntime implements AutoCloseable {
         public synchronized void copyOutputInto(float[] destination) {
             ensureUsable();
             Objects.requireNonNull(destination, "destination");
-            if (destination.length != outputLength) {
-                throw new IllegalArgumentException("Destination length must equal " + outputLength);
+            if (destination.length < outputLength) {
+                throw new IllegalArgumentException("Destination buffer is smaller than " + outputLength);
             }
             try (Arena arena = Arena.ofConfined()) {
                 MemorySegment out = allocateFloats(arena, outputLength);
@@ -429,7 +436,7 @@ public final class NativeRuntime implements AutoCloseable {
                     throw new IllegalStateException("Native job is not complete yet; status=" + result);
                 }
                 checkStatus(result, "copy-job-output");
-                copy(out, destination);
+                copyPrefix(out, destination, outputLength);
             } catch (Throwable failure) {
                 throw rethrow("Unable to copy native job output", failure);
             }

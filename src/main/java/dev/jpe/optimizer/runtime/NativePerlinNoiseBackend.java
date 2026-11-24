@@ -145,7 +145,7 @@ public final class NativePerlinNoiseBackend {
             for (int i = 0; i < blockZ.length; ++i) blockZ[i] = volume.blockZ(i);
 
             float[] target = ((DensityBufferAccessor) buffer).jpe$values();
-            if (target.length != expectedElements) {
+            if (target.length < expectedElements) {
                 BUFFER_VOLUME_MISMATCHES.increment();
                 return false;
             }
