@@ -108,11 +108,20 @@ Record:
 
 Use repeated ABBA or randomized order on fresh servers. Report median and spread. A faster isolated C++ kernel is not sufficient if bridge copies, queueing or block fill erase the gain.
 
+## Implementation status after the first native batch step
+
+- C++ `jpe_cpp_perlin_add_stack` now evaluates up to 64 ordered layer descriptors into one output buffer by calling the existing scalar volume kernel in order.
+- Rust exposes synchronous `jpe_runtime_perlin_add_stack` with dimension, length, layer-count and pointer validation.
+- Rust worker pool now accepts `jpe_runtime_submit_perlin_stack`; it copies each permutation into Rust-owned memory and borrows the shared output buffer until terminal status, matching the existing job lifecycle.
+- Rust tests compare synchronous stack output bit-for-bit with repeated single-layer calls, and compare asynchronous stack output with synchronous output.
+- This still does not reduce repeated coordinate calculations inside the C++ kernel. It primarily amortizes Java/FFM/Rust job and output-copy overhead across layers once Java is wired to it.
+- Java FFM bindings and Minecraft call-site integration are not yet implemented. The existing per-layer hook remains the active path.
+
 ## Immediate next implementation steps
 
 1. Complete the official Minecraft 26.3 and NeoForge-patched artifact audit. Record artifact hashes and verify the actual NoiseStack, PerlinNoise, and density-volume call chain.
-2. Add a native stack-batch kernel and Rust ABI behind a separate opt-in flag. Keep the existing per-Perlin ABI as the reference/fallback.
-3. Add C++ unit tests comparing stack batching with repeated calls to the existing scalar kernel, including non-zero initial output and multiple layers.
+2. Add Java FFM method handles and a leased descriptor/permutation arena for the stack ABI, with safe fallback to the current native per-layer path.
+3. Extract the exact ordered octave descriptors at a verified vanilla stack boundary. Unsupported or modded implementations must fall back.
 4. Add a Java GameTest that compares vanilla, current native and batched-native output over fixed seeds and volumes, checking float bits.
 5. Only after parity passes, benchmark complete fresh chunk generation and tune worker count.
 
