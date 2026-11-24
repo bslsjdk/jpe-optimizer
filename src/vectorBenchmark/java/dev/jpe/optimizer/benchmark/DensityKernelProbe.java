@@ -5,100 +5,154 @@ import dev.jpe.optimizer.vector.ScalarDensityKernel;
 import dev.jpe.optimizer.vector.VectorApiDensityKernel;
 import java.util.Arrays;
 import java.util.Locale;
-import java.util.Random;
 
-/** Isolated array benchmark for the same branch-heavy kernels used by JPE. */
+/** Diagnostic microbenchmark with alternating scalar/vector order and controlled branch ratios. */
 public final class DensityKernelProbe {
     private static volatile long blackhole;
+    private static final int[] SIZES = {256, 1024, 4096, 16384, 65536};
+    private static final int[] OUTSIDE_PERCENT = {0, 25, 50, 75, 100};
+    private static final int WARMUP = 5;
+    private static final int ITERATIONS = 31;
+
     private DensityKernelProbe() {}
 
     public static void run(String[] args) {
-        int size = argument(args, "--samples", 98_304);
-        int warmup = argument(args, "--warmup", 5);
-        int iterations = argument(args, "--iterations", 20);
-        if (size < 1 || warmup < 1 || iterations < 3) {
-            throw new IllegalArgumentException("Invalid density-kernel benchmark dimensions");
-        }
-        float[] source = new float[size], right = new float[size];
-        Random random = new Random(0x4a50454cL);
-        for (int i = 0; i < size; ++i) {
-            int bucket = random.nextInt(16);
-            source[i] = switch (bucket) {
-                case 0 -> 0.0F;
-                case 1 -> -0.0F;
-                case 2 -> Float.NaN;
-                case 3 -> Float.POSITIVE_INFINITY;
-                case 4 -> Float.NEGATIVE_INFINITY;
-                default -> random.nextFloat() * 4.0F - 2.0F;
-            };
-            right[i] = random.nextFloat() * 4.0F - 2.0F;
-        }
         DensityVectorKernel scalar = ScalarDensityKernel.INSTANCE;
         DensityVectorKernel vector = VectorApiDensityKernel.INSTANCE;
-        System.out.println("Density kernel probe: samples=" + size + ", warmup=" + warmup
-                + ", iterations=" + iterations + ", " + vector.description());
+        System.out.println("Density kernel probe: sizes=" + Arrays.toString(SIZES)
+                + ", outsideRatios=" + Arrays.toString(OUTSIDE_PERCENT)
+                + ", warmupPairs=" + WARMUP + ", measuredPairs=" + ITERATIONS
+                + ", order=alternating-SV/VS, " + vector.description());
 
-        float[] scalarValues = new float[size], vectorValues = new float[size];
-        Result scalarResult = measure(size, warmup, iterations,
-                () -> System.arraycopy(source, 0, scalarValues, 0, size),
-                () -> scalar.rangeChoiceConst(scalarValues, size, 0.2F, 0.8F, 1.0F, -1.0F), scalarValues);
-        Result vectorResult = measure(size, warmup, iterations,
-                () -> System.arraycopy(source, 0, vectorValues, 0, size),
-                () -> vector.rangeChoiceConst(vectorValues, size, 0.2F, 0.8F, 1.0F, -1.0F), vectorValues);
-        report("rangeChoiceConst", scalarResult, vectorResult, size);
-        compare("rangeChoiceConst", scalarValues, vectorValues);
-
-        float[] outOfRange = right.clone();
-        for (int i = 0; i < outOfRange.length; ++i) outOfRange[i] = source[(i * 13 + 7) % size];
-        float[] scalarRange = new float[size], vectorRange = new float[size];
-        Result scalarRangeResult = measure(size, warmup, iterations,
-                () -> System.arraycopy(source, 0, scalarRange, 0, size),
-                () -> scalar.rangeChoice(scalarRange, right, outOfRange, size, 0.2F, 0.8F), scalarRange);
-        Result vectorRangeResult = measure(size, warmup, iterations,
-                () -> System.arraycopy(source, 0, vectorRange, 0, size),
-                () -> vector.rangeChoice(vectorRange, right, outOfRange, size, 0.2F, 0.8F), vectorRange);
-        report("rangeChoice", scalarRangeResult, vectorRangeResult, size);
-        compare("rangeChoice", scalarRange, vectorRange);
-
-        for (boolean minimum : new boolean[]{true, false}) {
-            float[] scalarLeft = new float[size], vectorLeft = new float[size];
-            float[] scalarRight = right.clone(), vectorRight = right.clone();
-            scalarResult = measure(size, warmup, iterations,
-                    () -> System.arraycopy(source, 0, scalarLeft, 0, size),
-                    () -> scalar.minMax(scalarLeft, scalarRight, size, minimum), scalarLeft);
-            vectorResult = measure(size, warmup, iterations,
-                    () -> System.arraycopy(source, 0, vectorLeft, 0, size),
-                    () -> vector.minMax(vectorLeft, vectorRight, size, minimum), vectorLeft);
-            report(minimum ? "min" : "max", scalarResult, vectorResult, size);
-            compare(minimum ? "min" : "max", scalarLeft, vectorLeft);
+        for (int size : SIZES) {
+            for (int outsidePercent : OUTSIDE_PERCENT) {
+                runRangeChoice(size, outsidePercent, scalar, vector);
+            }
+            runRangeChoiceConst(size, scalar, vector);
+            runMinMax(size, scalar, vector, true);
+            runMinMax(size, scalar, vector, false);
         }
         System.out.println("Density kernel checksum=" + blackhole);
     }
 
-    private static Result measure(int size, int warmup, int iterations,
-                                  Runnable reset, Runnable operation, float[] output) {
-        for (int i = 0; i < warmup; ++i) {
-            reset.run(); operation.run();
-            blackhole += Float.floatToRawIntBits(output[(i * 31) % size]);
+    private static void runRangeChoice(int size, int outsidePercent,
+                                       DensityVectorKernel scalar, DensityVectorKernel vector) {
+        float[] input = new float[size];
+        float[] initial = new float[size];
+        float[] outOfRange = new float[size];
+        for (int i = 0; i < size; ++i) {
+            boolean outside = ((long) (i + 1) * outsidePercent / 100)
+                    != ((long) i * outsidePercent / 100);
+            input[i] = outside ? 1.5F : 0.5F;
+            initial[i] = (i % 997) * 0.001F;
+            outOfRange[i] = -((i % 991) * 0.001F + 0.25F);
         }
-        long[] timings = new long[iterations];
-        for (int i = 0; i < iterations; ++i) {
-            reset.run();
-            long start = System.nanoTime();
-            operation.run();
-            timings[i] = System.nanoTime() - start;
-            blackhole += Float.floatToRawIntBits(output[(i * 131 + 17) % size]);
-        }
-        Arrays.sort(timings);
-        return new Result(timings[iterations / 2], timings[(int) Math.ceil(iterations * 0.95) - 1]);
+
+        float[] scalarValues = new float[size];
+        float[] vectorValues = new float[size];
+        PairResult result = measurePair(
+                () -> System.arraycopy(initial, 0, scalarValues, 0, size),
+                () -> scalar.rangeChoice(scalarValues, input, outOfRange, size, 0.0F, 1.0F),
+                scalarValues,
+                () -> System.arraycopy(initial, 0, vectorValues, 0, size),
+                () -> vector.rangeChoice(vectorValues, input, outOfRange, size, 0.0F, 1.0F),
+                vectorValues);
+        compare("rangeChoice", scalarValues, vectorValues);
+        report("rangeChoice outside=" + outsidePercent + "%", result, size);
     }
 
-    private static void report(String name, Result scalar, Result vector, int size) {
+    private static void runRangeChoiceConst(int size,
+                                            DensityVectorKernel scalar, DensityVectorKernel vector) {
+        float[] input = new float[size];
+        for (int i = 0; i < size; ++i) input[i] = (i & 1) == 0 ? 0.5F : 1.5F;
+        float[] scalarValues = new float[size];
+        float[] vectorValues = new float[size];
+        PairResult result = measurePair(
+                () -> System.arraycopy(input, 0, scalarValues, 0, size),
+                () -> scalar.rangeChoiceConst(scalarValues, size, 0.0F, 1.0F, 1.0F, -1.0F),
+                scalarValues,
+                () -> System.arraycopy(input, 0, vectorValues, 0, size),
+                () -> vector.rangeChoiceConst(vectorValues, size, 0.0F, 1.0F, 1.0F, -1.0F),
+                vectorValues);
+        compare("rangeChoiceConst", scalarValues, vectorValues);
+        report("rangeChoiceConst", result, size);
+    }
+
+    private static void runMinMax(int size, DensityVectorKernel scalar,
+                                  DensityVectorKernel vector, boolean minimum) {
+        float[] left = new float[size];
+        float[] right = new float[size];
+        for (int i = 0; i < size; ++i) {
+            left[i] = (i % 2001) * 0.001F - 1.0F;
+            right[i] = ((i * 37) % 1999) * 0.001F - 1.0F;
+        }
+        float[] scalarValues = new float[size];
+        float[] vectorValues = new float[size];
+        PairResult result = measurePair(
+                () -> System.arraycopy(left, 0, scalarValues, 0, size),
+                () -> scalar.minMax(scalarValues, right, size, minimum),
+                scalarValues,
+                () -> System.arraycopy(left, 0, vectorValues, 0, size),
+                () -> vector.minMax(vectorValues, right, size, minimum),
+                vectorValues);
+        compare(minimum ? "min" : "max", scalarValues, vectorValues);
+        report(minimum ? "min" : "max", result, size);
+    }
+
+    private static PairResult measurePair(Runnable scalarReset, Runnable scalarOperation, float[] scalarOutput,
+                                          Runnable vectorReset, Runnable vectorOperation, float[] vectorOutput) {
+        long[] scalarTimes = new long[ITERATIONS];
+        long[] vectorTimes = new long[ITERATIONS];
+        for (int i = 0; i < WARMUP; ++i) {
+            scalarReset.run();
+            scalarOperation.run();
+            blackhole += checksum(scalarOutput);
+            vectorReset.run();
+            vectorOperation.run();
+            blackhole += checksum(vectorOutput);
+        }
+        for (int i = 0; i < ITERATIONS; ++i) {
+            if ((i & 1) == 0) {
+                scalarTimes[i] = time(scalarReset, scalarOperation, scalarOutput);
+                vectorTimes[i] = time(vectorReset, vectorOperation, vectorOutput);
+            } else {
+                vectorTimes[i] = time(vectorReset, vectorOperation, vectorOutput);
+                scalarTimes[i] = time(scalarReset, scalarOperation, scalarOutput);
+            }
+        }
+        return new PairResult(summarize(scalarTimes), summarize(vectorTimes));
+    }
+
+    private static long time(Runnable reset, Runnable operation, float[] output) {
+        reset.run();
+        long start = System.nanoTime();
+        operation.run();
+        long elapsed = System.nanoTime() - start;
+        blackhole += checksum(output);
+        return elapsed;
+    }
+
+    private static long checksum(float[] values) {
+        long sum = 0;
+        for (float value : values) sum += Float.floatToRawIntBits(value);
+        return sum;
+    }
+
+    private static Stats summarize(long[] values) {
+        long[] sorted = values.clone();
+        Arrays.sort(sorted);
+        return new Stats(sorted[sorted.length / 2], sorted[(int) Math.ceil(sorted.length * 0.95) - 1]);
+    }
+
+    private static void report(String name, PairResult result, int size) {
+        double scalarMedian = result.scalar.median / (double) size;
+        double vectorMedian = result.vector.median / (double) size;
         System.out.printf(Locale.ROOT,
-                "  %s scalar=%.3f ns/sample (p95 %.3f), vector=%.3f (p95 %.3f), speedup=%.3fx%n",
-                name, scalar.median / (double) size, scalar.p95 / (double) size,
-                vector.median / (double) size, vector.p95 / (double) size,
-                scalar.median / (double) vector.median);
+                "  size=%d %-30s scalar median=%.3f p95=%.3f ns/sample | "
+                        + "vector median=%.3f p95=%.3f | speedup=%.3fx%n",
+                size, name, scalarMedian, result.scalar.p95 / (double) size,
+                vectorMedian, result.vector.p95 / (double) size,
+                result.scalar.median / (double) result.vector.median);
     }
 
     private static void compare(String name, float[] scalar, float[] vector) {
@@ -109,12 +163,6 @@ public final class DensityKernelProbe {
         }
     }
 
-    private static int argument(String[] args, String name, int fallback) {
-        for (int i = 0; i + 1 < args.length; ++i) {
-            if (name.equals(args[i])) return Integer.parseInt(args[i + 1]);
-        }
-        return fallback;
-    }
-
-    private record Result(long median, long p95) {}
+    private record Stats(long median, long p95) {}
+    private record PairResult(Stats scalar, Stats vector) {}
 }
