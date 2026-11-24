@@ -92,17 +92,81 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
 
     @Override
     public void binary(float[] left, float[] right, int length, BinaryOp operation) {
-        ScalarDensityKernel.INSTANCE.binary(left, right, length, operation);
+        Objects.checkFromIndexSize(0, length, left.length);
+        Objects.checkFromIndexSize(0, length, right.length);
+        int bound = SPECIES.loopBound(length), i = 0;
+        for (; i < bound; i += SPECIES.length()) {
+            FloatVector a = FloatVector.fromArray(SPECIES, left, i);
+            FloatVector b = FloatVector.fromArray(SPECIES, right, i);
+            FloatVector result = switch (operation) {
+                case ADD -> a.add(b);
+                case SUBTRACT -> a.sub(b);
+                case MULTIPLY -> a.mul(b);
+                case DIVIDE -> a.div(b);
+            };
+            result.intoArray(left, i);
+        }
+        for (; i < length; ++i) {
+            float a = left[i], b = right[i];
+            left[i] = switch (operation) {
+                case ADD -> a + b;
+                case SUBTRACT -> a - b;
+                case MULTIPLY -> a * b;
+                case DIVIDE -> a / b;
+            };
+        }
     }
 
     @Override
     public void binaryConst(float[] values, int length, float operand, BinaryOp operation) {
-        ScalarDensityKernel.INSTANCE.binaryConst(values, length, operand, operation);
+        Objects.checkFromIndexSize(0, length, values.length);
+        FloatVector constant = FloatVector.broadcast(SPECIES, operand);
+        int bound = SPECIES.loopBound(length), i = 0;
+        for (; i < bound; i += SPECIES.length()) {
+            FloatVector current = FloatVector.fromArray(SPECIES, values, i);
+            FloatVector result = switch (operation) {
+                case ADD -> current.add(constant);
+                case SUBTRACT -> current.sub(constant);
+                case MULTIPLY -> current.mul(constant);
+                case DIVIDE -> current.div(constant);
+            };
+            result.intoArray(values, i);
+        }
+        for (; i < length; ++i) {
+            float current = values[i];
+            values[i] = switch (operation) {
+                case ADD -> current + operand;
+                case SUBTRACT -> current - operand;
+                case MULTIPLY -> current * operand;
+                case DIVIDE -> current / operand;
+            };
+        }
     }
 
     @Override
     public void binaryConstLeft(float[] values, int length, float operand, BinaryOp operation) {
-        ScalarDensityKernel.INSTANCE.binaryConstLeft(values, length, operand, operation);
+        Objects.checkFromIndexSize(0, length, values.length);
+        FloatVector constant = FloatVector.broadcast(SPECIES, operand);
+        int bound = SPECIES.loopBound(length), i = 0;
+        for (; i < bound; i += SPECIES.length()) {
+            FloatVector current = FloatVector.fromArray(SPECIES, values, i);
+            FloatVector result = switch (operation) {
+                case ADD -> constant.add(current);
+                case SUBTRACT -> constant.sub(current);
+                case MULTIPLY -> constant.mul(current);
+                case DIVIDE -> constant.div(current);
+            };
+            result.intoArray(values, i);
+        }
+        for (; i < length; ++i) {
+            float current = values[i];
+            values[i] = switch (operation) {
+                case ADD -> operand + current;
+                case SUBTRACT -> operand - current;
+                case MULTIPLY -> operand * current;
+                case DIVIDE -> operand / current;
+            };
+        }
     }
 
     @Override
