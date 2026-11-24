@@ -258,7 +258,12 @@ public final class GameTests {
             PerlinNoiseVectorizer.setVanillaBypass(false);
         }
 
-        noise.addToVolume(optimized, volume, 0.25, 0.0625, 0.75F);
+        NativePerlinNoiseBackend.setBypass(true);
+        try {
+            noise.addToVolume(optimized, volume, 0.25, 0.0625, 0.75F);
+        } finally {
+            NativePerlinNoiseBackend.setBypass(false);
+        }
         if (!PerlinNoiseVectorizer.wasLastCallVectorized()) {
             throw new AssertionError("Perlin vector path did not process a 16-lane Y run");
         }

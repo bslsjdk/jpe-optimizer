@@ -11,6 +11,7 @@ import net.minecraft.world.level.levelgen.synth.PerlinNoise;
 /** Opt-in bridge that runs Perlin volume work on the Rust worker pool / C++ backend. */
 public final class NativePerlinNoiseBackend {
     private static final ThreadLocal<Boolean> LAST_CALL_NATIVE = ThreadLocal.withInitial(() -> false);
+    private static final ThreadLocal<Boolean> BYPASS = ThreadLocal.withInitial(() -> false);
     private static volatile NativeRuntime runtime;
     private static volatile boolean loadAttempted;
 
@@ -25,10 +26,18 @@ public final class NativePerlinNoiseBackend {
         return LAST_CALL_NATIVE.get();
     }
 
+    public static void setBypass(boolean value) {
+        BYPASS.set(value);
+    }
+
+    public static boolean bypassed() {
+        return BYPASS.get();
+    }
+
     public static boolean tryAddToVolume(PerlinNoise noise, DensityBuffer buffer, DensityVolume volume,
                                          double xzScale, double yScale, float amplitude) {
         LAST_CALL_NATIVE.set(false);
-        if (!enabled()) return false;
+        if (BYPASS.get() || !enabled()) return false;
 
         NativeRuntime nativeRuntime = runtime();
         if (nativeRuntime == null) return false;

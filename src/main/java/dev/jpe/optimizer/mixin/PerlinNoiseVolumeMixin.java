@@ -19,7 +19,8 @@ public abstract class PerlinNoiseVolumeMixin {
                                  double xzScale, double yScale, float amplitude, CallbackInfo callback) {
         if (PerlinNoiseVectorizer.vanillaBypass()) return;
 
-        if (NativePerlinNoiseBackend.tryAddToVolume((PerlinNoise) (Object) this,
+        if (!NativePerlinNoiseBackend.bypassed()
+                && NativePerlinNoiseBackend.tryAddToVolume((PerlinNoise) (Object) this,
                 buffer, volume, xzScale, yScale, amplitude)) {
             callback.cancel();
             return;
