@@ -16,6 +16,10 @@ import net.minecraft.gametest.framework.TestData;
 import net.minecraft.gametest.framework.TestEnvironmentDefinition;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.level.block.Rotation;
+import net.minecraft.util.RandomSource;
+import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
+import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
+import net.minecraft.world.level.levelgen.synth.PerlinNoise;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.StructurePiece;
 import net.minecraft.world.level.levelgen.structure.pieces.StructurePiecesBuilder;
@@ -23,6 +27,9 @@ import net.minecraft.world.level.levelgen.structure.structures.MineshaftPieces;
 import net.minecraft.world.level.levelgen.structure.structures.MineshaftStructure;
 import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredRegister;
+import dev.jpe.optimizer.mixin.DensityBufferAccessor;
+import dev.jpe.optimizer.vector.DensityVectorRuntime;
+import dev.jpe.optimizer.vector.PerlinNoiseVectorizer;
 
 public final class GameTests {
     private GameTests() {}
@@ -41,6 +48,9 @@ public final class GameTests {
 
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> STRUCTURE_INDEX_BENCHMARK =
             TEST_FUNCTIONS.register("structure_index_benchmark", () -> GameTests::structureIndexBenchmark);
+
+    public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> PERLIN_VECTOR_PARITY =
+            TEST_FUNCTIONS.register("perlin_vector_parity", () -> GameTests::perlinVectorParity);
 
     public static void registerFunctions(net.neoforged.bus.api.IEventBus modEventBus) {
         TEST_FUNCTIONS.register(modEventBus);
@@ -72,6 +82,10 @@ public final class GameTests {
         event.registerTest(
                 Identifier.parse("jpe_optimizer:structure_index_benchmark"),
                 new FunctionGameTestInstance(STRUCTURE_INDEX_BENCHMARK.getKey(), data)
+        );
+        event.registerTest(
+                Identifier.parse("jpe_optimizer:perlin_vector_parity"),
+                new FunctionGameTestInstance(PERLIN_VECTOR_PARITY.getKey(), data)
         );
     }
 
@@ -207,6 +221,51 @@ public final class GameTests {
                 structureMetrics.linearFallbacks(),
                 structureMetrics.vanillaLinearChecks()
         );
+        helper.succeed();
+    }
+
+    /**
+     * Verifies the opt-in Perlin volume path against vanilla bit-for-bit.
+     * The 1/16 Y scale creates runs long enough to exercise the preferred 16-lane path.
+     */
+    private static void perlinVectorParity(GameTestHelper helper) {
+        if (!DensityVectorRuntime.enabled()) {
+            throw new AssertionError("Perlin vector parity test requires the Java 25 Vector API module");
+        }
+        if (!PerlinNoiseVectorizer.enabled()) {
+            throw new AssertionError("Perlin vector parity test requires -Djpe.perlinVectorEnabled=true");
+        }
+
+        PerlinNoise noise = new PerlinNoise(RandomSource.create(0x4A50454C263L));
+        DensityVolume volume = new DensityVolume(2, 64, 2, -16, -64, 32);
+        DensityBuffer vanilla = DensityBuffer.createUnpooled(volume.size());
+        DensityBuffer optimized = DensityBuffer.createUnpooled(volume.size());
+
+        PerlinNoiseVectorizer.setVanillaBypass(true);
+        try {
+            noise.addToVolume(vanilla, volume, 0.25, 0.0625, 0.75F);
+        } finally {
+            PerlinNoiseVectorizer.setVanillaBypass(false);
+        }
+
+        noise.addToVolume(optimized, volume, 0.25, 0.0625, 0.75F);
+        if (!PerlinNoiseVectorizer.wasLastCallVectorized()) {
+            throw new AssertionError("Perlin vector path did not process a 16-lane Y run");
+        }
+
+        float[] expected = ((DensityBufferAccessor) vanilla).jpe$values();
+        float[] actual = ((DensityBufferAccessor) optimized).jpe$values();
+        if (expected.length != actual.length) {
+            throw new AssertionError("Perlin vector buffer length mismatch");
+        }
+        for (int i = 0; i < expected.length; ++i) {
+            if (Float.floatToRawIntBits(expected[i]) != Float.floatToRawIntBits(actual[i])) {
+                throw new AssertionError("Perlin vector mismatch at density index " + i
+                        + ": vanilla=" + expected[i] + ", optimized=" + actual[i]);
+            }
+        }
+        JPEOptimizer.LOGGER.info("JPE_PERLIN_VECTOR_PARITY samples={} bitExact=true",
+                expected.length);
         helper.succeed();
     }
 
