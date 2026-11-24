@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * Optional Java 25 FFM bridge. Native worldgen is not loaded or enabled automatically.
@@ -37,6 +38,7 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle cancelJob;
     private final MethodHandle releaseJob;
     private final ConcurrentHashMap<Long, NativeJob> jobs = new ConcurrentHashMap<>();
+    private final ReentrantReadWriteLock lifecycle = new ReentrantReadWriteLock();
     private volatile boolean closed;
 
     private NativeRuntime(Arena arena, MethodHandle add, MethodHandle perlin,
@@ -108,7 +110,9 @@ public final class NativeRuntime implements AutoCloseable {
         }
     }
 
-    public synchronized float[] addEachValueToItself(float[] input) {
+    public float[] addEachValueToItself(float[] input) {
+        lifecycle.readLock().lock();
+        try {
         ensureOpen();
         Objects.requireNonNull(input, "input");
         try (Arena arena = Arena.ofConfined()) {
@@ -124,13 +128,19 @@ public final class NativeRuntime implements AutoCloseable {
         } catch (Throwable failure) {
             throw rethrow("Native bulk call failed", failure);
         }
+    
+        } finally {
+            lifecycle.readLock().unlock();
+        }
     }
 
     /** Synchronous bulk Perlin entry retained for exact parity tests, not live worldgen. */
-    public synchronized void perlinAddVolume(byte[] permutation, int[] blockX, int[] blockY, int[] blockZ,
+    public void perlinAddVolume(byte[] permutation, int[] blockX, int[] blockY, int[] blockZ,
                                 double offsetX, double offsetY, double offsetZ,
                                 double xzScale, double yScale, float amplitude,
                                 float[] output, boolean farLands) {
+        lifecycle.readLock().lock();
+        try {
         ensureOpen();
         validatePerlinInputs(permutation, blockX, blockY, blockZ, output);
         try (Arena arena = Arena.ofConfined()) {
@@ -153,6 +163,10 @@ public final class NativeRuntime implements AutoCloseable {
         } catch (Throwable failure) {
             throw rethrow("Native Perlin volume call failed", failure);
         }
+    
+        } finally {
+            lifecycle.readLock().unlock();
+        }
     }
 
     /**
@@ -160,10 +174,12 @@ public final class NativeRuntime implements AutoCloseable {
      * The native side copies every input before this method returns.
      * Returns null when the bounded native queue has no capacity.
      */
-    public synchronized NativeJob submitPerlinVolume(byte[] permutation, int[] blockX, int[] blockY, int[] blockZ,
+    public NativeJob submitPerlinVolume(byte[] permutation, int[] blockX, int[] blockY, int[] blockZ,
                                         double offsetX, double offsetY, double offsetZ,
                                         double xzScale, double yScale, float amplitude,
                                         float[] initialOutput, boolean farLands) {
+        lifecycle.readLock().lock();
+        try {
         ensureOpen();
         validatePerlinInputs(permutation, blockX, blockY, blockZ, initialOutput);
         try (Arena arena = Arena.ofConfined()) {
@@ -187,6 +203,10 @@ public final class NativeRuntime implements AutoCloseable {
             return job;
         } catch (Throwable failure) {
             throw rethrow("Unable to submit native Perlin job", failure);
+        }
+    
+        } finally {
+            lifecycle.readLock().unlock();
         }
     }
 
@@ -238,12 +258,14 @@ public final class NativeRuntime implements AutoCloseable {
         return failure instanceof RuntimeException runtime ? runtime : new IllegalStateException(message, failure);
     }
 
-    private synchronized void released(NativeJob job, long id) {
+    private void released(NativeJob job, long id) {
         jobs.remove(id, job);
     }
 
     @Override
-    public synchronized void close() {
+    public void close() {
+        lifecycle.writeLock().lock();
+        try {
         if (closed) return;
         if (!jobs.isEmpty()) {
             throw new IllegalStateException("Cannot unload native library while " + jobs.size()
@@ -251,6 +273,10 @@ public final class NativeRuntime implements AutoCloseable {
         }
         closed = true;
         libraryArena.close();
+    
+        } finally {
+            lifecycle.writeLock().unlock();
+        }
     }
 
     public static final class NativeJob implements AutoCloseable {
