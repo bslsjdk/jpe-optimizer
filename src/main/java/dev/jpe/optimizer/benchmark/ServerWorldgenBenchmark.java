@@ -5,12 +5,13 @@ import dev.jpe.optimizer.worldgen.StructureSpatialIndex;
 import dev.jpe.optimizer.worldgen.WorldgenMetrics;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
-import java.util.concurrent.atomic.AtomicBoolean;
-
 import java.lang.management.GarbageCollectorMXBean;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
 import java.util.ArrayList;
@@ -32,8 +33,7 @@ public final class ServerWorldgenBenchmark {
             return;
         }
 
-        // ServerStartedEvent fires before the first normal server tick. Defer until
-        // the first post-tick so startup tasks and spawn initialization have settled.
+        // Wait until the first post-tick so server startup has settled.
         MinecraftServer server = event.getServer();
         try {
             run(server);
@@ -134,8 +134,13 @@ public final class ServerWorldgenBenchmark {
     }
 
     private static void requireFullChunk(ServerLevel level, int x, int z) {
-        // ServerLevel#getChunk returns a fully promoted LevelChunk in 26.3.
-        var chunk = level.getChunk(x, z);
+        // The two-argument Level#getChunk path is not an explicit generation request.
+        // Ask the server chunk cache for FULL and allow it to load or generate.
+        var chunk = level.getChunkSource().getChunk(x, z, ChunkStatus.FULL, true);
+        if (!(chunk instanceof LevelChunk)) {
+            throw new IllegalStateException("Expected generated FULL LevelChunk at " + x + "," + z
+                    + ", got " + (chunk == null ? "null" : chunk.getClass().getName()));
+        }
         if (chunk.getPos().x() != x || chunk.getPos().z() != z) {
             throw new IllegalStateException("Server returned wrong chunk for " + x + "," + z
                     + ": " + chunk.getPos());
