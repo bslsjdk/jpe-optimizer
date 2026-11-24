@@ -90,7 +90,7 @@ public final class NativePerlinNoiseBackend {
         boolean interrupted = false;
         boolean terminal = false;
         try {
-            Object[] sourceLayers = ((NoiseStackAccessor) (Object) stack).jpe$layers();
+            Object[] sourceLayers = NoiseStackAccessor.layers(stack);
             if (sourceLayers.length == 0 || sourceLayers.length > 64) {
                 INVALID_DIMENSIONS.increment();
                 return false;
