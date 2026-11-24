@@ -40,11 +40,13 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
         int bound = SPECIES.loopBound(length), i = 0;
         for (; i < bound; i += SPECIES.length()) {
             FloatVector in = FloatVector.fromArray(SPECIES, input, i);
-            FloatVector selected = FloatVector.fromArray(SPECIES, values, i);
             FloatVector out = FloatVector.fromArray(SPECIES, whenOutOfRange, i);
             VectorMask<Float> outside = in.compare(VectorOperators.GE, minInclusive)
                     .and(in.compare(VectorOperators.LT, maxExclusive)).not();
-            selected.blend(out, outside).intoArray(values, i);
+            // Match the scalar kernel's conditional store. Loading/blending the
+            // existing output and writing every lane wastes bandwidth when most
+            // samples are in range.
+            out.intoArray(values, i, outside);
         }
         for (; i < length; ++i) {
             float selected = input[i];
@@ -65,7 +67,7 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
             VectorMask<Float> replace = minimum
                     ? b.compare(VectorOperators.LT, a)
                     : b.compare(VectorOperators.GT, a);
-            a.blend(b, replace).intoArray(left, i);
+            b.intoArray(left, i, replace);
         }
         for (; i < length; ++i) {
             float a = left[i], b = right[i];
@@ -83,7 +85,7 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
             VectorMask<Float> replace = minimum
                     ? current.compare(VectorOperators.GT, operand)
                     : current.compare(VectorOperators.LT, operand);
-            current.blend(constant, replace).intoArray(values, i);
+            constant.intoArray(values, i, replace);
         }
         for (; i < length; ++i) {
             float current = values[i];
