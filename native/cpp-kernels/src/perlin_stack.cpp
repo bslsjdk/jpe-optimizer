@@ -63,7 +63,6 @@ struct LayerWorkspace {
     std::vector<float> x_alpha;
     std::vector<int32_t> x_lattice0;
     std::vector<int32_t> x_lattice1;
-    std::vector<double> y_coordinates;
     std::vector<int32_t> y_floors;
     std::vector<float> y_relative;
     std::vector<float> y_alpha;
@@ -132,8 +131,7 @@ extern "C" int32_t jpe_cpp_perlin_add_stack_fused(
             ws.x_lattice0.resize(size_x);
             ws.x_lattice1.resize(size_x);
         }
-        if (ws.y_coordinates.size() < size_y) {
-            ws.y_coordinates.resize(size_y);
+        if (ws.y_floors.size() < size_y) {
             ws.y_floors.resize(size_y);
             ws.y_relative.resize(size_y);
             ws.y_alpha.resize(size_y);
@@ -155,7 +153,6 @@ extern "C" int32_t jpe_cpp_perlin_add_stack_fused(
                 far_lands) + layer.offset_y;
             const int32_t floor_y = floor_to_i32(y);
             const float relative_y = static_cast<float>(y - static_cast<double>(floor_y));
-            ws.y_coordinates[iy] = y;
             ws.y_floors[iy] = floor_y;
             ws.y_relative[iy] = relative_y;
             ws.y_alpha[iy] = smoothstep(relative_y);
