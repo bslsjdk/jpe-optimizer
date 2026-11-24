@@ -152,9 +152,7 @@ int32_t perlin_add_volume(
                         lerp(alpha_x, x001, x101),
                         lerp(alpha_x, x011, x111));
                     const float sample = amplitude * lerp(alpha_z, lower, upper);
-                    const uint64_t output_index =
-                        (static_cast<uint64_t>(iz) * size_x + ix) * size_y + iy;
-                    output[output_index] = output[output_index] + sample;
+                    output[base + iy] = output[base + iy] + sample;
 
                     ++iy;
                     if (iy < size_y) {
