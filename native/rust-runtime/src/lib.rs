@@ -1217,7 +1217,16 @@ mod tests {
         let len = SX * SY * SZ;
         let avx2_available = unsafe { jpe_cpp_perlin_avx2_supported() != 0 };
 
-        for (case, y_scale) in [("long-y-runs", 0.015625_f64), ("short-y-runs", 0.625_f64)] {
+        // Cover both sides of the dispatch threshold and its boundary.
+        // 1/16 is the current AVX2 eligibility limit; larger steps must use scalar.
+        for (case, y_scale) in [
+            ("long-y-runs-1-64", 0.015625_f64),
+            ("long-y-runs-1-32", 0.03125_f64),
+            ("threshold-1-16", 0.0625_f64),
+            ("scalar-fallback-1-8", 0.125_f64),
+            ("scalar-fallback-1-4", 0.25_f64),
+            ("scalar-fallback-5-8", 0.625_f64),
+        ] {
             let mut vector = vec![0.125_f32; len];
             let mut scalar = vector.clone();
             let run_vector = |out: &mut [f32]| {
