@@ -6,6 +6,7 @@
   "mixins": [
     "NoiseBasedChunkGeneratorMixin",
     "BiomeManagerZoomMixin",
+    "MultiNoiseBiomeSourceInvoker",
     "DensityBufferAccessor",
     "DensityBufferMetricsMixin",
     "DensityBufferPoolMetricsMixin",
