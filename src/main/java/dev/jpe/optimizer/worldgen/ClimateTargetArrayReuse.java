@@ -53,10 +53,37 @@ public final class ClimateTargetArrayReuse {
             boolean nested,
             long[] scratch
     ) {
+        return toParameterArray(
+                target.temperature(), target.humidity(), target.continentalness(),
+                target.erosion(), target.depth(), target.weirdness(),
+                reuse, nested, scratch
+        );
+    }
+
+    static long[] toParameterArray(
+            long temperature,
+            long humidity,
+            long continentalness,
+            long erosion,
+            long depth,
+            long weirdness,
+            boolean reuse,
+            boolean nested,
+            long[] scratch
+    ) {
         if (!reuse || nested) {
-            return allocate(target);
+            return new long[] {
+                    temperature, humidity, continentalness, erosion, depth, weirdness, 0L
+            };
         }
-        return fill(scratch, target);
+        scratch[0] = temperature;
+        scratch[1] = humidity;
+        scratch[2] = continentalness;
+        scratch[3] = erosion;
+        scratch[4] = depth;
+        scratch[5] = weirdness;
+        scratch[6] = 0L;
+        return scratch;
     }
 
     private static long[] fill(long[] values, Climate.TargetPoint target) {
