@@ -107,6 +107,29 @@ int32_t perlin_add_volume(
         y_floors[iy] = floor_to_i32(y);
     }
 
+    // X coordinates and their lattice lookups are also invariant across Z.
+    // Cache them once per volume so every Z slice avoids repeating wrap/floor,
+    // smoothstep and the first two permutation lookups.
+    thread_local std::vector<float> x_relative;
+    thread_local std::vector<float> x_alpha;
+    thread_local std::vector<int32_t> x_lattice0;
+    thread_local std::vector<int32_t> x_lattice1;
+    if (x_relative.size() < size_x) {
+        x_relative.resize(size_x);
+        x_alpha.resize(size_x);
+        x_lattice0.resize(size_x);
+        x_lattice1.resize(size_x);
+    }
+    for (uint32_t ix = 0; ix < size_x; ++ix) {
+        const double x = wrap_coordinate(static_cast<double>(axis_coordinate(min_x, ix, step_x)) * xz_scale, far_lands) + offset_x;
+        const int32_t floor_x = floor_to_i32(x);
+        const float relative_x = static_cast<float>(x - static_cast<double>(floor_x));
+        x_relative[ix] = relative_x;
+        x_alpha[ix] = smoothstep(relative_x);
+        x_lattice0[ix] = static_cast<int32_t>(permute_sum(permutation, floor_x));
+        x_lattice1[ix] = static_cast<int32_t>(permute_sum(permutation, floor_x, 1));
+    }
+
     for (uint32_t iz = 0; iz < size_z; ++iz) {
         const double z = wrap_coordinate(static_cast<double>(axis_coordinate(min_z, iz, step_z)) * xz_scale, far_lands) + offset_z;
         const int32_t floor_z = floor_to_i32(z);
@@ -114,13 +137,10 @@ int32_t perlin_add_volume(
         const float alpha_z = smoothstep(relative_z);
 
         for (uint32_t ix = 0; ix < size_x; ++ix) {
-            const double x = wrap_coordinate(static_cast<double>(axis_coordinate(min_x, ix, step_x)) * xz_scale, far_lands) + offset_x;
-            const int32_t floor_x = floor_to_i32(x);
-            const float relative_x = static_cast<float>(x - static_cast<double>(floor_x));
-            const float alpha_x = smoothstep(relative_x);
-
-            const int32_t x0 = static_cast<int32_t>(permute_sum(permutation, floor_x));
-            const int32_t x1 = static_cast<int32_t>(permute_sum(permutation, floor_x, 1));
+            const float relative_x = x_relative[ix];
+            const float alpha_x = x_alpha[ix];
+            const int32_t x0 = x_lattice0[ix];
+            const int32_t x1 = x_lattice1[ix];
             const uint64_t base = (static_cast<uint64_t>(iz) * size_x + ix) * size_y;
 
             uint32_t iy = 0;
