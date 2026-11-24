@@ -43,23 +43,26 @@ jobs:
           set -o pipefail
           gradle vectorBenchmark --no-daemon --stacktrace | tee build/vector-probe/result.txt
 
-      - name: Dedicated GameTestServer worldgen benchmark (SIMD)
-        env:
-          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector
+      - name: Dedicated GameTestServer worldgen benchmark (ABBA, four fresh servers)
         run: |
           mkdir -p build/server-benchmark
-          set -o pipefail
-          gradle runGameTestServer --no-daemon --stacktrace 2>&1 | tee build/server-benchmark/simd.log
-          grep 'JPE_SERVER_WORLDGEN_BENCH' build/server-benchmark/simd.log
+          set -euo pipefail
 
-      - name: Dedicated GameTestServer worldgen benchmark (scalar baseline)
-        env:
-          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.forceScalar=true
-        run: |
-          rm -rf run/gametest
-          set -o pipefail
-          gradle runGameTestServer --no-daemon --stacktrace 2>&1 | tee build/server-benchmark/scalar.log
-          grep 'JPE_SERVER_WORLDGEN_BENCH' build/server-benchmark/scalar.log
+          run_worldgen() {
+            local label="$1"
+            local java_options="$2"
+            echo "===== WORLDGEN BENCHMARK ${label} ====="
+            rm -rf run/gametest
+            JAVA_TOOL_OPTIONS="${java_options}" gradle runGameTestServer --no-daemon --stacktrace 2>&1 | tee "build/server-benchmark/${label}.log"
+            grep 'JPE_SERVER_WORLDGEN_BENCH' "build/server-benchmark/${label}.log"
+          }
+
+          # ABBA order balances first/last-run bias. Each invocation launches a
+          # separate GameTestServer and deletes its prior world before starting.
+          run_worldgen vector_a "--add-modules=jdk.incubator.vector"
+          run_worldgen scalar_a "--add-modules=jdk.incubator.vector -Djpe.forceScalar=true"
+          run_worldgen scalar_b "--add-modules=jdk.incubator.vector -Djpe.forceScalar=true"
+          run_worldgen vector_b "--add-modules=jdk.incubator.vector"
 
       - name: Build mod
         run: gradle build --no-daemon --stacktrace
