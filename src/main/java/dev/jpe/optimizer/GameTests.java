@@ -304,28 +304,75 @@ public final class GameTests {
         for (int i = 0; i < blockY.length; i++) blockY[i] = volume.blockY(i);
         for (int i = 0; i < blockZ.length; i++) blockZ[i] = volume.blockZ(i);
 
-        float[] actual = new float[volume.size()];
+        float[] expected = ((DensityBufferAccessor) vanilla).jpe$values();
+        float[] synchronous = new float[volume.size()];
         GradientNoiseAccessor access = (GradientNoiseAccessor) (Object) noise;
         try (NativeRuntime runtime = NativeRuntime.load(java.nio.file.Path.of(library))) {
             runtime.perlinAddVolume(
                     access.jpe$perms(), blockX, blockY, blockZ,
                     access.jpe$offsetX(), access.jpe$offsetY(), access.jpe$offsetZ(),
-                    0.25, 0.0625, 0.75F, actual,
+                    0.25, 0.0625, 0.75F, synchronous,
                     net.minecraft.SharedConstants.DEBUG_ENABLE_FARLANDS
             );
+            assertNativePerlinParity(expected, synchronous, "synchronous");
+
+            NativeRuntime.NativeJob job = runtime.submitPerlinVolume(
+                    access.jpe$perms(), blockX, blockY, blockZ,
+                    access.jpe$offsetX(), access.jpe$offsetY(), access.jpe$offsetZ(),
+                    0.25, 0.0625, 0.75F, new float[volume.size()],
+                    net.minecraft.SharedConstants.DEBUG_ENABLE_FARLANDS
+            );
+            if (job == null) throw new AssertionError("Native async queue unexpectedly rejected the parity job");
+            try (job) {
+                long deadline = System.nanoTime() + 10_000_000_000L;
+                int status;
+                boolean timedOut = false;
+                boolean interrupted = false;
+                do {
+                    status = job.status();
+                    if (status == NativeRuntime.JOB_COMPLETE
+                            || status == NativeRuntime.JOB_FAILED
+                            || status == NativeRuntime.JOB_CANCELLED) break;
+                    if (!timedOut && System.nanoTime() >= deadline) {
+                        timedOut = true;
+                        job.cancel();
+                    }
+                    try {
+                        Thread.sleep(1L);
+                    } catch (InterruptedException ignored) {
+                        interrupted = true;
+                        job.cancel();
+                    }
+                } while (true);
+                if (interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError("Interrupted while waiting for native async parity job");
+                }
+                if (timedOut) throw new AssertionError("Native async Perlin job timed out");
+                if (status != NativeRuntime.JOB_COMPLETE) {
+                    throw new AssertionError("Native async Perlin job ended with status " + status);
+                }
+                assertNativePerlinParity(expected, job.copyOutput(), "asynchronous");
+            }
         } catch (Exception failure) {
             throw new AssertionError("Unable to execute native Perlin parity test", failure);
         }
 
-        float[] expected = ((DensityBufferAccessor) vanilla).jpe$values();
+        JPEOptimizer.LOGGER.info("JPE_NATIVE_PERLIN_PARITY samples={} synchronous=true asynchronous=true bitExact=true",
+                expected.length);
+        helper.succeed();
+    }
+
+    private static void assertNativePerlinParity(float[] expected, float[] actual, String mode) {
+        if (expected.length != actual.length) {
+            throw new AssertionError("Native " + mode + " Perlin output length mismatch");
+        }
         for (int i = 0; i < expected.length; ++i) {
             if (Float.floatToRawIntBits(expected[i]) != Float.floatToRawIntBits(actual[i])) {
-                throw new AssertionError("Native Perlin mismatch at index " + i
+                throw new AssertionError("Native " + mode + " Perlin mismatch at index " + i
                         + ": vanilla=" + expected[i] + ", native=" + actual[i]);
             }
         }
-        JPEOptimizer.LOGGER.info("JPE_NATIVE_PERLIN_PARITY samples={} bitExact=true", expected.length);
-        helper.succeed();
     }
 
     /**
