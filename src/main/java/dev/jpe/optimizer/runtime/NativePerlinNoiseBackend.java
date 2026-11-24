@@ -20,6 +20,20 @@ public final class NativePerlinNoiseBackend {
     private static final LongAdder FALLBACKS = new LongAdder();
     private static final LongAdder SAMPLES = new LongAdder();
     private static final LongAdder TOTAL_NANOS = new LongAdder();
+    private static final ThreadLocal<CoordinateScratch> COORDINATES =
+            ThreadLocal.withInitial(CoordinateScratch::new);
+
+    private static final class CoordinateScratch {
+        private int[] x = new int[0];
+        private int[] y = new int[0];
+        private int[] z = new int[0];
+
+        private void prepare(int sizeX, int sizeY, int sizeZ) {
+            if (x.length != sizeX) x = new int[sizeX];
+            if (y.length != sizeY) y = new int[sizeY];
+            if (z.length != sizeZ) z = new int[sizeZ];
+        }
+    }
 
     public record Metrics(long attempts, long completed, long fallbacks, long samples, long totalNanos) {}
 
@@ -67,20 +81,24 @@ public final class NativePerlinNoiseBackend {
         boolean terminal = false;
         try {
             GradientNoiseAccessor access = (GradientNoiseAccessor) (Object) noise;
-            int[] blockX = new int[volume.sizeX()];
-            int[] blockY = new int[volume.sizeY()];
-            int[] blockZ = new int[volume.sizeZ()];
+            CoordinateScratch coordinates = COORDINATES.get();
+            coordinates.prepare(volume.sizeX(), volume.sizeY(), volume.sizeZ());
+            int[] blockX = coordinates.x;
+            int[] blockY = coordinates.y;
+            int[] blockZ = coordinates.z;
             for (int i = 0; i < blockX.length; ++i) blockX[i] = volume.blockX(i);
             for (int i = 0; i < blockY.length; ++i) blockY[i] = volume.blockY(i);
             for (int i = 0; i < blockZ.length; ++i) blockZ[i] = volume.blockZ(i);
 
             float[] target = ((DensityBufferAccessor) buffer).jpe$values();
             if (target.length != volume.size()) return false;
-            float[] candidate = target.clone();
+            // submitPerlinVolume copies the input into FFM memory and then Rust-owned memory
+            // before returning. Passing the live array is safe: workers never retain it.
+            // Output is copied back only after the native job reaches JOB_COMPLETE.
             job = nativeRuntime.submitPerlinVolume(
                     access.jpe$perms(), blockX, blockY, blockZ,
                     access.jpe$offsetX(), access.jpe$offsetY(), access.jpe$offsetZ(),
-                    xzScale, yScale, amplitude, candidate,
+                    xzScale, yScale, amplitude, target,
                     SharedConstants.DEBUG_ENABLE_FARLANDS
             );
             if (job == null) return false;
@@ -120,8 +138,7 @@ public final class NativePerlinNoiseBackend {
             }
 
             if (status != NativeRuntime.JOB_COMPLETE || interrupted) return false;
-            job.copyOutputInto(candidate);
-            System.arraycopy(candidate, 0, target, 0, target.length);
+            job.copyOutputInto(target);
             LAST_CALL_NATIVE.set(true);
             success = true;
             COMPLETED.increment();
