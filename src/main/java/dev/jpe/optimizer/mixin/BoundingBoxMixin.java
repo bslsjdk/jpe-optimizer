@@ -15,25 +15,25 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  */
 @Mixin(BoundingBox.class)
 public abstract class BoundingBoxMixin {
-    @Inject(method = "move(III)", at = @At("TAIL"))
+    @Inject(method = "move(IIILnet/minecraft/world/level/levelgen/structure/BoundingBox;)", at = @At("TAIL"))
     private void jpe$afterMove(int dx, int dy, int dz,
                                CallbackInfoReturnable<BoundingBox> callback) {
         StructureSpatialIndex.noteBoundsMutation();
     }
 
-    @Inject(method = "move(Lnet/minecraft/core/Vec3i;)", at = @At("TAIL"))
+    @Inject(method = "move(Lnet/minecraft/core/Vec3i;)Lnet/minecraft/world/level/levelgen/structure/BoundingBox;", at = @At("TAIL"))
     private void jpe$afterMoveVector(Vec3i amount,
                                      CallbackInfoReturnable<BoundingBox> callback) {
         StructureSpatialIndex.noteBoundsMutation();
     }
 
-    @Inject(method = "encapsulate(Lnet/minecraft/core/BlockPos;)", at = @At("TAIL"))
+    @Inject(method = "encapsulate(Lnet/minecraft/core/BlockPos;)Lnet/minecraft/world/level/levelgen/structure/BoundingBox;", at = @At("TAIL"))
     private void jpe$afterEncapsulatePosition(BlockPos position,
                                               CallbackInfoReturnable<BoundingBox> callback) {
         StructureSpatialIndex.noteBoundsMutation();
     }
 
-    @Inject(method = "encapsulate(Lnet/minecraft/world/level/levelgen/structure/BoundingBox;)",
+    @Inject(method = "encapsulate(Lnet/minecraft/world/level/levelgen/structure/BoundingBox;)Lnet/minecraft/world/level/levelgen/structure/BoundingBox;",
             at = @At("TAIL"))
     private void jpe$afterEncapsulateBox(BoundingBox other,
                                          CallbackInfoReturnable<BoundingBox> callback) {
