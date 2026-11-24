@@ -95,59 +95,67 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
         Objects.checkFromIndexSize(0, length, left.length);
         Objects.checkFromIndexSize(0, length, right.length);
         int bound = SPECIES.loopBound(length), i = 0;
-        if (operation == BinaryOp.ADD) {
-            for (; i < bound; i += SPECIES.length()) FloatVector.fromArray(SPECIES, left, i).add(FloatVector.fromArray(SPECIES, right, i)).intoArray(left, i);
-            for (; i < length; ++i) left[i] = left[i] + right[i];
-        } else if (operation == BinaryOp.SUBTRACT) {
-            for (; i < bound; i += SPECIES.length()) FloatVector.fromArray(SPECIES, left, i).sub(FloatVector.fromArray(SPECIES, right, i)).intoArray(left, i);
-            for (; i < length; ++i) left[i] = left[i] - right[i];
-        } else if (operation == BinaryOp.MULTIPLY) {
-            for (; i < bound; i += SPECIES.length()) FloatVector.fromArray(SPECIES, left, i).mul(FloatVector.fromArray(SPECIES, right, i)).intoArray(left, i);
-            for (; i < length; ++i) left[i] = left[i] * right[i];
-        } else {
-            for (; i < bound; i += SPECIES.length()) FloatVector.fromArray(SPECIES, left, i).div(FloatVector.fromArray(SPECIES, right, i)).intoArray(left, i);
-            for (; i < length; ++i) left[i] = left[i] / right[i];
+        for (; i < bound; i += SPECIES.length()) {
+            FloatVector a = FloatVector.fromArray(SPECIES, left, i);
+            FloatVector b = FloatVector.fromArray(SPECIES, right, i);
+            VectorMask<Float> valid = a.compare(VectorOperators.EQ, a)
+                    .and(b.compare(VectorOperators.EQ, b));
+            FloatVector result = applyVector(a, b, operation);
+            result.intoArray(left, i, valid);
+            for (int lane = 0; lane < SPECIES.length(); ++lane) {
+                if (!valid.laneIsSet(lane)) {
+                    int index = i + lane;
+                    left[index] = applyScalar(left[index], right[index], operation);
+                }
+            }
         }
+        for (; i < length; ++i) left[i] = applyScalar(left[i], right[i], operation);
     }
 
     @Override
     public void binaryConst(float[] values, int length, float operand, BinaryOp operation) {
         Objects.checkFromIndexSize(0, length, values.length);
+        if (Float.isNaN(operand)) {
+            for (int i = 0; i < length; ++i) values[i] = applyScalar(values[i], operand, operation);
+            return;
+        }
         FloatVector constant = FloatVector.broadcast(SPECIES, operand);
         int bound = SPECIES.loopBound(length), i = 0;
-        if (operation == BinaryOp.ADD) {
-            for (; i < bound; i += SPECIES.length()) FloatVector.fromArray(SPECIES, values, i).add(constant).intoArray(values, i);
-            for (; i < length; ++i) values[i] = values[i] + operand;
-        } else if (operation == BinaryOp.SUBTRACT) {
-            for (; i < bound; i += SPECIES.length()) FloatVector.fromArray(SPECIES, values, i).sub(constant).intoArray(values, i);
-            for (; i < length; ++i) values[i] = values[i] - operand;
-        } else if (operation == BinaryOp.MULTIPLY) {
-            for (; i < bound; i += SPECIES.length()) FloatVector.fromArray(SPECIES, values, i).mul(constant).intoArray(values, i);
-            for (; i < length; ++i) values[i] = values[i] * operand;
-        } else {
-            for (; i < bound; i += SPECIES.length()) FloatVector.fromArray(SPECIES, values, i).div(constant).intoArray(values, i);
-            for (; i < length; ++i) values[i] = values[i] / operand;
+        for (; i < bound; i += SPECIES.length()) {
+            FloatVector a = FloatVector.fromArray(SPECIES, values, i);
+            VectorMask<Float> valid = a.compare(VectorOperators.EQ, a);
+            applyVector(a, constant, operation).intoArray(values, i, valid);
+            for (int lane = 0; lane < SPECIES.length(); ++lane) {
+                if (!valid.laneIsSet(lane)) {
+                    int index = i + lane;
+                    values[index] = applyScalar(values[index], operand, operation);
+                }
+            }
         }
+        for (; i < length; ++i) values[i] = applyScalar(values[i], operand, operation);
     }
 
     @Override
     public void binaryConstLeft(float[] values, int length, float operand, BinaryOp operation) {
         Objects.checkFromIndexSize(0, length, values.length);
+        if (Float.isNaN(operand)) {
+            for (int i = 0; i < length; ++i) values[i] = applyScalar(operand, values[i], operation);
+            return;
+        }
         FloatVector constant = FloatVector.broadcast(SPECIES, operand);
         int bound = SPECIES.loopBound(length), i = 0;
-        if (operation == BinaryOp.ADD) {
-            for (; i < bound; i += SPECIES.length()) constant.add(FloatVector.fromArray(SPECIES, values, i)).intoArray(values, i);
-            for (; i < length; ++i) values[i] = operand + values[i];
-        } else if (operation == BinaryOp.SUBTRACT) {
-            for (; i < bound; i += SPECIES.length()) constant.sub(FloatVector.fromArray(SPECIES, values, i)).intoArray(values, i);
-            for (; i < length; ++i) values[i] = operand - values[i];
-        } else if (operation == BinaryOp.MULTIPLY) {
-            for (; i < bound; i += SPECIES.length()) constant.mul(FloatVector.fromArray(SPECIES, values, i)).intoArray(values, i);
-            for (; i < length; ++i) values[i] = operand * values[i];
-        } else {
-            for (; i < bound; i += SPECIES.length()) constant.div(FloatVector.fromArray(SPECIES, values, i)).intoArray(values, i);
-            for (; i < length; ++i) values[i] = operand / values[i];
+        for (; i < bound; i += SPECIES.length()) {
+            FloatVector b = FloatVector.fromArray(SPECIES, values, i);
+            VectorMask<Float> valid = b.compare(VectorOperators.EQ, b);
+            applyVector(constant, b, operation).intoArray(values, i, valid);
+            for (int lane = 0; lane < SPECIES.length(); ++lane) {
+                if (!valid.laneIsSet(lane)) {
+                    int index = i + lane;
+                    values[index] = applyScalar(operand, values[index], operation);
+                }
+            }
         }
+        for (; i < length; ++i) values[i] = applyScalar(operand, values[i], operation);
     }
 
     @Override
@@ -190,6 +198,20 @@ public final class VectorApiDensityKernel implements DensityVectorKernel {
             values[outputOffset + i] = values[outputOffset + i] + amplitude * lerp(alphaZ, low, high);
         }
     }
+    private static FloatVector applyVector(FloatVector a, FloatVector b, BinaryOp operation) {
+        if (operation == BinaryOp.ADD) return a.add(b);
+        if (operation == BinaryOp.SUBTRACT) return a.sub(b);
+        if (operation == BinaryOp.MULTIPLY) return a.mul(b);
+        return a.div(b);
+    }
+
+    private static float applyScalar(float a, float b, BinaryOp operation) {
+        if (operation == BinaryOp.ADD) return a + b;
+        if (operation == BinaryOp.SUBTRACT) return a - b;
+        if (operation == BinaryOp.MULTIPLY) return a * b;
+        return a / b;
+    }
+
     private static FloatVector lerp(FloatVector a, FloatVector x, FloatVector y) { return x.add(a.mul(y.sub(x))); }
     private static float lerp(float a, float x, float y) { return x + a * (y - x); }
     @Override public int lanes() { return SPECIES.length(); }
