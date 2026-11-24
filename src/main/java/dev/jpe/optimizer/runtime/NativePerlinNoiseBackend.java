@@ -185,7 +185,7 @@ public final class NativePerlinNoiseBackend {
             boolean cancelRequested = false;
             int status;
             while (true) {
-                status = job.status();
+                status = job.waitForStatus(10_000_000L);
                 if (status == NativeRuntime.JOB_COMPLETE
                         || status == NativeRuntime.JOB_FAILED
                         || status == NativeRuntime.JOB_CANCELLED) {
@@ -203,15 +203,6 @@ public final class NativePerlinNoiseBackend {
                     JPEOptimizer.LOGGER.warn("Native Perlin job timed out; cancelling and falling back to Java");
                     job.cancel();
                     cancelRequested = true;
-                }
-                try {
-                    Thread.sleep(1L);
-                } catch (InterruptedException ignored) {
-                    interrupted = true;
-                    if (!cancelRequested) {
-                        job.cancel();
-                        cancelRequested = true;
-                    }
                 }
             }
 
@@ -233,13 +224,13 @@ public final class NativePerlinNoiseBackend {
                 try {
                     if (!terminal) {
                         job.cancel();
-                        while (!job.isDone()) {
-                            try {
-                                Thread.sleep(1L);
-                            } catch (InterruptedException ignored) {
-                                interrupted = true;
-                            }
-                        }
+                        int cleanupStatus;
+                        do {
+                            cleanupStatus = job.waitForStatus(10_000_000L);
+                            if (Thread.interrupted()) interrupted = true;
+                        } while (cleanupStatus != NativeRuntime.JOB_COMPLETE
+                                && cleanupStatus != NativeRuntime.JOB_FAILED
+                                && cleanupStatus != NativeRuntime.JOB_CANCELLED);
                     }
                     job.close();
                 } catch (RuntimeException | LinkageError cleanupFailure) {

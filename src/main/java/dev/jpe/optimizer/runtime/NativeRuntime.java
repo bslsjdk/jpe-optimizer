@@ -23,7 +23,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * Completed jobs must be explicitly released before this runtime can be closed.
  */
 public final class NativeRuntime implements AutoCloseable {
-    public static final int EXPECTED_ABI_VERSION = 2;
+    public static final int EXPECTED_ABI_VERSION = 3;
 
     public static final int JOB_COMPLETE = 0;
     public static final int JOB_PENDING = 1;
@@ -36,6 +36,7 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle perlinAddVolume;
     private final MethodHandle submitPerlinVolume;
     private final MethodHandle jobStatus;
+    private final MethodHandle waitJob;
     private final MethodHandle copyJobOutput;
     private final MethodHandle cancelJob;
     private final MethodHandle releaseJob;
@@ -101,13 +102,14 @@ public final class NativeRuntime implements AutoCloseable {
     }
 
     private NativeRuntime(Arena arena, MethodHandle add, MethodHandle perlin,
-                          MethodHandle submit, MethodHandle status, MethodHandle copy,
-                          MethodHandle cancel, MethodHandle release) {
+                          MethodHandle submit, MethodHandle status, MethodHandle wait,
+                          MethodHandle copy, MethodHandle cancel, MethodHandle release) {
         this.libraryArena = arena;
         this.addF32 = add;
         this.perlinAddVolume = perlin;
         this.submitPerlinVolume = submit;
         this.jobStatus = status;
+        this.waitJob = wait;
         this.copyJobOutput = copy;
         this.cancelJob = cancel;
         this.releaseJob = release;
@@ -148,6 +150,9 @@ public final class NativeRuntime implements AutoCloseable {
             MethodHandle status = linker.downcallHandle(
                     lookup.find("jpe_runtime_job_status").orElseThrow(() -> new IllegalStateException("Missing async job status symbol")),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG));
+            MethodHandle wait = linker.downcallHandle(
+                    lookup.find("jpe_runtime_wait_job").orElseThrow(() -> new IllegalStateException("Missing async job wait symbol")),
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG));
             MethodHandle copy = linker.downcallHandle(
                     lookup.find("jpe_runtime_copy_job_output").orElseThrow(() -> new IllegalStateException("Missing async output copy symbol")),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
@@ -162,7 +167,7 @@ public final class NativeRuntime implements AutoCloseable {
             if (actual != EXPECTED_ABI_VERSION) {
                 throw new IllegalStateException("Native ABI mismatch: expected " + EXPECTED_ABI_VERSION + ", got " + actual);
             }
-            return new NativeRuntime(arena, add, perlin, submit, status, copy, cancel, release);
+            return new NativeRuntime(arena, add, perlin, submit, status, wait, copy, cancel, release);
         } catch (Throwable failure) {
             arena.close();
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
@@ -398,6 +403,17 @@ public final class NativeRuntime implements AutoCloseable {
                 return (int) runtime.jobStatus.invokeExact(id);
             } catch (Throwable failure) {
                 throw rethrow("Unable to query native job status", failure);
+            }
+        }
+
+        /** Blocks until the job reaches a terminal state or the timeout expires. */
+        public synchronized int waitForStatus(long timeoutNanos) {
+            ensureUsable();
+            if (timeoutNanos < 0L) throw new IllegalArgumentException("timeoutNanos must be non-negative");
+            try {
+                return (int) runtime.waitJob.invokeExact(id, timeoutNanos);
+            } catch (Throwable failure) {
+                throw rethrow("Unable to wait for native job", failure);
             }
         }
 

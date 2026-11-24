@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::slice;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-const ABI_VERSION: u32 = 2;
+const ABI_VERSION: u32 = 3;
 const STATUS_OK: i32 = 0;
 const STATUS_INVALID_ARGUMENT: i32 = 1;
 const STATUS_CPP_FAILURE: i32 = 2;
@@ -34,6 +34,7 @@ unsafe extern "C" {
 struct JobState {
     cancelled: AtomicBool,
     status: Mutex<JobStatus>,
+    changed: Condvar,
 }
 
 enum JobStatus { Pending, Running, Complete(Vec<f32>), Failed(i32), Cancelled }
@@ -74,6 +75,7 @@ fn scheduler() -> &'static Scheduler {
                     let Ok(mut task) = task else { break };
                     if task.state.cancelled.load(Ordering::Acquire) {
                         *lock_status(&task.state) = JobStatus::Cancelled;
+                        task.state.changed.notify_all();
                         continue;
                     }
                     *lock_status(&task.state) = JobStatus::Running;
@@ -97,6 +99,8 @@ fn scheduler() -> &'static Scheduler {
                             Err(_) => JobStatus::Failed(STATUS_RUST_PANIC),
                         };
                     }
+                    drop(status);
+                    task.state.changed.notify_all();
                 })
                 .expect("failed to start JPE native worker");
         }
@@ -170,7 +174,11 @@ pub unsafe extern "C" fn jpe_runtime_submit_perlin_volume(
         if expected != output_length || expected as u128 > MAX_VOLUME_ELEMENTS as u128 { return 0; }
         let task = unsafe {
             PerlinTask {
-                state: Arc::new(JobState { cancelled: AtomicBool::new(false), status: Mutex::new(JobStatus::Pending) }),
+                state: Arc::new(JobState {
+                    cancelled: AtomicBool::new(false),
+                    status: Mutex::new(JobStatus::Pending),
+                    changed: Condvar::new(),
+                }),
                 permutation: slice::from_raw_parts(permutation, 256).to_vec(),
                 block_x: slice::from_raw_parts(block_x, size_x as usize).to_vec(),
                 block_y: slice::from_raw_parts(block_y, size_y as usize).to_vec(),
@@ -211,6 +219,29 @@ pub extern "C" fn jpe_runtime_job_status(job_id: u64) -> i32 {
     result
 }
 
+/// Waits for a job to finish, or returns its current status when the timeout expires.
+#[no_mangle]
+pub extern "C" fn jpe_runtime_wait_job(job_id: u64, timeout_nanos: u64) -> i32 {
+    let state = {
+        let jobs = scheduler().jobs.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(state) = jobs.get(&job_id) else { return -1 };
+        Arc::clone(state)
+    };
+    let status = lock_status(&state);
+    let (status, _) = state.changed.wait_timeout_while(
+        status,
+        Duration::from_nanos(timeout_nanos),
+        |status| matches!(status, JobStatus::Pending | JobStatus::Running),
+    ).unwrap_or_else(|poisoned| poisoned.into_inner());
+    match &*status {
+        JobStatus::Pending => JOB_PENDING,
+        JobStatus::Running => JOB_RUNNING,
+        JobStatus::Complete(_) => JOB_COMPLETE,
+        JobStatus::Failed(_) => JOB_FAILED,
+        JobStatus::Cancelled => JOB_CANCELLED,
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn jpe_runtime_copy_job_output(job_id: u64, destination: *mut f32, capacity: u64) -> i32 {
     if destination.is_null() { return STATUS_INVALID_ARGUMENT; }
@@ -243,7 +274,11 @@ pub extern "C" fn jpe_runtime_cancel_job(job_id: u64) -> i32 {
     };
     state.cancelled.store(true, Ordering::Release);
     let mut status = lock_status(&state);
-    if matches!(*status, JobStatus::Pending) { *status = JobStatus::Cancelled; }
+    if matches!(*status, JobStatus::Pending) {
+        *status = JobStatus::Cancelled;
+        drop(status);
+        state.changed.notify_all();
+    }
     STATUS_OK
 }
 
@@ -264,7 +299,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exports_expected_abi_version() { assert_eq!(jpe_runtime_abi_version(), 2); }
+    fn exports_expected_abi_version() { assert_eq!(jpe_runtime_abi_version(), 3); }
 
     #[test]
     fn bulk_boundary_calls_cpp_kernel() {
@@ -299,17 +334,13 @@ mod tests {
         let id = unsafe { jpe_runtime_submit_perlin_volume(permutation.as_ptr(), axis.as_ptr(), axis.as_ptr(),
             axis.as_ptr(), 1, 1, 1, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, initial.as_ptr(), 1, 0) };
         assert_ne!(id, 0);
-        for _ in 0..100 {
-            let status = jpe_runtime_job_status(id);
-            if status == JOB_COMPLETE {
+        let status = jpe_runtime_wait_job(id, 2_000_000_000);
+        if status == JOB_COMPLETE {
                 let mut output = [99.0_f32];
                 assert_eq!(unsafe { jpe_runtime_copy_job_output(id, output.as_mut_ptr(), 1) }, STATUS_OK);
                 assert_eq!(output[0], 0.0);
                 assert_eq!(jpe_runtime_release_job(id), STATUS_OK);
                 return;
-            }
-            assert!(status == JOB_PENDING || status == JOB_RUNNING);
-            thread::sleep(Duration::from_millis(2));
         }
         let _ = jpe_runtime_release_job(id);
         panic!("native Perlin job did not complete");
