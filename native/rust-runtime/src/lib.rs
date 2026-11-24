@@ -673,6 +673,91 @@ mod tests {
     }
 
     #[test]
+    fn perlin_stack_native_microbenchmark_large_volume() {
+        use std::time::Instant;
+
+        const SX: usize = 32;
+        const SY: usize = 64;
+        const SZ: usize = 32;
+        const LAYERS: usize = 8;
+        const ROUNDS: usize = 7;
+        const REPEATS: usize = 2;
+        let permutations: [[u8; 256]; LAYERS] = std::array::from_fn(|layer| {
+            std::array::from_fn(|i| ((i * (37 + layer * 6) + 11 + layer * 17) & 255) as u8)
+        });
+        let layers: [JpePerlinLayer; LAYERS] = std::array::from_fn(|i| JpePerlinLayer {
+            permutation: permutations[i].as_ptr(),
+            offset_x: 0.13 * (i as f64 + 1.0),
+            offset_y: -0.17 * (i as f64 + 1.0),
+            offset_z: 0.23 * (i as f64 + 1.0),
+            xz_scale: 0.375 * (i as f64 + 1.0),
+            y_scale: 0.625 * (i as f64 + 1.0),
+            amplitude: 0.5_f32.powi(i as i32 + 1),
+        });
+        let len = SX * SY * SZ;
+        let mut repeated = vec![0.125_f32; len];
+        let mut fused = vec![0.125_f32; len];
+
+        let run_repeated = |out: &mut [f32]| {
+            for _ in 0..REPEATS {
+                out.fill(0.125);
+                assert_eq!(unsafe { jpe_cpp_perlin_add_stack(
+                    layers.as_ptr(), LAYERS as u32,
+                    SX as u32, SY as u32, SZ as u32,
+                    -128, -64, 96, 1, 1, 1,
+                    out.as_mut_ptr(), len as u64, 0
+                ) }, STATUS_OK);
+            }
+        };
+        let run_fused = |out: &mut [f32]| {
+            for _ in 0..REPEATS {
+                out.fill(0.125);
+                assert_eq!(unsafe { jpe_cpp_perlin_add_stack_fused(
+                    layers.as_ptr(), LAYERS as u32,
+                    SX as u32, SY as u32, SZ as u32,
+                    -128, -64, 96, 1, 1, 1,
+                    out.as_mut_ptr(), len as u64, 0
+                ) }, STATUS_OK);
+            }
+        };
+
+        // Warm both implementations before timing; alternate order each round.
+        for _ in 0..2 {
+            run_repeated(&mut repeated);
+            run_fused(&mut fused);
+        }
+        let mut repeated_ns = Vec::with_capacity(ROUNDS);
+        let mut fused_ns = Vec::with_capacity(ROUNDS);
+        for round in 0..ROUNDS {
+            if round % 2 == 0 {
+                let start = Instant::now(); run_repeated(&mut repeated);
+                repeated_ns.push(start.elapsed().as_nanos());
+                let start = Instant::now(); run_fused(&mut fused);
+                fused_ns.push(start.elapsed().as_nanos());
+            } else {
+                let start = Instant::now(); run_fused(&mut fused);
+                fused_ns.push(start.elapsed().as_nanos());
+                let start = Instant::now(); run_repeated(&mut repeated);
+                repeated_ns.push(start.elapsed().as_nanos());
+            }
+        }
+        assert_eq!(repeated.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                   fused.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+        repeated_ns.sort_unstable();
+        fused_ns.sort_unstable();
+        let repeated_median = repeated_ns[ROUNDS / 2];
+        let fused_median = fused_ns[ROUNDS / 2];
+        let ratio = repeated_median as f64 / fused_median as f64;
+        eprintln!(
+            "JPE_PERLIN_STACK_LARGE_MICROBENCH dims={}x{}x{} layers={} repeats={} rounds={} repeated_median_ms={:.3} fused_median_ms={:.3} fused_speedup={:.3}x",
+            SX, SY, SZ, LAYERS, REPEATS, ROUNDS,
+            repeated_median as f64 / 1_000_000.0,
+            fused_median as f64 / 1_000_000.0,
+            ratio
+        );
+    }
+
+    #[test]
     fn batched_perlin_stack_rejects_invalid_layer_count_and_output_size() {
         let permutation = [0_u8; 256];
         let layer = JpePerlinLayer { permutation: permutation.as_ptr(),
