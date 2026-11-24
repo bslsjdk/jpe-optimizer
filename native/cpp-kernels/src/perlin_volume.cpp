@@ -279,7 +279,7 @@ extern "C" int32_t jpe_cpp_perlin_add_volume(
     uint64_t output_length,
     uint32_t flags
 ) noexcept {
-    return perlin_add_volume_impl<true, true>(permutation,
+    return perlin_add_volume_impl<true, false>(permutation,
         size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
         xz_scale, y_scale, amplitude, output, output_length, flags);
 }
@@ -294,6 +294,20 @@ extern "C" int32_t jpe_cpp_perlin_add_volume_uncached_y(
     float* output, uint64_t output_length, uint32_t flags
 ) noexcept {
     return perlin_add_volume_impl<false, false>(permutation,
+        size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
+        xz_scale, y_scale, amplitude, output, output_length, flags);
+}
+
+extern "C" int32_t jpe_cpp_perlin_add_volume_cached_xy(
+    const uint8_t* permutation,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    double offset_x, double offset_y, double offset_z,
+    double xz_scale, double y_scale, float amplitude,
+    float* output, uint64_t output_length, uint32_t flags
+) noexcept {
+    return perlin_add_volume_impl<true, true>(permutation,
         size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
         xz_scale, y_scale, amplitude, output, output_length, flags);
 }
