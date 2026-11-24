@@ -60,10 +60,12 @@ jobs:
             local label="$1"
             local index_enabled="$2"
             echo "===== NORMAL WORLDGEN BENCHMARK ${label} ====="
-            rm -rf run/server
-            mkdir -p run/server
-            printf 'eula=true\n' > run/server/eula.txt
-            cat > run/server/server.properties <<'PROPERTIES'
+            # ModDevGradle's runServer uses the project run/ directory as its game directory.
+            # Clear the entire directory so no prior world's far-away benchmark chunks survive.
+            rm -rf run
+            mkdir -p run
+            printf 'eula=true\n' > run/eula.txt
+            cat > run/server.properties <<'PROPERTIES'
           level-seed=12648430
           level-type=minecraft:normal
           generate-structures=true
@@ -116,6 +118,6 @@ jobs:
             build/reports/tests/
             build/test-results/
             build/source-audit/report.txt
-            run/server/logs/
+            run/logs/
           if-no-files-found: warn
           retention-days: 7
