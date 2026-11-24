@@ -9,8 +9,7 @@
     "RangeChoiceConstSamplerMixin",
     "RangeChoiceSamplerMixin",
     "BinaryFunctionMinMaxMixin",
-    "GradientNoiseAccessor",
-    "PerlinNoiseVolumeMixin"
+    "StructurePiecesBuilderMixin"
   ],
   "injectors": {
     "defaultRequire": 1
