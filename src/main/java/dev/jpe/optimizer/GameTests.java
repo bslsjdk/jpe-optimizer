@@ -58,6 +58,9 @@ public final class GameTests {
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> PERLIN_NATIVE_PARITY =
             TEST_FUNCTIONS.register("perlin_native_parity", () -> GameTests::perlinNativeParity);
 
+    public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> PALETTE_HASH_CONFIGURATION =
+            TEST_FUNCTIONS.register("palette_hash_configuration", () -> GameTests::paletteHashConfiguration);
+
     public static void registerFunctions(net.neoforged.bus.api.IEventBus modEventBus) {
         TEST_FUNCTIONS.register(modEventBus);
     }
@@ -97,6 +100,20 @@ public final class GameTests {
                 Identifier.parse("jpe_optimizer:perlin_native_parity"),
                 new FunctionGameTestInstance(PERLIN_NATIVE_PARITY.getKey(), data)
         );
+        event.registerTest(
+                Identifier.parse("jpe_optimizer:palette_hash_configuration"),
+                new FunctionGameTestInstance(PALETTE_HASH_CONFIGURATION.getKey(), data)
+        );
+    }
+
+    private static void paletteHashConfiguration(GameTestHelper helper) {
+        boolean requested = Boolean.getBoolean("jpe.paletteHashEnabled");
+        boolean applied = dev.jpe.optimizer.worldgen.PaletteHashExperiment.applied();
+        if (requested != applied) {
+            throw new AssertionError("Palette hash experiment mismatch: requested=" + requested + ", applied=" + applied);
+        }
+        JPEOptimizer.LOGGER.info("JPE_PALETTE_HASH_CONFIGURATION requested={} applied={}", requested, applied);
+        helper.succeed();
     }
 
     private static void floatMathSmoke(GameTestHelper helper) {

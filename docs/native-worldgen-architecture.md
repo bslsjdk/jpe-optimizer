@@ -52,3 +52,8 @@ The scheduler is in-process. It is not a daemon, does not use shared-memory IPC,
 ## Validation and next steps
 
 Run cargo tests and release build, then Gradle unit tests, GameTests and the dedicated server benchmark. After CI, compare one-worker and auto-sized worker configurations on fresh servers, then benchmark the complete input-copy + queue + compute + result-copy path against vanilla. Only a measured end-to-end win justifies connecting this kernel to a live worldgen stage.
+
+
+## Palette hash experiment
+
+`-Djpe.paletteHashEnabled=true` replaces only the 3-bit and 4-bit linear palette configurations with Minecraft's existing HashMap palette factory. The default remains vanilla. This is an isolated experiment, not an assumed optimization: GameTest checks that the requested Mixin actually applied, and CI compares fresh same-seed servers in off/on/on/off order. Keep the option disabled unless the full benchmark shows a repeatable end-to-end gain without changing generated chunk contents.

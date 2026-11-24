@@ -56,7 +56,7 @@ jobs:
 
       - name: GameTest correctness suite
         env:
-          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.perlinVectorEnabled=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=true -Djpe.nativePerlinEnabled=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
+          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.perlinVectorEnabled=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=true -Djpe.nativePerlinEnabled=true -Djpe.paletteHashEnabled=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
         run: |
           mkdir -p build/gametest
           set +e
@@ -150,6 +150,13 @@ jobs:
           run_worldgen material_pool_on_a vector "-Djpe.densityBufferMetrics=true -Djpe.materialBufferPooling=true"
           run_worldgen material_pool_on_b vector "-Djpe.densityBufferMetrics=true -Djpe.materialBufferPooling=true"
           run_worldgen material_pool_off_b vector "-Djpe.densityBufferMetrics=true"
+
+          # Isolate 3-bit and 4-bit palette lookup strategy with a fresh-world ABBA.
+          # Only the palette factory selection changes; world seed, generator and JVM stay fixed.
+          run_worldgen palette_hash_off_a scalar
+          run_worldgen palette_hash_on_a scalar "-Djpe.paletteHashEnabled=true"
+          run_worldgen palette_hash_on_b scalar "-Djpe.paletteHashEnabled=true"
+          run_worldgen palette_hash_off_b scalar
 
           # Separate diagnostic run: JFR sampling identifies real hot methods without
           # contaminating the four-run scalar/vector performance comparison.
