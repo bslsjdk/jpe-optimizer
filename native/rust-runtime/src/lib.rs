@@ -1205,5 +1205,78 @@ mod tests {
     }
 
     #[test]
+    fn perlin_avx2_matches_scalar_cached_and_benchmarks_run_lengths() {
+        use std::time::Instant;
+        const SX: usize = 32;
+        const SY: usize = 64;
+        const SZ: usize = 32;
+        const REPEATS: usize = 5;
+        const ROUNDS: usize = 21;
+        let permutation: [u8; 256] =
+            std::array::from_fn(|i| ((i * 37 + 11) & 255) as u8);
+        let len = SX * SY * SZ;
+        let avx2_available = unsafe { jpe_cpp_perlin_avx2_supported() != 0 };
+
+        for (case, y_scale) in [("long-y-runs", 0.015625_f64), ("short-y-runs", 0.625_f64)] {
+            let mut vector = vec![0.125_f32; len];
+            let mut scalar = vector.clone();
+            let run_vector = |out: &mut [f32]| {
+                for _ in 0..REPEATS {
+                    out.fill(0.125);
+                    assert_eq!(unsafe { jpe_cpp_perlin_add_volume(
+                        permutation.as_ptr(), SX as u32, SY as u32, SZ as u32,
+                        -256, -128, 192, 1, 1, 1,
+                        0.13, -0.17, 0.23, 0.375, y_scale, 0.75,
+                        out.as_mut_ptr(), len as u64, 0
+                    ) }, STATUS_OK);
+                }
+            };
+            let run_scalar = |out: &mut [f32]| {
+                for _ in 0..REPEATS {
+                    out.fill(0.125);
+                    assert_eq!(unsafe { jpe_cpp_perlin_add_volume_scalar_cached_y(
+                        permutation.as_ptr(), SX as u32, SY as u32, SZ as u32,
+                        -256, -128, 192, 1, 1, 1,
+                        0.13, -0.17, 0.23, 0.375, y_scale, 0.75,
+                        out.as_mut_ptr(), len as u64, 0
+                    ) }, STATUS_OK);
+                }
+            };
+            for _ in 0..2 {
+                run_vector(&mut vector);
+                run_scalar(&mut scalar);
+            }
+            let mut vector_ns = Vec::with_capacity(ROUNDS);
+            let mut scalar_ns = Vec::with_capacity(ROUNDS);
+            for round in 0..ROUNDS {
+                if round % 2 == 0 {
+                    let start = Instant::now(); run_vector(&mut vector);
+                    vector_ns.push(start.elapsed().as_nanos());
+                    let start = Instant::now(); run_scalar(&mut scalar);
+                    scalar_ns.push(start.elapsed().as_nanos());
+                } else {
+                    let start = Instant::now(); run_scalar(&mut scalar);
+                    scalar_ns.push(start.elapsed().as_nanos());
+                    let start = Instant::now(); run_vector(&mut vector);
+                    vector_ns.push(start.elapsed().as_nanos());
+                }
+            }
+            assert_eq!(vector.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                       scalar.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+            vector_ns.sort_unstable();
+            scalar_ns.sort_unstable();
+            let vector_median = vector_ns[ROUNDS / 2];
+            let scalar_median = scalar_ns[ROUNDS / 2];
+            eprintln!(
+                "JPE_PERLIN_AVX2_BENCH case={} avx2_available={} dims={}x{}x{} repeats={} rounds={} scalar_cached_median_ms={:.3} dispatched_median_ms={:.3} speedup={:.3}x",
+                case, avx2_available, SX, SY, SZ, REPEATS, ROUNDS,
+                scalar_median as f64 / 1_000_000.0,
+                vector_median as f64 / 1_000_000.0,
+                scalar_median as f64 / vector_median as f64
+            );
+        }
+    }
+
+    #[test]
     fn unknown_job_ids_are_rejected() { assert_eq!(jpe_runtime_job_status(u64::MAX), -1); }
 }
