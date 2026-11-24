@@ -595,8 +595,8 @@ mod tests {
         const SY: usize = 32;
         const SZ: usize = 24;
         const LAYERS: usize = 6;
-        const ROUNDS: usize = 9;
-        const REPEATS: usize = 3;
+        const ROUNDS: usize = 21;
+        const REPEATS: usize = 5;
         let permutations: [[u8; 256]; LAYERS] = std::array::from_fn(|layer| {
             std::array::from_fn(|i| ((i * (37 + layer * 6) + 11 + layer * 17) & 255) as u8)
         });
@@ -680,8 +680,8 @@ mod tests {
         const SY: usize = 64;
         const SZ: usize = 32;
         const LAYERS: usize = 8;
-        const ROUNDS: usize = 7;
-        const REPEATS: usize = 2;
+        const ROUNDS: usize = 21;
+        const REPEATS: usize = 5;
         let permutations: [[u8; 256]; LAYERS] = std::array::from_fn(|layer| {
             std::array::from_fn(|i| ((i * (37 + layer * 6) + 11 + layer * 17) & 255) as u8)
         });
