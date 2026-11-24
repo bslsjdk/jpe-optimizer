@@ -16,6 +16,10 @@ import java.util.concurrent.atomic.LongAdder;
 public final class StructureSpatialIndex {
     public static final int MIN_INDEXED_PIECES = 24;
 
+    // The broadphase remains opt-in until a real-world benchmark demonstrates a win.
+    // Keeping it off by default also removes the global BoundingBox mutation counter
+    // from the normal world-generation hot path.
+    private static final boolean INDEX_ENABLED = Boolean.getBoolean("jpe.structureIndexEnabled");
     private static final boolean METRICS_ENABLED = Boolean.getBoolean("jpe.structureIndexMetrics");
     private static final AtomicLong PIECE_MOVEMENT_EPOCH = new AtomicLong();
     private static final LongAdder METRIC_QUERIES = new LongAdder();
@@ -29,6 +33,10 @@ public final class StructureSpatialIndex {
                           long candidateChecks, long linearFallbacks,
                           long vanillaLinearChecks) {}
 
+    public static boolean enabled() {
+        return INDEX_ENABLED;
+    }
+
     /** Global mutation epoch; moving any structure bounding box invalidates cached broadphases. */
     public static long movementEpoch() {
         return PIECE_MOVEMENT_EPOCH.get();
@@ -36,7 +44,9 @@ public final class StructureSpatialIndex {
 
     /** Called by the BoundingBox mutation mixin. Mutations are rare compared with collision queries. */
     public static void noteBoundsMutation() {
-        PIECE_MOVEMENT_EPOCH.incrementAndGet();
+        if (INDEX_ENABLED) {
+            PIECE_MOVEMENT_EPOCH.incrementAndGet();
+        }
     }
 
     public static Metrics metricsSnapshot() {
