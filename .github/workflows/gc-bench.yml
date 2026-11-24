@@ -1,0 +1,58 @@
+name: GC Flags Benchmark
+
+on:
+  push:
+    branches: [main, "work/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gc-bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 25 (HotSpot, same vendor family as ZL2 JRE 25)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Compile GC harness
+        run: |
+          mkdir -p build/gc
+          javac -d build/gc scripts/gc/GcStress.java
+          java -version
+
+      - name: Benchmark GC configurations
+        run: |
+          set -e
+          echo "=== GC flag comparison (MC-like burst allocation, -Xmx768m) ==="
+          echo "Each config runs the same workload; lower gcTotalMs / approxWorstPauseMs is better."
+          echo
+          run_cfg() {
+            local name="$1"; shift
+            echo "--- CONFIG: $name | flags: $* ---"
+            java -Xms256m -Xmx768m "$@" -cp build/gc GcStress 48 24 20000 | tee "build/gc/$name.txt"
+            echo
+          }
+          run_cfg default
+          run_cfg serial   -XX:+UseSerialGC
+          run_cfg parallel -XX:+UseParallelGC
+          run_cfg g1_lowpause -XX:+UseG1GC -XX:MaxGCPauseMillis=50 -XX:G1HeapRegionSize=2m
+          run_cfg zgc      -XX:+UseZGC
+          echo "=== SUMMARY ==="
+          grep -H GCRESULT build/gc/*.txt || true
+
+      - name: Upload GC results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gc-bench-${{ github.run_id }}
+          path: build/gc/*.txt
+          if-no-files-found: warn
+          retention-days: 7
