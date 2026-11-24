@@ -16,7 +16,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Java 25 (HotSpot, same vendor family as ZL2 JRE 25)
+      - name: Set up Java 25 (HotSpot, same JRE family as ZL2's 25.0.5.1)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -30,22 +30,25 @@ jobs:
 
       - name: Benchmark GC configurations
         run: |
-          set -e
-          echo "=== GC flag comparison (MC-like burst allocation, -Xmx768m) ==="
-          echo "Each config runs the same workload; lower gcTotalMs / approxWorstPauseMs is better."
+          echo "=== GC flag comparison: MC-like tiny-object allocation, -Xmx512m (phone-like small heap) ==="
+          echo "5 runs per config; report ALL runs. Lower gcTotalMs / fewer gcCount is better."
+          echo "NOTE: x86 CI trend only; final call must be A/B tested on the actual phone."
           echo
           run_cfg() {
             local name="$1"; shift
             echo "--- CONFIG: $name | flags: $* ---"
-            java -Xms256m -Xmx768m "$@" -cp build/gc GcStress 48 24 20000 | tee "build/gc/$name.txt"
+            for i in 1 2 3 4 5; do
+              java -Xms256m -Xmx512m "$@" -cp build/gc GcStress 400000 12 | tee -a "build/gc/$name.txt"
+            done
             echo
           }
           run_cfg default
           run_cfg serial   -XX:+UseSerialGC
           run_cfg parallel -XX:+UseParallelGC
-          run_cfg g1_lowpause -XX:+UseG1GC -XX:MaxGCPauseMillis=50 -XX:G1HeapRegionSize=2m
+          run_cfg g1       -XX:+UseG1GC
+          run_cfg g1_tuned -XX:+UseG1GC -XX:MaxGCPauseMillis=50 -XX:G1HeapRegionSize=1m -XX:InitiatingHeapOccupancyPercent=35
           run_cfg zgc      -XX:+UseZGC
-          echo "=== SUMMARY ==="
+          echo "=== SUMMARY (all runs) ==="
           grep -H GCRESULT build/gc/*.txt || true
 
       - name: Upload GC results

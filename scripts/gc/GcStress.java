@@ -3,62 +3,58 @@ import java.lang.management.ManagementFactory;
 import java.util.List;
 
 /**
- * GC stress harness modelling Minecraft's allocation shape: many short-lived
- * objects, small bursts (chunk gen / world load), tiny live set. Run with
- * different HotSpot GC flags; each run prints one GCRESULT line with total GC
- * pause time, collection count, achieved allocation rate and a rough pause
- * estimate (max per-collector time / count). Compare across configs in CI.
+ * GC stress harness modelling Minecraft's allocation shape: a flood of tiny
+ * short-lived objects (positions, vectors, temp holders) plus occasional
+ * medium bursts, with a small live set. Run under different HotSpot GC flags;
+ * prints one GCRESULT line. The CI workflow runs each config several times and
+ * takes the minimum so JVM warmup / ergonomics noise is filtered out.
  *
- * Usage: java [GC flags] GcStress [mbPerRound] [rounds] [smallObjScale]
+ * NOTE: this runs on x86 CI, not a phone. It validates which GC flags HotSpot
+ * 25 accepts and gives a rough trend only. Final choice must be A/B tested on
+ * the actual device (few cores, small heap, thermal throttling).
+ *
+ * Usage: java [GC flags] GcStress [objectsPerRound] [rounds]
  */
 public final class GcStress {
-    private static final int LIVE_SLOTS = 512;
+    private static final int LIVE_SLOTS = 1024;
+    private static volatile Object sink;
 
     public static void main(String[] args) {
-        int mbPerRound = args.length > 0 ? Integer.parseInt(args[0]) : 48;
-        int rounds = args.length > 1 ? Integer.parseInt(args[1]) : 24;
-        int smallScale = args.length > 2 ? Integer.parseInt(args[2]) : 20000;
+        int perRound = args.length > 0 ? Integer.parseInt(args[0]) : 400_000;
+        int rounds = args.length > 1 ? Integer.parseInt(args[1]) : 12;
 
-        Object[] live = new Object[LIVE_SLOTS];
+        Holder[] live = new Holder[LIVE_SLOTS];
         List<GarbageCollectorMXBean> beans = ManagementFactory.getGarbageCollectorMXBeans();
 
-        for (int r = 0; r < 4; r++) allocateRound(mbPerRound, smallScale, live);
+        for (int r = 0; r < 3; r++) allocateRound(perRound, live);
 
         long gcTime0 = totalGcTime(beans);
         long gcCount0 = totalGcCount(beans);
         long t0 = System.nanoTime();
-        for (int r = 0; r < rounds; r++) allocateRound(mbPerRound, smallScale, live);
+        for (int r = 0; r < rounds; r++) allocateRound(perRound, live);
         long elapsedNs = System.nanoTime() - t0;
 
         long gcMs = totalGcTime(beans) - gcTime0;
         long gcCount = totalGcCount(beans) - gcCount0;
-        long allocatedMb = (long) mbPerRound * rounds;
-        double allocMbPerSec = allocatedMb * 1_000_000_000.0 / elapsedNs;
+        long allocatedBytes = (long) perRound * rounds * 48L;
+        double allocMbPerSec = allocatedBytes / 1048576.0 * 1_000_000_000.0 / elapsedNs;
 
-        long worstPauseMs = 0;
-        for (GarbageCollectorMXBean b : beans) {
-            long c = b.getCollectionCount();
-            if (c > 0) worstPauseMs = Math.max(worstPauseMs, b.getCollectionTime() / c);
-        }
-
-        long liveBytes = 0;
-        for (Object o : live) if (o instanceof byte[]) liveBytes += ((byte[]) o).length;
-
-        System.out.printf("GCRESULT gcTotalMs=%d gcCount=%d allocMbPerSec=%.1f approxWorstPauseMs=%d liveKeptMb=%d elapsedMs=%d%n",
-                gcMs, gcCount, allocMbPerSec, worstPauseMs,
-                liveBytes / (1024 * 1024), elapsedNs / 1_000_000);
+        System.out.printf("GCRESULT gcTotalMs=%d gcCount=%d allocMbPerSec=%.0f elapsedMs=%d sink=%d%n",
+                gcMs, gcCount, allocMbPerSec, elapsedNs / 1_000_000, sink == null ? 0 : 1);
     }
 
-    private static void allocateRound(int mb, int smallScale, Object[] live) {
-        for (int i = 0; i < mb; i++) {
-            byte[] block = new byte[1024 * 1024];
-            block[0] = (byte) i;
-            if (i % 7 == 0) live[i % live.length] = block;
+    private static void allocateRound(int n, Holder[] live) {
+        for (int i = 0; i < n; i++) {
+            Holder h = new Holder(i);
+            h.a = i + 1;
+            h.b = (float) i * 0.5f;
+            if ((i & 1023) == 0) live[i >>> 10 & (live.length - 1)] = h;
+            sink = h;
         }
-        for (int i = 0; i < smallScale; i++) {
-            Node n = new Node(i);
-            n.next = new Node(i + 1);
-            if ((i & 31) == 0) live[i % live.length] = n;
+        if ((n & 7) == 0) {
+            byte[] burst = new byte[256 * 1024];
+            burst[0] = (byte) n;
+            sink = burst;
         }
     }
 
@@ -74,9 +70,12 @@ public final class GcStress {
         return s;
     }
 
-    private static final class Node {
-        int v;
-        Node next;
-        Node(int v) { this.v = v; }
+    private static final class Holder {
+        int a;
+        float b;
+        long c;
+        double d;
+        Object next;
+        Holder(int v) { c = v; d = v * 0.25; }
     }
 }
