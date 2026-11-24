@@ -75,8 +75,9 @@ public final class BiomeZoomMath {
         return value + salt;
     }
 
+    // 1024 is a power of two: the low ten bits equal floorMod for positive 1024.
     private static int fiddleIndex(long value) {
-        return (int) Math.floorMod(value >> 24, FIDDLE_COUNT);
+        return (int) ((value >> 24) & (FIDDLE_COUNT - 1L));
     }
 
     private static int offsetBase(double distance) {
