@@ -457,6 +457,7 @@ def bytecode_inspection(vanilla_jar: Path, patched_jar: Path) -> list[str]:
     classes = [
         "net.minecraft.world.level.levelgen.NoiseChunk",
         "net.minecraft.world.level.levelgen.RandomState",
+        "net.minecraft.world.level.levelgen.RandomState$2",
         "net.minecraft.world.level.levelgen.densityfunction.DensityVolume",
         "net.minecraft.world.level.levelgen.densityfunction.SamplerContext",
         "net.minecraft.world.level.levelgen.densityfunction.DensityBufferArena",
