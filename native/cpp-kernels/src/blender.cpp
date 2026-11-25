@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <cstdint>
 #include <limits>
 #include <unordered_map>
@@ -181,17 +182,33 @@ float blend_one(int32_t block_x, int32_t block_y, int32_t block_z, float noise,
 }
 } // namespace
 
-extern "C" int32_t jpe_cpp_blend_density_batch(
+int32_t wrapped_coordinate(int32_t minimum, uint32_t index, int32_t step) noexcept {
+    const uint32_t bits = static_cast<uint32_t>(minimum)
+        + index * static_cast<uint32_t>(step);
+    int32_t result;
+    std::memcpy(&result, &bits, sizeof(result));
+    return result;
+}
+} // namespace
+
+extern "C" int32_t jpe_cpp_blend_density_volume(
     const JpeBlendingDataView* height_data, uint32_t height_data_count,
     const JpeBlendingDataView* density_data, uint32_t density_data_count,
-    const JpeBlendDensityQuery* queries, uint32_t query_count,
-    float* outputs, uint32_t output_count
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    const float* noise_values, float* outputs, uint64_t output_count
 ) noexcept {
     if (height_data_count > kMaxDataViews || density_data_count > kMaxDataViews
-        || query_count > kMaxQueries || output_count != query_count
+        || size_x == 0 || size_y == 0 || size_z == 0
+        || step_x == 0 || step_y == 0 || step_z == 0) return 1;
+    const uint64_t xy = static_cast<uint64_t>(size_x) * size_y;
+    if (xy > kMaxQueries / size_z) return 1;
+    const uint64_t volume_count = xy * size_z;
+    if (volume_count != output_count || volume_count > kMaxQueries
         || (height_data_count > 0 && height_data == nullptr)
         || (density_data_count > 0 && density_data == nullptr)
-        || (query_count > 0 && (queries == nullptr || outputs == nullptr))) return 1;
+        || (volume_count > 0 && (noise_values == nullptr || outputs == nullptr))) return 1;
     const auto valid_views = [](const JpeBlendingDataView* views, uint32_t count) noexcept {
         for (uint32_t i = 0; i < count; ++i) {
             if (views[i].section_count == 0 || views[i].section_count > kMaxSections) return false;
@@ -217,9 +234,20 @@ extern "C" int32_t jpe_cpp_blend_density_batch(
         std::unordered_map<Coord, std::vector<uint32_t>, CoordHash> spatial;
         spatial.reserve(points.size() * 2U + 1U);
         for (uint32_t i = 0; i < points.size(); ++i) spatial[points[i].coord].push_back(i);
-        for (uint32_t i = 0; i < query_count; ++i) {
-            outputs[i] = blend_one(queries[i].block_x, queries[i].block_y, queries[i].block_z,
-                                   queries[i].noise_value, height_index, spatial, points);
+
+        // Match DensityVolume.indexUnchecked: ((z * sizeX + x) * sizeY + y).
+        // All coordinate arithmetic is performed here, with Java int wrap semantics.
+        for (uint32_t z = 0; z < size_z; ++z) {
+            const int32_t block_z = wrapped_coordinate(min_z, z, step_z);
+            for (uint32_t x = 0; x < size_x; ++x) {
+                const int32_t block_x = wrapped_coordinate(min_x, x, step_x);
+                uint64_t index = (static_cast<uint64_t>(z) * size_x + x) * size_y;
+                for (uint32_t y = 0; y < size_y; ++y, ++index) {
+                    const int32_t block_y = wrapped_coordinate(min_y, y, step_y);
+                    outputs[index] = blend_one(block_x, block_y, block_z, noise_values[index],
+                                                height_index, spatial, points);
+                }
+            }
         }
         return 0;
     } catch (...) {

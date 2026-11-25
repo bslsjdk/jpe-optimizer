@@ -152,22 +152,17 @@ typedef struct JpeBlendingDataView {
     const float *density_columns[JPE_BLENDING_COLUMN_COUNT];
 } JpeBlendingDataView;
 
-typedef struct JpeBlendDensityQuery {
-    int32_t block_x;
-    int32_t block_y;
-    int32_t block_z;
-    float noise_value;
-} JpeBlendDensityQuery;
-
 /* height_data models Blender.heightAndBiomeBlendingData for exact fixed-cell lookup.
  * density_data models Blender.densityBlendingData for weighted neighborhood blending.
  * The call is synchronous; all descriptors and source float columns may be released on return.
  */
-JPE_API int32_t jpe_runtime_blend_density_batch(
+JPE_API int32_t jpe_runtime_blend_density_volume(
     const JpeBlendingDataView *height_data, uint32_t height_data_count,
     const JpeBlendingDataView *density_data, uint32_t density_data_count,
-    const JpeBlendDensityQuery *queries, uint32_t query_count,
-    float *outputs, uint32_t output_count
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    const float *noise_values, float *outputs, uint64_t output_count
 );
 
 #ifdef __cplusplus

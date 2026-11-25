@@ -43,15 +43,6 @@ pub struct JpeBlendingDataView {
     pub density_columns: [*const f32; 16],
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct JpeBlendDensityQuery {
-    pub block_x: i32,
-    pub block_y: i32,
-    pub block_z: i32,
-    pub noise_value: f32,
-}
-
 const DENSITY_NO_INPUT: u32 = u32::MAX;
 const DENSITY_CONST: u32 = 1;
 const DENSITY_X: u32 = 2;
@@ -97,11 +88,13 @@ unsafe extern "C" {
     ) -> i32;
     fn jpe_cpp_density_graph_load_cache(path: *const std::ffi::c_char, cache_key: *const std::ffi::c_char) -> u64;
     fn jpe_cpp_density_graph_save_cache(graph_handle: u64, path: *const std::ffi::c_char, cache_key: *const std::ffi::c_char) -> i32;
-    fn jpe_cpp_blend_density_batch(
+    fn jpe_cpp_blend_density_volume(
         height_data: *const JpeBlendingDataView, height_data_count: u32,
         density_data: *const JpeBlendingDataView, density_data_count: u32,
-        queries: *const JpeBlendDensityQuery, query_count: u32,
-        outputs: *mut f32, output_count: u32,
+        size_x: u32, size_y: u32, size_z: u32,
+        min_x: i32, min_y: i32, min_z: i32,
+        step_x: i32, step_y: i32, step_z: i32,
+        noise_values: *const f32, outputs: *mut f32, output_count: u64,
     ) -> i32;
 
 }
@@ -189,23 +182,34 @@ pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate_multi_with_inputs(
 
 
 #[no_mangle]
-pub unsafe extern "C" fn jpe_runtime_blend_density_batch(
+pub unsafe extern "C" fn jpe_runtime_blend_density_volume(
     height_data: *const JpeBlendingDataView, height_data_count: u32,
     density_data: *const JpeBlendingDataView, density_data_count: u32,
-    queries: *const JpeBlendDensityQuery, query_count: u32,
-    outputs: *mut f32, output_count: u32,
+    size_x: u32, size_y: u32, size_z: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    step_x: i32, step_y: i32, step_z: i32,
+    noise_values: *const f32, outputs: *mut f32, output_count: u64,
 ) -> i32 {
     if height_data_count > 256 || density_data_count > 256
-        || query_count > 1_048_576 || output_count != query_count
+        || size_x == 0 || size_y == 0 || size_z == 0
+        || step_x == 0 || step_y == 0 || step_z == 0
         || (height_data_count > 0 && height_data.is_null())
         || (density_data_count > 0 && density_data.is_null())
-        || (query_count > 0 && (queries.is_null() || outputs.is_null())) {
+        || noise_values.is_null() || outputs.is_null() {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    let Some(volume) = (size_x as u64).checked_mul(size_y as u64)
+        .and_then(|v| v.checked_mul(size_z as u64)) else {
+        return STATUS_INVALID_ARGUMENT;
+    };
+    if volume == 0 || volume > MAX_VOLUME_ELEMENTS || volume != output_count {
         return STATUS_INVALID_ARGUMENT;
     }
     unsafe {
-        jpe_cpp_blend_density_batch(
+        jpe_cpp_blend_density_volume(
             height_data, height_data_count, density_data, density_data_count,
-            queries, query_count, outputs, output_count,
+            size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z,
+            noise_values, outputs, output_count,
         )
     }
 }
@@ -2067,20 +2071,20 @@ mod tests {
         assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
     }
 
+
+
     #[test]
-    fn blender_density_batch_preserves_empty_fallback_and_fixed_density_override() {
+    fn blender_density_volume_preserves_empty_fallback_and_fixed_density_override() {
+        let noise = [7.25_f32, -3.5_f32];
         let mut output = [0.0_f32; 2];
-        let queries = [
-            JpeBlendDensityQuery { block_x: 0, block_y: -32, block_z: 0, noise_value: 7.25 },
-            JpeBlendDensityQuery { block_x: -1, block_y: -31, block_z: -1, noise_value: -3.5 },
-        ];
         assert_eq!(unsafe {
-            jpe_runtime_blend_density_batch(
+            jpe_runtime_blend_density_volume(
                 std::ptr::null(), 0, std::ptr::null(), 0,
-                queries.as_ptr(), 2, output.as_mut_ptr(), 2,
+                1, 2, 1, 0, -32, 0, 1, 1, 1,
+                noise.as_ptr(), output.as_mut_ptr(), 2,
             )
         }, STATUS_OK);
-        assert_eq!(output, [7.25, -3.5]);
+        assert_eq!(output, noise);
 
         let mut column = vec![0.0_f32; 16];
         column[3] = 5.0;
@@ -2090,18 +2094,20 @@ mod tests {
             chunk_x: 0, chunk_z: 0, min_section_y: -4, section_count: 8,
             density_columns,
         };
+        let one_noise = [7.25_f32];
+        let mut one_output = [0.0_f32; 1];
         assert_eq!(unsafe {
-            jpe_runtime_blend_density_batch(
+            jpe_runtime_blend_density_volume(
                 &view, 1, std::ptr::null(), 0,
-                queries.as_ptr(), 2, output.as_mut_ptr(), 2,
+                1, 1, 1, 0, -32, 0, 1, 1, 1,
+                one_noise.as_ptr(), one_output.as_mut_ptr(), 1,
             )
         }, STATUS_OK);
-        assert_eq!(output[0].to_bits(), 0.5_f32.to_bits());
-        assert_eq!(output[1].to_bits(), (-3.5_f32).to_bits());
+        assert_eq!(one_output[0].to_bits(), 0.5_f32.to_bits());
     }
 
     #[test]
-    fn blender_density_batch_executes_native_neighborhood_weighting() {
+    fn blender_density_volume_executes_native_neighborhood_weighting() {
         let mut column = vec![0.0_f32; 16];
         column[3] = 10.0;
         let mut density_columns = [std::ptr::null(); 16];
@@ -2110,21 +2116,20 @@ mod tests {
             chunk_x: 0, chunk_z: 0, min_section_y: -4, section_count: 8,
             density_columns,
         };
-        let query = [JpeBlendDensityQuery {
-            block_x: 4, block_y: -32, block_z: 0, noise_value: 4.0,
-        }];
+        let noise = [4.0_f32];
         let mut output = [0.0_f32; 1];
         assert_eq!(unsafe {
-            jpe_runtime_blend_density_batch(
+            jpe_runtime_blend_density_volume(
                 std::ptr::null(), 0, &view, 1,
-                query.as_ptr(), 1, output.as_mut_ptr(), 1,
+                1, 1, 1, 4, -32, 0, 1, 1, 1,
+                noise.as_ptr(), output.as_mut_ptr(), 1,
             )
         }, STATUS_OK);
         assert_eq!(output[0].to_bits(), 2.0_f32.to_bits());
     }
 
     #[test]
-    fn blender_density_batch_handles_negative_quart_coordinates_and_boundary_fallback() {
+    fn blender_density_volume_handles_negative_coordinates_and_boundary_fallback() {
         let mut column = vec![0.0_f32; 16];
         column[3] = 12.5;
         let mut density_columns = [std::ptr::null(); 16];
@@ -2133,14 +2138,13 @@ mod tests {
             chunk_x: -1, chunk_z: -1, min_section_y: -4, section_count: 8,
             density_columns,
         };
-        let query = [JpeBlendDensityQuery {
-            block_x: 0, block_y: -32, block_z: 0, noise_value: 9.0,
-        }];
+        let noise = [9.0_f32];
         let mut output = [0.0_f32; 1];
         assert_eq!(unsafe {
-            jpe_runtime_blend_density_batch(
+            jpe_runtime_blend_density_volume(
                 &view, 1, std::ptr::null(), 0,
-                query.as_ptr(), 1, output.as_mut_ptr(), 1,
+                1, 1, 1, 0, -32, 0, 1, 1, 1,
+                noise.as_ptr(), output.as_mut_ptr(), 1,
             )
         }, STATUS_OK);
         assert_eq!(output[0].to_bits(), 1.25_f32.to_bits());

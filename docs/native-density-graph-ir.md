@@ -83,13 +83,13 @@ Unknown nodes have two deliberately separate behaviors. STRICT capture rejects t
 
 ## Native Blender density kernel (experimental, not wired into Minecraft)
 
-The C++ kernel now has a batch API for the two density paths in the exact 26.3 Blender implementation:
+The C++ kernel now has a full-volume API for the two density paths in the exact 26.3 Blender implementation. It receives volume dimensions, axis origins/steps, and the original noise-value volume; C++ constructs every block coordinate and emits the blended volume in Minecraft's native `((z * sizeX + x) * sizeY + y)` order.
 
 - `height_data` represents `heightAndBiomeBlendingData` and is used for the exact fixed-cell lookup, including the section-boundary fallback order.
 - `density_data` represents `densityBlendingData` and is used for the radius-2 weighted neighborhood blend.
 - Each `JpeBlendingDataView` carries the raw 16 density-column pointers, chunk coordinates, minimum section Y, and section count. A missing Java column is represented by a null pointer. Every non-null column contains `section_count * 2` raw floats.
 - The caller must preserve the iteration order of `densityBlendingData.forEach`. C++ builds the spatial index and computes cell coordinates, column mapping, Y-window filtering, distance, inverse-fourth-power weights, closest-distance alpha, and final interpolation. It sorts candidate point ordinals before accumulation so the original Java iteration order is retained.
-- The FFI call is synchronous and does not retain Java pointers. A Java adapter may expose/copy raw primitive columns, but must not enumerate density points, build the spatial index, perform neighbor searches, or calculate any blend values.
+- The FFI call is synchronous, processes the entire density volume in one call, and does not retain Java pointers. A Java adapter may expose/copy raw primitive columns, but must not enumerate density points, build the spatial index, perform neighbor searches, or calculate any blend values.
 
 The kernel is compiled directly into the C++ library and exposed through the Rust C ABI. Rust tests cover empty-data passthrough, fixed-density override, negative-coordinate boundary fallback, and weighted neighborhood interpolation.
 
