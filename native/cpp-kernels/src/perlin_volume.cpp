@@ -67,11 +67,13 @@ __attribute__((target("avx2")))
 inline void corner_for_lanes_masked(
     const uint8_t* p, uint32_t hash, float rx, float rz,
     float lane_xz[8][8], float lane_y[8][8], uint32_t corner_index,
-    __m256i lane_mask
+    const int32_t lane_mask_values[8]
 ) noexcept {
     float xz;
     float y;
     corner(p, hash, rx, rz, xz, y);
+    const __m256i lane_mask = _mm256_loadu_si256(
+        reinterpret_cast<const __m256i*>(lane_mask_values));
     _mm256_maskstore_ps(lane_xz[corner_index], lane_mask, _mm256_set1_ps(xz));
     _mm256_maskstore_ps(lane_y[corner_index], lane_mask, _mm256_set1_ps(y));
 }
@@ -409,12 +411,9 @@ int32_t perlin_add_volume_impl(
 
                             // Precompute one AVX2 lane mask per distinct floor. Each
                             // corner is then broadcast and written only to lanes using that floor.
-                            __m256i unique_lane_masks[8];
-                            const __m256i lane_indices_vector = _mm256_loadu_si256(
-                                reinterpret_cast<const __m256i*>(lane_unique_indices));
-                            for (uint32_t unique = 0; unique < unique_count; ++unique) {
-                                unique_lane_masks[unique] = _mm256_cmpeq_epi32(
-                                    lane_indices_vector, _mm256_set1_epi32(static_cast<int>(unique)));
+                            int32_t unique_lane_masks[8][8]{};
+                            for (uint32_t lane = 0; lane < 8; ++lane) {
+                                unique_lane_masks[static_cast<uint32_t>(lane_unique_indices[lane])][lane] = -1;
                             }
 
                             // Compute each distinct floor's eight corners exactly once.
