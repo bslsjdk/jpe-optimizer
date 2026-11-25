@@ -616,7 +616,7 @@ mod tests {
         let nodes = [
             JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
                 input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 4.0 },
-            JpeDensityNode { opcode: DENSITY_OPAQUE, input_a: DENSITY_NO_INPUT,
+            JpeDensityNode { opcode: DENSITY_OPAQUE, input_a: 0,
                 input_b: DENSITY_NO_INPUT, reserved: 1, immediate: f64::NAN },
             JpeDensityNode { opcode: DENSITY_ADD, input_a: 0,
                 input_b: 1, reserved: 0, immediate: 0.0 },
