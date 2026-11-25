@@ -53,7 +53,7 @@ jobs:
             echo "===== FULL CHUNK WORLDGEN ${label} ====="
             rm -rf run
             mkdir -p run
-            printf 'eula=true\\n' > run/eula.txt
+            printf 'eula=true\n' > run/eula.txt
             cat > run/server.properties <<'PROPERTIES'
           level-seed=12648430
           level-type=minecraft:normal
@@ -69,18 +69,17 @@ jobs:
           max-tick-time=-1
           sync-chunk-writes=false
           PROPERTIES
-            JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector ${options} -Djpe.benchmark.ticksPerColumn=22 -Djpe.continuousWorldgenBenchmark=true -Djpe.worldgenMetrics=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=false -Djpe.perlinVectorEnabled=false" \\
+            JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector ${options} -Djpe.benchmark.ticksPerColumn=22 -Djpe.continuousWorldgenBenchmark=true -Djpe.worldgenMetrics=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=false -Djpe.perlinVectorEnabled=false" \
               gradle runServer --no-daemon --stacktrace 2>&1 | tee "build/full-chunk-benchmark/${label}.log"
             grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*completedChunks=340.*failedChunks=0.*doFillCalls=([3-9][0-9]{2,}|[1-9][0-9]{3,})' "build/full-chunk-benchmark/${label}.log"
           }
 
-          # The benchmark requests FULL LevelChunks, not partial density tiles:
-          # 3 warmup rows, then 20 measured rows x 17 chunks = 340 completed chunks.
-          # Java scalar baseline is intentionally run exactly once, as requested.
+          # FULL LevelChunks: 3 warmup rows, then 20 measured rows x 17 chunks = 340 chunks.
+          # The Java scalar baseline runs exactly once; no repeated baseline run.
           run_worldgen java_scalar_baseline "-Djpe.forceScalar=true"
 
           # Synchronous native calls execute on Minecraft's own worldgen workers.
-          # This isolates native kernel cost from a second worker pool and queue polling.
+          # This avoids adding a second worker pool and queue-polling overhead.
           run_worldgen native_sync "-Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeLibraryPath=${NATIVE_LIBRARY}"
 
           grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin-sync.*nativeSyncCalls=[1-9][0-9]*' build/full-chunk-benchmark/native_sync.log
