@@ -7,6 +7,7 @@
 #include <fstream>
 #include <string>
 #include <algorithm>
+#include <array>
 #include <memory>
 #include <limits>
 #include <stdexcept>
@@ -64,6 +65,11 @@ struct ArithmeticInstruction {
     uint32_t output;
 };
 
+struct StaticBinding {
+    uint32_t node;
+    float value;
+};
+
 struct CompiledGraph {
     uint64_t fingerprint = 0;
     uint64_t configuration_fingerprint = 0;
@@ -71,16 +77,18 @@ struct CompiledGraph {
     uint32_t root = 0;
     uint32_t references = 1;
     std::vector<JpeDensityNode> nodes;
-    // Lowered once at compile/load time: leaves are not redispatched per sample.
-    std::vector<float> initial_values;
+    // Lowered once at compile/load time. Evaluation uses node-major tiles so
+    // contiguous sample loops can be auto-vectorized by the native compiler.
+    std::vector<StaticBinding> static_values;
     std::vector<CoordinateBinding> coordinates;
     std::vector<ArithmeticInstruction> arithmetic;
 };
 
 void build_execution_plan(CompiledGraph& graph) {
-    graph.initial_values.assign(graph.nodes.size(), 0.0F);
+    graph.static_values.clear();
     graph.coordinates.clear();
     graph.arithmetic.clear();
+    graph.static_values.reserve(graph.nodes.size());
     graph.coordinates.reserve(graph.nodes.size());
     graph.arithmetic.reserve(graph.nodes.size());
 
@@ -88,7 +96,7 @@ void build_execution_plan(CompiledGraph& graph) {
         const JpeDensityNode& node = graph.nodes[i];
         switch (node.opcode) {
             case JPE_DENSITY_CONST:
-                graph.initial_values[i] = static_cast<float>(node.immediate);
+                graph.static_values.push_back({i, static_cast<float>(node.immediate)});
                 break;
             case JPE_DENSITY_X:
                 graph.coordinates.push_back({i, 0});
@@ -100,7 +108,7 @@ void build_execution_plan(CompiledGraph& graph) {
                 graph.coordinates.push_back({i, 2});
                 break;
             case JPE_DENSITY_OPAQUE:
-                graph.initial_values[i] = std::numeric_limits<float>::quiet_NaN();
+                graph.static_values.push_back({i, std::numeric_limits<float>::quiet_NaN()});
                 break;
             case JPE_DENSITY_ADD:
             case JPE_DENSITY_MUL:
@@ -356,31 +364,67 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate(
         graph = found->second;
     }
 
-    // Constants and opaque diagnostic sentinels are initialized once per volume.
-    // The per-sample loop updates only coordinate leaves and executes arithmetic ops.
-    std::vector<float> values = graph->initial_values;
-    uint64_t output_index = 0;
-    for (uint32_t z = 0; z < size_z; ++z) {
-        const float world_z = static_cast<float>(wrapped_coordinate(min_z, z, step_z));
-        for (uint32_t x = 0; x < size_x; ++x) {
-            const float world_x = static_cast<float>(wrapped_coordinate(min_x, x, step_x));
-            for (uint32_t y = 0; y < size_y; ++y) {
-                const float world_y = static_cast<float>(wrapped_coordinate(min_y, y, step_y));
-                for (const CoordinateBinding& binding : graph->coordinates) {
-                    values[binding.node] = binding.axis == 0 ? world_x
-                        : binding.axis == 1 ? world_y : world_z;
+    // Evaluate a bounded tile of samples at once. Node-major storage lets the
+    // compiler vectorize each ADD/MUL across contiguous samples while preserving
+    // the topological order (and therefore every float32 rounding point).
+    constexpr uint32_t kMaxTileSamples = 32;
+    constexpr size_t kMaxTileValues = 262144; // <= 1 MiB of float scratch.
+    const size_t node_count = graph->nodes.size();
+    const uint32_t tile_capacity = static_cast<uint32_t>(
+        std::max<size_t>(1, std::min<size_t>(kMaxTileSamples, kMaxTileValues / node_count)));
+    std::vector<float> tile_values(node_count * tile_capacity);
+    std::array<float, kMaxTileSamples> x_values{};
+    std::array<float, kMaxTileSamples> y_values{};
+    std::array<float, kMaxTileSamples> z_values{};
+    const uint64_t plane_size = static_cast<uint64_t>(size_x) * size_y;
+
+    for (uint64_t tile_start = 0; tile_start < output_length; tile_start += tile_capacity) {
+        const uint32_t count = static_cast<uint32_t>(
+            std::min<uint64_t>(tile_capacity, output_length - tile_start));
+
+        for (const StaticBinding& binding : graph->static_values) {
+            float* destination = tile_values.data() + static_cast<size_t>(binding.node) * tile_capacity;
+            std::fill_n(destination, count, binding.value);
+        }
+
+        for (uint32_t sample = 0; sample < count; ++sample) {
+            const uint64_t linear = tile_start + sample;
+            const uint32_t y_index = static_cast<uint32_t>(linear % size_y);
+            const uint32_t x_index = static_cast<uint32_t>((linear / size_y) % size_x);
+            const uint32_t z_index = static_cast<uint32_t>(linear / plane_size);
+            x_values[sample] = static_cast<float>(wrapped_coordinate(min_x, x_index, step_x));
+            y_values[sample] = static_cast<float>(wrapped_coordinate(min_y, y_index, step_y));
+            z_values[sample] = static_cast<float>(wrapped_coordinate(min_z, z_index, step_z));
+        }
+
+        for (const CoordinateBinding& binding : graph->coordinates) {
+            float* destination = tile_values.data() + static_cast<size_t>(binding.node) * tile_capacity;
+            const float* source = binding.axis == 0 ? x_values.data()
+                : binding.axis == 1 ? y_values.data() : z_values.data();
+            std::copy_n(source, count, destination);
+        }
+
+        for (const ArithmeticInstruction& instruction : graph->arithmetic) {
+            const float* left = tile_values.data()
+                + static_cast<size_t>(instruction.input_a) * tile_capacity;
+            const float* right = tile_values.data()
+                + static_cast<size_t>(instruction.input_b) * tile_capacity;
+            float* destination = tile_values.data()
+                + static_cast<size_t>(instruction.output) * tile_capacity;
+            if (instruction.opcode == JPE_DENSITY_ADD) {
+                for (uint32_t sample = 0; sample < count; ++sample) {
+                    destination[sample] = left[sample] + right[sample];
                 }
-                // This list is already topologically ordered. Do not reorder operations:
-                // each ADD/MUL retains its float32 rounding point from the source graph.
-                for (const ArithmeticInstruction& instruction : graph->arithmetic) {
-                    const float left = values[instruction.input_a];
-                    const float right = values[instruction.input_b];
-                    values[instruction.output] = instruction.opcode == JPE_DENSITY_ADD
-                        ? left + right : left * right;
+            } else {
+                for (uint32_t sample = 0; sample < count; ++sample) {
+                    destination[sample] = left[sample] * right[sample];
                 }
-                output[output_index++] = values[graph->root];
             }
         }
+
+        const float* root_values = tile_values.data()
+            + static_cast<size_t>(graph->root) * tile_capacity;
+        std::copy_n(root_values, count, output + tile_start);
     }
     return 0;
 } catch (...) { return 3; }
