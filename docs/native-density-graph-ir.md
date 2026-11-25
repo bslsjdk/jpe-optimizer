@@ -80,6 +80,21 @@ The following require dedicated semantic work and must not be approximated as or
 
 Unknown nodes have two deliberately separate behaviors. STRICT capture rejects them and remains suitable for exact parity work. EXPERIMENTAL capture preserves each unknown node as an explicit OPAQUE node with a Java-side diagnostic sidecar (runtime class and reason). Native accepts that opcode only with its experimental marker, emits quiet NaN for that node, and continues evaluating known ancestors and independent subgraphs. The Java bridge exposes separate compileDensityGraph (strict) and compileDensityGraphExperimental entry points, so an experimental graph cannot accidentally enter the strict path. This is not an emulation of the unknown operation: NaN is a visible failure signal, not a guessed result. Experimental output must never be committed to a real chunk.
 
+
+## Native Blender density kernel (experimental, not wired into Minecraft)
+
+The C++ kernel now has a batch API for the two density paths in the exact 26.3 Blender implementation:
+
+- `height_data` represents `heightAndBiomeBlendingData` and is used for the exact fixed-cell lookup, including the section-boundary fallback order.
+- `density_data` represents `densityBlendingData` and is used for the radius-2 weighted neighborhood blend.
+- Each `JpeBlendingDataView` carries the raw 16 density-column pointers, chunk coordinates, minimum section Y, and section count. A missing Java column is represented by a null pointer. Every non-null column contains `section_count * 2` raw floats.
+- The caller must preserve the iteration order of `densityBlendingData.forEach`. C++ builds the spatial index and computes cell coordinates, column mapping, Y-window filtering, distance, inverse-fourth-power weights, closest-distance alpha, and final interpolation. It sorts candidate point ordinals before accumulation so the original Java iteration order is retained.
+- The FFI call is synchronous and does not retain Java pointers. A Java adapter may expose/copy raw primitive columns, but must not enumerate density points, build the spatial index, perform neighbor searches, or calculate any blend values.
+
+The kernel is compiled directly into the C++ library and exposed through the Rust C ABI. Rust tests cover empty-data passthrough, fixed-density override, negative-coordinate boundary fallback, and weighted neighborhood interpolation.
+
+**Current limitation:** this is a standalone Native kernel plus Rust FFI, not yet connected to Minecraft's live Blender objects or density-volume execution. No actual chunk parity or world-generation speedup is claimed. The next integration must provide raw column views from the exact runtime BlendingData instances, then compare every result bit-for-bit against the Java implementation before enabling it.
+
 ## Compilation and cache lifecycle
 
 1. Java computes a canonical serialization of the supported graph and its immutable descriptors.

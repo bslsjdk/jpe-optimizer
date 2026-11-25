@@ -4,6 +4,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../cpp-kernels/src/perlin_volume.cpp");
     println!("cargo:rerun-if-changed=../cpp-kernels/src/perlin_stack.cpp");
     println!("cargo:rerun-if-changed=../cpp-kernels/src/density_graph.cpp");
+    println!("cargo:rerun-if-changed=../cpp-kernels/src/blender.cpp");
     println!("cargo:rerun-if-changed=../include/jpe_native_api.h");
     let mut build = cc::Build::new();
     build.cpp(true)
