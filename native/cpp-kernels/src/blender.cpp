@@ -190,8 +190,6 @@ static int32_t wrapped_coordinate(int32_t minimum, uint32_t index, int32_t step)
     return result;
 }
 
-static int32_t wrapped_coordinate(int32_t minimum, uint32_t index, int32_t step) noexcept;
-
 extern "C" int32_t jpe_cpp_blend_density_volume(
     const JpeBlendingDataView* height_data, uint32_t height_data_count,
     const JpeBlendingDataView* density_data, uint32_t density_data_count,
