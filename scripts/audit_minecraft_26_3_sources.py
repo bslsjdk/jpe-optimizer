@@ -334,9 +334,13 @@ def main() -> int:
         if not list(output.rglob("*.java")):
             raise RuntimeError(f"Vineflower produced no Java source for {subset}")
 
-    all_names = sorted(set(vanilla_hashes) | set(patched_hashes))
-    method_report = compare_method_inventories(vanilla_inner, PATCHED_JAR, all_names)
-    changed = [name for name in all_names if vanilla_hashes.get(name) != patched_hashes.get(name)]
+    vanilla_names = set(vanilla_hashes)
+    patched_names = set(patched_hashes)
+    common_names = sorted(vanilla_names & patched_names)
+    vanilla_only = sorted(vanilla_names - patched_names)
+    patched_only = sorted(patched_names - vanilla_names)
+    method_report = compare_method_inventories(vanilla_inner, PATCHED_JAR, common_names)
+    changed = [name for name in common_names if vanilla_hashes[name] != patched_hashes[name]]
     report = [
         f"Minecraft version: {VERSION} ({version_data['type']})",
         f"Mojang version metadata URL: {version_entry['url']}",
@@ -348,15 +352,23 @@ def main() -> int:
         f"NeoForge patched jar: {PATCHED_JAR}",
         f"NeoForge patched jar SHA-256: {hashlib.sha256(PATCHED_JAR.read_bytes()).hexdigest()}",
         f"Vineflower: {VINEFLOWER_VERSION}",
-        f"Target classes present in both jars: {len(all_names)}",
-        f"Target class bytecode identical: {len(all_names) - len(changed)}",
+        f"Target classes present in both jars: {len(common_names)}",
+        f"Vanilla-only target classes: {len(vanilla_only)}",
+        f"NeoForge-only target classes: {len(patched_only)}",
+        f"Target class bytecode identical: {len(common_names) - len(changed)}",
         f"Target class bytecode changed by NeoForge patching: {len(changed)}",
+        "",
+        "Vanilla-only target class entries:",
+        *(vanilla_only or ["(none)"]),
+        "",
+        "NeoForge-only target class entries:",
+        *(patched_only or ["(none)"]),
         "",
         "Changed target class entries:",
         *(changed or ["(none)"]),
         "",
         "DensityFunction package class inventory:",
-        *(name for name in all_names if name.startswith("net/minecraft/world/level/levelgen/densityfunction/")),
+        *(name for name in common_names if name.startswith("net/minecraft/world/level/levelgen/densityfunction/")),
         "",
         "Method-level inventory (raw Code hashes may differ when constant-pool indices are remapped):",
         *method_report,
