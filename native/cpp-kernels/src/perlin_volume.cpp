@@ -579,12 +579,7 @@ extern "C" int32_t jpe_cpp_perlin_add_volume(
         return __builtin_cpu_supports("avx2");
     }();
     const double y_step_magnitude = std::abs(static_cast<double>(step_y) * y_scale);
-    const bool small_cross_floor_volume =
-        static_cast<uint64_t>(size_x) * static_cast<uint64_t>(size_z) <= 4U;
-    const bool avoid_small_volume_cross_floor_avx2 =
-        small_cross_floor_volume && y_step_magnitude > (1.0 / 64.0);
-    if (avx2_available && y_step_magnitude <= (1.0 / 16.0)
-        && !avoid_small_volume_cross_floor_avx2) {
+    if (avx2_available && y_step_magnitude <= (1.0 / 16.0)) {
         return perlin_add_volume_impl<true, false, true>(permutation,
             size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
             xz_scale, y_scale, amplitude, output, output_length, flags);
