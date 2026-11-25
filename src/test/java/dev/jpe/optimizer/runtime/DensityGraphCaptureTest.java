@@ -76,4 +76,21 @@ class DensityGraphCaptureTest {
         assertEquals(0, graph.nodes().get(2).inputA());
         assertEquals(0, graph.nodes().get(2).inputB());
     }
+    @Test
+    void extractsDeepChainsIterativelyWithoutRecursiveStackGrowth() {
+        DensityGraphCapture capture = new DensityGraphCapture();
+        DensityNode previous = new DensityNode();
+        capture.constant(previous, 1.0);
+        for (int i = 0; i < 12_000; ++i) {
+            DensityNode next = new DensityNode();
+            capture.add(next, previous, previous);
+            previous = next;
+        }
+        DensityGraphIr graph = capture.finish(previous, 0L);
+        assertEquals(12_001, graph.nodes().size());
+        assertEquals(12_000, graph.rootNode());
+        assertEquals(12_001, capture.lastStats().emittedNodes());
+        assertTrue(capture.lastStats().conversionNanos() >= 0);
+    }
+
 }
