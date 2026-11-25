@@ -140,7 +140,7 @@ inline void perlin_evaluate_8_avx2_independent(
 
 __attribute__((target("avx2")))
 inline void perlin_prepare_corners_8_avx2(
-    const int32_t* permutation_words,
+    const int32_t* gradient_words,
     const uint32_t hashes[8][8],
     float relative_x,
     float relative_z,
@@ -154,15 +154,15 @@ inline void perlin_prepare_corners_8_avx2(
     for (int i = 0; i < 8; ++i) {
         const __m256i hash = _mm256_loadu_si256(
             reinterpret_cast<const __m256i*>(hashes[i]));
-        const __m256i gradient = _mm256_and_si256(
-            _mm256_i32gather_epi32(permutation_words, hash, 4),
-            _mm256_set1_epi32(15));
-        const __m256 gx = _mm256_cvtepi32_ps(
-            _mm256_i32gather_epi32(kGradientX, gradient, 4));
-        const __m256 gy = _mm256_cvtepi32_ps(
-            _mm256_i32gather_epi32(kGradientY, gradient, 4));
-        const __m256 gz = _mm256_cvtepi32_ps(
-            _mm256_i32gather_epi32(kGradientZ, gradient, 4));
+        const __m256i packed = _mm256_i32gather_epi32(gradient_words, hash, 4);
+        const __m256i gx_i = _mm256_srai_epi32(_mm256_slli_epi32(packed, 30), 30);
+        const __m256i gy_i = _mm256_srai_epi32(
+            _mm256_slli_epi32(_mm256_srli_epi32(packed, 2), 30), 30);
+        const __m256i gz_i = _mm256_srai_epi32(
+            _mm256_slli_epi32(_mm256_srli_epi32(packed, 4), 30), 30);
+        const __m256 gx = _mm256_cvtepi32_ps(gx_i);
+        const __m256 gy = _mm256_cvtepi32_ps(gy_i);
+        const __m256 gz = _mm256_cvtepi32_ps(gz_i);
         const bool upper_x = (i == 1 || i == 3 || i == 5 || i == 7);
         const bool upper_z = (i >= 4);
         const __m256 x_term = _mm256_mul_ps(gx, upper_x ? rx1 : rx);
@@ -284,7 +284,7 @@ int32_t perlin_add_volume_impl(
     // values are independent of Z, so prepare them once per X/Y and reuse
     // across all Z slices instead of repeating four lookups per lane per slice.
     thread_local std::vector<XyPermutationCache> cross_floor_xy_cache;
-    alignas(32) int32_t cross_floor_permutation_words[256];
+    alignas(32) int32_t cross_floor_gradient_words[256];
     if constexpr (CacheY && UseAvx2) {
         // Detect whether the actual run-walking schedule can enter the
         // cross-floor vector branch. Long same-floor runs are consumed in
@@ -309,7 +309,11 @@ int32_t perlin_add_volume_impl(
         }
         if (needs_cross_floor_cache) {
             for (uint32_t i = 0; i < 256; ++i) {
-                cross_floor_permutation_words[i] = static_cast<int32_t>(permutation[i]);
+                const uint32_t gradient = static_cast<uint32_t>(permutation[i]) & 15U;
+                const uint32_t gx = static_cast<uint32_t>(kGradientX[gradient]) & 3U;
+                const uint32_t gy = static_cast<uint32_t>(kGradientY[gradient]) & 3U;
+                const uint32_t gz = static_cast<uint32_t>(kGradientZ[gradient]) & 3U;
+                cross_floor_gradient_words[i] = static_cast<int32_t>(gx | (gy << 2U) | (gz << 4U));
             }
             const size_t cross_count = static_cast<size_t>(size_x) * size_y;
             if (cross_floor_xy_cache.size() < cross_count) cross_floor_xy_cache.resize(cross_count);
@@ -377,7 +381,7 @@ int32_t perlin_add_volume_impl(
                             float lane_corner_xz[8][8];
                             float lane_corner_y[8][8];
                             perlin_prepare_corners_8_avx2(
-                                cross_floor_permutation_words, lane_hashes,
+                                cross_floor_gradient_words, lane_hashes,
                                 relative_x, relative_z, lane_corner_xz, lane_corner_y);
                             perlin_evaluate_8_avx2_independent(
                                 y_relative.data() + iy, y_alpha.data() + iy,
