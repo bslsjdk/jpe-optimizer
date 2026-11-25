@@ -21,6 +21,39 @@ const QUEUE_CAPACITY: usize = 16;
 const MAX_TRACKED_JOBS: usize = 32;
 
 #[repr(C)]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct JpeDensityNode {
+    opcode: u32,
+    input_a: u32,
+    input_b: u32,
+    reserved: u32,
+    immediate: f64,
+}
+
+const DENSITY_NO_INPUT: u32 = u32::MAX;
+const DENSITY_CONST: u32 = 1;
+const DENSITY_X: u32 = 2;
+const DENSITY_Y: u32 = 3;
+const DENSITY_Z: u32 = 4;
+const DENSITY_ADD: u32 = 5;
+const DENSITY_MUL: u32 = 6;
+
+unsafe extern "C" {
+    fn jpe_runtime_density_graph_compile(
+        nodes: *const JpeDensityNode, node_count: u32, root_node: u32,
+        configuration_fingerprint: u64,
+    ) -> u64;
+    fn jpe_runtime_density_graph_evaluate(
+        graph_handle: u64,
+        size_x: u32, size_y: u32, size_z: u32,
+        min_x: i32, min_y: i32, min_z: i32,
+        step_x: i32, step_y: i32, step_z: i32,
+        output: *mut f64, output_length: u64,
+    ) -> i32;
+    fn jpe_runtime_density_graph_release(graph_handle: u64) -> i32;
+}
+
 pub struct JpePerlinLayer {
     pub permutation: *const u8,
     pub offset_x: f64,
@@ -495,6 +528,84 @@ pub extern "C" fn jpe_runtime_release_job(job_id: u64) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn density_graph_compiles_caches_and_evaluates_a_full_volume() {
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_X, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_Y, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 2.0 },
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 0,
+                input_b: 2, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_MUL, input_a: 3,
+                input_b: 1, reserved: 0, immediate: 0.0 },
+        ];
+        let first = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 0x1234)
+        };
+        let second = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 0x1234)
+        };
+        assert_ne!(first, 0);
+        assert_eq!(first, second, "identical graph/config should reuse the cached handle");
+
+        let mut output = [0.0_f64; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                first, 2, 2, 1, 10, 3, 0, 1, 1, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, 0);
+        assert_eq!(output, [36.0, 48.0, 39.0, 52.0]);
+
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(first) }, 0);
+        // The second compile retained the same cached plan.
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                second, 1, 1, 1, 10, 3, 0, 1, 1, 1,
+                output.as_mut_ptr(), 1,
+            )
+        }, 0);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(second) }, 0);
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                first, 1, 1, 1, 0, 0, 0, 1, 1, 1,
+                output.as_mut_ptr(), 1,
+            )
+        }, 2);
+    }
+
+    #[test]
+    fn density_graph_rejects_forward_references_and_bad_volumes() {
+        let invalid = [
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 1,
+                input_b: 0, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 },
+        ];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_compile(invalid.as_ptr(), 2, 0, 7)
+        }, 0);
+
+        let valid = [JpeDensityNode { opcode: DENSITY_CONST,
+            input_a: DENSITY_NO_INPUT, input_b: DENSITY_NO_INPUT,
+            reserved: 0, immediate: 1.0 }];
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile(valid.as_ptr(), 1, 0, 7)
+        };
+        assert_ne!(handle, 0);
+        let mut output = [0.0_f64; 1];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                handle, 1, 1, 1, 0, 0, 0, 0, 1, 1,
+                output.as_mut_ptr(), 1,
+            )
+        }, 1);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, 0);
+    }
 
     #[test]
     fn exports_expected_abi_version() { assert_eq!(jpe_runtime_abi_version(), 6); }
