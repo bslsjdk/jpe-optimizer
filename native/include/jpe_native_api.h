@@ -90,7 +90,8 @@ enum {
     JPE_DENSITY_ADD = 5,
     JPE_DENSITY_MUL = 6,
     /* Experimental-only: emits NaN while allowing surrounding known nodes to execute. */
-    JPE_DENSITY_OPAQUE = 7
+    JPE_DENSITY_OPAQUE = 7,
+    JPE_DENSITY_SUB = 8
 };
 /* Returns a retained compiled-plan handle, or zero for an invalid graph. */
 JPE_API uint64_t jpe_runtime_density_graph_compile(
