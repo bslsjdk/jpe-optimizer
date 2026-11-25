@@ -36,6 +36,22 @@ class DensityGraphIrTest {
     }
 
     @Test
+    void acceptsExternalVolumeInputNode() {
+        DensityGraphIr graph = new DensityGraphIr(List.of(
+                DensityGraphIr.Node.input(0),
+                DensityGraphIr.Node.constant(2.0),
+                DensityGraphIr.Node.add(0, 1)
+        ), 2, 0x1A9L);
+        assertEquals(DensityGraphIr.INPUT, graph.nodes().get(0).opcode());
+        assertEquals(5, DensityGraphIr.VERSION);
+    }
+
+    @Test
+    void rejectsOutOfRangeExternalInputIndex() {
+        assertThrows(IllegalArgumentException.class, () -> DensityGraphIr.Node.input(256));
+    }
+
+    @Test
     void rejectsForwardReferences() {
         assertThrows(IllegalArgumentException.class, () -> new DensityGraphIr(List.of(
                 DensityGraphIr.Node.add(1, 0),
