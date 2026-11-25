@@ -16,6 +16,7 @@ constexpr uint32_t kNoInput = UINT32_MAX;
 struct CompiledGraph {
     uint64_t fingerprint = 0;
     uint64_t configuration_fingerprint = 0;
+    uint32_t ir_version = 0;
     uint32_t root = 0;
     uint32_t references = 1;
     std::vector<JpeDensityNode> nodes;
@@ -27,7 +28,7 @@ std::unordered_map<uint64_t, std::shared_ptr<CompiledGraph>> g_handles;
 std::unordered_multimap<uint64_t, uint64_t> g_cache;
 
 uint64_t hash_graph(const JpeDensityNode* nodes, uint32_t count,
-                    uint32_t root, uint64_t configuration) noexcept {
+                    uint32_t root, uint32_t ir_version, uint64_t configuration) noexcept {
     // FNV-1a over explicit fields, avoiding struct padding and host pointer values.
     uint64_t hash = 1469598103934665603ULL;
     const auto mix = [&hash](const uint8_t* bytes, size_t length) {
@@ -36,17 +37,30 @@ uint64_t hash_graph(const JpeDensityNode* nodes, uint32_t count,
             hash *= 1099511628211ULL;
         }
     };
-    mix(reinterpret_cast<const uint8_t*>(&configuration), sizeof(configuration));
-    mix(reinterpret_cast<const uint8_t*>(&count), sizeof(count));
-    mix(reinterpret_cast<const uint8_t*>(&root), sizeof(root));
+    const auto mix_u32 = [&mix](uint32_t value) {
+        for (unsigned shift = 0; shift < 32; shift += 8) {
+            const uint8_t byte = static_cast<uint8_t>(value >> shift);
+            mix(&byte, 1);
+        }
+    };
+    const auto mix_u64 = [&mix](uint64_t value) {
+        for (unsigned shift = 0; shift < 64; shift += 8) {
+            const uint8_t byte = static_cast<uint8_t>(value >> shift);
+            mix(&byte, 1);
+        }
+    };
+    mix_u64(configuration);
+    mix_u32(count);
+    mix_u32(root);
+    mix_u32(ir_version);
     for (uint32_t i = 0; i < count; ++i) {
-        mix(reinterpret_cast<const uint8_t*>(&nodes[i].opcode), sizeof(nodes[i].opcode));
-        mix(reinterpret_cast<const uint8_t*>(&nodes[i].input_a), sizeof(nodes[i].input_a));
-        mix(reinterpret_cast<const uint8_t*>(&nodes[i].input_b), sizeof(nodes[i].input_b));
-        mix(reinterpret_cast<const uint8_t*>(&nodes[i].reserved), sizeof(nodes[i].reserved));
+        mix_u32(nodes[i].opcode);
+        mix_u32(nodes[i].input_a);
+        mix_u32(nodes[i].input_b);
+        mix_u32(nodes[i].reserved);
         uint64_t immediate_bits;
         std::memcpy(&immediate_bits, &nodes[i].immediate, sizeof(immediate_bits));
-        mix(reinterpret_cast<const uint8_t*>(&immediate_bits), sizeof(immediate_bits));
+        mix_u64(immediate_bits);
     }
     return hash;
 }
@@ -94,17 +108,18 @@ bool valid_volume(uint32_t sx, uint32_t sy, uint32_t sz,
 
 extern "C" uint64_t jpe_runtime_density_graph_compile(
     const JpeDensityNode* nodes, uint32_t node_count, uint32_t root_node,
-    uint64_t configuration_fingerprint
+    uint32_t ir_version, uint64_t configuration_fingerprint
 ) try {
-    if (!valid_graph(nodes, node_count, root_node)) return 0;
-    const uint64_t fingerprint = hash_graph(nodes, node_count, root_node, configuration_fingerprint);
+    if (ir_version != 1 || !valid_graph(nodes, node_count, root_node)) return 0;
+    const uint64_t fingerprint = hash_graph(nodes, node_count, root_node, ir_version, configuration_fingerprint);
     std::lock_guard<std::mutex> lock(g_mutex);
     const auto range = g_cache.equal_range(fingerprint);
     for (auto it = range.first; it != range.second; ++it) {
         const auto found = g_handles.find(it->second);
         if (found == g_handles.end()) continue;
         auto& graph = *found->second;
-        if (graph.configuration_fingerprint == configuration_fingerprint
+        if (graph.ir_version == ir_version
+            && graph.configuration_fingerprint == configuration_fingerprint
             && graph.root == root_node && graph.nodes.size() == node_count
             && std::memcmp(graph.nodes.data(), nodes,
                            static_cast<size_t>(node_count) * sizeof(JpeDensityNode)) == 0) {
@@ -116,6 +131,7 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
     auto graph = std::make_shared<CompiledGraph>();
     graph->fingerprint = fingerprint;
     graph->configuration_fingerprint = configuration_fingerprint;
+    graph->ir_version = ir_version;
     graph->root = root_node;
     graph->nodes.assign(nodes, nodes + node_count);
     uint64_t handle = g_next_handle++;
