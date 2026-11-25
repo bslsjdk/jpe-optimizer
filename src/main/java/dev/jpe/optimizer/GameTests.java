@@ -484,7 +484,7 @@ public final class GameTests {
 
             BlendingData neighborData = createSyntheticBlendingData(3, 10.0F);
             Long2ObjectOpenHashMap<BlendingData> densityMap = new Long2ObjectOpenHashMap<>();
-            densityMap.put(ChunkPos.asLong(0, 0), neighborData);
+            densityMap.put(ChunkPos.pack(0, 0), neighborData);
             Blender neighborBlender = createSyntheticBlender(new Long2ObjectOpenHashMap<>(), densityMap);
             verifyBlenderCase(runtime, neighborBlender,
                     new DensityVolume(1, 1, 1, 4, -32, 0, 1, 1, 1),
