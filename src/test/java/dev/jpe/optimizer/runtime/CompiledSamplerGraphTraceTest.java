@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 class CompiledSamplerGraphTraceTest {
     public record TestSampler(Object left, Object right, float scale) {}
     public record LeafSampler(float constant) {}
+    private record HiddenSampler(Object child) {}
     private static final class CustomSampler {}
 
     @Test
@@ -25,6 +26,18 @@ class CompiledSamplerGraphTraceTest {
         assertEquals("3.0", snapshot.nodes().get(0).values().get(0).value());
         assertEquals("2.5", snapshot.nodes().get(1).values().get(0).value());
         assertEquals(0, snapshot.droppedNodes());
+    }
+
+    @Test
+    void readsPrivateNestedSamplerRecordAccessors() {
+        HiddenSampler root = new HiddenSampler(new LeafSampler(4.0F));
+        CompiledSamplerGraphTrace.Snapshot snapshot =
+                CompiledSamplerGraphTrace.capture(root,
+                        value -> value instanceof HiddenSampler || value instanceof LeafSampler, 8);
+
+        assertEquals(2, snapshot.nodes().size());
+        assertEquals(java.util.List.of(1), snapshot.nodes().get(0).children());
+        assertTrue(snapshot.nodes().get(0).limitation().isEmpty());
     }
 
     @Test
