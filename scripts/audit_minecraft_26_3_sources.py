@@ -50,6 +50,7 @@ TARGET_CLASSES = (
 
 TARGET_CLASS_PREFIXES = (
     "net/minecraft/world/level/levelgen/densityfunction/",
+    "net/minecraft/world/level/levelgen/blending/",
 )
 
 
@@ -430,9 +431,11 @@ def source_inspection(vanilla_root: Path, patched_root: Path) -> list[str]:
         "CachingDensitySampler.java": {"sampleVolume", "sampleValue", "bind"},
         "ContextBoundSampler.java": {"sampleVolume", "sampleValue", "bind"},
         "ScopedDensityBuffer.java": {"close"},
-        "BlendDensityFunction.java": {"compileSampler", "sampleValue"},
-        "LerpFunction.java": {"compileSampler", "sampleValue"},
-        "NoiseFunction.java": {"compileSampler"},
+        "BlendDensityFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
+        "LerpFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
+        "NoiseFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
+        "Blender.java": {"blendDensity", "isEmpty", "getBlendingData"},
+        "BlendingData.java": {"getDensity", "getHeight", "getAlpha", "getOffset"},
     }
     lines: list[str] = []
     for label, root in (("MOJANG_VANILLA", vanilla_root), ("NEOFORGE_PATCHED", patched_root)):
@@ -499,6 +502,8 @@ def bytecode_inspection(vanilla_jar: Path, patched_jar: Path) -> list[str]:
         "net.minecraft.world.level.levelgen.densityfunction.op.InterpolatedFunction",
         "net.minecraft.world.level.levelgen.densityfunction.op.BlendDensityFunction",
         "net.minecraft.world.level.levelgen.densityfunction.op.BlendDensityFunction$Sampler",
+        "net.minecraft.world.level.levelgen.blending.Blender",
+        "net.minecraft.world.level.levelgen.blending.BlendingData",
         "net.minecraft.world.level.levelgen.densityfunction.generator.ConstantFunction",
         "net.minecraft.world.level.levelgen.densityfunction.generator.NoiseFunction",
         "net.minecraft.world.level.levelgen.densityfunction.generator.NoiseFunction$Sampler",
