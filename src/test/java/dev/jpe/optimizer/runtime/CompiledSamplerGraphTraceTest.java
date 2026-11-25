@@ -98,4 +98,19 @@ class CompiledSamplerGraphTraceTest {
         assertEquals(1, snapshot.droppedNodes());
         assertTrue(snapshot.nodes().get(0).limitation().contains("budget"));
     }
+    
+    @Test
+    void classifiesMinecraftFloatConstantSampler() {
+        CompiledSamplerGraphTrace.Snapshot snapshot = new CompiledSamplerGraphTrace.Snapshot(
+                java.util.List.of(new CompiledSamplerGraphTrace.NodeInfo(0,
+                        "net.minecraft.world.level.levelgen.densityfunction.generator.ConstantFunction$Sampler",
+                        java.util.List.of(), java.util.List.of(
+                                new CompiledSamplerGraphTrace.ComponentValue("value", "float", "0.125")), "")),
+                0, 0);
+
+        CompiledSamplerGraphIr.Graph graph = CompiledSamplerGraphIr.lower(snapshot);
+
+        assertEquals(CompiledSamplerGraphIr.Op.CONSTANT, graph.nodes().get(0).op());
+        assertEquals("0.125", graph.nodes().get(0).scalarValues().get("value"));
+    }
 }
