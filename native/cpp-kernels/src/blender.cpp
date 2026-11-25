@@ -164,11 +164,13 @@ float blend_one(int32_t block_x, int32_t block_y, int32_t block_z, float noise,
     double closest_distance = std::numeric_limits<double>::infinity();
     for (uint32_t index : candidates) {
         const DensityPoint& point = points[index];
-        const float dx = static_cast<float>(static_cast<int64_t>(cell_x) - point.coord.x);
-        const float dy = static_cast<float>((static_cast<int64_t>(cell_y) - point.coord.y) * 2);
-        const float dz = static_cast<float>(static_cast<int64_t>(cell_z) - point.coord.z);
-        const float distance_f = std::sqrt(dx * dx + dy * dy + dz * dz);
-        const double distance = static_cast<double>(distance_f);
+        // Mojang's Mth.length receives double operands here. Keep every
+        // distance operation in binary64; a float sqrt changes blend weights
+        // and can alter the final density's raw float bits.
+        const double dx = static_cast<double>(static_cast<int64_t>(cell_x) - point.coord.x);
+        const double dy = static_cast<double>((static_cast<int64_t>(cell_y) - point.coord.y) * 2);
+        const double dz = static_cast<double>(static_cast<int64_t>(cell_z) - point.coord.z);
+        const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
         if (distance > 2.0) continue;
         if (distance < closest_distance) closest_distance = distance;
         const double weight = 1.0 / (distance * distance * distance * distance);
