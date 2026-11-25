@@ -39,6 +39,8 @@ const DENSITY_Z: u32 = 4;
 const DENSITY_ADD: u32 = 5;
 const DENSITY_MUL: u32 = 6;
 const DENSITY_OPAQUE: u32 = 7;
+#[cfg(test)]
+static CACHE_TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 
 
@@ -55,6 +57,8 @@ unsafe extern "C" {
         output: *mut f32, output_length: u64,
     ) -> i32;
     fn jpe_cpp_density_graph_release(graph_handle: u64) -> i32;
+    fn jpe_cpp_density_graph_load_cache(path: *const std::ffi::c_char, cache_key: *const std::ffi::c_char) -> u64;
+    fn jpe_cpp_density_graph_save_cache(graph_handle: u64, path: *const std::ffi::c_char, cache_key: *const std::ffi::c_char) -> i32;
     fn jpe_cpp_density_graph_load_cache(path: *const std::ffi::c_char, cache_key: *const std::ffi::c_char) -> u64;
     fn jpe_cpp_density_graph_save_cache(graph_handle: u64, path: *const std::ffi::c_char, cache_key: *const std::ffi::c_char) -> i32;
 }
@@ -628,6 +632,45 @@ mod tests {
                 output.as_mut_ptr(), 1,
             )
         }, 2);
+    }
+
+
+    #[test]
+    fn native_density_plan_cache_reloads_without_java_ir_transfer() {
+        use std::ffi::CString;
+        let path = std::env::temp_dir().join(format!(
+            "jpe-density-plan-cache-{}-{}.bin", std::process::id(),
+            CACHE_TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let path_string = CString::new(path.to_string_lossy().as_bytes()).unwrap();
+        let key = CString::new("mc26.3|loader|modset|overworld|strict").unwrap();
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 4.0 },
+            JpeDensityNode { opcode: DENSITY_X, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 0,
+                input_b: 1, reserved: 0, immediate: 0.0 },
+        ];
+        let first = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), 3, 2, 1, 0xCA_CHE)
+        };
+        assert_ne!(first, 0);
+        assert_eq!(unsafe { jpe_cpp_density_graph_save_cache(first, path_string.as_ptr(), key.as_ptr()) }, 0);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(first) }, STATUS_OK);
+
+        let loaded = unsafe { jpe_cpp_density_graph_load_cache(path_string.as_ptr(), key.as_ptr()) };
+        assert_ne!(loaded, 0, "C++ should load its persisted plan directly");
+        let mut output = [0.0_f32; 1];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                loaded, 1, 1, 1, 3, 0, 0, 1, 1, 1,
+                output.as_mut_ptr(), 1,
+            )
+        }, STATUS_OK);
+        assert_eq!(output[0], 7.0);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(loaded) }, STATUS_OK);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
