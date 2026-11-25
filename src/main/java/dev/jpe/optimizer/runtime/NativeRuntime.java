@@ -346,7 +346,9 @@ public final class NativeRuntime implements AutoCloseable {
         Objects.requireNonNull(cacheKey, "cacheKey");
         Objects.requireNonNull(capture, "capture");
         if (cacheKey.isBlank()) throw new IllegalArgumentException("Density graph cache key must not be blank");
-        String modeKey = cacheKey + (experimental ? "|jpe-mode=experimental" : "|jpe-mode=strict");
+        String modeKey = cacheKey + "|jpe-abi=" + EXPECTED_ABI_VERSION
+                + "|jpe-ir=" + DensityGraphIr.VERSION + "|jpe-native-plan=1"
+                + (experimental ? "|jpe-mode=experimental" : "|jpe-mode=strict");
         Files.createDirectories(cacheDirectory);
         Path nativeFile = DensityGraphCache.nativeCachePath(cacheDirectory, modeKey);
         lifecycle.readLock().lock();
@@ -359,7 +361,7 @@ public final class NativeRuntime implements AutoCloseable {
                 if (cachedHandle != 0L) {
                     NativeDensityGraph executable = new NativeDensityGraph(this, cachedHandle);
                     densityGraphs.add(executable);
-                    return new PreparedDensityGraph(executable, true, nativeFile, -1, -1);
+                    return new PreparedDensityGraph(executable, true, false, nativeFile, -1, -1);
                 }
             } catch (Throwable failure) {
                 throw rethrow("Unable to load persistent native density plan", failure);
@@ -400,12 +402,13 @@ public final class NativeRuntime implements AutoCloseable {
         }
         int opaqueCount = (int) loaded.graph().nodes().stream()
                 .filter(node -> node.opcode() == DensityGraphIr.OPAQUE).count();
-        return new PreparedDensityGraph(executable, loaded.cacheHit(), nativeFile,
+        return new PreparedDensityGraph(executable, false, loaded.cacheHit(), nativeFile,
                 loaded.graph().nodes().size(), opaqueCount);
     }
 
-    public record PreparedDensityGraph(NativeDensityGraph executable, boolean cacheHit,
-                                       Path cacheFile, int nodeCount, int opaqueNodeCount)
+    public record PreparedDensityGraph(NativeDensityGraph executable, boolean nativeCacheHit,
+                                       boolean irCacheHit, Path cacheFile,
+                                       int nodeCount, int opaqueNodeCount)
             implements AutoCloseable {
         @Override public void close() { executable.close(); }
     }
