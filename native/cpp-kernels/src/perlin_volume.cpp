@@ -109,7 +109,7 @@ __attribute__((target("avx2")))
 inline void perlin_evaluate_8_avx2_independent(
     const float* relative_y, const float* alpha_y, float* output,
     const float unique_corner_xz[8][8], const float unique_corner_y[8][8],
-    const int32_t lane_unique_indices[8],
+    const int32_t lane_unique_indices[8], bool identity_lanes,
     float alpha_x, float alpha_z, float amplitude
 ) noexcept {
     const __m256 ry = _mm256_loadu_ps(relative_y);
@@ -123,10 +123,12 @@ inline void perlin_evaluate_8_avx2_independent(
         reinterpret_cast<const __m256i*>(lane_unique_indices));
     __m256 values[8];
     for (int i = 0; i < 8; ++i) {
-        const __m256 cx = _mm256_permutevar8x32_ps(
-            _mm256_loadu_ps(unique_corner_xz[i]), lane_indices);
-        const __m256 cy = _mm256_permutevar8x32_ps(
-            _mm256_loadu_ps(unique_corner_y[i]), lane_indices);
+        const __m256 corner_xz = _mm256_loadu_ps(unique_corner_xz[i]);
+        const __m256 corner_y = _mm256_loadu_ps(unique_corner_y[i]);
+        const __m256 cx = identity_lanes
+            ? corner_xz : _mm256_permutevar8x32_ps(corner_xz, lane_indices);
+        const __m256 cy = identity_lanes
+            ? corner_y : _mm256_permutevar8x32_ps(corner_y, lane_indices);
         const __m256 relative = (i == 2 || i == 3 || i == 6 || i == 7) ? ry1 : ry;
         values[i] = _mm256_add_ps(cx, _mm256_mul_ps(cy, relative));
     }
@@ -373,7 +375,8 @@ int32_t perlin_add_volume_impl(
                             perlin_evaluate_8_avx2_independent(
                                 y_relative.data() + iy, y_alpha.data() + iy,
                                 output + base + iy, unique_corner_xz, unique_corner_y,
-                                lane_unique_indices, alpha_x, alpha_z, amplitude);
+                                lane_unique_indices, unique_count == 8,
+                                alpha_x, alpha_z, amplitude);
                             iy += 8;
                             continue;
                         }
