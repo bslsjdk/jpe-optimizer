@@ -110,4 +110,18 @@ class DensityGraphCaptureTest {
         assertEquals(0, graph.nodes().get(3).inputB());
     }
 
+    @Test
+    void experimentalOpaqueNodeRetainsKnownChildSubgraph() {
+        DensityGraphCapture capture = new DensityGraphCapture(DensityGraphCapture.Mode.EXPERIMENTAL);
+        DensityNode child = new DensityNode();
+        DensityNode opaque = new DensityNode();
+        capture.constant(child, 5.0);
+        capture.unsupported(opaque, "unknown transform", child);
+        DensityGraphIr graph = capture.finish(opaque, 0L);
+        assertEquals(2, graph.nodes().size());
+        assertEquals(0, graph.nodes().get(1).inputA());
+        assertEquals(DensityGraphIr.NO_INPUT, graph.nodes().get(1).inputB());
+        assertEquals(1, graph.diagnostics().get(0).nodeIndex());
+    }
+
 }
