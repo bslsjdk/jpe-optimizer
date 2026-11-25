@@ -46,6 +46,13 @@ class RuntimeDensityTraceTest {
         RuntimeDensityTrace.Snapshot snapshot = trace.stop();
         assertEquals(1, snapshot.edges().size());
         assertEquals(1, snapshot.guards().size());
+        trace.start();
+        try (RuntimeDensityTrace.Scope ignored = trace.enter(root)) {
+            trace.branch(root, 11, true);
+            trace.branch(root, 11, false);
+        }
+        RuntimeDensityTrace.Snapshot bothOutcomes = trace.stop();
+        assertEquals(2, bothOutcomes.guards().size());
     }
 
     @Test
