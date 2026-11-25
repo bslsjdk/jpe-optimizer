@@ -63,6 +63,20 @@ inline void corner(const uint8_t* p, uint32_t hash, float rx, float rz,
     y = static_cast<float>(kGradientY[gradient]);
 }
 
+struct CachedGradient {
+    int8_t x;
+    int8_t y;
+    int8_t z;
+};
+
+inline void corner_cached_gradient(const CachedGradient* gradients, uint32_t hash,
+                                   float rx, float rz, float& xz, float& y) noexcept {
+    const CachedGradient& gradient = gradients[hash & 255U];
+    xz = static_cast<float>(gradient.x) * rx
+       + static_cast<float>(gradient.z) * rz;
+    y = static_cast<float>(gradient.y);
+}
+
 struct XyPermutationCache {
     uint8_t xy00;
     uint8_t xy01;
@@ -267,6 +281,7 @@ int32_t perlin_add_volume_impl(
     // values are independent of Z, so prepare them once per X/Y and reuse
     // across all Z slices instead of repeating four lookups per lane per slice.
     thread_local std::vector<XyPermutationCache> cross_floor_xy_cache;
+    CachedGradient cross_floor_gradients[256]{};
     
     if constexpr (CacheY && UseAvx2) {
         // Detect whether the actual run-walking schedule can enter the
@@ -291,6 +306,17 @@ int32_t perlin_add_volume_impl(
             start = run_end;
         }
         if (needs_cross_floor_cache) {
+            // Pre-resolve the permutation-to-gradient dependency for the
+            // cross-floor SIMD path. The compact table lets X/Z corner
+            // components load independently instead of waiting on p[hash].
+            for (uint32_t hash = 0; hash < 256; ++hash) {
+                const uint32_t gradient = static_cast<uint32_t>(permutation[hash]) & 15U;
+                cross_floor_gradients[hash] = CachedGradient{
+                    static_cast<int8_t>(kGradientX[gradient]),
+                    static_cast<int8_t>(kGradientY[gradient]),
+                    static_cast<int8_t>(kGradientZ[gradient])
+                };
+            }
             const size_t cross_count = static_cast<size_t>(size_x) * size_y;
             if (cross_floor_xy_cache.size() < cross_count) cross_floor_xy_cache.resize(cross_count);
             for (uint32_t ix = 0; ix < size_x; ++ix) {
@@ -410,21 +436,21 @@ int32_t perlin_add_volume_impl(
                                 const uint32_t xy01 = lane_xy.xy01;
                                 const uint32_t xy10 = lane_xy.xy10;
                                 const uint32_t xy11 = lane_xy.xy11;
-                                corner(permutation, xy00 + static_cast<uint32_t>(floor_z), relative_x, relative_z,
+                                corner_cached_gradient(cross_floor_gradients, xy00 + static_cast<uint32_t>(floor_z), relative_x, relative_z,
                                        unique_corner_xz[0][unique], unique_corner_y[0][unique]);
-                                corner(permutation, xy10 + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z,
+                                corner_cached_gradient(cross_floor_gradients, xy10 + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z,
                                        unique_corner_xz[1][unique], unique_corner_y[1][unique]);
-                                corner(permutation, xy01 + static_cast<uint32_t>(floor_z), relative_x, relative_z,
+                                corner_cached_gradient(cross_floor_gradients, xy01 + static_cast<uint32_t>(floor_z), relative_x, relative_z,
                                        unique_corner_xz[2][unique], unique_corner_y[2][unique]);
-                                corner(permutation, xy11 + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z,
+                                corner_cached_gradient(cross_floor_gradients, xy11 + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z,
                                        unique_corner_xz[3][unique], unique_corner_y[3][unique]);
-                                corner(permutation, xy00 + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F,
+                                corner_cached_gradient(cross_floor_gradients, xy00 + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F,
                                        unique_corner_xz[4][unique], unique_corner_y[4][unique]);
-                                corner(permutation, xy10 + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F,
+                                corner_cached_gradient(cross_floor_gradients, xy10 + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F,
                                        unique_corner_xz[5][unique], unique_corner_y[5][unique]);
-                                corner(permutation, xy01 + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F,
+                                corner_cached_gradient(cross_floor_gradients, xy01 + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F,
                                        unique_corner_xz[6][unique], unique_corner_y[6][unique]);
-                                corner(permutation, xy11 + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F,
+                                corner_cached_gradient(cross_floor_gradients, xy11 + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F,
                                        unique_corner_xz[7][unique], unique_corner_y[7][unique]);
                             }
                             perlin_evaluate_8_avx2_independent(
