@@ -261,6 +261,81 @@ def compare_method_inventories(
                 lines.append(f"  * {name}{descriptor}: Code bytes {before} -> {after}")
     return lines
 
+def extract_method_blocks(source: str, method_names: set[str]) -> list[str]:
+    """Extract decompiled Java method bodies for a small, auditable method allowlist."""
+    import re
+
+    results: list[str] = []
+    for match in re.finditer(r"(?m)^([^\\n]*\\b(" + "|".join(map(re.escape, sorted(method_names)))
+                             + r")\\s*\\([^;{}]*\\)\\s*(?:throws [^{]+)?\\{)", source):
+        header_start = match.start()
+        header = match.group(1)
+        # Reject call sites and control-flow expressions; decompiler method declarations
+        # begin with a visibility modifier or a package-private return type.
+        if not re.search(r"\\b(public|protected|private)\\b", header):
+            continue
+        brace = source.find("{", match.start(1), match.end(1))
+        if brace < 0:
+            continue
+        depth = 0
+        state = "code"
+        i = brace
+        while i < len(source):
+            ch = source[i]
+            nxt = source[i + 1] if i + 1 < len(source) else ""
+            if state == "code":
+                if ch == '"' : state = "string"
+                elif ch == "'": state = "char"
+                elif ch == "/" and nxt == "*": state = "block"; i += 1
+                elif ch == "/" and nxt == "/": state = "line"; i += 1
+                elif ch == "{": depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        results.append(source[header_start:i + 1].strip())
+                        break
+            elif state == "string":
+                if ch == "\\\\": i += 1
+                elif ch == '"': state = "code"
+            elif state == "char":
+                if ch == "\\\\": i += 1
+                elif ch == "'": state = "code"
+            elif state == "block":
+                if ch == "*" and nxt == "/": state = "code"; i += 1
+            elif state == "line":
+                if ch == "\\n": state = "code"
+            i += 1
+    return results
+
+
+def source_inspection(vanilla_root: Path, patched_root: Path) -> list[str]:
+    """Emit selected exact 26.3 method bodies from both vanilla and patched sources."""
+    selected = {
+        "NoiseBasedChunkGenerator.java": {"buildTerrain", "doFill", "createNoiseChunk"},
+        "NoiseChunk.java": {"forChunk", "create"},
+        "DensityFunctionCompiler.java": {"compile", "compileSampler"},
+        "DensityBufferArena.java": {"sampleVolume", "sampleVolumeCached"},
+        "DensityBuffer.java": {"addTo"},
+        "DensityVolume.java": {"get", "set", "index"},
+        "SamplerContext.java": {"get", "getOrCompute", "sample"},
+        "RandomState.java": {"create", "getOrCreate"},
+    }
+    lines: list[str] = []
+    for label, root in (("MOJANG_VANILLA", vanilla_root), ("NEOFORGE_PATCHED", patched_root)):
+        lines.append(f"===== {label} =====")
+        for filename, methods in selected.items():
+            matches = list(root.rglob(filename))
+            if not matches:
+                lines.append(f"--- {filename}: NOT FOUND ---")
+                continue
+            for path in matches:
+                source = path.read_text(encoding="utf-8", errors="replace")
+                blocks = extract_method_blocks(source, methods)
+                lines.append(f"--- {filename}: {len(blocks)} selected methods ---")
+                lines.extend(blocks or ["(no selected declarations matched)"])
+    return lines
+
+
 def main() -> int:
     root = Path("build/source-audit")
     root.mkdir(parents=True, exist_ok=True)
@@ -373,7 +448,9 @@ def main() -> int:
         "Method-level inventory (raw Code hashes may differ when constant-pool indices are remapped):",
         *method_report,
         "",
-        "Decompiled source generated locally in build/source-audit/decompiled/ (not committed or uploaded).",
+        "",
+        "Selected decompiled method bodies (for lifecycle and batch-boundary inspection):",
+        *source_inspection(vanilla_out, patched_out),
     ]
     report_path = root / "report.txt"
     report_path.write_text("\n".join(report) + "\n", encoding="utf-8")
