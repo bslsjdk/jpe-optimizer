@@ -582,6 +582,17 @@ pub extern "C" fn jpe_runtime_release_job(job_id: u64) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
+
+    unsafe extern "C" {
+        fn jpe_cpp_density_graph_evaluate_scalar_reference(
+            graph_handle: u64,
+            size_x: u32, size_y: u32, size_z: u32,
+            min_x: i32, min_y: i32, min_z: i32,
+            step_x: i32, step_y: i32, step_z: i32,
+            output: *mut f32, output_length: u64,
+        ) -> i32;
+    }
 
     #[test]
     fn density_graph_compiles_caches_and_evaluates_a_full_volume() {
@@ -805,6 +816,69 @@ mod tests {
                 }
             }
         }
+
+        let mut scalar_output = vec![0.0_f32; output.len()];
+        assert_eq!(unsafe {
+            jpe_cpp_density_graph_evaluate_scalar_reference(
+                handle, sx as u32, sy as u32, sz as u32,
+                -16, -64, 48, 1, 2, 1,
+                scalar_output.as_mut_ptr(), scalar_output.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(output, scalar_output, "tiled and scalar evaluators must be bit-identical");
+
+        for _ in 0..2 {
+            assert_eq!(unsafe {
+                jpe_runtime_density_graph_evaluate(
+                    handle, sx as u32, sy as u32, sz as u32,
+                    -16, -64, 48, 1, 2, 1,
+                    output.as_mut_ptr(), output.len() as u64,
+                )
+            }, STATUS_OK);
+            assert_eq!(unsafe {
+                jpe_cpp_density_graph_evaluate_scalar_reference(
+                    handle, sx as u32, sy as u32, sz as u32,
+                    -16, -64, 48, 1, 2, 1,
+                    scalar_output.as_mut_ptr(), scalar_output.len() as u64,
+                )
+            }, STATUS_OK);
+        }
+        let mut tiled_ms = Vec::with_capacity(9);
+        let mut scalar_ms = Vec::with_capacity(9);
+        for _ in 0..9 {
+            let start = Instant::now();
+            for _ in 0..4 {
+                assert_eq!(unsafe {
+                    jpe_runtime_density_graph_evaluate(
+                        handle, sx as u32, sy as u32, sz as u32,
+                        -16, -64, 48, 1, 2, 1,
+                        output.as_mut_ptr(), output.len() as u64,
+                    )
+                }, STATUS_OK);
+            }
+            tiled_ms.push(start.elapsed().as_secs_f64() * 250.0);
+
+            let start = Instant::now();
+            for _ in 0..4 {
+                assert_eq!(unsafe {
+                    jpe_cpp_density_graph_evaluate_scalar_reference(
+                        handle, sx as u32, sy as u32, sz as u32,
+                        -16, -64, 48, 1, 2, 1,
+                        scalar_output.as_mut_ptr(), scalar_output.len() as u64,
+                    )
+                }, STATUS_OK);
+            }
+            scalar_ms.push(start.elapsed().as_secs_f64() * 250.0);
+        }
+        tiled_ms.sort_by(f64::total_cmp);
+        scalar_ms.sort_by(f64::total_cmp);
+        let tiled_median = tiled_ms[4];
+        let scalar_median = scalar_ms[4];
+        println!(
+            "JPE_DENSITY_GRAPH_TILE_BENCH dims={}x{}x{} nodes={} tiled_median_ms={:.3} scalar_median_ms={:.3} speedup={:.3}x",
+            sx, sy, sz, nodes.len(), tiled_median, scalar_median, scalar_median / tiled_median
+        );
+
         assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
     }
 
