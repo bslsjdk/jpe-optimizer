@@ -1,0 +1,95 @@
+name: Full Chunk Native Perlin Benchmark
+
+on:
+  push:
+    branches:
+      - work/native-perlin-cross-floor-avx2
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-chunk-native-perlin-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full-chunk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: gradle
+
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Gradle 9.2.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.2.1"
+
+      - name: Build native runtime
+        run: cargo build --release --manifest-path native/rust-runtime/Cargo.toml
+
+      - name: Run one fixed-seed full-chunk Java baseline and one native comparison
+        shell: bash
+        env:
+          NATIVE_LIBRARY: ${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
+        run: |
+          set -euo pipefail
+          mkdir -p build/full-chunk-benchmark
+
+          run_worldgen() {
+            local label="$1"
+            local options="$2"
+            echo "===== FULL CHUNK WORLDGEN ${label} ====="
+            rm -rf run
+            mkdir -p run
+            printf 'eula=true\\n' > run/eula.txt
+            cat > run/server.properties <<'PROPERTIES'
+          level-seed=12648430
+          level-type=minecraft:normal
+          generate-structures=true
+          online-mode=false
+          server-ip=127.0.0.1
+          server-port=25566
+          enable-query=false
+          enable-rcon=false
+          spawn-protection=0
+          view-distance=8
+          simulation-distance=6
+          max-tick-time=-1
+          sync-chunk-writes=false
+          PROPERTIES
+            JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector ${options} -Djpe.benchmark.ticksPerColumn=22 -Djpe.continuousWorldgenBenchmark=true -Djpe.worldgenMetrics=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=false -Djpe.perlinVectorEnabled=false" \\
+              gradle runServer --no-daemon --stacktrace 2>&1 | tee "build/full-chunk-benchmark/${label}.log"
+            grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*completedChunks=340.*failedChunks=0.*doFillCalls=([3-9][0-9]{2,}|[1-9][0-9]{3,})' "build/full-chunk-benchmark/${label}.log"
+          }
+
+          # The benchmark requests FULL LevelChunks, not partial density tiles:
+          # 3 warmup rows, then 20 measured rows x 17 chunks = 340 completed chunks.
+          # Java scalar baseline is intentionally run exactly once, as requested.
+          run_worldgen java_scalar_baseline "-Djpe.forceScalar=true"
+
+          # Synchronous native calls execute on Minecraft's own worldgen workers.
+          # This isolates native kernel cost from a second worker pool and queue polling.
+          run_worldgen native_sync "-Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeLibraryPath=${NATIVE_LIBRARY}"
+
+          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin-sync.*nativeSyncCalls=[1-9][0-9]*' build/full-chunk-benchmark/native_sync.log
+
+      - name: Upload full-chunk benchmark logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-chunk-native-perlin-${{ github.run_id }}
+          path: build/full-chunk-benchmark/
+          if-no-files-found: warn
+          retention-days: 14
