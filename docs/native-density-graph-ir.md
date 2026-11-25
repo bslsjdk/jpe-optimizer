@@ -168,3 +168,8 @@ path on Java.
 The collector's unit tests cover nested caller/callee edges, branch outcomes, disabled
 capture, and event-budget overflow. No live DensityFunction trace or worldgen speedup is
 claimed by this scaffolding.
+
+
+### Trace overhead control
+
+Observed caller/callee edges are deduplicated by object-identity node IDs, and branch outcomes are deduplicated by (node ID, explicit guard ID, outcome). Instrumentation must supply a stable guard ID for each branch site; an outcome is not itself a permanent fact and both outcomes may be present in the same snapshot. This prevents repeated voxel sampling from producing one identical edge/guard record per sample. The event budget still bounds unique records, and overflow is surfaced through droppedEvents.
