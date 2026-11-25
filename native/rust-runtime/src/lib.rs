@@ -797,7 +797,10 @@ mod tests {
                     let world_x = (-16 + x as i32) as f32;
                     let world_y = (-64 + (y as i32) * 2) as f32;
                     let world_z = (48 + z as i32) as f32;
-                    let expected = (world_x + 2.0) * world_y + world_z * 0.25;
+                    let shifted_x = world_x + 2.0;
+                    let horizontal = shifted_x * world_y;
+                    let vertical = world_z * 0.25;
+                    let expected = horizontal + vertical;
                     assert_eq!(output[index], expected, "sample mismatch at x={x}, y={y}, z={z}");
                 }
             }
