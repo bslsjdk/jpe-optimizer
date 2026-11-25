@@ -70,7 +70,6 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
     if (nodes == nullptr || count == 0 || count > kMaxNodes || root >= count) return false;
     for (uint32_t i = 0; i < count; ++i) {
         const JpeDensityNode& node = nodes[i];
-        if (node.reserved != 0) return false;
         switch (node.opcode) {
             case JPE_DENSITY_CONST:
             case JPE_DENSITY_X:
@@ -84,7 +83,7 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                 break;
             case JPE_DENSITY_ADD:
             case JPE_DENSITY_MUL:
-                if (node.input_a >= i || node.input_b >= i) return false;
+                if (node.reserved != 0 || node.input_a >= i || node.input_b >= i) return false;
                 break;
             default:
                 return false;
