@@ -28,6 +28,8 @@ import org.spongepowered.asm.mixin.Shadow;
  */
 @Mixin(NoiseBasedChunkGenerator.class)
 public abstract class NoiseBasedChunkGeneratorMixin {
+    private static final boolean POSITIVE_DENSITY_AQUIFER_FAST_PATH =
+            !Boolean.getBoolean("jpe.disablePositiveDensityAquiferFastPath");
     @Shadow @Final private Holder<NoiseGeneratorSettings> settings;
     @Shadow @Final private static BlockState AIR;
     @Shadow
@@ -114,7 +116,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                             boolean sampleTiming = profile && (densityIndex & 63) == 0;
                             long aquiferStart = sampleTiming ? System.nanoTime() : 0L;
                             BlockState state;
-                            if (density > 0.0F && noiseAquifer != null) {
+                            if (POSITIVE_DENSITY_AQUIFER_FAST_PATH && density > 0.0F && noiseAquifer != null) {
                                 // Vanilla NoiseBasedAquifer.computeSubstance() does exactly this:
                                 // clear the fluid-update flag and return null for positive density.
                                 noiseAquifer.jpe$setShouldScheduleFluidUpdate(false);
