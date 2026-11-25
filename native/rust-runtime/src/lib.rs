@@ -615,6 +615,22 @@ mod tests {
         }, 0);
         assert_eq!(output, [36.0, 48.0, 39.0, 52.0]);
 
+        // 33 samples cross the 32-sample tile boundary; the final one-sample
+        // tile must preserve the same z/x/y layout and coordinate semantics.
+        let mut tail_output = [0.0_f32; 33];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                first, 3, 11, 1, 10, 3, 0, 1, 1, 1,
+                tail_output.as_mut_ptr(), tail_output.len() as u64,
+            )
+        }, 0);
+        for x in 0..3 {
+            for y in 0..11 {
+                let index = x * 11 + y;
+                assert_eq!(tail_output[index], ((10 + x) as f32 + 2.0) * (3 + y) as f32);
+            }
+        }
+
         assert_eq!(unsafe { jpe_runtime_density_graph_release(first) }, 0);
         // The second compile retained the same cached plan.
         assert_eq!(unsafe {
@@ -734,6 +750,58 @@ mod tests {
             )
         }, STATUS_OK);
         assert_eq!(output[0], 0.0, "16,777,216 + 1 must round to f32 before the next add");
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
+    }
+
+
+    #[test]
+    fn density_graph_tiled_volume_matches_float32_scalar_reference() {
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_X, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_Y, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_Z, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 2.0 },
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 0,
+                input_b: 3, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_MUL, input_a: 4,
+                input_b: 1, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.25 },
+            JpeDensityNode { opcode: DENSITY_MUL, input_a: 2,
+                input_b: 6, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 5,
+                input_b: 7, reserved: 0, immediate: 0.0 },
+        ];
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 8, 3, 0x71_1E)
+        };
+        assert_ne!(handle, 0);
+        let (sx, sy, sz) = (32usize, 64usize, 32usize);
+        let mut output = vec![0.0_f32; sx * sy * sz];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                handle, sx as u32, sy as u32, sz as u32,
+                -16, -64, 48, 1, 2, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+
+        for z in 0..sz {
+            for x in 0..sx {
+                for y in 0..sy {
+                    let index = (z * sx + x) * sy + y;
+                    let world_x = (-16 + x as i32) as f32;
+                    let world_y = (-64 + (y as i32) * 2) as f32;
+                    let world_z = (48 + z as i32) as f32;
+                    let expected = (world_x + 2.0) * world_y + world_z * 0.25;
+                    assert_eq!(output[index], expected, "sample mismatch at x={x}, y={y}, z={z}");
+                }
+            }
+        }
         assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
     }
 
