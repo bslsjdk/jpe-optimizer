@@ -63,6 +63,28 @@ inline void corner(const uint8_t* p, uint32_t hash, float rx, float rz,
     y = static_cast<float>(kGradientY[gradient]);
 }
 
+inline void corner_for_lanes(
+    const uint8_t* p, uint32_t hash, float rx, float rz,
+    float lane_xz[8][8], float lane_y[8][8], uint32_t corner_index,
+    uint32_t unique_index, const int32_t lane_unique_indices[8],
+    bool identity_lanes
+) noexcept {
+    float xz;
+    float y;
+    corner(p, hash, rx, rz, xz, y);
+    if (identity_lanes) {
+        lane_xz[corner_index][unique_index] = xz;
+        lane_y[corner_index][unique_index] = y;
+        return;
+    }
+    for (uint32_t lane = 0; lane < 8; ++lane) {
+        if (static_cast<uint32_t>(lane_unique_indices[lane]) == unique_index) {
+            lane_xz[corner_index][lane] = xz;
+            lane_y[corner_index][lane] = y;
+        }
+    }
+}
+
 struct XyPermutationCache {
     uint8_t xy00;
     uint8_t xy01;
@@ -116,8 +138,7 @@ inline void perlin_evaluate_8_avx2(
 __attribute__((target("avx2")))
 inline void perlin_evaluate_8_avx2_independent(
     const float* relative_y, const float* alpha_y, float* output,
-    const float unique_corner_xz[8][8], const float unique_corner_y[8][8],
-    const int32_t lane_unique_indices[8], bool identity_lanes,
+    const float lane_corner_xz[8][8], const float lane_corner_y[8][8],
     float alpha_x, float alpha_z, float amplitude
 ) noexcept {
     const __m256 ry = _mm256_loadu_ps(relative_y);
@@ -127,16 +148,10 @@ inline void perlin_evaluate_8_avx2_independent(
     const __m256 az = _mm256_set1_ps(alpha_z);
     const __m256 amp = _mm256_set1_ps(amplitude);
     const __m256 ry1 = _mm256_sub_ps(ry, one);
-    const __m256i lane_indices = _mm256_loadu_si256(
-        reinterpret_cast<const __m256i*>(lane_unique_indices));
     __m256 values[8];
     for (int i = 0; i < 8; ++i) {
-        const __m256 corner_xz = _mm256_loadu_ps(unique_corner_xz[i]);
-        const __m256 corner_y = _mm256_loadu_ps(unique_corner_y[i]);
-        const __m256 cx = identity_lanes
-            ? corner_xz : _mm256_permutevar8x32_ps(corner_xz, lane_indices);
-        const __m256 cy = identity_lanes
-            ? corner_y : _mm256_permutevar8x32_ps(corner_y, lane_indices);
+        const __m256 cx = _mm256_loadu_ps(lane_corner_xz[i]);
+        const __m256 cy = _mm256_loadu_ps(lane_corner_y[i]);
         const __m256 relative = (i == 2 || i == 3 || i == 6 || i == 7) ? ry1 : ry;
         values[i] = _mm256_add_ps(cx, _mm256_mul_ps(cy, relative));
     }
@@ -335,8 +350,8 @@ int32_t perlin_add_volume_impl(
                         const bool same_floor =
                             perlin_eight_floors_same_avx2(y_floors.data() + iy);
                         if (!same_floor) {
-                            float unique_corner_xz[8][8]{};
-                            float unique_corner_y[8][8]{};
+                            float lane_corner_xz[8][8]{};
+                            float lane_corner_y[8][8]{};
                             int32_t unique_floors[8];
                             int32_t lane_unique_indices[8];
                             uint32_t unique_representative_lanes[8];
@@ -410,27 +425,27 @@ int32_t perlin_add_volume_impl(
                                 const uint32_t xy01 = lane_xy.xy01;
                                 const uint32_t xy10 = lane_xy.xy10;
                                 const uint32_t xy11 = lane_xy.xy11;
-                                corner(permutation, xy00 + static_cast<uint32_t>(floor_z), relative_x, relative_z,
-                                       unique_corner_xz[0][unique], unique_corner_y[0][unique]);
-                                corner(permutation, xy10 + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z,
-                                       unique_corner_xz[1][unique], unique_corner_y[1][unique]);
-                                corner(permutation, xy01 + static_cast<uint32_t>(floor_z), relative_x, relative_z,
-                                       unique_corner_xz[2][unique], unique_corner_y[2][unique]);
-                                corner(permutation, xy11 + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z,
-                                       unique_corner_xz[3][unique], unique_corner_y[3][unique]);
-                                corner(permutation, xy00 + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F,
-                                       unique_corner_xz[4][unique], unique_corner_y[4][unique]);
-                                corner(permutation, xy10 + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F,
-                                       unique_corner_xz[5][unique], unique_corner_y[5][unique]);
-                                corner(permutation, xy01 + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F,
-                                       unique_corner_xz[6][unique], unique_corner_y[6][unique]);
-                                corner(permutation, xy11 + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F,
-                                       unique_corner_xz[7][unique], unique_corner_y[7][unique]);
+                                const bool identity_lanes = unique_count == 8;
+                                corner_for_lanes(permutation, xy00 + static_cast<uint32_t>(floor_z), relative_x, relative_z,
+                                    lane_corner_xz, lane_corner_y, 0, unique, lane_unique_indices, identity_lanes);
+                                corner_for_lanes(permutation, xy10 + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z,
+                                    lane_corner_xz, lane_corner_y, 1, unique, lane_unique_indices, identity_lanes);
+                                corner_for_lanes(permutation, xy01 + static_cast<uint32_t>(floor_z), relative_x, relative_z,
+                                    lane_corner_xz, lane_corner_y, 2, unique, lane_unique_indices, identity_lanes);
+                                corner_for_lanes(permutation, xy11 + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z,
+                                    lane_corner_xz, lane_corner_y, 3, unique, lane_unique_indices, identity_lanes);
+                                corner_for_lanes(permutation, xy00 + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F,
+                                    lane_corner_xz, lane_corner_y, 4, unique, lane_unique_indices, identity_lanes);
+                                corner_for_lanes(permutation, xy10 + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F,
+                                    lane_corner_xz, lane_corner_y, 5, unique, lane_unique_indices, identity_lanes);
+                                corner_for_lanes(permutation, xy01 + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F,
+                                    lane_corner_xz, lane_corner_y, 6, unique, lane_unique_indices, identity_lanes);
+                                corner_for_lanes(permutation, xy11 + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F,
+                                    lane_corner_xz, lane_corner_y, 7, unique, lane_unique_indices, identity_lanes);
                             }
                             perlin_evaluate_8_avx2_independent(
                                 y_relative.data() + iy, y_alpha.data() + iy,
-                                output + base + iy, unique_corner_xz, unique_corner_y,
-                                lane_unique_indices, unique_count == 8,
+                                output + base + iy, lane_corner_xz, lane_corner_y,
                                 alpha_x, alpha_z, amplitude);
                             iy += 8;
                             continue;
