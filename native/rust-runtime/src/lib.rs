@@ -1399,6 +1399,44 @@ mod tests {
         }, STATUS_OK);
         assert_eq!(ordered, fused,
             "ordered per-layer SmearedPerlin and fused C++ stack must match on a complete chunk lattice");
+
+        let mut ordered_ms = Vec::with_capacity(15);
+        let mut fused_ms = Vec::with_capacity(15);
+        for _ in 0..15 {
+            let start = Instant::now();
+            for _ in 0..5 {
+                ordered.fill(0.0);
+                assert_eq!(unsafe {
+                    jpe_runtime_perlin_add_stack(
+                        layers.as_ptr(), LAYERS as u32, SX as u32, SY as u32, SZ as u32,
+                        0, -64, 0, 4, 8, 4,
+                        ordered.as_mut_ptr(), ordered.len() as u64, 0,
+                    )
+                }, STATUS_OK);
+            }
+            ordered_ms.push(start.elapsed().as_secs_f64() * 200.0);
+
+            let start = Instant::now();
+            for _ in 0..5 {
+                fused.fill(0.0);
+                assert_eq!(unsafe {
+                    jpe_cpp_perlin_add_stack_fused(
+                        layers.as_ptr(), LAYERS as u32, SX as u32, SY as u32, SZ as u32,
+                        0, -64, 0, 4, 8, 4,
+                        fused.as_mut_ptr(), fused.len() as u64, 0,
+                    )
+                }, STATUS_OK);
+            }
+            fused_ms.push(start.elapsed().as_secs_f64() * 200.0);
+        }
+        ordered_ms.sort_by(|a, b| a.total_cmp(b));
+        fused_ms.sort_by(|a, b| a.total_cmp(b));
+        println!(
+            "JPE_SMEARED_PERLIN_FULL_CHUNK dims=5x49x5 layers=8 ordered_median_ms={:.6} fused_median_ms={:.6} fused_speedup={:.3}x",
+            ordered_ms[ordered_ms.len() / 2],
+            fused_ms[fused_ms.len() / 2],
+            ordered_ms[ordered_ms.len() / 2] / fused_ms[fused_ms.len() / 2],
+        );
     }
 
     #[test]
