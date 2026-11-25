@@ -640,7 +640,7 @@ mod tests {
                 input_b: 1, reserved: 0, immediate: 0.0 },
         ];
         let first = unsafe {
-            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 5, 4, 0x1234)
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 5, 0x1234)
         };
         let second = unsafe {
             jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 5, 4, 0x1234)
@@ -781,7 +781,7 @@ mod tests {
                 input_b: 3, reserved: 0, immediate: 0.0 },
         ];
         let handle = unsafe {
-            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 5, 4, 0xF32)
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 3, 5, 0xF32)
         };
         assert_ne!(handle, 0);
         let mut output = [1.0_f32; 1];
