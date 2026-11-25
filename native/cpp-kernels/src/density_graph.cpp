@@ -79,7 +79,10 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                 break;
             case JPE_DENSITY_OPAQUE:
                 // Explicit experimental sentinel. It is never emitted by STRICT capture.
-                if (node.input_a != kNoInput || node.input_b != kNoInput || node.reserved != 1) return false;
+                if (node.reserved != 1
+                    || (node.input_a == kNoInput && node.input_b != kNoInput)
+                    || (node.input_a != kNoInput && node.input_a >= i)
+                    || (node.input_b != kNoInput && node.input_b >= i)) return false;
                 break;
             case JPE_DENSITY_ADD:
             case JPE_DENSITY_MUL:
