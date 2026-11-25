@@ -32,7 +32,7 @@ class DensityGraphIrTest {
         ), 2, 0x5ABL);
 
         assertEquals(DensityGraphIr.SUB, graph.nodes().get(2).opcode());
-        assertEquals(4, DensityGraphIr.VERSION);
+        assertEquals(5, DensityGraphIr.VERSION);
     }
 
     @Test
