@@ -71,7 +71,7 @@ JPE_API int32_t jpe_runtime_cancel_job(uint64_t job_id);
 JPE_API int32_t jpe_runtime_release_job(uint64_t job_id);
 
 /*
- * Experimental density-graph IR v1. This additive API is not wired into Minecraft yet.
+ * Experimental density-graph IR v5. This additive API is not wired into Minecraft yet.
  * Nodes are topologically ordered; inputs must reference earlier nodes.
  * Volume output order is ((z * size_x + x) * size_y + y).
  */
