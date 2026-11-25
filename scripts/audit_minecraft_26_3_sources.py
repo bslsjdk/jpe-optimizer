@@ -265,16 +265,17 @@ def extract_method_blocks(source: str, method_names: set[str]) -> list[str]:
     """Extract decompiled Java method bodies for a small, auditable method allowlist."""
     import re
 
+    names = "|".join(map(re.escape, sorted(method_names)))
+    declaration = re.compile(
+        r"(?m)^([^\n]*\b(?:" + names + r")\s*\([^;{}]*\)\s*(?:throws [^{]+)?\{)"
+    )
     results: list[str] = []
-    for match in re.finditer(r"(?m)^([^\\n]*\\b(" + "|".join(map(re.escape, sorted(method_names)))
-                             + r")\\s*\\([^;{}]*\\)\\s*(?:throws [^{]+)?\\{)", source):
-        header_start = match.start()
+    for match in declaration.finditer(source):
+        header_start = match.start(1)
         header = match.group(1)
-        # Reject call sites and control-flow expressions; decompiler method declarations
-        # begin with a visibility modifier or a package-private return type.
-        if not re.search(r"\\b(public|protected|private)\\b", header):
+        if not re.search(r"\b(public|protected|private)\b", header):
             continue
-        brace = source.find("{", match.start(1), match.end(1))
+        brace = source.find("{", header_start, match.end(1))
         if brace < 0:
             continue
         depth = 0
@@ -284,7 +285,7 @@ def extract_method_blocks(source: str, method_names: set[str]) -> list[str]:
             ch = source[i]
             nxt = source[i + 1] if i + 1 < len(source) else ""
             if state == "code":
-                if ch == '"' : state = "string"
+                if ch == '"': state = "string"
                 elif ch == "'": state = "char"
                 elif ch == "/" and nxt == "*": state = "block"; i += 1
                 elif ch == "/" and nxt == "/": state = "line"; i += 1
@@ -295,15 +296,15 @@ def extract_method_blocks(source: str, method_names: set[str]) -> list[str]:
                         results.append(source[header_start:i + 1].strip())
                         break
             elif state == "string":
-                if ch == "\\\\": i += 1
+                if ch == "\\": i += 1
                 elif ch == '"': state = "code"
             elif state == "char":
-                if ch == "\\\\": i += 1
+                if ch == "\\": i += 1
                 elif ch == "'": state = "code"
             elif state == "block":
                 if ch == "*" and nxt == "/": state = "code"; i += 1
             elif state == "line":
-                if ch == "\\n": state = "code"
+                if ch == "\n": state = "code"
             i += 1
     return results
 
