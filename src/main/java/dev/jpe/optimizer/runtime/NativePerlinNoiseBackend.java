@@ -38,6 +38,10 @@ public final class NativePerlinNoiseBackend {
     private static final LongAdder NATIVE_JOB_FAILURES = new LongAdder();
     private static final LongAdder NATIVE_EXCEPTIONS = new LongAdder();
     private static final AtomicLong PROFILE_CALLS = new AtomicLong();
+    // Tiny density volumes are cheaper to evaluate in vanilla than to cross the FFM boundary.
+    // The threshold is read once at class initialization for benchmarkable tuning.
+    private static final long MIN_NATIVE_VOLUME_ELEMENTS = Math.max(1L,
+            Long.getLong("jpe.nativePerlinMinSamples", 128L));
     public record Metrics(long attempts, long completed, long fallbacks, long samples,
                           long totalNanos, long synchronousCalls,
                           long invalidDimensions, long axisVolumeMismatches, long bufferVolumeMismatches,
@@ -122,6 +126,9 @@ public final class NativePerlinNoiseBackend {
                 OVERSIZED_VOLUMES.increment();
                 return false;
             }
+            // Avoid FFM setup, descriptor writes and native dispatch for tiny volumes.
+            // The caller falls through to the exact vanilla NoiseStack implementation.
+            if (expectedElements < MIN_NATIVE_VOLUME_ELEMENTS) return false;
             if (Boolean.getBoolean("jpe.nativePerlinProfile")) {
                 profilePerlinYRuns(sourceLayers, xzScale, yScale, amplitude, volume);
             }
