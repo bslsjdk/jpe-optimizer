@@ -70,6 +70,8 @@ struct StaticBinding {
     float value;
 };
 
+struct InputBinding { uint32_t node; uint32_t input_index; };
+
 struct CompiledGraph {
     uint64_t fingerprint = 0;
     uint64_t configuration_fingerprint = 0;
@@ -80,15 +82,18 @@ struct CompiledGraph {
     // Lowered once at compile/load time. Evaluation uses node-major tiles so
     // contiguous sample loops can be auto-vectorized by the native compiler.
     std::vector<StaticBinding> static_values;
+    std::vector<InputBinding> inputs;
     std::vector<CoordinateBinding> coordinates;
     std::vector<ArithmeticInstruction> arithmetic;
 };
 
 void build_execution_plan(CompiledGraph& graph) {
     graph.static_values.clear();
+    graph.inputs.clear();
     graph.coordinates.clear();
     graph.arithmetic.clear();
     graph.static_values.reserve(graph.nodes.size());
+    graph.inputs.reserve(graph.nodes.size());
     graph.coordinates.reserve(graph.nodes.size());
     graph.arithmetic.reserve(graph.nodes.size());
 
@@ -97,6 +102,9 @@ void build_execution_plan(CompiledGraph& graph) {
         switch (node.opcode) {
             case JPE_DENSITY_CONST:
                 graph.static_values.push_back({i, static_cast<float>(node.immediate)});
+                break;
+            case JPE_DENSITY_INPUT:
+                graph.inputs.push_back({i, static_cast<uint32_t>(node.immediate)});
                 break;
             case JPE_DENSITY_X:
                 graph.coordinates.push_back({i, 0});
@@ -175,6 +183,11 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
             case JPE_DENSITY_Y:
             case JPE_DENSITY_Z:
                 if (node.input_a != kNoInput || node.input_b != kNoInput || node.reserved != 0) return false;
+                break;
+            case JPE_DENSITY_INPUT:
+                if (node.reserved != 0 || node.input_a != kNoInput || node.input_b != kNoInput
+                    || !std::isfinite(node.immediate) || node.immediate < 0.0
+                    || node.immediate > 255.0 || std::floor(node.immediate) != node.immediate) return false;
                 break;
             case JPE_DENSITY_OPAQUE:
                 // Explicit experimental sentinel. It is never emitted by STRICT capture.
@@ -348,15 +361,17 @@ extern "C" uint64_t jpe_cpp_density_graph_load_cache(
     return jpe_cpp_density_graph_compile(nodes.data(), count, root, ir_version, configuration);
 } catch (...) { return 0; }
 
-extern "C" int32_t jpe_cpp_density_graph_evaluate(
+extern "C" int32_t jpe_cpp_density_graph_evaluate_with_inputs(
     uint64_t graph_handle,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
+    const float* inputs, uint32_t input_count,
     float* output, uint64_t output_length
 ) try {
     if (output == nullptr || !valid_volume(size_x, size_y, size_z,
-            step_x, step_y, step_z, output_length)) return 1;
+            step_x, step_y, step_z, output_length) || input_count > 256
+        || (input_count > 0 && inputs == nullptr)) return 1;
 
     std::shared_ptr<CompiledGraph> graph;
     {
@@ -391,6 +406,9 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate(
         float* destination = tile_values.data() + static_cast<size_t>(binding.node) * tile_capacity;
         std::fill_n(destination, tile_capacity, binding.value);
     }
+    for (const InputBinding& binding : graph->inputs) {
+        if (binding.input_index >= input_count) return 1;
+    }
 
     for (uint64_t tile_start = 0; tile_start < output_length; tile_start += tile_capacity) {
         const uint32_t count = static_cast<uint32_t>(
@@ -413,6 +431,12 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate(
                     ++z_index;
                 }
             }
+        }
+
+        for (const InputBinding& binding : graph->inputs) {
+            const float* source = inputs + static_cast<uint64_t>(binding.input_index) * output_length + tile_start;
+            float* destination = tile_values.data() + static_cast<size_t>(binding.node) * tile_capacity;
+            std::copy_n(source, count, destination);
         }
 
         for (const CoordinateBinding& binding : graph->coordinates) {
@@ -450,6 +474,19 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate(
     }
     return 0;
 } catch (...) { return 3; }
+
+extern "C" int32_t jpe_cpp_density_graph_evaluate(
+    uint64_t graph_handle,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    float* output, uint64_t output_length
+) {
+    return jpe_cpp_density_graph_evaluate_with_inputs(
+        graph_handle, size_x, size_y, size_z,
+        min_x, min_y, min_z, step_x, step_y, step_z,
+        nullptr, 0, output, output_length);
+}
 
 #ifdef JPE_DENSITY_GRAPH_TEST_REFERENCE
 // Test-only scalar reference retained to quantify the tiled evaluator against
