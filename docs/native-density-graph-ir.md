@@ -38,7 +38,7 @@ The extraction point should be the stable, inspectable DensityFunction graph and
 
 ## IR v1 wire model
 
-The transport is a flat topologically ordered node array. Every input index must refer to an earlier node; this makes cycles impossible and allows validation in one pass. Constants and parameters are stored as fixed-width numeric fields. The wire format contains no native pointers, Java object IDs, class names, or platform-sized integers.
+The transport is a flat topologically ordered node array. Every input index must refer to an earlier node; this makes cycles impossible and allows validation in one pass. IR version 1 is passed explicitly through the C ABI and participates in the cache fingerprint. The Java FFM bridge now exposes compile, bulk volume evaluate, and reference-counted release. Native output is `float[]`-compatible to match Minecraft's `DensityBuffer`; intermediate prototype registers are `double` and are converted to float only at the volume boundary. Constants and parameters are stored as fixed-width numeric fields. The wire format contains no native pointers, Java object IDs, class names, or platform-sized integers.
 
 Each graph carries:
 - `ir_version` and `semantic_version`
@@ -66,7 +66,7 @@ The initial compiler should be deliberately narrow. Candidate pure operations in
 - clamp and the simple unary transforms whose exact formulas are confirmed from the target artifact
 - noise references only after permutation, octave order, coordinate wrapping, and float/double conversion points have parity tests
 
-These are a proposed allowlist, not a claim that every opcode is already implemented. The first native prototype currently implements only `CONST`, `X`, `Y`, `Z`, `ADD`, and `MUL` in `native/cpp-kernels/src/density_graph.cpp`. Its C ABI supports compile/cache, full-volume evaluation, and reference-counted release. Rust unit tests exercise the arithmetic graph, cache reuse, malformed topological references, and invalid volume rejection. This prototype is infrastructure validation only; it is not yet connected to Java or Minecraft and is not a terrain speedup.
+These are a proposed allowlist, not a claim that every opcode is already implemented. The first native prototype currently implements only `CONST`, `X`, `Y`, `Z`, `ADD`, and `MUL` in `native/cpp-kernels/src/density_graph.cpp`. Its C ABI supports versioned compile/cache, full-volume evaluation, and reference-counted release; Java 25 FFM wrappers are present in `NativeRuntime`. Rust unit tests exercise the arithmetic graph, cache reuse, malformed topological references, and invalid volume rejection. Java unit tests exercise IR validation. The prototype API is callable from Java, but no Minecraft `DensityFunction` extractor or `NoiseRouter` integration exists yet. It is not a terrain speedup.
 
 The following require dedicated semantic work and must not be approximated as ordinary arithmetic:
 
