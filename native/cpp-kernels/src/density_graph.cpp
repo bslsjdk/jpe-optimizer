@@ -504,8 +504,8 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
         for (const ArithmeticInstruction& instruction : graph->arithmetic) {
             const float* left = tile_values.data()
                 + static_cast<size_t>(instruction.input_a) * tile_capacity;
-            const float* right = tile_values.data()
-                + static_cast<size_t>(instruction.input_b) * tile_capacity;
+            const float* right = instruction.input_b == kNoInput ? nullptr
+                : tile_values.data() + static_cast<size_t>(instruction.input_b) * tile_capacity;
             float* destination = tile_values.data()
                 + static_cast<size_t>(instruction.output) * tile_capacity;
             if (instruction.opcode == JPE_DENSITY_ADD) {
