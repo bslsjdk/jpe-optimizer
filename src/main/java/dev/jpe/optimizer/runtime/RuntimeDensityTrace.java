@@ -82,6 +82,9 @@ public final class RuntimeDensityTrace {
         Objects.requireNonNull(densityFunction, "densityFunction");
         if (!recording.get()) return Scope.NOOP;
         int id = nodeId(densityFunction);
+        // The event budget may be exhausted while the capture is still active.
+        // Never push the -1 sentinel: it would corrupt parent/child nesting.
+        if (id < 0) return Scope.NOOP;
         ArrayDeque<Integer> stack = callStack.get();
         if (!stack.isEmpty()) addEdge(stack.peek(), id);
         stack.push(id);
@@ -135,7 +138,12 @@ public final class RuntimeDensityTrace {
     }
 
     private void leave(int id, Thread owner) {
-        if (!recording.get()) return;
+        // stop() may have ended capture on another worker. Clear that worker's
+        // ThreadLocal stack when its outstanding scope finally closes.
+        if (!recording.get()) {
+            if (Thread.currentThread() == owner) callStack.remove();
+            return;
+        }
         if (Thread.currentThread() != owner) {
             throw new IllegalStateException("Density trace scope closed on a different thread");
         }
