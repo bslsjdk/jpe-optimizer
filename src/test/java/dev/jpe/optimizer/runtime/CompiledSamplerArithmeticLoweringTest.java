@@ -77,8 +77,8 @@ class CompiledSamplerArithmeticLoweringTest {
         assertEquals(2, batch.nativeOutputNodeIds().size());
         assertEquals(DensityGraphIr.INPUT, batch.graph().nodes().get(0).opcode());
         assertEquals(DensityGraphIr.CONST, batch.graph().nodes().get(1).opcode());
-        assertEquals(DensityGraphIr.ADD, batch.graph().nodes().get(2).opcode());
-        assertEquals(DensityGraphIr.CONST, batch.graph().nodes().get(3).opcode());
+        assertEquals(DensityGraphIr.CONST, batch.graph().nodes().get(2).opcode());
+        assertEquals(DensityGraphIr.ADD, batch.graph().nodes().get(3).opcode());
         assertEquals(DensityGraphIr.SUB, batch.graph().nodes().get(4).opcode());
     }
 
