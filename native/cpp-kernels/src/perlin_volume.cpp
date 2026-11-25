@@ -357,8 +357,8 @@ int32_t perlin_add_volume_impl(
                             int32_t unique_floors[8];
                             int32_t lane_unique_indices[8];
                             uint32_t unique_representative_lanes[8];
-                            uint32_t unique_start_lanes[8];
-                            uint32_t unique_end_lanes[8];
+                            uint32_t unique_start_lanes[8]{};
+                            uint32_t unique_end_lanes[8]{};
                             uint32_t unique_count = 0;
                             bool monotonic_floors = true;
                             int floor_direction = 0;
