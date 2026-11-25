@@ -33,6 +33,8 @@ TARGET_CLASSES = (
     "net/minecraft/world/level/levelgen/NoiseBasedChunkGenerator",
     "net/minecraft/world/level/biome/BiomeManager",
     "net/minecraft/world/level/levelgen/NoiseChunk",
+    "net/minecraft/world/level/levelgen/RandomState",
+    "net/minecraft/world/level/levelgen/NoiseRouter",
     "net/minecraft/world/level/levelgen/densityfunction/DensitySampler",
     "net/minecraft/world/level/levelgen/densityfunction/DensityFunctionCompiler",
     "net/minecraft/world/level/levelgen/densityfunction/SamplerContext",
@@ -253,6 +255,19 @@ def compare_method_inventories(
             lines.append(f"{class_name}: methods vanilla={len(old)}, patched={len(new)}")
             lines.append(f"  added signatures: {len(added)}; removed signatures: {len(removed)}")
             lines.append(f"  changed Code lengths: {len(length_changed)}; raw Code hashes differ: {len(raw_code_changed)}")
+            if class_name in {
+                "net/minecraft/world/level/levelgen/NoiseBasedChunkGenerator.class",
+                "net/minecraft/world/level/levelgen/NoiseChunk.class",
+                "net/minecraft/world/level/levelgen/RandomState.class",
+                "net/minecraft/world/level/levelgen/NoiseRouter.class",
+                "net/minecraft/world/level/levelgen/densityfunction/DensityFunctionCompiler.class",
+                "net/minecraft/world/level/levelgen/densityfunction/DensityBufferArena.class",
+                "net/minecraft/world/level/levelgen/densityfunction/DensityBuffer.class",
+                "net/minecraft/world/level/levelgen/densityfunction/DensityVolume.class",
+                "net/minecraft/world/level/levelgen/densityfunction/SamplerContext.class",
+            }:
+                for method_name, descriptor in common:
+                    lines.append(f"  = {method_name}{descriptor}")
             for name, descriptor in added:
                 lines.append(f"  + {name}{descriptor}")
             for name, descriptor in removed:
@@ -262,20 +277,19 @@ def compare_method_inventories(
     return lines
 
 def extract_method_blocks(source: str, method_names: set[str]) -> list[str]:
-    """Extract decompiled Java method bodies for a small, auditable method allowlist."""
+    """Extract selected decompiled Java method bodies with multiline signatures."""
     import re
 
     names = "|".join(map(re.escape, sorted(method_names)))
     declaration = re.compile(
-        r"(?m)^([^\n]*\b(?:" + names + r")\s*\([^;{}]*\)\s*(?:throws [^{]+)?\{)"
+        r"\b(?:public|protected|private)\b[^{};]*?\b(" + names
+        + r")\s*\([^{};]*\)\s*(?:throws\s+[^{};]+)?\s*\{",
+        re.DOTALL,
     )
     results: list[str] = []
     for match in declaration.finditer(source):
-        header_start = match.start(1)
-        header = match.group(1)
-        if not re.search(r"\b(public|protected|private)\b", header):
-            continue
-        brace = source.find("{", header_start, match.end(1))
+        header_start = match.start()
+        brace = source.find("{", match.start(), match.end())
         if brace < 0:
             continue
         depth = 0
