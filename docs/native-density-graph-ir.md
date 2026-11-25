@@ -173,3 +173,8 @@ claimed by this scaffolding.
 ### Trace overhead control
 
 Observed caller/callee edges are deduplicated by object-identity node IDs, and branch outcomes are deduplicated by (node ID, explicit guard ID, outcome). Instrumentation must supply a stable guard ID for each branch site; an outcome is not itself a permanent fact and both outcomes may be present in the same snapshot. This prevents repeated voxel sampling from producing one identical edge/guard record per sample. The event budget still bounds unique records, and overflow is surfaced through droppedEvents.
+
+
+### Semantic capture boundary
+
+`RuntimeDensityTrace` is diagnostic evidence only. `DensityGraphCapture` is the separate, explicit lowering API: adapters must register constants, coordinates, and supported binary operations with their actual operands. A missing adapter or any reachable unsupported node rejects the entire graph, allowing the caller to retain the Java implementation. This prevents observed call order from being mistaken for executable semantics.
