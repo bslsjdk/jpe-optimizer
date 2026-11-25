@@ -1263,6 +1263,87 @@ mod tests {
         }, STATUS_OK);
         assert!(smeared.iter().all(|value| value.is_finite()));
 
+        // Independent scalar transcription of SmearedPerlinNoise.addToVolume:
+        // alphaY uses raw relativeY, while only the gradient dot products use
+        // relativeY - computeFudgeY(originalY, relativeY).
+        let gx = [1.0_f32,-1.0,1.0,-1.0,1.0,-1.0,1.0,-1.0,0.0,0.0,0.0,0.0,1.0,0.0,-1.0,0.0];
+        let gy = [1.0_f32,1.0,-1.0,-1.0,0.0,0.0,0.0,0.0,1.0,-1.0,1.0,-1.0,1.0,-1.0,1.0,-1.0];
+        let gz = [0.0_f32,0.0,0.0,0.0,1.0,1.0,-1.0,-1.0,1.0,1.0,-1.0,-1.0,0.0,1.0,0.0,-1.0];
+        let smooth = |v: f32| v * v * v * (v * (v * 6.0 - 15.0) + 10.0);
+        let lerp = |a: f32, from: f32, to: f32| from + a * (to - from);
+        let perm = |v: i32| permutation[(v as u32 & 255) as usize] as i32;
+        let mut expected = vec![0.0_f32; smeared.len()];
+        for iz in 0..SZ {
+            let block_z = (iz * 4) as f64;
+            let z = block_z * layer.xz_scale + layer.offset_z;
+            let floor_z = z.floor() as i32;
+            let rz = (z - floor_z as f64) as f32;
+            let az = smooth(rz);
+            for ix in 0..SX {
+                let block_x = (ix * 4) as f64;
+                let x = block_x * layer.xz_scale + layer.offset_x;
+                let floor_x = x.floor() as i32;
+                let rx = (x - floor_x as f64) as f32;
+                let ax = smooth(rx);
+                let x0 = perm(floor_x);
+                let x1 = perm(floor_x + 1);
+                for iy in 0..SY {
+                    let block_y = -64.0 + (iy * 8) as f64;
+                    let original_y = block_y * layer.y_scale;
+                    let y = original_y + layer.offset_y;
+                    let floor_y = y.floor() as i32;
+                    let relative_y = y - floor_y as f64;
+                    let alpha_y = smooth(relative_y as f32);
+                    let fudge_limit = if original_y >= 0.0 && original_y < relative_y {
+                        original_y
+                    } else {
+                        relative_y
+                    };
+                    let fudge_steps = (fudge_limit / layer.fudge_y_scale + 1.0E-7_f32 as f64).floor() as i32;
+                    let fudged_y = (relative_y - fudge_steps as f64 * layer.fudge_y_scale) as f32;
+                    let xy00 = perm(x0 + floor_y);
+                    let xy01 = perm(x0 + floor_y + 1);
+                    let xy10 = perm(x1 + floor_y);
+                    let xy11 = perm(x1 + floor_y + 1);
+                    let hashes = [
+                        perm(xy00 + floor_z), perm(xy10 + floor_z),
+                        perm(xy01 + floor_z), perm(xy11 + floor_z),
+                        perm(xy00 + floor_z + 1), perm(xy10 + floor_z + 1),
+                        perm(xy01 + floor_z + 1), perm(xy11 + floor_z + 1),
+                    ];
+                    let rxz = [rx, rx - 1.0, rx, rx - 1.0, rx, rx - 1.0, rx, rx - 1.0];
+                    let rzz = [rz, rz, rz, rz, rz - 1.0, rz - 1.0, rz - 1.0, rz - 1.0];
+                    let mut xz_dot = [0.0_f32; 8];
+                    let mut y_grad = [0.0_f32; 8];
+                    for k in 0..8 {
+                        let g = (permutation[(hashes[k] as u32 & 255) as usize] & 15) as usize;
+                        xz_dot[k] = gx[g] * rxz[k] + gz[g] * rzz[k];
+                        y_grad[k] = gy[g];
+                    }
+                    let ry1 = fudged_y - 1.0;
+                    let values = [
+                        xz_dot[0] + y_grad[0] * fudged_y,
+                        xz_dot[1] + y_grad[1] * fudged_y,
+                        xz_dot[2] + y_grad[2] * ry1,
+                        xz_dot[3] + y_grad[3] * ry1,
+                        xz_dot[4] + y_grad[4] * fudged_y,
+                        xz_dot[5] + y_grad[5] * fudged_y,
+                        xz_dot[6] + y_grad[6] * ry1,
+                        xz_dot[7] + y_grad[7] * ry1,
+                    ];
+                    let lower = lerp(alpha_y,
+                        lerp(ax, values[0], values[1]),
+                        lerp(ax, values[2], values[3]));
+                    let upper = lerp(alpha_y,
+                        lerp(ax, values[4], values[5]),
+                        lerp(ax, values[6], values[7]));
+                    let index = (iz * SX + ix) * SY + iy;
+                    expected[index] = layer.amplitude * lerp(az, lower, upper);
+                }
+            }
+        }
+        assert_eq!(smeared, expected, "C++ SmearedPerlin must match the independent scalar reference bit-for-bit");
+
         layer.fudge_y_scale = 0.0;
         layer.flags = 0;
         let mut ordinary = vec![0.0_f32; smeared.len()];
