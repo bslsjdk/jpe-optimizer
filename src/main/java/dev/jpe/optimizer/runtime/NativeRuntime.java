@@ -366,6 +366,11 @@ public final class NativeRuntime implements AutoCloseable {
         Objects.requireNonNull(cacheKey, "cacheKey");
         Objects.requireNonNull(capture, "capture");
         if (cacheKey.isBlank()) throw new IllegalArgumentException("Density graph cache key must not be blank");
+        long preparationStarted = System.nanoTime();
+        long nativeLoadNanos = 0L;
+        long irLoadOrCaptureNanos = 0L;
+        long nativeCompileNanos = 0L;
+        long nativeSaveNanos = 0L;
         String modeKey = cacheKey + "|jpe-abi=" + EXPECTED_ABI_VERSION
                 + "|jpe-ir=" + DensityGraphIr.VERSION + "|jpe-native-plan=1"
                 + (experimental ? "|jpe-mode=experimental" : "|jpe-mode=strict");
@@ -377,11 +382,15 @@ public final class NativeRuntime implements AutoCloseable {
             try (Arena arena = Arena.ofConfined()) {
                 MemorySegment pathSegment = arena.allocateFrom(nativeFile.toAbsolutePath().normalize().toString());
                 MemorySegment keySegment = arena.allocateFrom(modeKey);
+                long nativeLoadStarted = System.nanoTime();
                 long cachedHandle = (long) loadDensityGraphCache.invokeExact(pathSegment, keySegment);
+                nativeLoadNanos = System.nanoTime() - nativeLoadStarted;
                 if (cachedHandle != 0L) {
                     NativeDensityGraph executable = new NativeDensityGraph(this, cachedHandle);
                     densityGraphs.add(executable);
-                    return new PreparedDensityGraph(executable, true, false, nativeFile, -1, -1);
+                    PreparationMetrics metrics = new PreparationMetrics(nativeLoadNanos, 0L, 0L, 0L,
+                            System.nanoTime() - preparationStarted);
+                    return new PreparedDensityGraph(executable, true, false, nativeFile, -1, -1, metrics);
                 }
             } catch (Throwable failure) {
                 throw rethrow("Unable to load persistent native density plan", failure);
@@ -390,12 +399,17 @@ public final class NativeRuntime implements AutoCloseable {
             lifecycle.readLock().unlock();
         }
 
+        long irStarted = System.nanoTime();
         DensityGraphCache.LoadResult loaded = DensityGraphCache.loadOrBuild(
                 cacheDirectory, modeKey, capture);
+        irLoadOrCaptureNanos = System.nanoTime() - irStarted;
+        long compileStarted = System.nanoTime();
         NativeDensityGraph executable = experimental
                 ? compileDensityGraphExperimental(loaded.graph())
                 : compileDensityGraph(loaded.graph());
+        nativeCompileNanos = System.nanoTime() - compileStarted;
         try {
+            long saveStarted = System.nanoTime();
             lifecycle.readLock().lock();
             try {
                 ensureOpen();
@@ -415,6 +429,7 @@ public final class NativeRuntime implements AutoCloseable {
             } finally {
                 lifecycle.readLock().unlock();
             }
+            nativeSaveNanos = System.nanoTime() - saveStarted;
         } catch (Throwable failure) {
             executable.close();
             if (failure instanceof IOException io) throw io;
@@ -422,14 +437,20 @@ public final class NativeRuntime implements AutoCloseable {
         }
         int opaqueCount = (int) loaded.graph().nodes().stream()
                 .filter(node -> node.opcode() == DensityGraphIr.OPAQUE).count();
+        PreparationMetrics metrics = new PreparationMetrics(nativeLoadNanos, irLoadOrCaptureNanos,
+                nativeCompileNanos, nativeSaveNanos, System.nanoTime() - preparationStarted);
         return new PreparedDensityGraph(executable, false, loaded.cacheHit(), nativeFile,
-                loaded.graph().nodes().size(), opaqueCount);
+                loaded.graph().nodes().size(), opaqueCount, metrics);
     }
+
+    public record PreparationMetrics(long nativeLoadNanos, long irLoadOrCaptureNanos,
+                                     long nativeCompileNanos, long nativeSaveNanos,
+                                     long totalNanos) {}
 
     public record PreparedDensityGraph(NativeDensityGraph executable, boolean nativeCacheHit,
                                        boolean irCacheHit, Path cacheFile,
-                                       int nodeCount, int opaqueNodeCount)
-            implements AutoCloseable {
+                                       int nodeCount, int opaqueNodeCount,
+                                       PreparationMetrics metrics) implements AutoCloseable {
         @Override public void close() { executable.close(); }
     }
 
