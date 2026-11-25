@@ -23,6 +23,8 @@ import dev.jpe.optimizer.mixin.GradientNoiseAccessor;
 import dev.jpe.optimizer.mixin.NoiseStackLayerAccessor;
 import net.minecraft.world.level.levelgen.synth.Noise;
 import net.minecraft.world.level.levelgen.synth.PerlinNoise;
+import net.minecraft.world.level.levelgen.synth.SmearedPerlinNoise;
+import dev.jpe.optimizer.mixin.SmearedPerlinNoiseAccessor;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LevelHeightAccessor;
@@ -39,8 +41,8 @@ import dev.jpe.optimizer.mixin.BlendingDataAccessor;
  * Completed jobs must be explicitly released before this runtime can be closed.
  */
 public final class NativeRuntime implements AutoCloseable {
-    public static final int EXPECTED_ABI_VERSION = 7;
-    private static final long PERLIN_LAYER_SIZE = 56L;
+    public static final int EXPECTED_ABI_VERSION = 8;
+    private static final long PERLIN_LAYER_SIZE = 72L;
     private static final MemoryLayout BLENDING_DATA_VIEW_LAYOUT = MemoryLayout.structLayout(
             ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
             MemoryLayout.sequenceLayout(16, ValueLayout.ADDRESS)
@@ -1140,8 +1142,9 @@ public final class NativeRuntime implements AutoCloseable {
         for (int i = 0; i < sourceLayers.length; ++i) {
             NoiseStackLayerAccessor layer = (NoiseStackLayerAccessor) Objects.requireNonNull(sourceLayers[i], "layer");
             Noise layerNoise = layer.jpe$noise();
-            if (layerNoise == null || layerNoise.getClass() != PerlinNoise.class) {
-                throw new IllegalArgumentException("Native Perlin stack only accepts exact PerlinNoise layers");
+            if (layerNoise == null || (layerNoise.getClass() != PerlinNoise.class
+                    && layerNoise.getClass() != SmearedPerlinNoise.class)) {
+                throw new IllegalArgumentException("Native Perlin stack only accepts exact PerlinNoise or SmearedPerlinNoise layers");
             }
             GradientNoiseAccessor noise = (GradientNoiseAccessor) layerNoise;
             byte[] permutation = noise.jpe$perms();
@@ -1162,6 +1165,11 @@ public final class NativeRuntime implements AutoCloseable {
             scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 32L, xzScale * frequency);
             scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 40L, yScale * frequency);
             scratch.layerDescriptors.set(ValueLayout.JAVA_FLOAT, base + 48L, amplitude * layer.jpe$amplitude());
+            boolean smeared = layerNoise.getClass() == SmearedPerlinNoise.class;
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 56L,
+                    smeared ? ((SmearedPerlinNoiseAccessor) layerNoise).jpe$fudgeYScale() : 0.0);
+            scratch.layerDescriptors.set(ValueLayout.JAVA_INT, base + 64L, smeared ? 1 : 0);
+            scratch.layerDescriptors.set(ValueLayout.JAVA_INT, base + 68L, 0);
         }
     }
 
@@ -1188,6 +1196,9 @@ public final class NativeRuntime implements AutoCloseable {
             scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 32L, layer.xzScale());
             scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 40L, layer.yScale());
             scratch.layerDescriptors.set(ValueLayout.JAVA_FLOAT, base + 48L, layer.amplitude());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 56L, 0.0);
+            scratch.layerDescriptors.set(ValueLayout.JAVA_INT, base + 64L, 0);
+            scratch.layerDescriptors.set(ValueLayout.JAVA_INT, base + 68L, 0);
         }
     }
 
