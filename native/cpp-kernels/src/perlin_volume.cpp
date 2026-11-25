@@ -283,10 +283,8 @@ int32_t perlin_add_volume_impl(
                 const int32_t x1 = x_lattice1[ix];
                 const size_t row = static_cast<size_t>(ix) * size_y;
                 for (uint32_t iy = 0; iy < size_y; ++iy) {
-                    uint32_t previous = 0;
-                    while (previous < iy && y_floors[previous] != y_floors[iy]) ++previous;
-                    if (previous < iy) {
-                        cross_floor_xy_cache[row + iy] = cross_floor_xy_cache[row + previous];
+                    if (iy > 0 && y_floors[iy - 1] == y_floors[iy]) {
+                        cross_floor_xy_cache[row + iy] = cross_floor_xy_cache[row + iy - 1];
                         continue;
                     }
                     const int32_t floor_y = y_floors[iy];
