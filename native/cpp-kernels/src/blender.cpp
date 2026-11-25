@@ -182,14 +182,15 @@ float blend_one(int32_t block_x, int32_t block_y, int32_t block_z, float noise,
 }
 } // namespace
 
-int32_t wrapped_coordinate(int32_t minimum, uint32_t index, int32_t step) noexcept {
+static int32_t wrapped_coordinate(int32_t minimum, uint32_t index, int32_t step) noexcept {
     const uint32_t bits = static_cast<uint32_t>(minimum)
         + index * static_cast<uint32_t>(step);
     int32_t result;
     std::memcpy(&result, &bits, sizeof(result));
     return result;
 }
-} // namespace
+
+static int32_t wrapped_coordinate(int32_t minimum, uint32_t index, int32_t step) noexcept;
 
 extern "C" int32_t jpe_cpp_blend_density_volume(
     const JpeBlendingDataView* height_data, uint32_t height_data_count,
