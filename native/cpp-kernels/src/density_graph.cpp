@@ -372,7 +372,12 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate(
     const size_t node_count = graph->nodes.size();
     const uint32_t tile_capacity = static_cast<uint32_t>(
         std::max<size_t>(1, std::min<size_t>(kMaxTileSamples, kMaxTileValues / node_count)));
-    std::vector<float> tile_values(node_count * tile_capacity);
+    // The FFM call is synchronous and this evaluator never calls back into Java,
+    // so one bounded scratch vector can be safely reused by each worldgen worker.
+    // Capacity is capped at 1 MiB and retained per native worker thread.
+    thread_local std::vector<float> tile_scratch;
+    tile_scratch.resize(node_count * tile_capacity);
+    std::vector<float>& tile_values = tile_scratch;
     std::array<float, kMaxTileSamples> x_values{};
     std::array<float, kMaxTileSamples> y_values{};
     std::array<float, kMaxTileSamples> z_values{};
