@@ -135,6 +135,41 @@ inline void perlin_evaluate_8_avx2_independent(
     const __m256 sample = _mm256_mul_ps(amp, interpolated);
     const __m256 old_output = _mm256_loadu_ps(output);
     _mm256_storeu_ps(output, _mm256_add_ps(old_output, sample));
+
+}
+
+__attribute__((target("avx2")))
+inline void perlin_prepare_corners_8_avx2(
+    const int32_t* permutation_words,
+    const uint32_t hashes[8][8],
+    float relative_x,
+    float relative_z,
+    float corner_xz[8][8],
+    float corner_y[8][8]
+) noexcept {
+    const __m256 rx = _mm256_set1_ps(relative_x);
+    const __m256 rx1 = _mm256_set1_ps(relative_x - 1.0F);
+    const __m256 rz = _mm256_set1_ps(relative_z);
+    const __m256 rz1 = _mm256_set1_ps(relative_z - 1.0F);
+    for (int i = 0; i < 8; ++i) {
+        const __m256i hash = _mm256_loadu_si256(
+            reinterpret_cast<const __m256i*>(hashes[i]));
+        const __m256i gradient = _mm256_and_si256(
+            _mm256_i32gather_epi32(permutation_words, hash, 4),
+            _mm256_set1_epi32(15));
+        const __m256 gx = _mm256_cvtepi32_ps(
+            _mm256_i32gather_epi32(kGradientX, gradient, 4));
+        const __m256 gy = _mm256_cvtepi32_ps(
+            _mm256_i32gather_epi32(kGradientY, gradient, 4));
+        const __m256 gz = _mm256_cvtepi32_ps(
+            _mm256_i32gather_epi32(kGradientZ, gradient, 4));
+        const bool upper_x = (i == 1 || i == 3 || i == 5 || i == 7);
+        const bool upper_z = (i >= 4);
+        const __m256 x_term = _mm256_mul_ps(gx, upper_x ? rx1 : rx);
+        const __m256 z_term = _mm256_mul_ps(gz, upper_z ? rz1 : rz);
+        _mm256_storeu_ps(corner_xz[i], _mm256_add_ps(x_term, z_term));
+        _mm256_storeu_ps(corner_y[i], gy);
+    }
 }
 #endif
 
@@ -249,6 +284,7 @@ int32_t perlin_add_volume_impl(
     // values are independent of Z, so prepare them once per X/Y and reuse
     // across all Z slices instead of repeating four lookups per lane per slice.
     thread_local std::vector<XyPermutationCache> cross_floor_xy_cache;
+    alignas(32) int32_t cross_floor_permutation_words[256];
     if constexpr (CacheY && UseAvx2) {
         // Detect whether the actual run-walking schedule can enter the
         // cross-floor vector branch. Long same-floor runs are consumed in
@@ -272,6 +308,9 @@ int32_t perlin_add_volume_impl(
             start = run_end;
         }
         if (needs_cross_floor_cache) {
+            for (uint32_t i = 0; i < 256; ++i) {
+                cross_floor_permutation_words[i] = static_cast<int32_t>(permutation[i]);
+            }
             const size_t cross_count = static_cast<size_t>(size_x) * size_y;
             if (cross_floor_xy_cache.size() < cross_count) cross_floor_xy_cache.resize(cross_count);
             for (uint32_t ix = 0; ix < size_x; ++ix) {
@@ -317,24 +356,29 @@ int32_t perlin_add_volume_impl(
                             }
                         }
                         if (!same_floor) {
-                            float lane_corner_xz[8][8];
-                            float lane_corner_y[8][8];
+                            uint32_t lane_hashes[8][8];
                             for (uint32_t lane = 0; lane < 8; ++lane) {
                                 const XyPermutationCache& lane_xy =
                                     cross_floor_xy_cache[static_cast<size_t>(ix) * size_y + iy + lane];
-                                const int32_t lane_xy00 = lane_xy.xy00;
-                                const int32_t lane_xy01 = lane_xy.xy01;
-                                const int32_t lane_xy10 = lane_xy.xy10;
-                                const int32_t lane_xy11 = lane_xy.xy11;
-                                corner(permutation, static_cast<uint32_t>(lane_xy00) + static_cast<uint32_t>(floor_z), relative_x, relative_z, lane_corner_xz[0][lane], lane_corner_y[0][lane]);
-                                corner(permutation, static_cast<uint32_t>(lane_xy10) + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z, lane_corner_xz[1][lane], lane_corner_y[1][lane]);
-                                corner(permutation, static_cast<uint32_t>(lane_xy01) + static_cast<uint32_t>(floor_z), relative_x, relative_z, lane_corner_xz[2][lane], lane_corner_y[2][lane]);
-                                corner(permutation, static_cast<uint32_t>(lane_xy11) + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z, lane_corner_xz[3][lane], lane_corner_y[3][lane]);
-                                corner(permutation, static_cast<uint32_t>(lane_xy00) + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F, lane_corner_xz[4][lane], lane_corner_y[4][lane]);
-                                corner(permutation, static_cast<uint32_t>(lane_xy10) + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F, lane_corner_xz[5][lane], lane_corner_y[5][lane]);
-                                corner(permutation, static_cast<uint32_t>(lane_xy01) + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F, lane_corner_xz[6][lane], lane_corner_y[6][lane]);
-                                corner(permutation, static_cast<uint32_t>(lane_xy11) + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F, lane_corner_xz[7][lane], lane_corner_y[7][lane]);
+                                const uint32_t xy00 = lane_xy.xy00;
+                                const uint32_t xy01 = lane_xy.xy01;
+                                const uint32_t xy10 = lane_xy.xy10;
+                                const uint32_t xy11 = lane_xy.xy11;
+                                const uint32_t z0 = static_cast<uint32_t>(floor_z);
+                                lane_hashes[0][lane] = (xy00 + z0) & 255U;
+                                lane_hashes[1][lane] = (xy10 + z0) & 255U;
+                                lane_hashes[2][lane] = (xy01 + z0) & 255U;
+                                lane_hashes[3][lane] = (xy11 + z0) & 255U;
+                                lane_hashes[4][lane] = (xy00 + z0 + 1U) & 255U;
+                                lane_hashes[5][lane] = (xy10 + z0 + 1U) & 255U;
+                                lane_hashes[6][lane] = (xy01 + z0 + 1U) & 255U;
+                                lane_hashes[7][lane] = (xy11 + z0 + 1U) & 255U;
                             }
+                            float lane_corner_xz[8][8];
+                            float lane_corner_y[8][8];
+                            perlin_prepare_corners_8_avx2(
+                                cross_floor_permutation_words, lane_hashes,
+                                relative_x, relative_z, lane_corner_xz, lane_corner_y);
                             perlin_evaluate_8_avx2_independent(
                                 y_relative.data() + iy, y_alpha.data() + iy,
                                 output + base + iy, lane_corner_xz, lane_corner_y,
