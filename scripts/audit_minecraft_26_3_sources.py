@@ -434,8 +434,10 @@ def source_inspection(vanilla_root: Path, patched_root: Path) -> list[str]:
         "BlendDensityFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
         "LerpFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
         "NoiseFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
-        "Blender.java": {"blendDensity", "isEmpty", "getBlendingData"},
-        "BlendingData.java": {"getDensity", "getHeight", "getAlpha", "getOffset"},
+        "Blender.java": {"blendDensity", "isEmpty", "getBlendingData", "getBlendingDataValue",
+                         "lambda$blendDensity$1"},
+        "BlendingData.java": {"getDensity", "getHeight", "getAlpha", "getOffset",
+                              "iterateDensities", "getCellYIndex", "getMinY"},
     }
     lines: list[str] = []
     for label, root in (("MOJANG_VANILLA", vanilla_root), ("NEOFORGE_PATCHED", patched_root)):
