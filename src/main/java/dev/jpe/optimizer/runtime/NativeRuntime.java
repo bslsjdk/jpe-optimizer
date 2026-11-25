@@ -60,6 +60,7 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle compileDensityGraph;
     private final MethodHandle evaluateDensityGraph;
     private final MethodHandle evaluateDensityGraphWithInputs;
+    private final MethodHandle evaluateDensityGraphMultiWithInputs;
     private final MethodHandle releaseDensityGraph;
     private final MethodHandle loadDensityGraphCache;
     private final MethodHandle saveDensityGraphCache;
@@ -210,7 +211,8 @@ public final class NativeRuntime implements AutoCloseable {
                           MethodHandle status, MethodHandle wait,
                           MethodHandle cancel, MethodHandle release,
                           MethodHandle compileDensityGraph, MethodHandle evaluateDensityGraph,
-                          MethodHandle evaluateDensityGraphWithInputs, MethodHandle releaseDensityGraph, MethodHandle loadDensityGraphCache,
+                          MethodHandle evaluateDensityGraphWithInputs, MethodHandle evaluateDensityGraphMultiWithInputs,
+                          MethodHandle releaseDensityGraph, MethodHandle loadDensityGraphCache,
                           MethodHandle saveDensityGraphCache) {
         this.configureWorkers = configureWorkers;
         this.workerCount = workerCount;
@@ -226,6 +228,7 @@ public final class NativeRuntime implements AutoCloseable {
         this.compileDensityGraph = compileDensityGraph;
         this.evaluateDensityGraph = evaluateDensityGraph;
         this.evaluateDensityGraphWithInputs = evaluateDensityGraphWithInputs;
+        this.evaluateDensityGraphMultiWithInputs = evaluateDensityGraphMultiWithInputs;
         this.releaseDensityGraph = releaseDensityGraph;
         this.loadDensityGraphCache = loadDensityGraphCache;
         this.saveDensityGraphCache = saveDensityGraphCache;
@@ -316,6 +319,14 @@ public final class NativeRuntime implements AutoCloseable {
                             ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
                             ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
                             ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
+            MethodHandle evaluateDensityGraphMultiWithInputs = linker.downcallHandle(
+                    lookup.find("jpe_runtime_density_graph_evaluate_multi_with_inputs").orElseThrow(() -> new IllegalStateException("Missing density graph multi-output evaluate symbol")),
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG,
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                            ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS,
+                            ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
             MethodHandle releaseDensityGraph = linker.downcallHandle(
                     lookup.find("jpe_runtime_density_graph_release").orElseThrow(() -> new IllegalStateException("Missing density graph release symbol")),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG));
@@ -334,7 +345,7 @@ public final class NativeRuntime implements AutoCloseable {
             int actualWorkers = (int) configureWorkers.invokeExact(requestedWorkers);
             if (actualWorkers < 1) throw new IllegalStateException("Unable to configure native workers: " + actualWorkers);
             return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, perlinStack, submit, submitStack, status, wait, cancel, release,
-                    compileDensityGraph, evaluateDensityGraph, evaluateDensityGraphWithInputs, releaseDensityGraph,
+                    compileDensityGraph, evaluateDensityGraph, evaluateDensityGraphWithInputs, evaluateDensityGraphMultiWithInputs, releaseDensityGraph,
                     loadDensityGraphCache, saveDensityGraphCache);
         } catch (Throwable failure) {
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
@@ -605,6 +616,72 @@ public final class NativeRuntime implements AutoCloseable {
         }
     }
 
+    private void evaluateDensityGraphMultiWithInputs(NativeDensityGraph graph,
+                                       int sizeX, int sizeY, int sizeZ,
+                                       int minX, int minY, int minZ,
+                                       int stepX, int stepY, int stepZ,
+                                       float[][] inputs, int[] outputNodes, float[][] outputs) {
+        lifecycle.readLock().lock();
+        DensityScratch scratch = null;
+        try {
+            ensureOpen();
+            Objects.requireNonNull(inputs, "inputs");
+            Objects.requireNonNull(outputNodes, "outputNodes");
+            Objects.requireNonNull(outputs, "outputs");
+            if (outputs.length == 0 || outputs.length > 256 || outputNodes.length != outputs.length) {
+                throw new IllegalArgumentException("Multi-output evaluation requires 1..256 matching roots and output arrays");
+            }
+            int length = validateDensityVolume(sizeX, sizeY, sizeZ, stepX, stepY, stepZ, outputs[0]);
+            if (graph.closed) throw new IllegalStateException("Native density graph has been released");
+            long totalOutputFloats = Math.multiplyExact((long) outputs.length, length);
+            long totalInputFloats = Math.multiplyExact((long) inputs.length, length);
+            if (totalOutputFloats > 16_777_216L || totalInputFloats > 16_777_216L) {
+                throw new IllegalArgumentException("Density input/output staging exceeds the 64 MiB safety budget");
+            }
+            for (float[] output : outputs) {
+                if (output == null || output.length < length) {
+                    throw new IllegalArgumentException("A multi-output destination is null or too short");
+                }
+            }
+            if (inputs.length > 256) throw new IllegalArgumentException("At most 256 external density inputs are supported");
+            scratch = acquireDensityScratch();
+            MemorySegment nativeInputs = scratch.ensureInputCapacity(totalInputFloats);
+            for (int i = 0; i < inputs.length; ++i) {
+                if (inputs[i] == null || inputs[i].length < length) {
+                    throw new IllegalArgumentException("External input volume " + i + " is null or too short");
+                }
+                MemorySegment.copy(inputs[i], 0, nativeInputs, ValueLayout.JAVA_FLOAT,
+                        Math.multiplyExact((long) i * length, ValueLayout.JAVA_FLOAT.byteSize()), length);
+            }
+            MemorySegment nativeRoots = scratch.arena.allocate(
+                    Math.multiplyExact((long) outputNodes.length, ValueLayout.JAVA_INT.byteSize()),
+                    ValueLayout.JAVA_INT.byteAlignment());
+            for (int i = 0; i < outputNodes.length; ++i) {
+                if (outputNodes[i] < 0) throw new IllegalArgumentException("Negative native output root");
+                nativeRoots.setAtIndex(ValueLayout.JAVA_INT, i, outputNodes[i]);
+            }
+            MemorySegment nativeOutputs = scratch.ensureOutputCapacity(Math.toIntExact(totalOutputFloats));
+            try {
+                int status = (int) evaluateDensityGraphMultiWithInputs.invokeExact(
+                        graph.handle, sizeX, sizeY, sizeZ,
+                        minX, minY, minZ, stepX, stepY, stepZ,
+                        nativeInputs, inputs.length, nativeRoots, outputNodes.length,
+                        nativeOutputs, totalOutputFloats);
+                checkStatus(status, "density-graph-evaluate-multi-with-inputs");
+                for (int i = 0; i < outputs.length; ++i) {
+                    MemorySegment.copy(nativeOutputs, ValueLayout.JAVA_FLOAT,
+                            Math.multiplyExact((long) i * length, ValueLayout.JAVA_FLOAT.byteSize()),
+                            outputs[i], 0, length);
+                }
+            } catch (Throwable failure) {
+                throw rethrow("Unable to evaluate native density graph with multiple outputs", failure);
+            }
+        } finally {
+            if (scratch != null) scratch.release();
+            lifecycle.readLock().unlock();
+        }
+    }
+
     private void releaseDensityGraph(NativeDensityGraph graph) {
         lifecycle.readLock().lock();
         try {
@@ -657,6 +734,20 @@ public final class NativeRuntime implements AutoCloseable {
                 if (closed) throw new IllegalStateException("Native density graph has been released");
                 runtime.evaluateDensityGraphWithInputs(this, sizeX, sizeY, sizeZ,
                         minX, minY, minZ, stepX, stepY, stepZ, inputs, output);
+            } finally {
+                graphLifecycle.readLock().unlock();
+            }
+        }
+
+        public void evaluateMultiWithInputs(int sizeX, int sizeY, int sizeZ,
+                                             int minX, int minY, int minZ,
+                                             int stepX, int stepY, int stepZ,
+                                             float[][] inputs, int[] outputNodes, float[][] outputs) {
+            graphLifecycle.readLock().lock();
+            try {
+                if (closed) throw new IllegalStateException("Native density graph has been released");
+                runtime.evaluateDensityGraphMultiWithInputs(this, sizeX, sizeY, sizeZ,
+                        minX, minY, minZ, stepX, stepY, stepZ, inputs, outputNodes, outputs);
             } finally {
                 graphLifecycle.readLock().unlock();
             }
