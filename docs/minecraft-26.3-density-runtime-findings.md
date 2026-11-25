@@ -112,6 +112,19 @@ Therefore the next experimental capture should observe the *compiled sampler gra
 
 The first safe experiment is a diagnostic sampler-graph inventory, with no changes to world generation: record concrete sampler class, identity, child edges where exposed by known sampler records, and the actual `sampleVolume`/cache boundary. Only after that inventory should a Native sampler subset be selected for parity tests.
 
+### Implemented diagnostic sampler inventory
+
+A one-shot, opt-in inventory is now available at the final-density `DensitySampler.Bound` used by `NoiseBasedChunkGenerator.doFill`:
+
+- Enable with JVM property `-Djpe.traceCompiledSamplers=true`.
+- It captures the actual compiled root sampler, not the pre-optimized source function.
+- It follows only Java record components whose values are also `DensitySampler` instances. It does not recursively inspect arbitrary fields, registries, contexts, or noise objects.
+- Primitive/string/enum record components are retained as compact diagnostic values; non-record sampler implementations are retained as opaque leaves.
+- The capture is bounded to 65,536 sampler objects, runs once per JVM, and does not evaluate samplers or change generated output.
+- Summary is logged at INFO; per-node details are logged at DEBUG. The latest in-memory snapshot is exposed through `CompiledSamplerGraphDiagnostics.lastSnapshot()`.
+
+This is diagnostic infrastructure, not a Native execution path. It deliberately avoids enabling Native world generation or replacing Minecraft's sampler/cache behavior. The new generic trace tests cover shared-child identity, scalar record parameters, opaque non-record nodes, and the node budget.
+
 ## DensityBuffer storage and copy cost
 
 The audited `DensityBuffer` stores values in a protected final Java `float[] values`, with a separate logical `size`. Its `copyFrom` method checks the logical sizes and then invokes `System.arraycopy` over the active range. `ScopedDensityBuffer` extends this class and returns its storage to a `DensityBufferArena` when its scope closes.
