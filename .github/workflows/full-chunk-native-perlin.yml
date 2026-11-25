@@ -83,7 +83,9 @@ jobs:
           # without queue submission, polling, or a second native worker pool.
           run_worldgen native_sync "-Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeLibraryPath=${NATIVE_LIBRARY}"
 
-          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin-sync.*completedChunks=340.*failedChunks=0.*nativeCalls=[1-9][0-9]*.*nativeCompleted=[1-9][0-9]*.*nativeFallbacks=0.*nativeSyncCalls=[1-9][0-9]*' build/full-chunk-benchmark/native_sync.log
+          # Tiny density volumes intentionally fall back to vanilla; require real native work
+          # and zero correctness/runtime failures rather than an impossible zero-fallback count.
+          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin-sync.*completedChunks=340.*failedChunks=0.*nativeCalls=[1-9][0-9]*.*nativeCompleted=[1-9][0-9]*.*nativeFallbacks=[0-9]+.*nativeSyncCalls=[1-9][0-9]*.*nativeInvalidDimensions=0.*nativeAxisMismatches=0.*nativeBufferMismatches=0.*nativeOversizedVolumes=0.*nativeRuntimeUnavailable=0.*nativeQueueRejections=0.*nativeJobFailures=0.*nativeExceptions=0' build/full-chunk-benchmark/native_sync.log
 
       - name: Upload full-chunk benchmark logs
         if: always()
