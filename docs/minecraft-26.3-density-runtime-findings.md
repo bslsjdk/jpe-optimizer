@@ -172,3 +172,12 @@ A suitable experiment should write into the actual target array only while the o
 3. Capture immutable graph topology separately from `SamplerContext`, cache cells, seed-derived state, and chunk volume metadata.
 4. Add a first exact adapter only after its operation semantics and inputs are verified from source/bytecode.
 5. Keep unknown nodes on the experimental OPAQUE path and compare against Java; never substitute a first-observed output as a permanent constant.
+
+
+## Compiled sampler arithmetic-island planning
+
+`CompiledSamplerArithmeticIslands` now partitions the diagnostic compiled-sampler IR into maximal connected regions containing only `CONSTANT`, `ADD`, and `SUB` nodes. It records named external input edges and observable output nodes. `MUL`, `DIV`, guarded `MIN`/`MAX`, cache wrappers, context-bound samplers, and opaque implementations remain boundaries in this first conservative pass.
+
+This is a structural planning result only. It does not emit native code, evaluate the graph, or claim a speedup. The first native lowering stage must still prove float32 parity, operand order, NaN/signed-zero behavior, volume layout, and the lifetime of every external input. In particular, a region must not cross Minecraft cache/context boundaries merely because the graph is connected.
+
+The planner intentionally begins with a small exact subset. Extending it to short-circuit operations requires explicit control-flow representation and tests against the actual compiled sampler bytecode, not simply adding their opcodes to the eligible set.
