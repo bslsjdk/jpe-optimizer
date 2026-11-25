@@ -1260,9 +1260,9 @@ mod tests {
     #[test]
     fn perlin_y_cache_native_microbenchmark() {
         use std::time::Instant;
-        const SX: usize = 24;
-        const SY: usize = 32;
-        const SZ: usize = 24;
+        const SX: usize = 16;
+        const SY: usize = 384;
+        const SZ: usize = 16;
         const LAYERS: usize = 6;
         const ROUNDS: usize = 21;
         const REPEATS: usize = 5;
@@ -1381,9 +1381,9 @@ mod tests {
     #[test]
     fn perlin_y_cache_native_microbenchmark_large_volume() {
         use std::time::Instant;
-        const SX: usize = 32;
-        const SY: usize = 64;
-        const SZ: usize = 32;
+        const SX: usize = 16;
+        const SY: usize = 384;
+        const SZ: usize = 16;
         const LAYERS: usize = 8;
         const ROUNDS: usize = 15;
         const REPEATS: usize = 3;
@@ -1464,9 +1464,9 @@ mod tests {
     #[test]
     fn perlin_xy_cache_native_microbenchmark_large_volume() {
         use std::time::Instant;
-        const SX: usize = 32;
-        const SY: usize = 64;
-        const SZ: usize = 32;
+        const SX: usize = 16;
+        const SY: usize = 384;
+        const SZ: usize = 16;
         const LAYERS: usize = 8;
         const ROUNDS: usize = 15;
         const REPEATS: usize = 3;
@@ -1551,9 +1551,9 @@ mod tests {
     fn perlin_stack_native_microbenchmark_fixed_workload() {
         use std::time::Instant;
 
-        const SX: usize = 24;
-        const SY: usize = 32;
-        const SZ: usize = 24;
+        const SX: usize = 16;
+        const SY: usize = 384;
+        const SZ: usize = 16;
         const LAYERS: usize = 6;
         const ROUNDS: usize = 21;
         const REPEATS: usize = 5;
@@ -1636,9 +1636,9 @@ mod tests {
     fn perlin_stack_native_microbenchmark_large_volume() {
         use std::time::Instant;
 
-        const SX: usize = 32;
-        const SY: usize = 64;
-        const SZ: usize = 32;
+        const SX: usize = 16;
+        const SY: usize = 384;
+        const SZ: usize = 16;
         const LAYERS: usize = 8;
         const ROUNDS: usize = 21;
         const REPEATS: usize = 5;
@@ -1805,9 +1805,9 @@ mod tests {
     #[test]
     fn perlin_avx2_matches_scalar_cached_and_benchmarks_run_lengths() {
         use std::time::Instant;
-        const SX: usize = 32;
-        const SY: usize = 64;
-        const SZ: usize = 32;
+        const SX: usize = 16;
+        const SY: usize = 384;
+        const SZ: usize = 16;
         const REPEATS: usize = 5;
         const ROUNDS: usize = 21;
         let permutation: [u8; 256] =
