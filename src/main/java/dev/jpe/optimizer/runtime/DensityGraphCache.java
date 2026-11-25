@@ -29,7 +29,7 @@ import java.util.function.Supplier;
  */
 public final class DensityGraphCache {
     private static final int MAGIC = 0x4A504544; // JPED
-    private static final int FORMAT_VERSION = 1;
+    private static final int FORMAT_VERSION = 2;
     private static final int DIGEST_BYTES = 32;
     private static final long MAX_CACHE_BYTES = 16L * 1024L * 1024L;
     private static final int MAX_DIAGNOSTIC_TEXT = 8192;
@@ -134,10 +134,14 @@ public final class DensityGraphCache {
                 int nodeIndex = in.readInt();
                 String sourceClass = in.readUTF();
                 String reason = in.readUTF();
-                if (sourceClass.length() > MAX_DIAGNOSTIC_TEXT || reason.length() > MAX_DIAGNOSTIC_TEXT) {
+                int childCount = in.readInt();
+                if (sourceClass.length() > MAX_DIAGNOSTIC_TEXT || reason.length() > MAX_DIAGNOSTIC_TEXT
+                        || childCount < 0 || childCount > DensityGraphIr.MAX_NODES) {
                     return Optional.empty();
                 }
-                diagnostics.add(new DensityGraphIr.Diagnostic(nodeIndex, sourceClass, reason));
+                ArrayList<Integer> childIndices = new ArrayList<>(childCount);
+                for (int child = 0; child < childCount; ++child) childIndices.add(in.readInt());
+                diagnostics.add(new DensityGraphIr.Diagnostic(nodeIndex, sourceClass, reason, childIndices));
             }
             if (in.available() != 0) return Optional.empty();
             return Optional.of(new DensityGraphIr(nodes, diagnostics, root, fingerprint));
@@ -192,6 +196,8 @@ public final class DensityGraphCache {
                 out.writeInt(diagnostic.nodeIndex());
                 out.writeUTF(diagnostic.sourceClass());
                 out.writeUTF(diagnostic.reason());
+                out.writeInt(diagnostic.childIndices().size());
+                for (int childIndex : diagnostic.childIndices()) out.writeInt(childIndex);
             }
         }
         byte[] result = bytes.toByteArray();
