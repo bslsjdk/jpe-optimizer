@@ -336,6 +336,7 @@ int32_t perlin_add_volume_impl(
                             float unique_corner_y[8][8]{};
                             int32_t unique_floors[8];
                             int32_t lane_unique_indices[8];
+                            uint32_t unique_representative_lanes[8];
                             uint32_t unique_count = 0;
                             bool monotonic_floors = true;
                             int floor_direction = 0;
@@ -363,6 +364,7 @@ int32_t perlin_add_volume_impl(
                                     } else {
                                         unique_index = unique_count++;
                                         unique_floors[unique_index] = lane_floor;
+                                        unique_representative_lanes[unique_index] = lane;
                                     }
                                 } else {
                                     // A direction change invalidates the adjacent-only map.
@@ -372,14 +374,22 @@ int32_t perlin_add_volume_impl(
                                         const int32_t rebuild_floor = y_floors[iy + rebuild_lane];
                                         uint32_t found = 0;
                                         while (found < unique_count && unique_floors[found] != rebuild_floor) ++found;
-                                        if (found == unique_count) unique_floors[unique_count++] = rebuild_floor;
+                                        if (found == unique_count) {
+                                            unique_floors[unique_count] = rebuild_floor;
+                                            unique_representative_lanes[unique_count] = rebuild_lane;
+                                            ++unique_count;
+                                        }
                                         lane_unique_indices[rebuild_lane] = static_cast<int32_t>(found);
                                     }
                                     for (uint32_t remaining = lane + 1; remaining < 8; ++remaining) {
                                         const int32_t remaining_floor = y_floors[iy + remaining];
                                         uint32_t found = 0;
                                         while (found < unique_count && unique_floors[found] != remaining_floor) ++found;
-                                        if (found == unique_count) unique_floors[unique_count++] = remaining_floor;
+                                        if (found == unique_count) {
+                                            unique_floors[unique_count] = remaining_floor;
+                                            unique_representative_lanes[unique_count] = remaining;
+                                            ++unique_count;
+                                        }
                                         lane_unique_indices[remaining] = static_cast<int32_t>(found);
                                     }
                                     break;
@@ -389,18 +399,13 @@ int32_t perlin_add_volume_impl(
 
                             // Compute each distinct floor's eight corners exactly once.
                             for (uint32_t unique = 0; unique < unique_count; ++unique) {
-                                const int32_t floor_y = unique_floors[unique];
-                                uint32_t representative_lane = 0;
-                                while (static_cast<uint32_t>(lane_unique_indices[representative_lane]) != unique) {
-                                    ++representative_lane;
-                                }
+                                const uint32_t representative_lane = unique_representative_lanes[unique];
                                 const XyPermutationCache& lane_xy =
                                     cross_floor_xy_cache[static_cast<size_t>(ix) * size_y + iy + representative_lane];
                                 const uint32_t xy00 = lane_xy.xy00;
                                 const uint32_t xy01 = lane_xy.xy01;
                                 const uint32_t xy10 = lane_xy.xy10;
                                 const uint32_t xy11 = lane_xy.xy11;
-                                (void)floor_y;
                                 corner(permutation, xy00 + static_cast<uint32_t>(floor_z), relative_x, relative_z,
                                        unique_corner_xz[0][unique], unique_corner_y[0][unique]);
                                 corner(permutation, xy10 + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z,
