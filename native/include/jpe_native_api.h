@@ -13,7 +13,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* ABI v6. Axis coordinates use min + index * step with Java int wrap semantics. */
+/* ABI v7. Axis coordinates use min + index * step with Java int wrap semantics. */
 JPE_API uint32_t jpe_runtime_abi_version(void);
 /* requested=0 selects all process-visible CPUs; positive values are capped to that count. */
 /* Zero selects available CPUs. Repeating the active count is safe after startup;
@@ -107,6 +107,9 @@ JPE_API int32_t jpe_runtime_density_graph_evaluate(
 );
 /* Releases one retained handle. Active evaluations keep their immutable plan alive. */
 JPE_API int32_t jpe_runtime_density_graph_release(uint64_t graph_handle);
+/* Native-owned persistent plan cache. A cache miss returns handle 0; save returns status 0 on success. */
+JPE_API uint64_t jpe_runtime_density_graph_load_cache(const char *path, const char *cache_key);
+JPE_API int32_t jpe_runtime_density_graph_save_cache(uint64_t graph_handle, const char *path, const char *cache_key);
 
 #ifdef __cplusplus
 }
