@@ -8,12 +8,13 @@ public final class CompiledSamplerGraphDiagnostics {
     private static final System.Logger LOGGER =
             System.getLogger(CompiledSamplerGraphDiagnostics.class.getName());
     private static final AtomicBoolean CAPTURED = new AtomicBoolean();
+    private static final boolean ENABLED = Boolean.getBoolean("jpe.traceCompiledSamplers");
     private static volatile CompiledSamplerGraphTrace.Snapshot lastSnapshot;
 
     private CompiledSamplerGraphDiagnostics() {}
 
     public static boolean enabled() {
-        return Boolean.getBoolean("jpe.traceCompiledSamplers");
+        return ENABLED;
     }
 
     /**
