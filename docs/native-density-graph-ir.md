@@ -1,4 +1,4 @@
-# Native density graph IR v1
+# Native density graph IR v2
 
 Status: design contract only. No Minecraft density graph is executed by this IR yet. The native backend must remain opt-in until the exact-output and real-worldgen gates below pass.
 
@@ -209,3 +209,16 @@ Important integration boundary: the bootstrap API exists, but the Minecraft life
 The runtime also reuses a per-thread native output buffer for density-volume evaluation. The C++ graph writes one contiguous volume, then Java performs one bulk copy into the Minecraft-owned float array; the per-evaluation confined Arena allocation has been removed. This is still one cross-language call and one output copy per volume, not zero-copy. Eliminating that final copy requires changing the density-buffer ownership/consumer boundary so Minecraft can consume native-backed memory safely; it must not be disguised as a completed optimization.
 
 Seed handling must be split from graph identity. Do not put a world seed into the static graph cache key merely because it changes Perlin permutations or random offsets: those are per-world runtime parameter data and should be uploaded once when the world context is initialized, then reused by all chunks. If a captured operation actually embeds a seed-derived value as a graph constant, that dependency must either be externalized into the parameter block or included in the cache identity. Reusing a graph with the wrong seed state is a correctness bug, not a harmless cache hit.
+
+
+### Minecraft 26.3 floating-point semantics
+
+Minecraft 26.3 evaluates Density Functions and noises using single-precision
+floating-point values, including intermediate operations. Native Density IR v2
+therefore rounds constants, coordinates, and every arithmetic result to IEEE-754
+float32 before downstream nodes consume them. The wire record still carries a
+64-bit immediate field for ABI alignment, but constants are converted to float32
+at evaluation. IR v1 plans are not compatible and must be rebuilt under the v2
+cache identity. This is not yet a claim of full vanilla parity: each supported
+operation and noise implementation still requires comparison against the exact
+26.3 runtime.
