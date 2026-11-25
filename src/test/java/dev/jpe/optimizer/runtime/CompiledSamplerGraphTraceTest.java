@@ -29,6 +29,34 @@ class CompiledSamplerGraphTraceTest {
     }
 
     @Test
+    void lowersKnownCompiledSamplerClassesWithoutLosingBoundaries() {
+        CompiledSamplerGraphTrace.Snapshot snapshot = new CompiledSamplerGraphTrace.Snapshot(
+                java.util.List.of(
+                        new CompiledSamplerGraphTrace.NodeInfo(0,
+                                "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$MulSampler",
+                                java.util.List.of(1, 2), java.util.List.of(), ""),
+                        new CompiledSamplerGraphTrace.NodeInfo(1,
+                                "net.minecraft.world.level.levelgen.densityfunction.CachingDensitySampler",
+                                java.util.List.of(3), java.util.List.of(
+                                        new CompiledSamplerGraphTrace.ComponentValue("id", "int", "7")), ""),
+                        new CompiledSamplerGraphTrace.NodeInfo(2,
+                                "net.minecraft.world.level.levelgen.densityfunction.ContextBoundSampler",
+                                java.util.List.of(4), java.util.List.of(), ""),
+                        new CompiledSamplerGraphTrace.NodeInfo(3, "custom.NoiseSampler",
+                                java.util.List.of(), java.util.List.of(), "not a record")
+                ), 0, 0);
+
+        CompiledSamplerGraphIr.Graph graph = CompiledSamplerGraphIr.lower(snapshot);
+
+        assertEquals(CompiledSamplerGraphIr.Op.MUL_ZERO_SHORT_CIRCUIT, graph.nodes().get(0).op());
+        assertEquals(java.util.List.of(1, 2), graph.nodes().get(0).children());
+        assertEquals(CompiledSamplerGraphIr.Op.CACHE_BOUNDARY, graph.nodes().get(1).op());
+        assertEquals("7", graph.nodes().get(1).scalarValues().get("id"));
+        assertEquals(CompiledSamplerGraphIr.Op.CONTEXT_BOUNDARY, graph.nodes().get(2).op());
+        assertEquals(CompiledSamplerGraphIr.Op.OPAQUE, graph.nodes().get(3).op());
+    }
+
+    @Test
     void readsPrivateNestedSamplerRecordAccessors() {
         HiddenSampler root = new HiddenSampler(new LeafSampler(4.0F));
         CompiledSamplerGraphTrace.Snapshot snapshot =
