@@ -30,7 +30,7 @@ class DensityGraphCaptureTest {
         DensityGraphCapture capture = new DensityGraphCapture();
         DensityNode known = new DensityNode(), unknown = new DensityNode(), root = new DensityNode();
         capture.constant(known, 1.0);
-        capture.unsupported(unknown, "random state is not represented in IR v1");
+        capture.unsupported(unknown, "random state is not represented in IR v3");
         capture.add(root, known, unknown);
         IllegalStateException failure = assertThrows(IllegalStateException.class, () -> capture.finish(root, 0L));
         assertTrue(failure.getMessage().contains("random state"));
@@ -123,5 +123,23 @@ class DensityGraphCaptureTest {
         assertEquals(DensityGraphIr.NO_INPUT, graph.nodes().get(1).inputB());
         assertEquals(1, graph.diagnostics().get(0).nodeIndex());
     }
+
+    @Test
+    void experimentalOpaqueNodeRetainsAllNaryDependencies() {
+        DensityGraphCapture capture = new DensityGraphCapture(DensityGraphCapture.Mode.EXPERIMENTAL);
+        DensityNode a = new DensityNode(), b = new DensityNode();
+        DensityNode c = new DensityNode(), d = new DensityNode(), opaque = new DensityNode();
+        capture.constant(a, 1.0);
+        capture.constant(b, 2.0);
+        capture.constant(c, 3.0);
+        capture.constant(d, 4.0);
+        capture.unsupported(opaque, "n-ary spline or composite node", a, b, c, d);
+        DensityGraphIr graph = capture.finish(opaque, 0L);
+        assertEquals(5, graph.nodes().size());
+        assertEquals(0, graph.nodes().get(4).inputA());
+        assertEquals(1, graph.nodes().get(4).inputB());
+        assertEquals(java.util.List.of(0, 1, 2, 3), graph.diagnostics().get(0).childIndices());
+    }
+
 
 }
