@@ -574,6 +574,8 @@ def main() -> int:
         "Method-level inventory (raw Code hashes may differ when constant-pool indices are remapped):",
         *method_report,
         "",
+        "Exact javap bytecode for critical runtime classes (authoritative when decompiler names differ):",
+        *bytecode_report,
         "",
         "Selected decompiled method bodies (for lifecycle and batch-boundary inspection):",
         *source_inspection(vanilla_out, patched_out),
