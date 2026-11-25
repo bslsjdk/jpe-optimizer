@@ -74,7 +74,7 @@ class CompiledSamplerArithmeticLoweringTest {
                 CompiledSamplerArithmeticLowering.lower(graph, multiOutput, 0);
 
         assertEquals(List.of(0, 1, 2), lowered.outputSourceNodeIds());
-        assertEquals(List.of(2, 1, 0), lowered.nativeOutputNodeIds());
+        assertEquals(List.of(2, 0, 1), lowered.nativeOutputNodeIds());
         assertEquals(2, lowered.graph().rootNode());
         assertEquals(3, lowered.graph().nodes().size());
     }
