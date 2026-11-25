@@ -66,7 +66,7 @@ The initial compiler should be deliberately narrow. Candidate pure operations in
 - clamp and the simple unary transforms whose exact formulas are confirmed from the target artifact
 - noise references only after permutation, octave order, coordinate wrapping, and float/double conversion points have parity tests
 
-These are a proposed allowlist, not a claim that every opcode is already implemented.
+These are a proposed allowlist, not a claim that every opcode is already implemented. The first native prototype currently implements only `CONST`, `X`, `Y`, `Z`, `ADD`, and `MUL` in `native/cpp-kernels/src/density_graph.cpp`. Its C ABI supports compile/cache, full-volume evaluation, and reference-counted release. Rust unit tests exercise the arithmetic graph, cache reuse, malformed topological references, and invalid volume rejection. This prototype is infrastructure validation only; it is not yet connected to Java or Minecraft and is not a terrain speedup.
 
 The following require dedicated semantic work and must not be approximated as ordinary arithmetic:
 
