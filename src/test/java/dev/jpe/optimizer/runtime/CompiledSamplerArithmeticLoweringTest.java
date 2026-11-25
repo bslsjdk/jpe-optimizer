@@ -62,12 +62,13 @@ class CompiledSamplerArithmeticLoweringTest {
     @Test
     void batchesIndependentIslandsIntoOneMultiOutputGraphAndDeduplicatesSharedInputs() {
         CompiledSamplerGraphIr.Graph graph = new CompiledSamplerGraphIr.Graph(List.of(
+                node(5, CompiledSamplerGraphIr.Op.OPAQUE, List.of(0, 1), Map.of()),
                 node(0, CompiledSamplerGraphIr.Op.ADD, List.of(2, 3), Map.of()),
                 node(1, CompiledSamplerGraphIr.Op.SUB, List.of(2, 4), Map.of()),
                 node(2, CompiledSamplerGraphIr.Op.OPAQUE, List.of(), Map.of()),
                 node(3, CompiledSamplerGraphIr.Op.CONSTANT, List.of(), Map.of("value", "3.0")),
                 node(4, CompiledSamplerGraphIr.Op.CONSTANT, List.of(), Map.of("value", "4.0"))
-        ), 0, 0);
+        ), 5, 0);
         CompiledSamplerArithmeticIslands.Plan plan = CompiledSamplerArithmeticIslands.plan(graph);
         assertEquals(2, plan.islands().size());
         CompiledSamplerArithmeticLowering.LoweredIsland batch =
