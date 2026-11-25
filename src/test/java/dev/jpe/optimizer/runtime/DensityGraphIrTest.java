@@ -53,7 +53,7 @@ class DensityGraphIrTest {
                 DensityGraphIr.Node.add(0, 1)
         ), 2, 0x1A9L);
         assertEquals(DensityGraphIr.INPUT, graph.nodes().get(0).opcode());
-        assertEquals(5, DensityGraphIr.VERSION);
+        assertEquals(6, DensityGraphIr.VERSION);
     }
 
     @Test
