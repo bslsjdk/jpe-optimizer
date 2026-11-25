@@ -101,7 +101,7 @@ JPE_API int32_t jpe_runtime_density_graph_evaluate(
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
-    double *output, uint64_t output_length
+    float *output, uint64_t output_length
 );
 /* Releases one retained handle. Active evaluations keep their immutable plan alive. */
 JPE_API int32_t jpe_runtime_density_graph_release(uint64_t graph_handle);
