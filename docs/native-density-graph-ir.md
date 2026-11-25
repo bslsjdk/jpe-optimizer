@@ -393,3 +393,10 @@ The exact 26.3 audit confirms that CachingDensitySampler and ContextBoundSampler
 The bytecode also shows DensityFunctionCompiler.samplers is declared as Map but initialized with ConcurrentHashMap; getSampler uses computeIfAbsent, and optimizeAndCompile is serialized by a ReentrantLock. The compiler cache is world-scoped through RandomState, while SamplerContext and its cache cells remain chunk-scoped. These details were checked against both official and NeoForge-patched 26.3 artifacts.
 
 A regression test now constructs an actual Minecraft CachingDensitySampler around a test DensitySampler, captures its record component edge, and confirms that the cache wrapper remains a boundary rather than being flattened into the arithmetic island.
+
+
+### Canonical sampler graph fingerprints for persistent cache keys
+
+Compiled sampler inventories now have a deterministic SHA-256 semantic fingerprint. The encoding is length-prefixed and includes the IR semantic version, root id, node order and ids, exact operation kind, source implementation class, ordered child ids, named child edges, and scalar record components sorted by component name. It deliberately excludes diagnostic prose and map insertion order. Ordered operands remain significant, so subtraction and other non-commutative operations cannot collide after child reordering.
+
+Incomplete captures with dropped nodes and graphs with missing/duplicate node references are rejected rather than fingerprinted. The cache helper combines this digest with the existing environment identity (Minecraft, loader, native build, mod set, dimension, worldgen settings, and registry fingerprints). This is a key-construction primitive only: no live sampler object or world/chunk context is serialized, and the cache is not yet wired into the worldgen execution path.
