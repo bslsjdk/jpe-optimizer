@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <memory>
 #include <limits>
+#include <stdexcept>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
