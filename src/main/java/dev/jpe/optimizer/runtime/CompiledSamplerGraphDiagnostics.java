@@ -80,7 +80,7 @@ public final class CompiledSamplerGraphDiagnostics {
             }
         } catch (RuntimeException | LinkageError failure) {
             LOGGER.log(System.Logger.Level.WARNING,
-                    "Compiled sampler graph inventory failed without affecting world generation: {0}"",
+                    "Compiled sampler graph inventory failed without affecting world generation: {0}",
                     failure.toString());
         }
     }
