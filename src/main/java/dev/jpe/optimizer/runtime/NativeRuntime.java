@@ -30,7 +30,7 @@ import net.minecraft.world.level.levelgen.synth.PerlinNoise;
  * Completed jobs must be explicitly released before this runtime can be closed.
  */
 public final class NativeRuntime implements AutoCloseable {
-    public static final int EXPECTED_ABI_VERSION = 6;
+    public static final int EXPECTED_ABI_VERSION = 7;
     private static final long PERLIN_LAYER_SIZE = 56L;
     private static final MemoryLayout DENSITY_NODE_LAYOUT = MemoryLayout.structLayout(
             ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
@@ -60,6 +60,8 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle compileDensityGraph;
     private final MethodHandle evaluateDensityGraph;
     private final MethodHandle releaseDensityGraph;
+    private final MethodHandle loadDensityGraphCache;
+    private final MethodHandle saveDensityGraphCache;
     private final ConcurrentHashMap<Long, NativeJob> jobs = new ConcurrentHashMap<>();
     private final java.util.Set<NativeDensityGraph> densityGraphs = ConcurrentHashMap.newKeySet();
     private final ReentrantReadWriteLock lifecycle = new ReentrantReadWriteLock();
@@ -183,7 +185,8 @@ public final class NativeRuntime implements AutoCloseable {
                           MethodHandle status, MethodHandle wait,
                           MethodHandle cancel, MethodHandle release,
                           MethodHandle compileDensityGraph, MethodHandle evaluateDensityGraph,
-                          MethodHandle releaseDensityGraph) {
+                          MethodHandle releaseDensityGraph, MethodHandle loadDensityGraphCache,
+                          MethodHandle saveDensityGraphCache) {
         this.configureWorkers = configureWorkers;
         this.workerCount = workerCount;
         this.addF32 = add;
@@ -198,6 +201,8 @@ public final class NativeRuntime implements AutoCloseable {
         this.compileDensityGraph = compileDensityGraph;
         this.evaluateDensityGraph = evaluateDensityGraph;
         this.releaseDensityGraph = releaseDensityGraph;
+        this.loadDensityGraphCache = loadDensityGraphCache;
+        this.saveDensityGraphCache = saveDensityGraphCache;
     }
 
     public static NativeRuntime load(Path libraryPath) throws IOException {
@@ -281,6 +286,12 @@ public final class NativeRuntime implements AutoCloseable {
             MethodHandle releaseDensityGraph = linker.downcallHandle(
                     lookup.find("jpe_runtime_density_graph_release").orElseThrow(() -> new IllegalStateException("Missing density graph release symbol")),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG));
+            MethodHandle loadDensityGraphCache = linker.downcallHandle(
+                    lookup.find("jpe_runtime_density_graph_load_cache").orElseThrow(() -> new IllegalStateException("Missing native density cache load symbol")),
+                    FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+            MethodHandle saveDensityGraphCache = linker.downcallHandle(
+                    lookup.find("jpe_runtime_density_graph_save_cache").orElseThrow(() -> new IllegalStateException("Missing native density cache save symbol")),
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
 
             int actual = (int) version.invokeExact();
             if (actual != EXPECTED_ABI_VERSION) {
@@ -290,7 +301,8 @@ public final class NativeRuntime implements AutoCloseable {
             int actualWorkers = (int) configureWorkers.invokeExact(requestedWorkers);
             if (actualWorkers < 1) throw new IllegalStateException("Unable to configure native workers: " + actualWorkers);
             return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, perlinStack, submit, submitStack, status, wait, cancel, release,
-                    compileDensityGraph, evaluateDensityGraph, releaseDensityGraph);
+                    compileDensityGraph, evaluateDensityGraph, releaseDensityGraph,
+                    loadDensityGraphCache, saveDensityGraphCache);
         } catch (Throwable failure) {
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
         }
@@ -322,18 +334,73 @@ public final class NativeRuntime implements AutoCloseable {
      * Java DensityFunction capture supplier: it reads the persisted IR and uploads it
      * once to the native runtime. Keep the returned executable alive for worldgen.
      */
+    /**
+     * Startup/pre-world-creation preparation. First try loading the persisted native
+     * plan directly in C++; only a cache miss invokes Java graph capture and FFM node
+     * serialization. The returned handle is ready to execute during world generation.
+     */
     public PreparedDensityGraph prepareDensityGraph(Path cacheDirectory, String cacheKey,
                                                      Supplier<DensityGraphIr> capture,
                                                      boolean experimental) throws IOException {
+        Objects.requireNonNull(cacheDirectory, "cacheDirectory");
+        Objects.requireNonNull(cacheKey, "cacheKey");
         Objects.requireNonNull(capture, "capture");
+        if (cacheKey.isBlank()) throw new IllegalArgumentException("Density graph cache key must not be blank");
+        String modeKey = cacheKey + (experimental ? "|jpe-mode=experimental" : "|jpe-mode=strict");
+        Files.createDirectories(cacheDirectory);
+        Path nativeFile = DensityGraphCache.nativeCachePath(cacheDirectory, modeKey);
+        lifecycle.readLock().lock();
+        try {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment pathSegment = arena.allocateFrom(nativeFile.toAbsolutePath().normalize().toString());
+                MemorySegment keySegment = arena.allocateFrom(modeKey);
+                long cachedHandle = (long) loadDensityGraphCache.invokeExact(pathSegment, keySegment);
+                if (cachedHandle != 0L) {
+                    NativeDensityGraph executable = new NativeDensityGraph(this, cachedHandle);
+                    densityGraphs.add(executable);
+                    return new PreparedDensityGraph(executable, true, nativeFile, -1, -1);
+                }
+            } catch (Throwable failure) {
+                throw rethrow("Unable to load persistent native density plan", failure);
+            }
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+
         DensityGraphCache.LoadResult loaded = DensityGraphCache.loadOrBuild(
-                cacheDirectory, cacheKey, capture);
+                cacheDirectory, modeKey, capture);
         NativeDensityGraph executable = experimental
                 ? compileDensityGraphExperimental(loaded.graph())
                 : compileDensityGraph(loaded.graph());
+        try {
+            lifecycle.readLock().lock();
+            try {
+                ensureOpen();
+                try (Arena arena = Arena.ofConfined()) {
+                    MemorySegment pathSegment = arena.allocateFrom(nativeFile.toAbsolutePath().normalize().toString());
+                    MemorySegment keySegment = arena.allocateFrom(modeKey);
+                    int status = (int) saveDensityGraphCache.invokeExact(
+                            executable.handle, pathSegment, keySegment);
+                    if (status != 0) {
+                        throw new IOException("Native density plan cache save failed with status " + status);
+                    }
+                } catch (IOException failure) {
+                    throw failure;
+                } catch (Throwable failure) {
+                    throw rethrow("Unable to persist native density plan", failure);
+                }
+            } finally {
+                lifecycle.readLock().unlock();
+            }
+        } catch (Throwable failure) {
+            executable.close();
+            if (failure instanceof IOException io) throw io;
+            throw failure;
+        }
         int opaqueCount = (int) loaded.graph().nodes().stream()
                 .filter(node -> node.opcode() == DensityGraphIr.OPAQUE).count();
-        return new PreparedDensityGraph(executable, loaded.cacheHit(), loaded.cacheFile(),
+        return new PreparedDensityGraph(executable, loaded.cacheHit(), nativeFile,
                 loaded.graph().nodes().size(), opaqueCount);
     }
 
