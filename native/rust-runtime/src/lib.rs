@@ -49,7 +49,7 @@ unsafe extern "C" {
         size_x: u32, size_y: u32, size_z: u32,
         min_x: i32, min_y: i32, min_z: i32,
         step_x: i32, step_y: i32, step_z: i32,
-        output: *mut f64, output_length: u64,
+        output: *mut f32, output_length: u64,
     ) -> i32;
     fn jpe_runtime_density_graph_release(graph_handle: u64) -> i32;
 }
@@ -552,7 +552,7 @@ mod tests {
         assert_ne!(first, 0);
         assert_eq!(first, second, "identical graph/config should reuse the cached handle");
 
-        let mut output = [0.0_f64; 4];
+        let mut output = [0.0_f32; 4];
         assert_eq!(unsafe {
             jpe_runtime_density_graph_evaluate(
                 first, 2, 2, 1, 10, 3, 0, 1, 1, 1,
@@ -597,7 +597,7 @@ mod tests {
             jpe_runtime_density_graph_compile(valid.as_ptr(), 1, 0, 7)
         };
         assert_ne!(handle, 0);
-        let mut output = [0.0_f64; 1];
+        let mut output = [0.0_f32; 1];
         assert_eq!(unsafe {
             jpe_runtime_density_graph_evaluate(
                 handle, 1, 1, 1, 0, 0, 0, 0, 1, 1,
