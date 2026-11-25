@@ -319,3 +319,14 @@ This is now a native execution primitive and Java bridge API, not yet a Minecraf
 The first adapter is intentionally conservative: it accepts only islands with exactly one output because the current native graph ABI has a single output root. Multi-output islands are rejected rather than silently dropping values or recomputing shared subgraphs. The diagnostic capture path now attempts this lowering and reports how many islands are lowerable. It does not compile or execute them; configuration fingerprint zero is a diagnostic placeholder and is not a valid persistent worldgen cache identity.
 
 The adapter still requires a runtime provider for each external sampler volume, exact matching of Minecraft's sampler volume/context/cache lifetime, and Java-vs-native bitwise comparison before worldgen execution can be enabled.
+
+
+## Multi-output arithmetic-island execution
+
+The native density graph bridge now exposes an additive multi-output entry point. It accepts an ordered list of graph node indices and writes output-major volumes in one evaluation pass. The graph's shared intermediate nodes are evaluated once per tile, even when several output roots depend on them. The legacy single-root entry points remain available and delegate to the same evaluator.
+
+The Java lowering result retains every source output in stable island order and maps each output to its lowered native node index. Its batch execution helper passes all roots to `NativeDensityGraph.evaluateMultiWithInputs`, so callers can obtain all island outputs without recompiling or evaluating the graph separately for each root.
+
+The bridge limits each volume to 1,048,576 samples, each input/output count to 256, and combined external-input plus output staging to 16,777,216 float values (64 MiB). Java validates array lengths and the same combined budget before copying; Rust and C++ validate the ABI arguments again. Output layout is output-major: `outputs[rootIndex * volumeLength + sampleIndex]`. This is still a synchronous FFM staging path, not zero-copy access to Java heap arrays.
+
+This primitive and its tests do not yet prove that Minecraft's live `DensitySampler` graph is executing natively. The sampler boundary providers, cache-cell semantics, context binding, and exact Java-vs-native volume parity still need to be connected and verified before world generation can use this path.
