@@ -1970,7 +1970,7 @@ mod tests {
     #[test]
     fn density_graph_evaluates_multiple_shared_roots_in_one_pass() {
         let nodes = [
-            JpeDensityNode { opcode: DENSITY_X, input_a: DENSITY_NO_INPUT,
+            JpeDensityNode { opcode: DENSITY_INPUT, input_a: DENSITY_NO_INPUT,
                 input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
             JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
                 input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 2.0 },
@@ -1980,26 +1980,27 @@ mod tests {
                 input_b: 1, reserved: 0, immediate: 0.0 },
         ];
         let handle = unsafe {
-            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 2 , 6, 0xA117)
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 2, 6, 0xA117)
         };
         assert_ne!(handle, 0);
+        let inputs = [10.0_f32, 20.0, 30.0, 40.0];
         let roots = [2_u32, 3_u32, 2_u32];
         let mut outputs = [0.0_f32; 12];
         assert_eq!(unsafe {
             jpe_runtime_density_graph_evaluate_multi_with_inputs(
                 handle, 2, 2, 1, 10, 3, 0, 1, 1, 1,
-                std::ptr::null(), 0, roots.as_ptr(), roots.len() as u32,
+                inputs.as_ptr(), 1, roots.as_ptr(), roots.len() as u32,
                 outputs.as_mut_ptr(), outputs.len() as u64,
             )
         }, STATUS_OK);
-        assert_eq!(&outputs[0..4], &[12.0, 12.0, 13.0, 13.0]);
-        assert_eq!(&outputs[4..8], &[8.0, 8.0, 9.0, 9.0]);
-        assert_eq!(&outputs[8..12], &[12.0, 12.0, 13.0, 13.0]);
+        assert_eq!(&outputs[0..4], &[12.0, 22.0, 32.0, 42.0]);
+        assert_eq!(&outputs[4..8], &[8.0, 18.0, 28.0, 38.0]);
+        assert_eq!(&outputs[8..12], &[12.0, 22.0, 32.0, 42.0]);
         let mut oversized = [0.0_f32; 11];
         assert_eq!(unsafe {
             jpe_runtime_density_graph_evaluate_multi_with_inputs(
                 handle, 2, 2, 1, 10, 3, 0, 1, 1, 1,
-                std::ptr::null(), 0, roots.as_ptr(), roots.len() as u32,
+                inputs.as_ptr(), 1, roots.as_ptr(), roots.len() as u32,
                 oversized.as_mut_ptr(), oversized.len() as u64,
             )
         }, STATUS_INVALID_ARGUMENT);
@@ -2007,12 +2008,11 @@ mod tests {
         assert_eq!(unsafe {
             jpe_runtime_density_graph_evaluate_multi_with_inputs(
                 handle, 2, 2, 1, 10, 3, 0, 1, 1, 1,
-                std::ptr::null(), 0, bad_roots.as_ptr(), bad_roots.len() as u32,
+                inputs.as_ptr(), 1, bad_roots.as_ptr(), bad_roots.len() as u32,
                 outputs.as_mut_ptr(), 8,
             )
-        }, 1);
+        }, STATUS_INVALID_ARGUMENT);
         assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
     }
-
 
 }

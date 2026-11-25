@@ -432,9 +432,9 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
         if (binding.input_index >= input_count) return 1;
     }
 
-    for (uint64_t tile_start = 0; tile_start < output_length; tile_start += tile_capacity) {
+    for (uint64_t tile_start = 0; tile_start < volume_length; tile_start += tile_capacity) {
         const uint32_t count = static_cast<uint32_t>(
-            std::min<uint64_t>(tile_capacity, output_length - tile_start));
+            std::min<uint64_t>(tile_capacity, volume_length - tile_start));
 
         const uint32_t z_start = static_cast<uint32_t>(tile_start / plane_size);
         const uint64_t within_plane = tile_start - static_cast<uint64_t>(z_start) * plane_size;
