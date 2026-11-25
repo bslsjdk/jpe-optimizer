@@ -15,7 +15,6 @@ import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
@@ -36,6 +35,42 @@ public final class DensityGraphCache {
     private static final int MAX_DIAGNOSTIC_TEXT = 8192;
 
     public record LoadResult(DensityGraphIr graph, boolean cacheHit, Path cacheFile) {}
+
+    /** Required semantic identity for safe cross-launch reuse. */
+    public record Identity(String minecraftVersion, String loaderVersion, String nativeBuild,
+                           String modSetFingerprint, String dimensionKey,
+                           long worldgenSettingsFingerprint, long registryFingerprint) {
+        public Identity {
+            Objects.requireNonNull(minecraftVersion, "minecraftVersion");
+            Objects.requireNonNull(loaderVersion, "loaderVersion");
+            Objects.requireNonNull(nativeBuild, "nativeBuild");
+            Objects.requireNonNull(modSetFingerprint, "modSetFingerprint");
+            Objects.requireNonNull(dimensionKey, "dimensionKey");
+            if (minecraftVersion.isBlank() || loaderVersion.isBlank() || nativeBuild.isBlank()
+                    || modSetFingerprint.isBlank() || dimensionKey.isBlank()) {
+                throw new IllegalArgumentException("Density cache identity text fields must not be blank");
+            }
+        }
+
+        /** Length-prefixed canonical encoding prevents delimiter collisions. */
+        public String stableKey() {
+            try {
+                ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                try (DataOutputStream out = new DataOutputStream(bytes)) {
+                    out.writeUTF(minecraftVersion);
+                    out.writeUTF(loaderVersion);
+                    out.writeUTF(nativeBuild);
+                    out.writeUTF(modSetFingerprint);
+                    out.writeUTF(dimensionKey);
+                    out.writeLong(worldgenSettingsFingerprint);
+                    out.writeLong(registryFingerprint);
+                }
+                return hex(sha256(bytes.toByteArray()));
+            } catch (IOException impossible) {
+                throw new IllegalStateException("Unable to encode density cache identity", impossible);
+            }
+        }
+    }
 
     private DensityGraphCache() {}
 
