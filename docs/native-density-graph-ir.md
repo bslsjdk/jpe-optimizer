@@ -434,3 +434,19 @@ The real-worldgen shadow verifier now visits every lowerable non-constant arithm
 ### Batched multi-island execution
 
 The shadow parity path validates candidate islands independently, then combines all lowerable disjoint islands into one Native graph with multiple output roots. External boundary samplers are deduplicated across the combined graph, so a shared source is sampled once and all island outputs are evaluated in one FFM/native dispatch. Opaque, cache, context, and short-circuit nodes remain boundaries; batching does not inline or reinterpret them. If combined lowering or execution fails, the verifier retries islands independently to retain fault isolation. The same 64 MiB aggregate input/output staging budget applies.
+
+### Native Blender density-volume engine
+
+The 26.3 Blender density operation now has a separate whole-volume C ABI entry point. The Java boundary adapter exposes only the two live Blender maps' raw BlendingData primitive columns plus their chunk and vertical-range metadata. It does not calculate quart coordinates, deduplicate points, build an index, search neighbors, compute weights, or interpolate densities.
+
+The C++ kernel owns those operations. It builds the fixed-density chunk lookup and the spatial index for old density points, applies the exact vanilla boundary fallback order, enumerates the same density columns and vertical sample ranges, performs radius-limited inverse-fourth-power weighting, and writes the complete output volume in DensityVolume.indexUnchecked order. The Java adapter copies raw arrays into a confined FFM arena for the duration of one synchronous call; this is still a measurable transfer cost and is not claimed to be zero-copy.
+
+Exactness constraints checked against the decompiled official and NeoForge-patched 26.3 artifacts:
+
+- Blender.blendDensity uses QuartPos.fromBlock, integer blockY / 8, fixed-density lookup, then density-map neighborhood blending.
+- getBlendingDataValue checks the owning chunk first, then the northwest, west, and north neighbors only when the query lies on the corresponding minimum boundary.
+- BlendingData.iterateDensities visits columns in array order and Y indices in ascending order. The Native snapshot preserves the Java map's iteration order and the C++ candidate list is restored to this ordinal order before accumulation.
+- Density coordinates use getX/getZ column mappings, getColumnMinY = getMinY + 1, and cellCountPerColumn = sectionCount * 2.
+- Distance and weighted accumulation are binary64, while density column scaling and final output remain float32. C++ is built with floating-point contraction disabled.
+
+The opt-in integration flags are -Djpe.nativeBlenderEnabled=true for Native output or -Djpe.verifyNativeBlenderParity=true for shadow comparison. Native output is not enabled by default. The GameTest jpe_optimizer:blender_native_parity compares raw float bits for fixed-density, weighted-neighborhood, negative-boundary, and a 225-sample patterned volume. Passing this fixture establishes those cases only; it does not yet establish whole-world speedup or complete sampler-graph execution. Full DensityFunction/Noise graph execution and block placement remain separate integration work.
