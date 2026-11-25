@@ -396,7 +396,7 @@ public final class NativeRuntime implements AutoCloseable {
         } catch (Throwable failure) {
             executable.close();
             if (failure instanceof IOException io) throw io;
-            throw failure;
+            throw rethrow("Unable to prepare persistent native density plan", failure);
         }
         int opaqueCount = (int) loaded.graph().nodes().stream()
                 .filter(node -> node.opcode() == DensityGraphIr.OPAQUE).count();
