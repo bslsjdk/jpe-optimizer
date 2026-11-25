@@ -7,7 +7,7 @@
 #include <limits>
 #include <vector>
 
-static_assert(sizeof(JpePerlinLayer) == 56, "JpePerlinLayer C ABI size mismatch");
+static_assert(sizeof(JpePerlinLayer) == 72, "JpePerlinLayer C ABI size mismatch");
 static_assert(alignof(JpePerlinLayer) == 8, "JpePerlinLayer C ABI alignment mismatch");
 static_assert(offsetof(JpePerlinLayer, permutation) == 0, "JpePerlinLayer.permutation offset mismatch");
 static_assert(offsetof(JpePerlinLayer, offset_x) == 8, "JpePerlinLayer.offset_x offset mismatch");
@@ -16,6 +16,9 @@ static_assert(offsetof(JpePerlinLayer, offset_z) == 24, "JpePerlinLayer.offset_z
 static_assert(offsetof(JpePerlinLayer, xz_scale) == 32, "JpePerlinLayer.xz_scale offset mismatch");
 static_assert(offsetof(JpePerlinLayer, y_scale) == 40, "JpePerlinLayer.y_scale offset mismatch");
 static_assert(offsetof(JpePerlinLayer, amplitude) == 48, "JpePerlinLayer.amplitude offset mismatch");
+static_assert(offsetof(JpePerlinLayer, fudge_y_scale) == 56, "JpePerlinLayer.fudge_y_scale offset mismatch");
+static_assert(offsetof(JpePerlinLayer, flags) == 64, "JpePerlinLayer.flags offset mismatch");
+static_assert(offsetof(JpePerlinLayer, reserved) == 68, "JpePerlinLayer.reserved offset mismatch");
 
 namespace {
 constexpr int kGradientX[16] = {1,-1,1,-1,1,-1,1,-1,0,0,0,0,1,0,-1,0};
@@ -100,7 +103,7 @@ bool validate_stack(
     if (expected != output_length
         || expected > static_cast<uint64_t>(std::numeric_limits<size_t>::max() / sizeof(float))) return false;
     for (uint32_t i = 0; i < layer_count; ++i) {
-        if (layers[i].permutation == nullptr) return false;
+        if (layers[i].permutation == nullptr || (layers[i].flags & ~1U) != 0U || layers[i].reserved != 0U) return false;
     }
     return true;
 }
@@ -158,14 +161,25 @@ extern "C" int32_t jpe_cpp_perlin_add_stack_fused(
             ws.x_lattice1[ix] = static_cast<int32_t>(permute_sum(layer.permutation, floor_x, 1));
         }
         for (uint32_t iy = 0; iy < size_y; ++iy) {
-            const double y = wrap_coordinate(
-                static_cast<double>(axis_coordinate(min_y, iy, step_y)) * layer.y_scale,
-                far_lands) + layer.offset_y;
+            const double original_y = static_cast<double>(axis_coordinate(min_y, iy, step_y)) * layer.y_scale;
+            const double y = wrap_coordinate(original_y, far_lands) + layer.offset_y;
             const int32_t floor_y = floor_to_i32(y);
-            const float relative_y = static_cast<float>(y - static_cast<double>(floor_y));
+            const double relative_y_double = y - static_cast<double>(floor_y);
+            const float relative_y = static_cast<float>(relative_y_double);
             ws.y_floors[iy] = floor_y;
-            ws.y_relative[iy] = relative_y;
+            // SmearedPerlin keeps the interpolation weight from the original Y,
+            // but shifts only the Y coordinate used by the gradient dot products.
             ws.y_alpha[iy] = smoothstep(relative_y);
+            if ((layer.flags & 1U) != 0U) {
+                const double fudge_limit = (original_y >= 0.0 && original_y < relative_y_double)
+                    ? original_y : relative_y_double;
+                const int32_t fudge_steps = floor_to_i32(
+                    fudge_limit / layer.fudge_y_scale + static_cast<double>(1.0E-7F));
+                const double fudge_y = static_cast<double>(fudge_steps) * layer.fudge_y_scale;
+                ws.y_relative[iy] = static_cast<float>(relative_y_double - fudge_y);
+            } else {
+                ws.y_relative[iy] = relative_y;
+            }
         }
     }
 
