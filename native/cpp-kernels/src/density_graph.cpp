@@ -3,6 +3,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
+#include <string>
+#include <algorithm>
 #include <memory>
 #include <limits>
 #include <mutex>
@@ -13,6 +16,39 @@ namespace {
 constexpr uint32_t kMaxNodes = 65536;
 constexpr uint64_t kMaxVolumeElements = 1024ULL * 1024ULL;
 constexpr uint32_t kNoInput = UINT32_MAX;
+
+constexpr uint32_t kCacheFormatVersion = 1;
+constexpr size_t kMaxCacheBytes = 16U * 1024U * 1024U;
+constexpr size_t kMaxCacheKeyBytes = 4096U;
+constexpr char kCacheMagic[8] = {'J','P','E','G','R','P','H','1'};
+
+void append_u32(std::vector<uint8_t>& out, uint32_t value) {
+    for (unsigned shift = 0; shift < 32; shift += 8) out.push_back(static_cast<uint8_t>(value >> shift));
+}
+void append_u64(std::vector<uint8_t>& out, uint64_t value) {
+    for (unsigned shift = 0; shift < 64; shift += 8) out.push_back(static_cast<uint8_t>(value >> shift));
+}
+bool read_u32(const std::vector<uint8_t>& data, size_t& offset, uint32_t& value) {
+    if (offset + 4 > data.size()) return false;
+    value = 0;
+    for (unsigned shift = 0; shift < 32; shift += 8) value |= static_cast<uint32_t>(data[offset++]) << shift;
+    return true;
+}
+bool read_u64(const std::vector<uint8_t>& data, size_t& offset, uint64_t& value) {
+    if (offset + 8 > data.size()) return false;
+    value = 0;
+    for (unsigned shift = 0; shift < 64; shift += 8) value |= static_cast<uint64_t>(data[offset++]) << shift;
+    return true;
+}
+uint64_t checksum64(const uint8_t* bytes, size_t length) noexcept {
+    uint64_t hash = 1469598103934665603ULL;
+    for (size_t i = 0; i < length; ++i) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
 
 struct CompiledGraph {
     uint64_t fingerprint = 0;
@@ -146,6 +182,105 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
     g_handles.emplace(handle, std::move(graph));
     g_cache.emplace(fingerprint, handle);
     return handle;
+} catch (...) { return 0; }
+
+
+extern "C" int32_t jpe_cpp_density_graph_save_cache(
+    uint64_t graph_handle, const char* path, const char* cache_key
+) try {
+    if (path == nullptr || cache_key == nullptr) return 1;
+    const size_t key_length = std::strlen(cache_key);
+    if (key_length == 0 || key_length > kMaxCacheKeyBytes) return 1;
+    std::shared_ptr<CompiledGraph> graph;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        const auto found = g_handles.find(graph_handle);
+        if (found == g_handles.end()) return 2;
+        graph = found->second;
+    }
+    std::vector<uint8_t> bytes;
+    bytes.reserve(40U + key_length + graph->nodes.size() * 24U);
+    bytes.insert(bytes.end(), kCacheMagic, kCacheMagic + sizeof(kCacheMagic));
+    append_u32(bytes, kCacheFormatVersion);
+    append_u32(bytes, graph->ir_version);
+    append_u64(bytes, graph->configuration_fingerprint);
+    append_u32(bytes, graph->root);
+    append_u32(bytes, static_cast<uint32_t>(graph->nodes.size()));
+    append_u32(bytes, static_cast<uint32_t>(key_length));
+    bytes.insert(bytes.end(), cache_key, cache_key + key_length);
+    for (const JpeDensityNode& node : graph->nodes) {
+        append_u32(bytes, node.opcode);
+        append_u32(bytes, node.input_a);
+        append_u32(bytes, node.input_b);
+        append_u32(bytes, node.reserved);
+        uint64_t immediate_bits;
+        std::memcpy(&immediate_bits, &node.immediate, sizeof(immediate_bits));
+        append_u64(bytes, immediate_bits);
+    }
+    append_u64(bytes, checksum64(bytes.data(), bytes.size()));
+    if (bytes.size() > kMaxCacheBytes) return 1;
+    const std::string temporary = std::string(path) + ".tmp";
+    {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        if (!output) return 3;
+        output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        output.flush();
+        if (!output) return 3;
+    }
+    if (std::rename(temporary.c_str(), path) != 0) {
+        std::remove(temporary.c_str());
+        return 3;
+    }
+    return 0;
+} catch (...) { return 3; }
+
+extern "C" uint64_t jpe_cpp_density_graph_load_cache(
+    const char* path, const char* cache_key
+) try {
+    if (path == nullptr || cache_key == nullptr) return 0;
+    const size_t key_length = std::strlen(cache_key);
+    if (key_length == 0 || key_length > kMaxCacheKeyBytes) return 0;
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input) return 0;
+    const std::streamoff file_size = input.tellg();
+    if (file_size < 48 || static_cast<uint64_t>(file_size) > kMaxCacheBytes) return 0;
+    std::vector<uint8_t> bytes(static_cast<size_t>(file_size));
+    input.seekg(0);
+    input.read(reinterpret_cast<char*>(bytes.data()), file_size);
+    if (!input || bytes.size() < 8U + 4U + 4U + 8U + 4U + 4U + 4U + 8U) return 0;
+    const size_t payload_length = bytes.size() - 8U;
+    size_t checksum_offset = payload_length;
+    uint64_t stored_checksum = 0;
+    if (!read_u64(bytes, checksum_offset, stored_checksum)
+        || stored_checksum != checksum64(bytes.data(), payload_length)) return 0;
+    if (std::memcmp(bytes.data(), kCacheMagic, sizeof(kCacheMagic)) != 0) return 0;
+    size_t offset = sizeof(kCacheMagic);
+    uint32_t format = 0, ir_version = 0, root = 0, count = 0, stored_key_length = 0;
+    uint64_t configuration = 0;
+    if (!read_u32(bytes, offset, format) || format != kCacheFormatVersion
+        || !read_u32(bytes, offset, ir_version)
+        || !read_u64(bytes, offset, configuration)
+        || !read_u32(bytes, offset, root)
+        || !read_u32(bytes, offset, count)
+        || !read_u32(bytes, offset, stored_key_length)) return 0;
+    if (stored_key_length != key_length || offset + stored_key_length > payload_length
+        || std::memcmp(bytes.data() + offset, cache_key, key_length) != 0) return 0;
+    offset += stored_key_length;
+    if (count == 0 || count > kMaxNodes
+        || static_cast<uint64_t>(count) * 24ULL > payload_length - offset) return 0;
+    std::vector<JpeDensityNode> nodes(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        uint64_t immediate_bits = 0;
+        JpeDensityNode& node = nodes[i];
+        if (!read_u32(bytes, offset, node.opcode)
+            || !read_u32(bytes, offset, node.input_a)
+            || !read_u32(bytes, offset, node.input_b)
+            || !read_u32(bytes, offset, node.reserved)
+            || !read_u64(bytes, offset, immediate_bits)) return 0;
+        std::memcpy(&node.immediate, &immediate_bits, sizeof(immediate_bits));
+    }
+    if (offset != payload_length || ir_version != 1 || !valid_graph(nodes.data(), count, root)) return 0;
+    return jpe_cpp_density_graph_compile(nodes.data(), count, root, ir_version, configuration);
 } catch (...) { return 0; }
 
 extern "C" int32_t jpe_cpp_density_graph_evaluate(
