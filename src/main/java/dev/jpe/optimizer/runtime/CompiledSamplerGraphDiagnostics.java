@@ -1,5 +1,7 @@
 package dev.jpe.optimizer.runtime;
 
+import java.util.EnumMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import net.minecraft.world.level.levelgen.densityfunction.DensitySampler;
 
@@ -10,6 +12,7 @@ public final class CompiledSamplerGraphDiagnostics {
     private static final AtomicBoolean CAPTURED = new AtomicBoolean();
     private static final boolean ENABLED = Boolean.getBoolean("jpe.traceCompiledSamplers");
     private static volatile CompiledSamplerGraphTrace.Snapshot lastSnapshot;
+    private static volatile CompiledSamplerGraphIr.Graph lastGraph;
 
     private CompiledSamplerGraphDiagnostics() {}
 
@@ -27,13 +30,21 @@ public final class CompiledSamplerGraphDiagnostics {
             CompiledSamplerGraphTrace.Snapshot snapshot =
                     CompiledSamplerGraphTrace.capture(sampler, DensitySampler.class::isInstance, 65_536);
             lastSnapshot = snapshot;
+            CompiledSamplerGraphIr.Graph graph = CompiledSamplerGraphIr.lower(snapshot);
+            lastGraph = graph;
+            EnumMap<CompiledSamplerGraphIr.Op, Integer> counts =
+                    new EnumMap<>(CompiledSamplerGraphIr.Op.class);
+            for (CompiledSamplerGraphIr.Node node : graph.nodes()) {
+                counts.merge(node.op(), 1, Integer::sum);
+            }
             LOGGER.log(System.Logger.Level.INFO,
-                    "Compiled sampler graph inventory: nodes={0}, dropped={1}, root={2}",
-                    snapshot.nodes().size(), snapshot.droppedNodes(), snapshot.rootId());
-            for (CompiledSamplerGraphTrace.NodeInfo node : snapshot.nodes()) {
+                    "Compiled sampler graph inventory: nodes={0}, dropped={1}, root={2}, ops={3}",
+                    snapshot.nodes().size(), snapshot.droppedNodes(), snapshot.rootId(), counts);
+            for (CompiledSamplerGraphIr.Node node : graph.nodes()) {
                 LOGGER.log(System.Logger.Level.DEBUG,
-                        "sampler[{0}] {1} children={2} values={3} limitation={4}",
-                        node.id(), node.implementation(), node.children(), node.values(), node.limitation());
+                        "sampler[{0}] op={1} source={2} children={3} values={4} note={5}",
+                        node.id(), node.op(), node.sourceClass(), node.children(),
+                        node.scalarValues(), node.note());
             }
         } catch (RuntimeException | LinkageError failure) {
             LOGGER.log(System.Logger.Level.WARNING,
@@ -44,5 +55,9 @@ public final class CompiledSamplerGraphDiagnostics {
 
     public static CompiledSamplerGraphTrace.Snapshot lastSnapshot() {
         return lastSnapshot;
+    }
+
+    public static CompiledSamplerGraphIr.Graph lastGraph() {
+        return lastGraph;
     }
 }
