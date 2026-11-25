@@ -35,7 +35,7 @@ jobs:
         run: |
           mkdir -p build/native-perlin
           set -o pipefail
-          cargo test --release --manifest-path native/rust-runtime/Cargo.toml -- --nocapture 2>&1 | tee build/native-perlin/native-tests.log
+          cargo test --release --features density-graph-benchmark --manifest-path native/rust-runtime/Cargo.toml -- --nocapture 2>&1 | tee build/native-perlin/native-tests.log
 
       - name: Build native runtime
         run: cargo build --release --manifest-path native/rust-runtime/Cargo.toml
