@@ -456,7 +456,7 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
         }
 
         for (const InputBinding& binding : graph->inputs) {
-            const float* source = inputs + static_cast<uint64_t>(binding.input_index) * output_length + tile_start;
+            const float* source = inputs + static_cast<uint64_t>(binding.input_index) * volume_length + tile_start;
             float* destination = tile_values.data() + static_cast<size_t>(binding.node) * tile_capacity;
             std::copy_n(source, count, destination);
         }
