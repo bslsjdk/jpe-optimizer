@@ -118,6 +118,7 @@ The bytecode audit confirms that the main compiled arithmetic samplers are Java 
 
 The sampler diagnostic now lowers the captured inventory into `CompiledSamplerGraphIr`, with explicit classes for:
 
+- the exact `ConstantFunction$Sampler` float32 constant leaf (its `value` component is retained as a float scalar);
 - ADD and SUB;
 - MUL and DIV with the audited left-zero short-circuit semantics;
 - MIN/MAX with their precomputed right-side bounds;
