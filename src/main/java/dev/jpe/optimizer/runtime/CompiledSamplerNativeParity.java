@@ -10,7 +10,9 @@ import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
 public final class CompiledSamplerNativeParity {
     public record Report(int outputCount, int samplesPerOutput, long comparedValues,
                          long mismatches, int firstOutputIndex, int firstSampleIndex,
-                         int expectedBits, int actualBits) {
+                         int expectedBits, int actualBits,
+                         long externalInputNanos, long nativeEvaluateNanos,
+                         long javaReferenceNanos, long compareNanos) {
         public boolean exact() { return mismatches == 0; }
     }
 
@@ -57,16 +59,22 @@ public final class CompiledSamplerNativeParity {
         }
 
         Objects.requireNonNull(externalInputs, "externalInputs");
+        long inputStarted = System.nanoTime();
         float[][] inputs = externalInputs.resolve(captured, island);
+        long externalInputNanos = System.nanoTime() - inputStarted;
         long outputStaging = Math.addExact(priorOutputFloats, outputFloats);
         if (Math.addExact(externalInputs.stagedFloatCount(), outputStaging) > 16_777_216L) {
             throw new IllegalArgumentException("Combined multi-island parity staging exceeds the 64 MiB budget");
         }
         float[][] actual = new float[island.outputSourceNodeIds().size()][];
         for (int i = 0; i < actual.length; ++i) actual[i] = new float[sampleCount];
+        long nativeStarted = System.nanoTime();
         island.evaluate(executable, sizeX, sizeY, sizeZ,
                 minX, minY, minZ, stepX, stepY, stepZ, inputs, actual);
+        long nativeEvaluateNanos = System.nanoTime() - nativeStarted;
 
+        long javaReferenceNanos = 0L;
+        long compareNanos = 0L;
         long compared = 0;
         long mismatches = 0;
         int firstOutput = -1;
@@ -79,8 +87,11 @@ public final class CompiledSamplerNativeParity {
                 throw new IllegalArgumentException("Island output is not a DensitySampler");
             }
             DensityBuffer expectedBuffer = DensityBuffer.createUnpooled(sampleCount);
+            long javaStarted = System.nanoTime();
             sampler.sampleVolume(bound.context(), expectedBuffer, volume);
+            javaReferenceNanos += System.nanoTime() - javaStarted;
             float[] expected = ((DensityBufferAccessor) expectedBuffer).jpe$values();
+            long compareStarted = System.nanoTime();
             for (int sample = 0; sample < sampleCount; ++sample) {
                 int expectedValue = Float.floatToRawIntBits(expected[sample]);
                 int actualValue = Float.floatToRawIntBits(actual[output][sample]);
@@ -95,8 +106,10 @@ public final class CompiledSamplerNativeParity {
                     ++mismatches;
                 }
             }
+            compareNanos += System.nanoTime() - compareStarted;
         }
         return new Report(actual.length, sampleCount, compared, mismatches,
-                firstOutput, firstSample, expectedBits, actualBits);
+                firstOutput, firstSample, expectedBits, actualBits,
+                externalInputNanos, nativeEvaluateNanos, javaReferenceNanos, compareNanos);
     }
 }
