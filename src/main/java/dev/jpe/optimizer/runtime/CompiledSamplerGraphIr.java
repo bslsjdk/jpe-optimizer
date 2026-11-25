@@ -31,13 +31,19 @@ public final class CompiledSamplerGraphIr {
     }
 
     public record Node(int id, Op op, String sourceClass, List<Integer> children,
+                       List<CompiledSamplerGraphTrace.ChildEdge> childEdges,
                        Map<String, String> scalarValues, String note) {
         public Node {
             children = List.copyOf(children);
+            childEdges = List.copyOf(childEdges);
             scalarValues = Map.copyOf(scalarValues);
             Objects.requireNonNull(op, "op");
             Objects.requireNonNull(sourceClass, "sourceClass");
             Objects.requireNonNull(note, "note");
+        }
+        public Node(int id, Op op, String sourceClass, List<Integer> children,
+                    Map<String, String> scalarValues, String note) {
+            this(id, op, sourceClass, children, List.of(), scalarValues, note);
         }
     }
 
@@ -71,7 +77,7 @@ public final class CompiledSamplerGraphIr {
                         ? "No exact sampler lowering registered" : source.limitation();
                 default -> "Compiled sampler operation identified; exact native execution still requires parity tests";
             };
-            nodes.add(new Node(source.id(), op, name, source.children(), values, note));
+            nodes.add(new Node(source.id(), op, name, source.children(), source.childEdges(), values, note));
         }
         return new Graph(nodes, snapshot.rootId(), snapshot.droppedNodes());
     }
