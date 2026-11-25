@@ -69,10 +69,23 @@ public final class DensityGraphIr {
         this.rootNode = rootNode;
         this.configurationFingerprint = configurationFingerprint;
         validateTopologicalOrder(this.nodes);
+        boolean[] diagnosed = new boolean[this.nodes.size()];
         for (Diagnostic diagnostic : this.diagnostics) {
-            if (diagnostic.nodeIndex() >= this.nodes.size()
-                    || this.nodes.get(diagnostic.nodeIndex()).opcode() != OPAQUE) {
+            int nodeIndex = diagnostic.nodeIndex();
+            if (nodeIndex >= this.nodes.size() || this.nodes.get(nodeIndex).opcode() != OPAQUE) {
                 throw new IllegalArgumentException("Diagnostic must reference an OPAQUE node");
+            }
+            if (diagnosed[nodeIndex]) {
+                throw new IllegalArgumentException("OPAQUE node must not have duplicate diagnostics");
+            }
+            diagnosed[nodeIndex] = true;
+            Node opaque = this.nodes.get(nodeIndex);
+            List<Integer> children = diagnostic.childIndices();
+            int expectedA = children.isEmpty() ? NO_INPUT : children.get(0);
+            int expectedB = children.size() < 2 ? NO_INPUT : children.get(1);
+            if (opaque.inputA() != expectedA || opaque.inputB() != expectedB) {
+                throw new IllegalArgumentException(
+                        "OPAQUE node inputs must match the first two diagnostic dependencies");
             }
         }
     }
