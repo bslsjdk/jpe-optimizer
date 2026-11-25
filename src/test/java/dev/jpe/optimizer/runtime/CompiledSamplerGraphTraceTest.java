@@ -156,7 +156,7 @@ class CompiledSamplerGraphTraceTest {
         assertEquals("input", snapshot.nodes().get(0).childEdges().get(0).componentName());
         assertEquals(CompiledSamplerGraphIr.Op.CACHE_BOUNDARY, graph.nodes().get(0).op());
         assertEquals(CompiledSamplerGraphIr.Op.OPAQUE, graph.nodes().get(1).op());
-        assertEquals(1, CompiledSamplerArithmeticIslands.plan(graph).boundaryNodeCount());
+        assertEquals(2, CompiledSamplerArithmeticIslands.plan(graph).boundaryNodeCount());
     }
 
     @Test
