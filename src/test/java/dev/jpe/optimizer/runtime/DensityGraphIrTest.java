@@ -24,6 +24,18 @@ class DensityGraphIrTest {
     }
 
     @Test
+    void acceptsSubtractionOpcode() {
+        DensityGraphIr graph = new DensityGraphIr(List.of(
+                DensityGraphIr.Node.x(),
+                DensityGraphIr.Node.constant(3.5),
+                DensityGraphIr.Node.subtract(0, 1)
+        ), 2, 0x5ABL);
+
+        assertEquals(DensityGraphIr.SUB, graph.nodes().get(2).opcode());
+        assertEquals(4, DensityGraphIr.VERSION);
+    }
+
+    @Test
     void rejectsForwardReferences() {
         assertThrows(IllegalArgumentException.class, () -> new DensityGraphIr(List.of(
                 DensityGraphIr.Node.add(1, 0),
