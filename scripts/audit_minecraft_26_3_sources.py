@@ -466,6 +466,20 @@ def bytecode_inspection(vanilla_jar: Path, patched_jar: Path) -> list[str]:
         "net.minecraft.world.level.levelgen.densityfunction.DensitySampler$Bound",
         "net.minecraft.world.level.levelgen.densityfunction.ContextBoundSampler",
         "net.minecraft.world.level.levelgen.densityfunction.CachingDensitySampler",
+        "net.minecraft.world.level.levelgen.densityfunction.DensityFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.DensityFunctions",
+        "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.op.CacheFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.op.ClampFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.op.LerpFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.op.RangeChoiceFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.op.InterpolatedFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.op.BlendDensityFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.generator.ConstantFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.generator.NoiseFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.generator.ShiftNoiseFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.generator.DistanceToPointFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.generator.GradientFunction",
     ]
     lines: list[str] = []
     for label, archive in (("MOJANG_VANILLA", vanilla_jar), ("NEOFORGE_PATCHED", patched_jar)):
