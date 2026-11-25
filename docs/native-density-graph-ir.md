@@ -222,3 +222,17 @@ at evaluation. IR v1 plans are not compatible and must be rebuilt under the v2
 cache identity. This is not yet a claim of full vanilla parity: each supported
 operation and noise implementation still requires comparison against the exact
 26.3 runtime.
+
+
+### Opaque n-ary dependency preservation (IR v3)
+
+Experimental OPAQUE nodes may represent runtime functions with more than two
+children, such as composite or spline-backed functions. The fixed-size native
+node record keeps only the first two dependency slots for ABI compatibility,
+because the current OPAQUE evaluator returns a diagnostic NaN sentinel rather
+than claiming to evaluate unknown semantics. The Java IR diagnostic sidecar now
+retains every child node index in source order, including dependencies beyond
+the two native slots. The persistent Java IR cache format is v2 and stores this
+metadata; the IR version is v3 so old cache entries are invalidated. This
+preserves the complete observed dependency list for later adapter development
+without pretending the native sentinel evaluates the unknown operation.
