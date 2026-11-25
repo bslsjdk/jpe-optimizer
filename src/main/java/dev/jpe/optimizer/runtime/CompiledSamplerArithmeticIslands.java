@@ -108,6 +108,9 @@ public final class CompiledSamplerArithmeticIslands {
     private static boolean isEligible(CompiledSamplerGraphIr.Op op) {
         return op == CompiledSamplerGraphIr.Op.CONSTANT
                 || op == CompiledSamplerGraphIr.Op.ADD
-                || op == CompiledSamplerGraphIr.Op.SUB;
+                || op == CompiledSamplerGraphIr.Op.SUB
+                || op == CompiledSamplerGraphIr.Op.CONST_ADD_RIGHT
+                || op == CompiledSamplerGraphIr.Op.CONST_SUB_LEFT
+                || op == CompiledSamplerGraphIr.Op.CONST_MUL_RIGHT;
     }
 }
