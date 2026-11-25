@@ -10,6 +10,7 @@
 #include <array>
 #include <memory>
 #include <limits>
+#include <cmath>
 #include <stdexcept>
 #include <mutex>
 #include <unordered_map>
@@ -230,7 +231,7 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
     const JpeDensityNode* nodes, uint32_t node_count, uint32_t root_node,
     uint32_t ir_version, uint64_t configuration_fingerprint
 ) try {
-    if (ir_version != 4 || !valid_graph(nodes, node_count, root_node)) return 0;
+    if (ir_version != 5 || !valid_graph(nodes, node_count, root_node)) return 0;
     const uint64_t fingerprint = hash_graph(nodes, node_count, root_node, ir_version, configuration_fingerprint);
     std::lock_guard<std::mutex> lock(g_mutex);
     const auto range = g_cache.equal_range(fingerprint);
