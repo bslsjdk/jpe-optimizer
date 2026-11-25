@@ -35,6 +35,7 @@ jobs:
               - 'gradle/**'
               - 'gradle.properties'
               - 'scripts/audit_minecraft_26_3_sources.py'
+              - '.github/workflows/ci.yml'
 
       - name: Set up Java 25
         if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
@@ -81,7 +82,7 @@ jobs:
       - name: GameTest correctness suite
         if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         env:
-          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.perlinVectorEnabled=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=true -Djpe.nativePerlinEnabled=true -Djpe.paletteHashEnabled=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so -Djpe.verifyCompiledSamplerParity=true
+          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.perlinVectorEnabled=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=true -Djpe.nativePerlinEnabled=true -Djpe.paletteHashEnabled=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
         run: |
           mkdir -p build/gametest
           set +e
@@ -91,12 +92,6 @@ jobs:
           # Preserve the GameTest server log before later benchmark runs recreate run/.
           if [ -d run/logs ]; then
             cp -a run/logs build/gametest/
-          fi
-          if [ "$test_status" -eq 0 ]; then
-            if ! grep -R -F 'JPE_NATIVE_SAMPLER_PARITY exact=true' build/gametest/logs; then
-              echo "Expected exact Native sampler parity result was not found in GameTest logs"
-              test_status=1
-            fi
           fi
           exit "$test_status"
 
@@ -125,6 +120,34 @@ jobs:
           grep -F 'JPE_CLIMATE_TARGET_ARRAY_REUSE enabled=true' build/climate-rtree-benchmark/overworld.log
           grep 'JPE_CLIMATE_RTREE_REAL points=' build/climate-rtree-benchmark/overworld.log
           test "$(grep -c 'JPE_CLIMATE_RTREE_REAL fanOut=' build/climate-rtree-benchmark/overworld.log)" -eq 6
+
+      - name: Real compiled-sampler Native parity during overworld generation
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          mkdir -p build/sampler-parity
+          rm -rf run
+          mkdir -p run
+          printf 'eula=true\\n' > run/eula.txt
+          cat > run/server.properties <<'PROPERTIES'
+          level-seed=12648430
+          level-type=minecraft:normal
+          generate-structures=true
+          online-mode=false
+          server-ip=127.0.0.1
+          server-port=25566
+          enable-query=false
+          enable-rcon=false
+          spawn-protection=0
+          view-distance=8
+          simulation-distance=6
+          max-tick-time=-1
+          sync-chunk-writes=false
+          PROPERTIES
+          set -o pipefail
+          env JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector -Djpe.forceScalar=true -Djpe.benchmark.ticksPerColumn=22 -Djpe.continuousWorldgenBenchmark=true -Djpe.verifyCompiledSamplerParity=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so -Djpe.perlinVectorEnabled=false" \
+            gradle runServer --no-daemon --stacktrace 2>&1 | tee build/sampler-parity/overworld.log
+          grep -F 'JPE_NATIVE_SAMPLER_PARITY exact=true' build/sampler-parity/overworld.log
+          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*completedChunks=340.*failedChunks=0' build/sampler-parity/overworld.log
 
       - name: Dedicated continuous run-worldgen benchmark (scalar/vector ABBA, four fresh servers)
         if: github.event_name == 'workflow_dispatch'
