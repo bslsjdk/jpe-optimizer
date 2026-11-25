@@ -344,3 +344,10 @@ A short-lived `CompiledSamplerGraphTrace.CapturedGraph` now retains the exact so
 The helper samples each distinct external sampler identity at most once for its lifetime, shares the resulting float array among island consumers, and enforces a 64 MiB input staging cap. A new helper must be created for each exact `DensitySampler.Bound` and `DensityVolume` pair. The convenience `evaluate` method then submits those full-volume inputs and all island roots through the multi-output native API.
 
 This is the first real bridge from captured compiled-sampler nodes to live Minecraft-produced input volumes. It is not yet wired into `NoiseBasedChunkGenerator.doFill`; doing so safely still requires a runtime library lifecycle, a nonzero world/settings graph fingerprint, output parity checks against the original Java samplers, and a fail-closed experimental switch before any block placement consumes native results.
+
+
+## Full-volume sampler parity verifier
+
+`CompiledSamplerNativeParity.verify` is an opt-in diagnostic harness for a lowered arithmetic island. It resolves all external inputs through the live `DensitySampler.Bound` context, executes every native output in one call, then evaluates each original Java output sampler into an unpooled `DensityBuffer`. It compares every sample with `Float.floatToRawIntBits`, reporting the first mismatch and total mismatch count.
+
+The verifier refuses combined input/output staging above 64 MiB and never changes block placement or the final-density buffer. A successful result proves bitwise parity only for the specific sampler instances, context, volume, and inputs tested. It does not prove parity for other seeds, dimensions, mods, or branches, and it does not itself enable native world generation.
