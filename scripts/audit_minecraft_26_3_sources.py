@@ -443,7 +443,21 @@ def source_inspection(vanilla_root: Path, patched_root: Path) -> list[str]:
                 source = path.read_text(encoding="utf-8", errors="replace")
                 blocks = extract_method_blocks(source, methods)
                 lines.append(f"--- {filename}: {len(blocks)} selected methods ---")
-                lines.extend(blocks or ["(no selected declarations matched)"])
+                if not blocks:
+                    lines.append("(no selected declarations matched)")
+                    if filename in {
+                        "NoiseBasedChunkGenerator.java",
+                        "NoiseChunk.java",
+                        "DensityFunctionCompiler.java",
+                        "DensitySampler.java",
+                        "DensityVolume.java",
+                        "SamplerContext.java",
+                    }:
+                        raise RuntimeError(
+                            f"Critical source audit extracted zero method bodies from {label}/{filename}"
+                        )
+                else:
+                    lines.extend(blocks)
     return lines
 
 
