@@ -22,6 +22,8 @@ public final class WorldgenMetrics {
     private static final LongAdder SAMPLED_AQUIFER_NANOS = new LongAdder();
     private static final LongAdder SAMPLED_PLACEMENT_NANOS = new LongAdder();
     private static final LongAdder TIMING_SAMPLE_COUNT = new LongAdder();
+    private static final LongAdder AQUIFER_CALLS_EXECUTED = new LongAdder();
+    private static final LongAdder AQUIFER_CALLS_SKIPPED = new LongAdder();
 
     public record Snapshot(long calls, long densitySampleNanos, long blockFillNanos, long samples,
                            long sampledAquiferNanos, long sampledPlacementNanos, long timingSamples,
@@ -53,7 +55,8 @@ public final class WorldgenMetrics {
     }
 
     public static void record(long densitySampleNanos, long blockFillNanos, int sampleCount,
-                              long sampledAquiferNanos, long sampledPlacementNanos, long timingSampleCount) {
+                              long sampledAquiferNanos, long sampledPlacementNanos, long timingSampleCount,
+                              long aquiferCallsExecuted, long aquiferCallsSkipped) {
         if (!ENABLED) {
             return;
         }
@@ -64,6 +67,8 @@ public final class WorldgenMetrics {
         SAMPLED_AQUIFER_NANOS.add(sampledAquiferNanos);
         SAMPLED_PLACEMENT_NANOS.add(sampledPlacementNanos);
         TIMING_SAMPLE_COUNT.add(timingSampleCount);
+        AQUIFER_CALLS_EXECUTED.add(aquiferCallsExecuted);
+        AQUIFER_CALLS_SKIPPED.add(aquiferCallsSkipped);
 
         long calls = DO_FILL_CALLS.incrementAndGet();
         if (calls % LOG_INTERVAL == 0L) {
@@ -72,12 +77,13 @@ public final class WorldgenMetrics {
             long averageSamples = SAMPLES.sum() / calls;
 
             JPEOptimizer.LOGGER.info(
-                    "JPE worldgen metrics: doFillCalls={}, avgSamplesPerCall={}, avgDensitySampleMs={}, avgBlockFillMs={}, sampledAquiferNs={}, sampledPlacementNs={}, timingSamples={}",
+                    "JPE worldgen metrics: doFillCalls={}, avgSamplesPerCall={}, avgDensitySampleMs={}, avgBlockFillMs={}, sampledAquiferNs={}, sampledPlacementNs={}, timingSamples={}, aquiferCallsExecuted={}, aquiferCallsSkipped={}",
                     calls,
                     averageSamples,
                     String.format(java.util.Locale.ROOT, "%.3f", averageDensityMs),
                     String.format(java.util.Locale.ROOT, "%.3f", averageBlockFillMs),
-                    SAMPLED_AQUIFER_NANOS.sum(), SAMPLED_PLACEMENT_NANOS.sum(), TIMING_SAMPLE_COUNT.sum()
+                    SAMPLED_AQUIFER_NANOS.sum(), SAMPLED_PLACEMENT_NANOS.sum(), TIMING_SAMPLE_COUNT.sum(),
+                    AQUIFER_CALLS_EXECUTED.sum(), AQUIFER_CALLS_SKIPPED.sum()
             );
         }
     }
