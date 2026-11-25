@@ -154,7 +154,7 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
     const JpeDensityNode* nodes, uint32_t node_count, uint32_t root_node,
     uint32_t ir_version, uint64_t configuration_fingerprint
 ) try {
-    if (ir_version != 2 || !valid_graph(nodes, node_count, root_node)) return 0;
+    if (ir_version != 3 || !valid_graph(nodes, node_count, root_node)) return 0;
     const uint64_t fingerprint = hash_graph(nodes, node_count, root_node, ir_version, configuration_fingerprint);
     std::lock_guard<std::mutex> lock(g_mutex);
     const auto range = g_cache.equal_range(fingerprint);
@@ -280,7 +280,7 @@ extern "C" uint64_t jpe_cpp_density_graph_load_cache(
             || !read_u64(bytes, offset, immediate_bits)) return 0;
         std::memcpy(&node.immediate, &immediate_bits, sizeof(immediate_bits));
     }
-    if (offset != payload_length || ir_version != 2 || !valid_graph(nodes.data(), count, root)) return 0;
+    if (offset != payload_length || ir_version != 3 || !valid_graph(nodes.data(), count, root)) return 0;
     return jpe_cpp_density_graph_compile(nodes.data(), count, root, ir_version, configuration);
 } catch (...) { return 0; }
 
