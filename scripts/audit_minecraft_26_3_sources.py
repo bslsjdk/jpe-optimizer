@@ -46,6 +46,7 @@ TARGET_CLASSES = (
     "net/minecraft/world/level/levelgen/densityfunction/generator/NoiseFunction",
     "net/minecraft/world/level/levelgen/synth/NoiseStack",
     "net/minecraft/world/level/levelgen/synth/PerlinNoise",
+    "net/minecraft/world/level/levelgen/synth/SmearedPerlinNoise",
     "net/minecraft/world/level/levelgen/synth/GradientNoise",
     "net/minecraft/world/level/levelgen/synth/Noise",
 )
@@ -441,8 +442,9 @@ def source_inspection(vanilla_root: Path, patched_root: Path) -> list[str]:
         "BlendingData.java": {"getDensity", "getHeight", "getAlpha", "getOffset",
                               "iterateDensities", "getCellYIndex", "getMinY"},
         "NoiseStack.java": {"addToVolume", "get", "NoiseStack", "build"},
-        "PerlinNoise.java": {"getValue", "getOctaveNoise", "maxValue", "PerlinNoise"},
-        "GradientNoise.java": {"getValue", "get", "GradientNoise", "wrap"},
+        "PerlinNoise.java": {"get", "noiseWithDerivative", "sampleAndLerp", "addToVolume", "PerlinNoise"},
+        "SmearedPerlinNoise.java": {"get", "computeFudgeY", "addToVolume", "range", "SmearedPerlinNoise"},
+        "GradientNoise.java": {"get", "gradDot", "permute", "wrap", "GradientNoise"},
         "Noise.java": {"addToVolume", "get"},
     }
     lines: list[str] = []
@@ -524,6 +526,7 @@ def bytecode_inspection(vanilla_jar: Path, patched_jar: Path) -> list[str]:
         "net.minecraft.world.level.levelgen.synth.NoiseStack$SmearedPerlin",
         "net.minecraft.world.level.levelgen.synth.Noise",
         "net.minecraft.world.level.levelgen.synth.PerlinNoise",
+        "net.minecraft.world.level.levelgen.synth.SmearedPerlinNoise",
         "net.minecraft.world.level.levelgen.synth.GradientNoise",
     ]
     lines: list[str] = []
