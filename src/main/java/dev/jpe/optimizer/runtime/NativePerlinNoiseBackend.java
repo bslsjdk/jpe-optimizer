@@ -55,9 +55,17 @@ public final class NativePerlinNoiseBackend {
                 NATIVE_EXCEPTIONS.sum(), current == null ? 0 : current.workerCount());
     }
 
-    public static String mode() {
+    private static boolean synchronousDispatch() {
+        // Minecraft already parallelizes chunk generation. Submitting each volume to
+        // a second Rust worker queue and immediately blocking for it adds scheduling,
+        // condition-variable wakeups and job bookkeeping without increasing chunk
+        // level parallelism. Keep async available for controlled experiments only.
         return Boolean.getBoolean("jpe.nativePerlinSynchronous")
-                ? "native-perlin-sync" : "native-perlin-async";
+                || !Boolean.getBoolean("jpe.nativePerlinAsync");
+    }
+
+    public static String mode() {
+        return synchronousDispatch() ? "native-perlin-sync" : "native-perlin-async";
     }
 
     private NativePerlinNoiseBackend() {}
@@ -141,7 +149,7 @@ public final class NativePerlinNoiseBackend {
                 RUNTIME_UNAVAILABLE.increment();
                 return false;
             }
-            if (Boolean.getBoolean("jpe.nativePerlinSynchronous")) {
+            if (synchronousDispatch()) {
                 nativeRuntime.perlinAddStack(sourceLayers, xzScale, yScale, amplitude,
                         sizeX, sizeY, sizeZ,
                         volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
