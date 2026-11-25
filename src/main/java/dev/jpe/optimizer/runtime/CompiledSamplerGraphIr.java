@@ -14,6 +14,7 @@ public final class CompiledSamplerGraphIr {
     public enum Op {
         ADD,
         SUB,
+        CONSTANT,
         MUL_ZERO_SHORT_CIRCUIT,
         DIV_ZERO_SHORT_CIRCUIT,
         MIN_RIGHT_BOUND,
@@ -63,6 +64,7 @@ public final class CompiledSamplerGraphIr {
                 case MAX_RIGHT_BOUND -> "Preserve rightMaxValue guard and Java Math.max(float,float)";
                 case CONST_MUL_RIGHT, CONST_DIV_LEFT ->
                         "Preserve operand order and Java float32 arithmetic; no generic zero shortcut";
+                case CONSTANT -> "Exact float32 constant sampler; value remains a float scalar";
                 case CACHE_BOUNDARY -> "Do not inline across Minecraft cache identity or volume lifetime";
                 case CONTEXT_BOUNDARY -> "Resolve through SamplerContext; fallback is not an unconditional child";
                 case OPAQUE -> source.limitation().isEmpty()
@@ -76,6 +78,7 @@ public final class CompiledSamplerGraphIr {
 
     private static Op classify(String name) {
         return switch (name) {
+            case "net.minecraft.world.level.levelgen.densityfunction.generator.ConstantFunction$Sampler" -> Op.CONSTANT;
             case "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$AddSampler" -> Op.ADD;
             case "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$SubSampler" -> Op.SUB;
             case "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$MulSampler" ->
