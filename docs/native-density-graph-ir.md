@@ -384,3 +384,12 @@ The exact 26.3 sampler bytecode confirms that vanilla's optimizer emits record s
 The constant fields are read as Java float record components and materialized as float32 constant nodes. Subtraction preserves the constant as the left operand; it is not rewritten as right - constant or as a negation plus addition. Multiplication uses the existing native float32 MUL opcode. No general MulSampler or DivSampler is admitted: their left-zero short-circuit behavior must remain explicit, and generic DIV is not implemented. Constant division, min, and max remain boundaries until their exact operation semantics are represented.
 
 The new unit fixture verifies that a shared arithmetic island containing these three constant-specialized samplers lowers to one graph, keeps the external inputs deduplicated, and preserves operand order. This expands the set of candidate islands but does not claim live Minecraft parity or worldgen execution; the full-volume parity verifier must pass on actual sampler instances before integration.
+
+
+### Follow-up bytecode detail: cache wrappers are traversable records
+
+The exact 26.3 audit confirms that CachingDensitySampler and ContextBoundSampler are Java records, not opaque non-record wrappers. CachingDensitySampler exposes id and input record components; its sampleVolume and sampleValue delegate through SamplerContext.sampleVolumeCached and sampleValueCached. ContextBoundSampler exposes its context key and fallback sampler as record components, but the fallback is not necessarily the active sampler: evaluation resolves the current context field first. The trace can therefore preserve these wrapper nodes and their structural dependencies without inspecting arbitrary fields. The planner still treats them as hard execution boundaries and must not inline through them.
+
+The bytecode also shows DensityFunctionCompiler.samplers is declared as Map but initialized with ConcurrentHashMap; getSampler uses computeIfAbsent, and optimizeAndCompile is serialized by a ReentrantLock. The compiler cache is world-scoped through RandomState, while SamplerContext and its cache cells remain chunk-scoped. These details were checked against both official and NeoForge-patched 26.3 artifacts.
+
+A regression test now constructs an actual Minecraft CachingDensitySampler around a test DensitySampler, captures its record component edge, and confirms that the cache wrapper remains a boundary rather than being flattened into the arithmetic island.
