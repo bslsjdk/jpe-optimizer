@@ -38,6 +38,10 @@ public final class NativePerlinNoiseBackend {
     private static final LongAdder NATIVE_JOB_FAILURES = new LongAdder();
     private static final LongAdder NATIVE_EXCEPTIONS = new LongAdder();
     private static final AtomicLong PROFILE_CALLS = new AtomicLong();
+    // Tiny density volumes are cheaper to evaluate in vanilla than to cross the FFM boundary.
+    // The threshold is read once at class initialization for benchmarkable tuning.
+    private static final long MIN_NATIVE_VOLUME_ELEMENTS = Math.max(1L,
+            Long.getLong("jpe.nativePerlinMinSamples", 128L));
     public record Metrics(long attempts, long completed, long fallbacks, long samples,
                           long totalNanos, long synchronousCalls,
                           long invalidDimensions, long axisVolumeMismatches, long bufferVolumeMismatches,
@@ -98,21 +102,12 @@ public final class NativePerlinNoiseBackend {
                 INVALID_DIMENSIONS.increment();
                 return false;
             }
-            List<NativeRuntime.PerlinLayer> layers = new ArrayList<>(sourceLayers.length);
+            // Validate the exact layer types without allocating a new List and one
+            // PerlinLayer record per octave on every density-buffer invocation.
             for (Object sourceLayer : sourceLayers) {
                 NoiseStackLayerAccessor layer = (NoiseStackLayerAccessor) sourceLayer;
                 Noise layerNoise = layer.jpe$noise();
-                // NoiseStack.Perlin is only valid for exact PerlinNoise layers. Keep a hard
-                // runtime check so modded or altered layer contents never enter the wrong kernel.
                 if (layerNoise == null || layerNoise.getClass() != PerlinNoise.class) return false;
-                GradientNoiseAccessor noise = (GradientNoiseAccessor) layerNoise;
-                double frequency = layer.jpe$frequency();
-                layers.add(new NativeRuntime.PerlinLayer(
-                        noise.jpe$perms(),
-                        noise.jpe$offsetX(), noise.jpe$offsetY(), noise.jpe$offsetZ(),
-                        xzScale * frequency, yScale * frequency,
-                        amplitude * layer.jpe$amplitude()
-                ));
             }
 
             int sizeX = volume.sizeX();
@@ -131,8 +126,15 @@ public final class NativePerlinNoiseBackend {
                 OVERSIZED_VOLUMES.increment();
                 return false;
             }
+            // Avoid FFM setup, descriptor writes and native dispatch for tiny volumes.
+            // The caller falls through to the exact vanilla NoiseStack implementation.
+            if (expectedElements < MIN_NATIVE_VOLUME_ELEMENTS) return false;
             if (Boolean.getBoolean("jpe.nativePerlinProfile")) {
-                profilePerlinYRuns(layers, volume);
+                profilePerlinYRuns(sourceLayers, xzScale, yScale, amplitude, volume);
+            }
+            List<NativeRuntime.PerlinLayer> layers = null;
+            if (!Boolean.getBoolean("jpe.nativePerlinSynchronous")) {
+                layers = toPerlinLayers(sourceLayers, xzScale, yScale, amplitude);
             }
             float[] target = ((DensityBufferAccessor) buffer).jpe$values();
             if (target.length < expectedElements) {
@@ -145,6 +147,19 @@ public final class NativePerlinNoiseBackend {
                 RUNTIME_UNAVAILABLE.increment();
                 return false;
             }
+            if (Boolean.getBoolean("jpe.nativePerlinSynchronous")) {
+                nativeRuntime.perlinAddStack(sourceLayers, xzScale, yScale, amplitude,
+                        sizeX, sizeY, sizeZ,
+                        volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
+                        volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ(),
+                        target, SharedConstants.DEBUG_ENABLE_FARLANDS);
+                SYNCHRONOUS_CALLS.increment();
+                LAST_CALL_NATIVE.set(true);
+                success = true;
+                COMPLETED.increment();
+                return true;
+            }
+
             job = nativeRuntime.submitPerlinStack(layers,
                     sizeX, sizeY, sizeZ,
                     volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
@@ -269,13 +284,8 @@ public final class NativePerlinNoiseBackend {
         boolean terminal = false;
         try {
             GradientNoiseAccessor access = (GradientNoiseAccessor) (Object) noise;
-            if (Boolean.getBoolean("jpe.nativePerlinProfile")) {
-                profilePerlinYRuns(List.of(new NativeRuntime.PerlinLayer(
-                        access.jpe$perms(),
-                        access.jpe$offsetX(), access.jpe$offsetY(), access.jpe$offsetZ(),
-                        xzScale, yScale, amplitude
-                )), volume);
-            }
+            // Real-world stack profiling is handled by tryAddToStack. This
+            // single-layer fallback path is not used by the stack interception.
             float[] target = ((DensityBufferAccessor) buffer).jpe$values();
             if (target.length < expectedElements) {
                 BUFFER_VOLUME_MISMATCHES.increment();
@@ -382,7 +392,25 @@ public final class NativePerlinNoiseBackend {
      * Y-coordinate wrapping/floor grouping and reports how much work can enter the
      * current eight-wide AVX2 loop. Disabled by default; profiling itself scans Y.
      */
-    private static void profilePerlinYRuns(List<NativeRuntime.PerlinLayer> layers,
+
+    private static List<NativeRuntime.PerlinLayer> toPerlinLayers(Object[] sourceLayers,
+                                                                   double xzScale, double yScale,
+                                                                   float amplitude) {
+        List<NativeRuntime.PerlinLayer> layers = new ArrayList<>(sourceLayers.length);
+        for (Object sourceLayer : sourceLayers) {
+            NoiseStackLayerAccessor layer = (NoiseStackLayerAccessor) sourceLayer;
+            GradientNoiseAccessor noise = (GradientNoiseAccessor) layer.jpe$noise();
+            double frequency = layer.jpe$frequency();
+            layers.add(new NativeRuntime.PerlinLayer(noise.jpe$perms(),
+                    noise.jpe$offsetX(), noise.jpe$offsetY(), noise.jpe$offsetZ(),
+                    xzScale * frequency, yScale * frequency,
+                    amplitude * layer.jpe$amplitude()));
+        }
+        return layers;
+    }
+
+    private static void profilePerlinYRuns(Object[] sourceLayers,
+                                           double xzScale, double yScale, float amplitude,
                                            DensityVolume volume) {
         long sequence = PROFILE_CALLS.incrementAndGet();
         // Sample every 32nd volume to keep diagnostic overhead bounded on busy worldgen.
@@ -403,8 +431,11 @@ public final class NativePerlinNoiseBackend {
         boolean farLands = SharedConstants.DEBUG_ENABLE_FARLANDS;
         int layerIndex = 0;
 
-        for (NativeRuntime.PerlinLayer layer : layers) {
-            double scale = layer.yScale();
+        for (Object sourceLayer : sourceLayers) {
+            NoiseStackLayerAccessor layer = (NoiseStackLayerAccessor) sourceLayer;
+            GradientNoiseAccessor noise = (GradientNoiseAccessor) layer.jpe$noise();
+            double frequency = layer.jpe$frequency();
+            double scale = yScale * frequency;
             minScale = Math.min(minScale, scale);
             maxScale = Math.max(maxScale, scale);
             boolean eligible = Math.abs((double) stepY * scale) <= (1.0 / 16.0);
@@ -425,7 +456,7 @@ public final class NativePerlinNoiseBackend {
                         || y >= Math.nextDown(16_777_216.0))) {
                     y -= Math.floor(y / 33_554_432.0 + 0.5) * 33_554_432.0;
                 }
-                y += layer.offsetY();
+                y += noise.jpe$offsetY();
                 double floored = Math.floor(y);
                 int floorY = floored >= Integer.MAX_VALUE ? Integer.MAX_VALUE
                         : floored <= Integer.MIN_VALUE ? Integer.MIN_VALUE : (int) floored;
@@ -478,7 +509,7 @@ public final class NativePerlinNoiseBackend {
         JPEOptimizer.LOGGER.info(
                 "JPE_PERLIN_Y_PROFILE sample={} origin=({}, {}, {}) volume={}x{}x{} stepY={} layers={} yScaleRange=[{},{}] eligibleLayers={} floorRuns={} avgRun={} minRun={} maxRun={} avx2CandidateVectors={} avx2CandidateSamples={} scalarOrTailSamples={} farLands={}",
                 sequence, volume.minBlockX(), minY, volume.minBlockZ(),
-                volume.sizeX(), sizeY, volume.sizeZ(), stepY, layers.size(),
+                volume.sizeX(), sizeY, volume.sizeZ(), stepY, sourceLayers.length,
                 minScale, maxScale, eligibleLayers, totalRuns,
                 totalRuns == 0 ? 0.0 : (double) totalSamples / totalRuns,
                 minRun == Integer.MAX_VALUE ? 0 : minRun, maxRun,

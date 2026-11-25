@@ -1,0 +1,35 @@
+name: Native Density Batch AVX2 Probe
+
+on:
+  push:
+    branches: ["work/**"]
+    paths:
+      - "benchmarks/density_batch_avx2.cpp"
+      - ".github/workflows/density-batch-avx2.yml"
+  pull_request:
+    paths:
+      - "benchmarks/density_batch_avx2.cpp"
+      - ".github/workflows/density-batch-avx2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  density-batch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build AVX2 batch probe
+        run: g++ -O3 -std=c++17 -Wall -Wextra -Werror benchmarks/density_batch_avx2.cpp -o density_batch_avx2
+      - name: Run parity and batch-size sweep
+        run: ./density_batch_avx2 | tee density-batch-avx2.log
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: density-batch-avx2-${{ github.run_id }}
+          path: density-batch-avx2.log
+          if-no-files-found: warn
+          retention-days: 14
