@@ -58,13 +58,8 @@ inline float lerp(float alpha, float from, float to) noexcept {
 inline void corner(const uint8_t* p, uint32_t hash, float rx, float rz,
                    float& xz, float& y) noexcept {
     const uint32_t gradient = static_cast<uint32_t>(p[hash & 255U]) & 15U;
-    const int32_t gx = kGradientX[gradient];
-    const int32_t gz = kGradientZ[gradient];
-    // Avoid general multiplication for coefficients -1 and +1. Keep 0*x
-    // terms to preserve NaN propagation and the original addition order.
-    const float x = gx == 0 ? 0.0F * rx : (gx > 0 ? rx : -rx);
-    const float z = gz == 0 ? 0.0F * rz : (gz > 0 ? rz : -rz);
-    xz = x + z;
+    xz = static_cast<float>(kGradientX[gradient]) * rx
+       + static_cast<float>(kGradientZ[gradient]) * rz;
     y = static_cast<float>(kGradientY[gradient]);
 }
 
