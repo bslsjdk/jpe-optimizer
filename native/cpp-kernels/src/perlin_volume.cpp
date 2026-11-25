@@ -320,7 +320,6 @@ int32_t perlin_add_volume_impl(
                             float lane_corner_xz[8][8];
                             float lane_corner_y[8][8];
                             for (uint32_t lane = 0; lane < 8; ++lane) {
-                                const int32_t lane_floor = y_floors[iy + lane];
                                 const XyPermutationCache& lane_xy =
                                     cross_floor_xy_cache[static_cast<size_t>(ix) * size_y + iy + lane];
                                 const int32_t lane_xy00 = lane_xy.xy00;
