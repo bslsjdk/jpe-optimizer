@@ -63,19 +63,26 @@ inline void corner(const uint8_t* p, uint32_t hash, float rx, float rz,
     y = static_cast<float>(kGradientY[gradient]);
 }
 
-__attribute__((target("avx2")))
-inline void corner_for_lanes_masked(
+inline void corner_for_lanes(
     const uint8_t* p, uint32_t hash, float rx, float rz,
     float lane_xz[8][8], float lane_y[8][8], uint32_t corner_index,
-    const int32_t lane_mask_values[8]
+    uint32_t unique_index, const int32_t lane_unique_indices[8],
+    bool identity_lanes
 ) noexcept {
     float xz;
     float y;
     corner(p, hash, rx, rz, xz, y);
-    const __m256i lane_mask = _mm256_loadu_si256(
-        reinterpret_cast<const __m256i*>(lane_mask_values));
-    _mm256_maskstore_ps(lane_xz[corner_index], lane_mask, _mm256_set1_ps(xz));
-    _mm256_maskstore_ps(lane_y[corner_index], lane_mask, _mm256_set1_ps(y));
+    if (identity_lanes) {
+        lane_xz[corner_index][unique_index] = xz;
+        lane_y[corner_index][unique_index] = y;
+        return;
+    }
+    for (uint32_t lane = 0; lane < 8; ++lane) {
+        if (static_cast<uint32_t>(lane_unique_indices[lane]) == unique_index) {
+            lane_xz[corner_index][lane] = xz;
+            lane_y[corner_index][lane] = y;
+        }
+    }
 }
 
 struct XyPermutationCache {
@@ -409,13 +416,6 @@ int32_t perlin_add_volume_impl(
                                 lane_unique_indices[lane] = static_cast<int32_t>(unique_index);
                             }
 
-                            // Precompute one AVX2 lane mask per distinct floor. Each
-                            // corner is then broadcast and written only to lanes using that floor.
-                            int32_t unique_lane_masks[8][8]{};
-                            for (uint32_t lane = 0; lane < 8; ++lane) {
-                                unique_lane_masks[static_cast<uint32_t>(lane_unique_indices[lane])][lane] = -1;
-                            }
-
                             // Compute each distinct floor's eight corners exactly once.
                             for (uint32_t unique = 0; unique < unique_count; ++unique) {
                                 const uint32_t representative_lane = unique_representative_lanes[unique];
@@ -425,22 +425,23 @@ int32_t perlin_add_volume_impl(
                                 const uint32_t xy01 = lane_xy.xy01;
                                 const uint32_t xy10 = lane_xy.xy10;
                                 const uint32_t xy11 = lane_xy.xy11;
-                                corner_for_lanes_masked(permutation, xy00 + static_cast<uint32_t>(floor_z), relative_x, relative_z,
-                                    lane_corner_xz, lane_corner_y, 0, unique_lane_masks[unique]);
-                                corner_for_lanes_masked(permutation, xy10 + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z,
-                                    lane_corner_xz, lane_corner_y, 1, unique_lane_masks[unique]);
-                                corner_for_lanes_masked(permutation, xy01 + static_cast<uint32_t>(floor_z), relative_x, relative_z,
-                                    lane_corner_xz, lane_corner_y, 2, unique_lane_masks[unique]);
-                                corner_for_lanes_masked(permutation, xy11 + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z,
-                                    lane_corner_xz, lane_corner_y, 3, unique_lane_masks[unique]);
-                                corner_for_lanes_masked(permutation, xy00 + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F,
-                                    lane_corner_xz, lane_corner_y, 4, unique_lane_masks[unique]);
-                                corner_for_lanes_masked(permutation, xy10 + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F,
-                                    lane_corner_xz, lane_corner_y, 5, unique_lane_masks[unique]);
-                                corner_for_lanes_masked(permutation, xy01 + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F,
-                                    lane_corner_xz, lane_corner_y, 6, unique_lane_masks[unique]);
-                                corner_for_lanes_masked(permutation, xy11 + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F,
-                                    lane_corner_xz, lane_corner_y, 7, unique_lane_masks[unique]);
+                                const bool identity_lanes = unique_count == 8;
+                                corner_for_lanes(permutation, xy00 + static_cast<uint32_t>(floor_z), relative_x, relative_z,
+                                    lane_corner_xz, lane_corner_y, 0, unique, lane_unique_indices, identity_lanes);
+                                corner_for_lanes(permutation, xy10 + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z,
+                                    lane_corner_xz, lane_corner_y, 1, unique, lane_unique_indices, identity_lanes);
+                                corner_for_lanes(permutation, xy01 + static_cast<uint32_t>(floor_z), relative_x, relative_z,
+                                    lane_corner_xz, lane_corner_y, 2, unique, lane_unique_indices, identity_lanes);
+                                corner_for_lanes(permutation, xy11 + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z,
+                                    lane_corner_xz, lane_corner_y, 3, unique, lane_unique_indices, identity_lanes);
+                                corner_for_lanes(permutation, xy00 + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F,
+                                    lane_corner_xz, lane_corner_y, 4, unique, lane_unique_indices, identity_lanes);
+                                corner_for_lanes(permutation, xy10 + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F,
+                                    lane_corner_xz, lane_corner_y, 5, unique, lane_unique_indices, identity_lanes);
+                                corner_for_lanes(permutation, xy01 + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F,
+                                    lane_corner_xz, lane_corner_y, 6, unique, lane_unique_indices, identity_lanes);
+                                corner_for_lanes(permutation, xy11 + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F,
+                                    lane_corner_xz, lane_corner_y, 7, unique, lane_unique_indices, identity_lanes);
                             }
                             perlin_evaluate_8_avx2_independent(
                                 y_relative.data() + iy, y_alpha.data() + iy,
