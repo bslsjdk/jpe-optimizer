@@ -37,12 +37,17 @@ TARGET_CLASSES = (
     "net/minecraft/world/level/levelgen/densityfunction/DensityFunctionCompiler",
     "net/minecraft/world/level/levelgen/densityfunction/SamplerContext",
     "net/minecraft/world/level/levelgen/densityfunction/DensityBufferPool",
+    "net/minecraft/world/level/levelgen/densityfunction/DensityFunction",
     "net/minecraft/world/level/levelgen/densityfunction/DensityVolume",
     "net/minecraft/world/level/levelgen/densityfunction/op/RangeChoiceFunction",
     "net/minecraft/world/level/levelgen/densityfunction/op/BinaryFunction",
     "net/minecraft/world/level/levelgen/densityfunction/generator/NoiseFunction",
     "net/minecraft/world/level/levelgen/synth/NoiseStack",
     "net/minecraft/world/level/levelgen/synth/PerlinNoise",
+)
+
+TARGET_CLASS_PREFIXES = (
+    "net/minecraft/world/level/levelgen/densityfunction/",
 )
 
 
@@ -98,7 +103,9 @@ def selected_class(name: str) -> bool:
     if not name.endswith(".class"):
         return False
     return any(name == prefix + ".class" or name.startswith(prefix + "$") and name.endswith(".class")
-               for prefix in TARGET_CLASSES)
+               for prefix in TARGET_CLASSES) or any(
+        name.startswith(prefix) and name.endswith(".class") for prefix in TARGET_CLASS_PREFIXES
+    )
 
 
 def make_subset(source_jar: Path, subset_jar: Path) -> dict[str, str]:
@@ -347,6 +354,9 @@ def main() -> int:
         "",
         "Changed target class entries:",
         *(changed or ["(none)"]),
+        "",
+        "DensityFunction package class inventory:",
+        *(name for name in all_names if name.startswith("net/minecraft/world/level/levelgen/densityfunction/")),
         "",
         "Method-level inventory (raw Code hashes may differ when constant-pool indices are remapped):",
         *method_report,
