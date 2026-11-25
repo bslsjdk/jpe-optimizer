@@ -1,7 +1,6 @@
 package dev.jpe.optimizer.runtime;
 
 import dev.jpe.optimizer.mixin.DensityBufferAccessor;
-import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
@@ -69,6 +68,19 @@ public final class CompiledSamplerExternalInputs {
         sampled.put(sampler, values);
         stagedFloats += size;
         return values;
+    }
+
+    /** Resolves the external samplers and executes all island roots in one native call. */
+    public void evaluate(NativeRuntime.NativeDensityGraph executable,
+                         CompiledSamplerGraphTrace.CapturedGraph captured,
+                         CompiledSamplerArithmeticLowering.LoweredIsland island,
+                         int sizeX, int sizeY, int sizeZ,
+                         int minX, int minY, int minZ,
+                         int stepX, int stepY, int stepZ,
+                         float[][] outputVolumes) {
+        float[][] inputs = resolve(captured, island);
+        island.evaluate(executable, sizeX, sizeY, sizeZ,
+                minX, minY, minZ, stepX, stepY, stepZ, inputs, outputVolumes);
     }
 
     public int distinctSamplerCount() {
