@@ -668,6 +668,17 @@ mod tests {
         }, STATUS_OK);
         assert_eq!(output[0], 7.0);
         assert_eq!(unsafe { jpe_runtime_density_graph_release(loaded) }, STATUS_OK);
+
+        let wrong_key = CString::new("different-modpack-identity").unwrap();
+        assert_eq!(unsafe { jpe_cpp_density_graph_load_cache(path_string.as_ptr(), wrong_key.as_ptr()) }, 0,
+            "a different worldgen identity must never reuse this plan");
+
+        let mut damaged = std::fs::read(&path).unwrap();
+        let middle = damaged.len() / 2;
+        damaged[middle] ^= 0x20;
+        std::fs::write(&path, damaged).unwrap();
+        assert_eq!(unsafe { jpe_cpp_density_graph_load_cache(path_string.as_ptr(), key.as_ptr()) }, 0,
+            "corrupt native plan cache must be rejected");
         let _ = std::fs::remove_file(path);
     }
 
