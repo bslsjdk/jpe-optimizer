@@ -84,36 +84,44 @@ class CompiledSamplerArithmeticLoweringTest {
     @Test
     void lowersConstantSpecializedAddSubtractAndMultiplyInExactOperandOrder() {
         CompiledSamplerGraphIr.Graph graph = new CompiledSamplerGraphIr.Graph(List.of(
-                node(0, CompiledSamplerGraphIr.Op.CONST_ADD_RIGHT, List.of(3),
+                node(0, CompiledSamplerGraphIr.Op.ADD, List.of(1, 2), Map.of()),
+                node(1, CompiledSamplerGraphIr.Op.CONST_ADD_RIGHT, List.of(3),
                         Map.of("right", "2.5")),
-                node(1, CompiledSamplerGraphIr.Op.CONST_SUB_LEFT, List.of(3),
+                node(2, CompiledSamplerGraphIr.Op.CONST_SUB_LEFT, List.of(4),
                         Map.of("left", "9.0")),
-                node(2, CompiledSamplerGraphIr.Op.CONST_MUL_RIGHT, List.of(3),
+                node(3, CompiledSamplerGraphIr.Op.CONST_MUL_RIGHT, List.of(5),
                         Map.of("right", "-4.0")),
-                node(3, CompiledSamplerGraphIr.Op.OPAQUE, List.of(), Map.of())
+                node(4, CompiledSamplerGraphIr.Op.OPAQUE, List.of(), Map.of()),
+                node(5, CompiledSamplerGraphIr.Op.OPAQUE, List.of(), Map.of())
         ), 0, 0);
         CompiledSamplerArithmeticIslands.Plan plan = CompiledSamplerArithmeticIslands.plan(graph);
         assertEquals(1, plan.islands().size());
         CompiledSamplerArithmeticIslands.Island island = plan.islands().get(0);
-        assertEquals(List.of(0, 1, 2), island.outputNodeIds());
+        assertEquals(List.of(4, 5), island.externalInputs().stream()
+                .map(CompiledSamplerArithmeticIslands.InputEdge::sourceNode).distinct().toList());
+        assertEquals(List.of(0), island.outputNodeIds());
 
         CompiledSamplerArithmeticLowering.LoweredIsland lowered =
                 CompiledSamplerArithmeticLowering.lower(graph, island, 0x55);
 
-        assertEquals(List.of(3), lowered.inputSourceNodeIds());
-        assertEquals(List.of(0, 1, 2), lowered.outputSourceNodeIds());
-        assertEquals(7, lowered.graph().nodes().size());
+        assertEquals(List.of(4, 5), lowered.inputSourceNodeIds());
+        assertEquals(List.of(0), lowered.outputSourceNodeIds());
+        assertEquals(9, lowered.graph().nodes().size());
         assertEquals(DensityGraphIr.INPUT, lowered.graph().nodes().get(0).opcode());
-        assertEquals(DensityGraphIr.CONST, lowered.graph().nodes().get(1).opcode());
-        assertEquals(DensityGraphIr.ADD, lowered.graph().nodes().get(2).opcode());
-        assertEquals(0, lowered.graph().nodes().get(2).inputA());
-        assertEquals(1, lowered.graph().nodes().get(2).inputB());
-        assertEquals(DensityGraphIr.CONST, lowered.graph().nodes().get(3).opcode());
-        assertEquals(3, lowered.graph().nodes().get(4).opcode());
-        assertEquals(4, lowered.graph().nodes().get(4).inputA());
-        assertEquals(0, lowered.graph().nodes().get(4).inputB());
-        assertEquals(DensityGraphIr.CONST, lowered.graph().nodes().get(5).opcode());
-        assertEquals(DensityGraphIr.MUL, lowered.graph().nodes().get(6).opcode());
-        assertEquals(0, lowered.graph().nodes().get(6).inputA());
-        assertEquals(5, lowered.graph().nodes().get(6).inputB());
+        assertEquals(DensityGraphIr.INPUT, lowered.graph().nodes().get(1).opcode());
+        assertEquals(DensityGraphIr.CONST, lowered.graph().nodes().get(2).opcode());
+        assertEquals(DensityGraphIr.ADD, lowered.graph().nodes().get(3).opcode());
+        assertEquals(0, lowered.graph().nodes().get(3).inputA());
+        assertEquals(2, lowered.graph().nodes().get(3).inputB());
+        assertEquals(DensityGraphIr.CONST, lowered.graph().nodes().get(4).opcode());
+        assertEquals(DensityGraphIr.SUB, lowered.graph().nodes().get(5).opcode());
+        assertEquals(4, lowered.graph().nodes().get(5).inputA());
+        assertEquals(1, lowered.graph().nodes().get(5).inputB());
+        assertEquals(DensityGraphIr.CONST, lowered.graph().nodes().get(6).opcode());
+        assertEquals(DensityGraphIr.MUL, lowered.graph().nodes().get(7).opcode());
+        assertEquals(1, lowered.graph().nodes().get(7).inputA());
+        assertEquals(6, lowered.graph().nodes().get(7).inputB());
+        assertEquals(DensityGraphIr.ADD, lowered.graph().nodes().get(8).opcode());
+        assertEquals(3, lowered.graph().nodes().get(8).inputA());
+        assertEquals(5, lowered.graph().nodes().get(8).inputB());
     }
