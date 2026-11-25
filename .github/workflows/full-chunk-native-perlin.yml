@@ -88,10 +88,13 @@ jobs:
             run_worldgen "${label}" "-Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativePerlinMinSamples=${threshold} -Djpe.nativeLibraryPath=${NATIVE_LIBRARY}"
           done
 
+          # A control run isolates the positive-density Aquifer shortcut from the
+          # native Perlin threshold sweep. It uses the same 128-sample cutoff.
+          run_worldgen native_no_aquifer_skip "-Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativePerlinMinSamples=128 -Djpe.disablePositiveDensityAquiferFastPath=true -Djpe.nativeLibraryPath=${NATIVE_LIBRARY}"
+
           # Tiny density volumes intentionally fall back to vanilla. Validate that
-          # each threshold performs real native work and has no correctness/runtime failures.
-          for threshold in 64 128 256 512; do
-            label="native_min${threshold}"
+          # every run performs real native work and has no correctness/runtime failures.
+          for label in native_min64 native_min128 native_min256 native_min512 native_no_aquifer_skip; do
             grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin-sync.*completedChunks=340.*failedChunks=0.*nativeCalls=[1-9][0-9]*.*nativeCompleted=[1-9][0-9]*.*nativeFallbacks=[0-9]+.*nativeSyncCalls=[1-9][0-9]*.*nativeInvalidDimensions=0.*nativeAxisMismatches=0.*nativeBufferMismatches=0.*nativeOversizedVolumes=0.*nativeRuntimeUnavailable=0.*nativeQueueRejections=0.*nativeJobFailures=0.*nativeExceptions=0' "build/full-chunk-benchmark/${label}.log"
           done
 
