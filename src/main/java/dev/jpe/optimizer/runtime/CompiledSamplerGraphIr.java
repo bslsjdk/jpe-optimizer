@@ -20,8 +20,8 @@ public final class CompiledSamplerGraphIr {
         MAX_RIGHT_BOUND,
         CONST_ADD_RIGHT,
         CONST_SUB_LEFT,
-        CONST_MUL_RIGHT_ZERO_SHORT_CIRCUIT,
-        CONST_DIV_LEFT_ZERO_SHORT_CIRCUIT,
+        CONST_MUL_RIGHT,
+        CONST_DIV_LEFT,
         CONST_MIN_RIGHT,
         CONST_MAX_RIGHT,
         CACHE_BOUNDARY,
@@ -61,8 +61,8 @@ public final class CompiledSamplerGraphIr {
                         "Preserve left-first evaluation; left == +/-0 returns +0 without evaluating right";
                 case MIN_RIGHT_BOUND -> "Preserve rightMinValue guard and Java Math.min(float,float)";
                 case MAX_RIGHT_BOUND -> "Preserve rightMaxValue guard and Java Math.max(float,float)";
-                case CONST_MUL_RIGHT_ZERO_SHORT_CIRCUIT, CONST_DIV_LEFT_ZERO_SHORT_CIRCUIT ->
-                        "Preserve constant-side float32 operation and zero short-circuit";
+                case CONST_MUL_RIGHT, CONST_DIV_LEFT ->
+                        "Preserve operand order and Java float32 arithmetic; no generic zero shortcut";
                 case CACHE_BOUNDARY -> "Do not inline across Minecraft cache identity or volume lifetime";
                 case CONTEXT_BOUNDARY -> "Resolve through SamplerContext; fallback is not an unconditional child";
                 case OPAQUE -> source.limitation().isEmpty()
@@ -91,9 +91,9 @@ public final class CompiledSamplerGraphIr {
             case "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$ConstSubSampler" ->
                     Op.CONST_SUB_LEFT;
             case "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$ConstMulSampler" ->
-                    Op.CONST_MUL_RIGHT_ZERO_SHORT_CIRCUIT;
+                    Op.CONST_MUL_RIGHT;
             case "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$ConstDivSampler" ->
-                    Op.CONST_DIV_LEFT_ZERO_SHORT_CIRCUIT;
+                    Op.CONST_DIV_LEFT;
             case "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$ConstMinSampler" ->
                     Op.CONST_MIN_RIGHT;
             case "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$ConstMaxSampler" ->
