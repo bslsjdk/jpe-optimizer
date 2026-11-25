@@ -724,6 +724,9 @@ mod tests {
         assert_eq!(offset_of!(JpePerlinLayer, xz_scale), 32);
         assert_eq!(offset_of!(JpePerlinLayer, y_scale), 40);
         assert_eq!(offset_of!(JpePerlinLayer, amplitude), 48);
+        assert_eq!(offset_of!(JpePerlinLayer, fudge_y_scale), 56);
+        assert_eq!(offset_of!(JpePerlinLayer, flags), 64);
+        assert_eq!(offset_of!(JpePerlinLayer, reserved), 68);
     }
 
     use super::*;
