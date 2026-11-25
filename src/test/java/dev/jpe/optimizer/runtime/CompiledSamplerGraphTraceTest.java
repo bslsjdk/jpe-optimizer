@@ -4,6 +4,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
+import net.minecraft.world.level.levelgen.densityfunction.CachingDensitySampler;
+import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
+import net.minecraft.world.level.levelgen.densityfunction.DensitySampler;
+import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
+import net.minecraft.world.level.levelgen.densityfunction.SamplerContext;
 import org.junit.jupiter.api.Test;
 
 class CompiledSamplerGraphTraceTest {
@@ -11,6 +16,18 @@ class CompiledSamplerGraphTraceTest {
     public record LeafSampler(float constant) {}
     private record HiddenSampler(Object child) {}
     private static final class CustomSampler {}
+
+    private record TestDensitySampler(float value) implements DensitySampler {
+        @Override
+        public void sampleVolume(SamplerContext context, DensityBuffer buffer, DensityVolume volume) {
+            buffer.fill(value);
+        }
+
+        @Override
+        public float sampleValue(SamplerContext context, int blockX, int blockY, int blockZ) {
+            return value;
+        }
+    }
 
     @Test
     void capturesRecordSamplerChildrenAndScalarParameters() {
@@ -124,6 +141,24 @@ class CompiledSamplerGraphTraceTest {
         assertTrue(snapshot.nodes().get(0).limitation().contains("budget"));
     }
     
+
+    @Test
+    void traversesRealMinecraftCachingSamplerRecordWithoutCrossingItsBoundary() {
+        TestDensitySampler child = new TestDensitySampler(0.75F);
+        CachingDensitySampler root = new CachingDensitySampler(17, child);
+
+        CompiledSamplerGraphTrace.Snapshot snapshot =
+                CompiledSamplerGraphTrace.capture(root, DensitySampler.class::isInstance, 8);
+        CompiledSamplerGraphIr.Graph graph = CompiledSamplerGraphIr.lower(snapshot);
+
+        assertEquals(2, snapshot.nodes().size());
+        assertEquals(java.util.List.of(1), snapshot.nodes().get(0).children());
+        assertEquals("input", snapshot.nodes().get(0).childEdges().get(0).componentName());
+        assertEquals(CompiledSamplerGraphIr.Op.CACHE_BOUNDARY, graph.nodes().get(0).op());
+        assertEquals(CompiledSamplerGraphIr.Op.OPAQUE, graph.nodes().get(1).op());
+        assertEquals(1, CompiledSamplerArithmeticIslands.plan(graph).boundaryNodeCount());
+    }
+
     @Test
     void classifiesMinecraftFloatConstantSampler() {
         CompiledSamplerGraphTrace.Snapshot snapshot = new CompiledSamplerGraphTrace.Snapshot(
