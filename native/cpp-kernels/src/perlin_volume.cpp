@@ -337,12 +337,35 @@ int32_t perlin_add_volume_impl(
                             int32_t unique_floors[8];
                             int32_t lane_unique_indices[8];
                             uint32_t unique_count = 0;
+                            bool monotonic_floors = true;
+                            int floor_direction = 0;
+                            for (uint32_t lane = 1; lane < 8; ++lane) {
+                                const int32_t previous = y_floors[iy + lane - 1];
+                                const int32_t current = y_floors[iy + lane];
+                                const int direction = current > previous ? 1 : (current < previous ? -1 : 0);
+                                if (direction != 0) {
+                                    if (floor_direction == 0) floor_direction = direction;
+                                    else if (direction != floor_direction) {
+                                        monotonic_floors = false;
+                                        break;
+                                    }
+                                }
+                            }
                             for (uint32_t lane = 0; lane < 8; ++lane) {
                                 const int32_t lane_floor = y_floors[iy + lane];
-                                uint32_t unique_index = 0;
-                                while (unique_index < unique_count &&
-                                       unique_floors[unique_index] != lane_floor) {
-                                    ++unique_index;
+                                uint32_t unique_index;
+                                if (monotonic_floors) {
+                                    if (lane > 0 && lane_floor == y_floors[iy + lane - 1]) {
+                                        unique_index = static_cast<uint32_t>(lane_unique_indices[lane - 1]);
+                                    } else {
+                                        unique_index = unique_count;
+                                    }
+                                } else {
+                                    unique_index = 0;
+                                    while (unique_index < unique_count &&
+                                           unique_floors[unique_index] != lane_floor) {
+                                        ++unique_index;
+                                    }
                                 }
                                 if (unique_index == unique_count) {
                                     unique_floors[unique_count] = lane_floor;
