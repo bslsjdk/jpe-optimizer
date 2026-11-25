@@ -38,6 +38,22 @@ public final class CompiledSamplerGraphTrace {
     public record Snapshot(List<NodeInfo> nodes, int rootId, long droppedNodes) {
         public Snapshot { nodes = List.copyOf(nodes); }
     }
+    /** Ephemeral capture retaining live sampler identities only for one volume execution. */
+    public record CapturedGraph(Snapshot snapshot, List<Object> samplerSources) {
+        public CapturedGraph {
+            Objects.requireNonNull(snapshot, "snapshot");
+            samplerSources = List.copyOf(samplerSources);
+            if (samplerSources.size() != snapshot.nodes().size()) {
+                throw new IllegalArgumentException("Sampler source count must match graph nodes");
+            }
+        }
+        public Object source(int nodeId) {
+            if (nodeId < 0 || nodeId >= samplerSources.size()) {
+                throw new IllegalArgumentException("Unknown sampler node id " + nodeId);
+            }
+            return samplerSources.get(nodeId);
+        }
+    }
 
     private static final class NodeBuilder {
         final int id;
@@ -58,6 +74,14 @@ public final class CompiledSamplerGraphTrace {
 
     /** Captures a record-based sampler DAG without invoking sampler evaluation. */
     public static Snapshot capture(Object root, Predicate<Object> isSampler, int maxNodes) {
+        return captureDetailed(root, isSampler, maxNodes).snapshot();
+    }
+
+    /**
+     * Captures the graph plus its live source identities. The returned object is
+     * intentionally ephemeral: callers must not put it in static or persistent caches.
+     */
+    public static CapturedGraph captureDetailed(Object root, Predicate<Object> isSampler, int maxNodes) {
         Objects.requireNonNull(root, "root");
         Objects.requireNonNull(isSampler, "isSampler");
         if (maxNodes < 1) throw new IllegalArgumentException("maxNodes must be positive");
@@ -144,7 +168,10 @@ public final class CompiledSamplerGraphTrace {
             result.add(new NodeInfo(builder.id, builder.source.getClass().getName(),
                     builder.children, builder.childEdges, builder.values, builder.limitation));
         }
-        return new Snapshot(result, 0, dropped);
+        Snapshot snapshot = new Snapshot(result, 0, dropped);
+        ArrayList<Object> sources = new ArrayList<>(builders.size());
+        for (NodeBuilder builder : builders) sources.add(builder.source);
+        return new CapturedGraph(snapshot, sources);
     }
 
     private static boolean isSafeScalar(Object value) {
