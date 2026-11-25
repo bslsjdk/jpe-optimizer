@@ -98,21 +98,12 @@ public final class NativePerlinNoiseBackend {
                 INVALID_DIMENSIONS.increment();
                 return false;
             }
-            List<NativeRuntime.PerlinLayer> layers = new ArrayList<>(sourceLayers.length);
+            // Validate the exact layer types without allocating a new List and one
+            // PerlinLayer record per octave on every density-buffer invocation.
             for (Object sourceLayer : sourceLayers) {
                 NoiseStackLayerAccessor layer = (NoiseStackLayerAccessor) sourceLayer;
                 Noise layerNoise = layer.jpe$noise();
-                // NoiseStack.Perlin is only valid for exact PerlinNoise layers. Keep a hard
-                // runtime check so modded or altered layer contents never enter the wrong kernel.
                 if (layerNoise == null || layerNoise.getClass() != PerlinNoise.class) return false;
-                GradientNoiseAccessor noise = (GradientNoiseAccessor) layerNoise;
-                double frequency = layer.jpe$frequency();
-                layers.add(new NativeRuntime.PerlinLayer(
-                        noise.jpe$perms(),
-                        noise.jpe$offsetX(), noise.jpe$offsetY(), noise.jpe$offsetZ(),
-                        xzScale * frequency, yScale * frequency,
-                        amplitude * layer.jpe$amplitude()
-                ));
             }
 
             int sizeX = volume.sizeX();
@@ -146,7 +137,7 @@ public final class NativePerlinNoiseBackend {
                 return false;
             }
             if (Boolean.getBoolean("jpe.nativePerlinSynchronous")) {
-                nativeRuntime.perlinAddStack(layers,
+                nativeRuntime.perlinAddStack(sourceLayers, xzScale, yScale, amplitude,
                         sizeX, sizeY, sizeZ,
                         volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
                         volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ(),
