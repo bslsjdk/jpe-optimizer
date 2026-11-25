@@ -332,8 +332,8 @@ int32_t perlin_add_volume_impl(
                             }
                         }
                         if (!same_floor) {
-                            float unique_corner_xz[8][8];
-                            float unique_corner_y[8][8];
+                            float unique_corner_xz[8][8]{};
+                            float unique_corner_y[8][8]{};
                             int32_t unique_floors[8];
                             int32_t lane_unique_indices[8];
                             uint32_t unique_count = 0;
