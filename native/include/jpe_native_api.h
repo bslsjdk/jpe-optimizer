@@ -93,7 +93,7 @@ enum {
 /* Returns a retained compiled-plan handle, or zero for an invalid graph. */
 JPE_API uint64_t jpe_runtime_density_graph_compile(
     const JpeDensityNode *nodes, uint32_t node_count, uint32_t root_node,
-    uint64_t configuration_fingerprint
+    uint32_t ir_version, uint64_t configuration_fingerprint
 );
 /* Evaluates the root over a complete volume. Coordinates use min + index * step. */
 JPE_API int32_t jpe_runtime_density_graph_evaluate(
