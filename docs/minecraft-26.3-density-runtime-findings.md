@@ -83,6 +83,35 @@ The audited concrete node records expose these fields:
 
 These field layouts are confirmed from the Mojang 26.3 bytecode report. The operation bodies and enum values still require dedicated inspection before any exact lowering is claimed.
 
+## Compiled binary sampler semantics verified from bytecode
+
+The concrete compiled sampler records are not interchangeable with their source `BinaryFunction` nodes. The bytecode report confirms separate sampler classes for Add, Sub, Mul, Div, Min, Max and constant-right variants.
+
+Important semantic details:
+
+- `AddSampler.sampleValue` evaluates left and right and adds two Java `float` values.
+- `SubSampler.sampleValue` evaluates left and right and subtracts two Java `float` values.
+- `MulSampler.sampleValue` evaluates the left input first. If the left compares equal to zero using JVM `fcmpl`, it returns positive zero without evaluating the right input. This includes negative zero; NaN does not take the zero shortcut.
+- `DivSampler.sampleValue` has the same left-zero shortcut and returns positive zero without evaluating the right input. A native implementation that always evaluates both operands or directly performs division is not equivalent.
+- `MinSampler` carries a precomputed `rightMinValue`. It returns the left value without evaluating the right sampler when the left value is already less than or equal to that bound; otherwise it evaluates the right sampler and calls `java.lang.Math.min(float,float)`.
+- `MaxSampler` similarly carries `rightMaxValue`, short-circuits when the left value is already greater than or equal to that bound, and otherwise calls `java.lang.Math.max(float,float)`.
+- Constant-right samplers store the constant as a `float`, not a `double`. For example, constant add/subtract/multiply/divide use JVM `fadd/fsub/fmul/fdiv`; constant min/max call Java `Math.min/max(float,float)`.
+
+These shortcuts affect both output semantics and which child nodes execute. The sampler compiler must preserve evaluation order, zero handling, and min/max bounds. Treating all six operations as eager generic binary arithmetic is not exact.
+
+## Why the next capture target is DensitySampler
+
+The bytecode confirms that `DensityFunctionCompiler` lowers source functions into concrete `DensitySampler` implementations. The optimized arithmetic and cache behavior live in those compiled sampler objects: constant folding, short-circuit bounds, scoped temporary buffers, and deduplicated cache wrappers are visible there.
+
+Therefore the next experimental capture should observe the *compiled sampler graph after Minecraft's own compilation and deduplication*, rather than independently reconstructing every optimization from the source DensityFunction graph. A sampler-level IR can then:
+- represent arithmetic and constant-specialized operations explicitly;
+- preserve short-circuit guards and their evaluation order;
+- treat cache/context/noise samplers as explicit external inputs or opaque boundaries;
+- retain Minecraft's existing sampler memoization rather than duplicating it;
+- batch a whole volume through one Native execution plan where semantics permit.
+
+The first safe experiment is a diagnostic sampler-graph inventory, with no changes to world generation: record concrete sampler class, identity, child edges where exposed by known sampler records, and the actual `sampleVolume`/cache boundary. Only after that inventory should a Native sampler subset be selected for parity tests.
+
 ## DensityBuffer storage and copy cost
 
 The audited `DensityBuffer` stores values in a protected final Java `float[] values`, with a separate logical `size`. Its `copyFrom` method checks the logical sizes and then invokes `System.arraycopy` over the active range. `ScopedDensityBuffer` extends this class and returns its storage to a `DensityBufferArena` when its scope closes.
