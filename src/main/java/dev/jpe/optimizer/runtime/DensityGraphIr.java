@@ -96,5 +96,5 @@ public final class DensityGraphIr {
     public List<Diagnostic> diagnostics() { return diagnostics; }
     public int rootNode() { return rootNode; }
     public long configurationFingerprint() { return configurationFingerprint; }
-    public boolean experimental() { return !diagnostics.isEmpty(); }
+    public boolean experimental() { return nodes.stream().anyMatch(node -> node.opcode() == OPAQUE); }
 }
