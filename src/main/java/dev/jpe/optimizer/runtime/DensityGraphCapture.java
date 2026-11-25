@@ -111,7 +111,7 @@ public final class DensityGraphCapture {
                 if (mode == Mode.STRICT) {
                     throw new IllegalStateException("Missing semantic adapter for " + source.getClass().getName());
                 }
-                value = new Unsupported("No semantic adapter was registered for this runtime object");
+                value = new Unsupported("No semantic adapter was registered for this runtime object", List.of());
             }
             if (value instanceof Unsupported unsupported && mode == Mode.STRICT) {
                 throw new IllegalStateException("Native lowering rejected "
