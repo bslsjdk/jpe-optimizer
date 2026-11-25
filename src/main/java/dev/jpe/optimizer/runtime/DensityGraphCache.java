@@ -29,7 +29,7 @@ import java.util.function.Supplier;
  */
 public final class DensityGraphCache {
     private static final int MAGIC = 0x4A504544; // JPED
-    private static final int FORMAT_VERSION = 2;
+    private static final int FORMAT_VERSION = 3;
     private static final int DIGEST_BYTES = 32;
     private static final long MAX_CACHE_BYTES = 16L * 1024L * 1024L;
     private static final int MAX_DIAGNOSTIC_TEXT = 8192;
@@ -116,6 +116,7 @@ public final class DensityGraphCache {
 
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(bytes, 0, payloadLength))) {
             if (in.readInt() != MAGIC || in.readInt() != FORMAT_VERSION) return Optional.empty();
+            if (in.readInt() != DensityGraphIr.VERSION) return Optional.empty();
             byte[] storedKey = in.readNBytes(DIGEST_BYTES);
             if (!MessageDigest.isEqual(storedKey, expectedKeyDigest)) return Optional.empty();
             long fingerprint = in.readLong();
@@ -177,6 +178,7 @@ public final class DensityGraphCache {
         try (DataOutputStream out = new DataOutputStream(bytes)) {
             out.writeInt(MAGIC);
             out.writeInt(FORMAT_VERSION);
+            out.writeInt(DensityGraphIr.VERSION);
             out.write(keyDigest);
             out.writeLong(graph.configurationFingerprint());
             out.writeInt(graph.rootNode());
