@@ -392,7 +392,7 @@ The exact 26.3 audit confirms that CachingDensitySampler and ContextBoundSampler
 
 The bytecode also shows DensityFunctionCompiler.samplers is declared as Map but initialized with ConcurrentHashMap; getSampler uses computeIfAbsent, and optimizeAndCompile is serialized by a ReentrantLock. The compiler cache is world-scoped through RandomState, while SamplerContext and its cache cells remain chunk-scoped. These details were checked against both official and NeoForge-patched 26.3 artifacts.
 
-A regression test now constructs an actual Minecraft CachingDensitySampler around a test DensitySampler, captures its record component edge, and confirms that the cache wrapper remains a boundary rather than being flattened into the arithmetic island.
+The focused unit fixture models the CachingDensitySampler and ContextBoundSampler nodes with their recorded child edges and confirms that both remain hard boundaries. The exact Minecraft record-component structure itself is independently confirmed by the 26.3 javap audit; the focused pure-Java test source intentionally does not depend on Minecraft classes.
 
 
 ### Canonical sampler graph fingerprints for persistent cache keys
