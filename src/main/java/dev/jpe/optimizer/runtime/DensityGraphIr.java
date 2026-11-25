@@ -5,7 +5,7 @@ import java.util.Objects;
 
 /** Compact, topologically ordered density graph transport model. */
 public final class DensityGraphIr {
-    public static final int VERSION = 1;
+    public static final int VERSION = 2;
     public static final int MAX_NODES = 65_536;
     public static final int NO_INPUT = -1;
 
