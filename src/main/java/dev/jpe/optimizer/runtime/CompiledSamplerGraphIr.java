@@ -192,6 +192,7 @@ public final class CompiledSamplerGraphIr {
                     Op.CONST_MIN_RIGHT;
             case "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$ConstMaxSampler" ->
                     Op.CONST_MAX_RIGHT;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.ClampFunction$Sampler" -> Op.CLAMP;
             case "net.minecraft.world.level.levelgen.densityfunction.CachingDensitySampler" ->
                     Op.CACHE_BOUNDARY;
             case "net.minecraft.world.level.levelgen.densityfunction.ContextBoundSampler" ->
