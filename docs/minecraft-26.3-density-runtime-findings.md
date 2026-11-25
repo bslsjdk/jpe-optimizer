@@ -112,6 +112,26 @@ Therefore the next experimental capture should observe the *compiled sampler gra
 
 The first safe experiment is a diagnostic sampler-graph inventory, with no changes to world generation: record concrete sampler class, identity, child edges where exposed by known sampler records, and the actual `sampleVolume`/cache boundary. Only after that inventory should a Native sampler subset be selected for parity tests.
 
+### Compiled sampler graph inventory now has semantic node classification
+
+The bytecode audit confirms that the main compiled arithmetic samplers are Java records with direct `DensitySampler` child components. This is a particularly useful result: the current bounded record walker can discover their real DAG edges without arbitrary field reflection.
+
+The sampler diagnostic now lowers the captured inventory into `CompiledSamplerGraphIr`, with explicit classes for:
+
+- ADD and SUB;
+- MUL and DIV with the audited left-zero short-circuit semantics;
+- MIN/MAX with their precomputed right-side bounds;
+- constant-left/constant-right arithmetic variants;
+- `CachingDensitySampler` as a cache boundary;
+- `ContextBoundSampler` as a context-resolution boundary;
+- all other sampler classes as OPAQUE until their semantics are audited.
+
+The constant-specialized bytecode was checked separately. In particular, `ConstMulSampler` and `ConstDivSampler` do **not** share the generic two-sampler zero shortcut. Constant division evaluates the right sampler and performs Java float division. The IR classification was corrected to preserve that distinction.
+
+The trace also now explicitly opens accessible record accessors for private nested record classes, which is necessary for Minecraft's private implementation records. Scalar rendering avoids calling arbitrary custom `Number.toString()` or enum `toString()` methods.
+
+The inventory remains diagnostic only. No sampler is replaced and no Native execution is enabled. The new IR is the basis for selecting a small, exact sampler subset for parity testing.
+
 ### Implemented diagnostic sampler inventory
 
 A one-shot, opt-in inventory is now available at the final-density `DensitySampler.Bound` used by `NoiseBasedChunkGenerator.doFill`:
