@@ -1444,6 +1444,43 @@ mod tests {
     }
 
     #[test]
+    fn smeared_perlin_wraps_large_x_and_z_coordinates_like_vanilla() {
+        let permutation: [u8; 256] = std::array::from_fn(|i| ((i * 37 + 11) & 255) as u8);
+        let layer = JpePerlinLayer {
+            permutation: permutation.as_ptr(),
+            offset_x: 0.13,
+            offset_y: 0.29,
+            offset_z: 0.41,
+            xz_scale: 1.0,
+            y_scale: 0.37,
+            amplitude: 0.5,
+            fudge_y_scale: 0.25,
+            flags: 1,
+            reserved: 0,
+        };
+        let evaluate = |min_x: i32, min_z: i32| {
+            let mut output = [0.0_f32; 1];
+            let status = unsafe {
+                jpe_runtime_perlin_add_stack(
+                    &layer, 1, 1, 1, 1,
+                    min_x, -64, min_z, 1, 1, 1,
+                    output.as_mut_ptr(), output.len() as u64, 0,
+                )
+            };
+            assert_eq!(status, STATUS_OK);
+            output[0].to_bits()
+        };
+
+        // Minecraft's Perlin wrap period is 2^25. The large coordinates must
+        // fold to the same wrapped X/Z values before offsets and lattice floors.
+        let baseline = evaluate(123, -321);
+        assert_eq!(evaluate(123 + 33_554_432, -321), baseline,
+            "SmearedPerlin X coordinate must use vanilla wrap semantics");
+        assert_eq!(evaluate(123, -321 + 33_554_432), baseline,
+            "SmearedPerlin Z coordinate must use vanilla wrap semantics");
+    }
+
+    #[test]
     fn cached_y_interpolation_matches_uncached_reference_bit_for_bit() {
         let permutations: [[u8; 256]; 3] = std::array::from_fn(|layer| {
             std::array::from_fn(|i| ((i * (31 + layer * 8) + 17 + layer * 13) & 255) as u8)
