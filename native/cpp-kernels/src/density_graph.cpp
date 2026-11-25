@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <limits>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -75,7 +76,11 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
             case JPE_DENSITY_X:
             case JPE_DENSITY_Y:
             case JPE_DENSITY_Z:
-                if (node.input_a != kNoInput || node.input_b != kNoInput) return false;
+                if (node.input_a != kNoInput || node.input_b != kNoInput || node.reserved != 0) return false;
+                break;
+            case JPE_DENSITY_OPAQUE:
+                // Explicit experimental sentinel. It is never emitted by STRICT capture.
+                if (node.input_a != kNoInput || node.input_b != kNoInput || node.reserved != 1) return false;
                 break;
             case JPE_DENSITY_ADD:
             case JPE_DENSITY_MUL:
@@ -174,6 +179,11 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate(
                         case JPE_DENSITY_X: values[n] = world_x; break;
                         case JPE_DENSITY_Y: values[n] = world_y; break;
                         case JPE_DENSITY_Z: values[n] = world_z; break;
+                        case JPE_DENSITY_OPAQUE:
+                            // Preserve graph execution around unknown semantics and expose the
+                            // unsupported subgraph as NaN instead of inventing a value.
+                            values[n] = std::numeric_limits<double>::quiet_NaN();
+                            break;
                         case JPE_DENSITY_ADD:
                             values[n] = values[node.input_a] + values[node.input_b];
                             break;
