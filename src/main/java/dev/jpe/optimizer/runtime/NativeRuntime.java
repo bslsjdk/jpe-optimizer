@@ -92,6 +92,8 @@ public final class NativeRuntime implements AutoCloseable {
         private int outputCapacity;
         private MemorySegment inputVolumes;
         private long inputCapacityFloats;
+        private MemorySegment outputRoots;
+        private int outputRootCapacity;
         private final AtomicBoolean leased = new AtomicBoolean();
 
         private boolean tryAcquire() { return leased.compareAndSet(false, true); }
@@ -119,6 +121,7 @@ public final class NativeRuntime implements AutoCloseable {
             return output;
         }
         private MemorySegment ensureInputCapacity(long requiredFloats) {
+            if (requiredFloats == 0) return MemorySegment.NULL;
             if (inputCapacityFloats < requiredFloats) {
                 long next = Math.max(1024L, inputCapacityFloats);
                 while (next < requiredFloats) next = Math.multiplyExact(next, 2L);
@@ -127,6 +130,16 @@ public final class NativeRuntime implements AutoCloseable {
                 inputCapacityFloats = next;
             }
             return inputVolumes;
+        }
+        private MemorySegment ensureOutputRootCapacity(int requiredRoots) {
+            if (outputRootCapacity < requiredRoots) {
+                int next = Math.max(8, outputRootCapacity);
+                while (next < requiredRoots) next = Math.multiplyExact(next, 2);
+                outputRoots = arena.allocate(Math.multiplyExact((long) next, ValueLayout.JAVA_INT.byteSize()),
+                        ValueLayout.JAVA_INT.byteAlignment());
+                outputRootCapacity = next;
+            }
+            return outputRoots;
         }
         @Override public void close() {
             if (leased.get()) throw new IllegalStateException("Cannot close a leased density scratch arena");
@@ -635,8 +648,8 @@ public final class NativeRuntime implements AutoCloseable {
             if (graph.closed) throw new IllegalStateException("Native density graph has been released");
             long totalOutputFloats = Math.multiplyExact((long) outputs.length, length);
             long totalInputFloats = Math.multiplyExact((long) inputs.length, length);
-            if (totalOutputFloats > 16_777_216L || totalInputFloats > 16_777_216L) {
-                throw new IllegalArgumentException("Density input/output staging exceeds the 64 MiB safety budget");
+            if (Math.addExact(totalOutputFloats, totalInputFloats) > 16_777_216L) {
+                throw new IllegalArgumentException("Combined density input/output staging exceeds the 64 MiB safety budget");
             }
             for (float[] output : outputs) {
                 if (output == null || output.length < length) {
@@ -653,9 +666,7 @@ public final class NativeRuntime implements AutoCloseable {
                 MemorySegment.copy(inputs[i], 0, nativeInputs, ValueLayout.JAVA_FLOAT,
                         Math.multiplyExact((long) i * length, ValueLayout.JAVA_FLOAT.byteSize()), length);
             }
-            MemorySegment nativeRoots = scratch.arena.allocate(
-                    Math.multiplyExact((long) outputNodes.length, ValueLayout.JAVA_INT.byteSize()),
-                    ValueLayout.JAVA_INT.byteAlignment());
+            MemorySegment nativeRoots = scratch.ensureOutputRootCapacity(outputNodes.length);
             for (int i = 0; i < outputNodes.length; ++i) {
                 if (outputNodes[i] < 0) throw new IllegalArgumentException("Negative native output root");
                 nativeRoots.setAtIndex(ValueLayout.JAVA_INT, i, outputNodes[i]);
