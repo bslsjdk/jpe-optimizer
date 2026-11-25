@@ -18,7 +18,7 @@ public final class DensityGraphCapture {
     private sealed interface Captured permits Leaf, Binary, Unsupported {}
     private record Leaf(DensityGraphIr.Node node) implements Captured {}
     private record Binary(int opcode, Object left, Object right) implements Captured {}
-    private record Unsupported(String reason) implements Captured {}
+    private record Unsupported(String reason, List<Object> children) implements Captured {}
     private static final class Frame {
         final Object source;
         boolean expanded;
@@ -50,7 +50,20 @@ public final class DensityGraphCapture {
     public void multiply(Object source, Object left, Object right) { binary(source, DensityGraphIr.MUL, left, right); }
 
     public void unsupported(Object source, String reason) {
-        put(source, new Unsupported(Objects.requireNonNull(reason, "reason")));
+        unsupported(source, reason, new Object[0]);
+    }
+
+    /** Captures up to two child dependencies even when the operation itself is unknown. */
+    public void unsupported(Object source, String reason, Object... children) {
+        Objects.requireNonNull(children, "children");
+        if (children.length > 2) throw new IllegalArgumentException("Opaque IR currently supports at most two child edges");
+        ArrayList<Object> copied = new ArrayList<>(children.length);
+        for (Object child : children) {
+            Objects.requireNonNull(child, "opaque child");
+            if (!captured.containsKey(child)) throw new IllegalStateException("Capture opaque child nodes before their parent");
+            copied.add(child);
+        }
+        put(source, new Unsupported(Objects.requireNonNull(reason, "reason"), List.copyOf(copied)));
     }
 
     private void binary(Object source, int opcode, Object left, Object right) {
@@ -105,10 +118,18 @@ public final class DensityGraphCapture {
                         + source.getClass().getName() + ": " + unsupported.reason());
             }
 
-            if (value instanceof Binary binary && !frame.expanded) {
+            if ((value instanceof Binary || value instanceof Unsupported) && !frame.expanded) {
                 frame.expanded = true;
-                if (!indices.containsKey(binary.right())) stack.push(new Frame(binary.right()));
-                if (!indices.containsKey(binary.left())) stack.push(new Frame(binary.left()));
+                if (value instanceof Binary binary) {
+                    if (!indices.containsKey(binary.right())) stack.push(new Frame(binary.right()));
+                    if (!indices.containsKey(binary.left())) stack.push(new Frame(binary.left()));
+                } else {
+                    List<Object> children = ((Unsupported) value).children();
+                    for (int child = children.size() - 1; child >= 0; --child) {
+                        Object dependency = children.get(child);
+                        if (!indices.containsKey(dependency)) stack.push(new Frame(dependency));
+                    }
+                }
                 continue;
             }
 
@@ -125,7 +146,10 @@ public final class DensityGraphCapture {
                         ? DensityGraphIr.Node.add(left, right)
                         : DensityGraphIr.Node.multiply(left, right);
             } else {
-                node = DensityGraphIr.Node.opaque();
+                List<Object> children = ((Unsupported) value).children();
+                int first = children.isEmpty() ? DensityGraphIr.NO_INPUT : indices.get(children.get(0));
+                int second = children.size() < 2 ? DensityGraphIr.NO_INPUT : indices.get(children.get(1));
+                node = DensityGraphIr.Node.opaque(first, second);
             }
             int index = nodes.size();
             if (index >= DensityGraphIr.MAX_NODES) {
