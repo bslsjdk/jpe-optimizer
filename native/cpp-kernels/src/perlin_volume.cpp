@@ -250,20 +250,43 @@ int32_t perlin_add_volume_impl(
     // across all Z slices instead of repeating four lookups per lane per slice.
     thread_local std::vector<XyPermutationCache> cross_floor_xy_cache;
     if constexpr (CacheY && UseAvx2) {
-        const size_t cross_count = static_cast<size_t>(size_x) * size_y;
-        if (cross_floor_xy_cache.size() < cross_count) cross_floor_xy_cache.resize(cross_count);
-        for (uint32_t ix = 0; ix < size_x; ++ix) {
-            const int32_t x0 = x_lattice0[ix];
-            const int32_t x1 = x_lattice1[ix];
-            const size_t row = static_cast<size_t>(ix) * size_y;
-            for (uint32_t iy = 0; iy < size_y; ++iy) {
-                const int32_t floor_y = y_floors[iy];
-                cross_floor_xy_cache[row + iy] = XyPermutationCache{
-                    static_cast<uint8_t>(permute_sum(permutation, x0, floor_y)),
-                    static_cast<uint8_t>(permute_sum(permutation, x0, floor_y, 1)),
-                    static_cast<uint8_t>(permute_sum(permutation, x1, floor_y)),
-                    static_cast<uint8_t>(permute_sum(permutation, x1, floor_y, 1))
-                };
+        // Detect whether the actual run-walking schedule can enter the
+        // cross-floor vector branch. Long same-floor runs are consumed in
+        // 8-lane groups plus a scalar tail, so only each new run boundary
+        // needs to be checked here.
+        bool needs_cross_floor_cache = false;
+        for (uint32_t start = 0; start + 8 <= size_y;) {
+            bool same_floor = true;
+            for (uint32_t lane = 1; lane < 8; ++lane) {
+                if (y_floors[start + lane] != y_floors[start]) {
+                    same_floor = false;
+                    break;
+                }
+            }
+            if (!same_floor) {
+                needs_cross_floor_cache = true;
+                break;
+            }
+            uint32_t run_end = start + 1;
+            while (run_end < size_y && y_floors[run_end] == y_floors[start]) ++run_end;
+            start = run_end;
+        }
+        if (needs_cross_floor_cache) {
+            const size_t cross_count = static_cast<size_t>(size_x) * size_y;
+            if (cross_floor_xy_cache.size() < cross_count) cross_floor_xy_cache.resize(cross_count);
+            for (uint32_t ix = 0; ix < size_x; ++ix) {
+                const int32_t x0 = x_lattice0[ix];
+                const int32_t x1 = x_lattice1[ix];
+                const size_t row = static_cast<size_t>(ix) * size_y;
+                for (uint32_t iy = 0; iy < size_y; ++iy) {
+                    const int32_t floor_y = y_floors[iy];
+                    cross_floor_xy_cache[row + iy] = XyPermutationCache{
+                        static_cast<uint8_t>(permute_sum(permutation, x0, floor_y)),
+                        static_cast<uint8_t>(permute_sum(permutation, x0, floor_y, 1)),
+                        static_cast<uint8_t>(permute_sum(permutation, x1, floor_y)),
+                        static_cast<uint8_t>(permute_sum(permutation, x1, floor_y, 1))
+                    };
+                }
             }
         }
     }
