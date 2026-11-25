@@ -2,6 +2,7 @@ package dev.jpe.optimizer.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 import org.junit.jupiter.api.Test;
 
@@ -92,6 +93,21 @@ class CompiledSamplerGraphTraceTest {
 
         assertEquals(1, snapshot.nodes().size());
         assertTrue(snapshot.nodes().get(0).limitation().contains("not a record"));
+    }
+
+    @Test
+    void detailedCaptureRetainsExactSamplerIdentitiesForEphemeralBinding() {
+        LeafSampler shared = new LeafSampler(7.0F);
+        TestSampler root = new TestSampler(shared, shared, 1.0F);
+
+        CompiledSamplerGraphTrace.CapturedGraph captured =
+                CompiledSamplerGraphTrace.captureDetailed(root,
+                        value -> value instanceof TestSampler || value instanceof LeafSampler, 8);
+
+        assertSame(root, captured.source(0));
+        assertSame(shared, captured.source(1));
+        assertEquals(2, captured.samplerSources().size());
+        assertEquals(captured.snapshot().nodes().size(), captured.samplerSources().size());
     }
 
     @Test
