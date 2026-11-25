@@ -5,11 +5,11 @@ import java.util.Objects;
 
 /** Compact, topologically ordered density graph transport model. */
 public final class DensityGraphIr {
-    public static final int VERSION = 4;
+    public static final int VERSION = 5;
     public static final int MAX_NODES = 65_536;
     public static final int NO_INPUT = -1;
 
-    public static final int CONST = 1, X = 2, Y = 3, Z = 4, ADD = 5, MUL = 6, OPAQUE = 7, SUB = 8;
+    public static final int CONST = 1, X = 2, Y = 3, Z = 4, ADD = 5, MUL = 6, OPAQUE = 7, SUB = 8, INPUT = 9;
 
     public record Node(int opcode, int inputA, int inputB, double immediate) {
         public static Node constant(double value) { return new Node(CONST, NO_INPUT, NO_INPUT, value); }
@@ -19,6 +19,11 @@ public final class DensityGraphIr {
         public static Node add(int left, int right) { return new Node(ADD, left, right, 0.0); }
         public static Node multiply(int left, int right) { return new Node(MUL, left, right, 0.0); }
         public static Node subtract(int left, int right) { return new Node(SUB, left, right, 0.0); }
+        /** Reads one external float32 volume, indexed by the non-negative input slot. */
+        public static Node input(int inputIndex) {
+            if (inputIndex < 0 || inputIndex > 255) throw new IllegalArgumentException("Input index must be in [0, 255]");
+            return new Node(INPUT, NO_INPUT, NO_INPUT, inputIndex);
+        }
         /** Experimental sentinel: native evaluation emits NaN and continues through parents. */
         public static Node opaque() { return new Node(OPAQUE, NO_INPUT, NO_INPUT, Double.NaN); }
         public static Node opaque(int inputA, int inputB) { return new Node(OPAQUE, inputA, inputB, Double.NaN); }
@@ -95,8 +100,11 @@ public final class DensityGraphIr {
         for (int i = 0; i < nodes.size(); ++i) {
             Node node = Objects.requireNonNull(nodes.get(i), "node");
             switch (node.opcode()) {
-                case CONST, X, Y, Z -> {
-                    if (node.inputA() != NO_INPUT || node.inputB() != NO_INPUT) {
+                case CONST, X, Y, Z, INPUT -> {
+                    if (node.inputA() != NO_INPUT || node.inputB() != NO_INPUT
+                            || node.opcode() == INPUT && (!Double.isFinite(node.immediate())
+                            || node.immediate() < 0 || node.immediate() > 255
+                            || node.immediate() != Math.rint(node.immediate()))) {
                         throw new IllegalArgumentException("Leaf node " + i + " must not have inputs");
                     }
                 }
