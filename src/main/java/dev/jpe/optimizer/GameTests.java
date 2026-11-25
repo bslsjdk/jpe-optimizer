@@ -3,11 +3,14 @@ package dev.jpe.optimizer;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
+import java.lang.reflect.Constructor;
+import java.util.Optional;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.gametest.framework.FunctionGameTestInstance;
@@ -19,6 +22,9 @@ import net.minecraft.world.level.block.Rotation;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
+import net.minecraft.world.level.levelgen.blending.Blender;
+import net.minecraft.world.level.levelgen.blending.BlendingData;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.world.level.levelgen.synth.PerlinNoise;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.StructurePiece;
@@ -28,6 +34,7 @@ import net.minecraft.world.level.levelgen.structure.structures.MineshaftStructur
 import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredRegister;
 import dev.jpe.optimizer.mixin.DensityBufferAccessor;
+import dev.jpe.optimizer.mixin.BlendingDataAccessor;
 import dev.jpe.optimizer.mixin.GradientNoiseAccessor;
 import dev.jpe.optimizer.runtime.NativeRuntime;
 import dev.jpe.optimizer.runtime.DensityGraphIr;
@@ -61,6 +68,9 @@ public final class GameTests {
 
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> DENSITY_GRAPH_NATIVE_PARITY =
             TEST_FUNCTIONS.register("density_graph_native_parity", () -> GameTests::densityGraphNativeParity);
+
+    public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> BLENDER_NATIVE_PARITY =
+            TEST_FUNCTIONS.register("blender_native_parity", () -> GameTests::blenderNativeParity);
 
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> PALETTE_HASH_CONFIGURATION =
             TEST_FUNCTIONS.register("palette_hash_configuration", () -> GameTests::paletteHashConfiguration);
@@ -107,6 +117,10 @@ public final class GameTests {
         event.registerTest(
                 Identifier.parse("jpe_optimizer:density_graph_native_parity"),
                 new FunctionGameTestInstance(DENSITY_GRAPH_NATIVE_PARITY.getKey(), data)
+        );
+        event.registerTest(
+                Identifier.parse("jpe_optimizer:blender_native_parity"),
+                new FunctionGameTestInstance(BLENDER_NATIVE_PARITY.getKey(), data)
         );
         event.registerTest(
                 Identifier.parse("jpe_optimizer:palette_hash_configuration"),
@@ -446,6 +460,108 @@ public final class GameTests {
         JPEOptimizer.LOGGER.info("JPE_NATIVE_PERLIN_PARITY samples={} synchronous=true asynchronous=true liveWorldgen=true bitExact=true",
                 expected.length);
         helper.succeed();
+    }
+
+
+    /** Compares the live Java Blender implementation against one full-volume C++ call. */
+    private static void blenderNativeParity(GameTestHelper helper) {
+        String library = System.getProperty("jpe.nativeLibraryPath");
+        if (library == null || library.isBlank()) {
+            throw new AssertionError("Set -Djpe.nativeLibraryPath to the freshly built native runtime library");
+        }
+        try (NativeRuntime runtime = NativeRuntime.load(java.nio.file.Path.of(library))) {
+            if (!runtime.supportsBlenderDensityVolume()) {
+                throw new AssertionError("Native library does not export Blender density volume support");
+            }
+
+            BlendingData fixedData = createSyntheticBlendingData(3, 5.0F);
+            Long2ObjectOpenHashMap<BlendingData> fixedMap = new Long2ObjectOpenHashMap<>();
+            fixedMap.put(ChunkPos.asLong(0, 0), fixedData);
+            Blender fixedBlender = createSyntheticBlender(fixedMap, new Long2ObjectOpenHashMap<>());
+            verifyBlenderCase(runtime, fixedBlender,
+                    new DensityVolume(1, 1, 1, 0, -32, 0, 1, 1, 1),
+                    new float[]{7.25F}, "fixed-density");
+
+            BlendingData neighborData = createSyntheticBlendingData(3, 10.0F);
+            Long2ObjectOpenHashMap<BlendingData> densityMap = new Long2ObjectOpenHashMap<>();
+            densityMap.put(ChunkPos.asLong(0, 0), neighborData);
+            Blender neighborBlender = createSyntheticBlender(new Long2ObjectOpenHashMap<>(), densityMap);
+            verifyBlenderCase(runtime, neighborBlender,
+                    new DensityVolume(1, 1, 1, 4, -32, 0, 1, 1, 1),
+                    new float[]{4.0F}, "weighted-neighborhood");
+
+            BlendingData boundaryData = createSyntheticBlendingData(11, 12.5F);
+            Long2ObjectOpenHashMap<BlendingData> boundaryMap = new Long2ObjectOpenHashMap<>();
+            boundaryMap.put(ChunkPos.asLong(-1, -1), boundaryData);
+            Blender boundaryBlender = createSyntheticBlender(boundaryMap, new Long2ObjectOpenHashMap<>());
+            verifyBlenderCase(runtime, boundaryBlender,
+                    new DensityVolume(1, 1, 1, 0, -32, 0, 1, 1, 1),
+                    new float[]{9.0F}, "negative-section-boundary");
+        } catch (ReflectiveOperationException failure) {
+            throw new AssertionError("Unable to create exact Minecraft Blender parity fixtures", failure);
+        } catch (Exception failure) {
+            throw new AssertionError("Native Blender volume parity failed", failure);
+        }
+        helper.succeed();
+    }
+
+    private static BlendingData createSyntheticBlendingData(int columnIndex, float rawValue)
+            throws ReflectiveOperationException {
+        Constructor<BlendingData> constructor = BlendingData.class.getDeclaredConstructor(
+                int.class, int.class, Optional.class);
+        if (!constructor.trySetAccessible()) {
+            throw new IllegalStateException("BlendingData constructor is not reflectively accessible");
+        }
+        BlendingData data = constructor.newInstance(-4, 4, Optional.empty());
+        float[][] columns = ((BlendingDataAccessor) data).jpe$densities();
+        float[] values = new float[16];
+        values[3] = rawValue;
+        columns[columnIndex] = values;
+        return data;
+    }
+
+    private static Blender createSyntheticBlender(
+            Long2ObjectOpenHashMap<BlendingData> heightData,
+            Long2ObjectOpenHashMap<BlendingData> densityData) throws ReflectiveOperationException {
+        for (Constructor<?> constructor : Blender.class.getDeclaredConstructors()) {
+            Class<?>[] parameters = constructor.getParameterTypes();
+            if (parameters.length == 3
+                    && parameters[0] == Long2ObjectOpenHashMap.class
+                    && parameters[1] == Long2ObjectOpenHashMap.class) {
+                if (!constructor.trySetAccessible()) {
+                    throw new IllegalStateException("Blender constructor is not reflectively accessible");
+                }
+                return (Blender) constructor.newInstance(heightData, densityData, null);
+            }
+        }
+        throw new NoSuchMethodException("Minecraft 26.3 Blender map constructor was not found");
+    }
+
+    private static void verifyBlenderCase(NativeRuntime runtime, Blender blender,
+                                          DensityVolume volume, float[] input, String label) {
+        float[] expected = new float[volume.size()];
+        float[] actual = new float[volume.size()];
+        int index = 0;
+        for (int z = 0; z < volume.sizeZ(); ++z) {
+            int blockZ = volume.blockZ(z);
+            for (int x = 0; x < volume.sizeX(); ++x) {
+                int blockX = volume.blockX(x);
+                for (int y = 0; y < volume.sizeY(); ++y) {
+                    expected[index] = blender.blendDensity(
+                            blockX, volume.blockY(y), blockZ, input[index]);
+                    ++index;
+                }
+            }
+        }
+        runtime.blendDensityVolume(blender, volume, input, actual);
+        for (int i = 0; i < expected.length; ++i) {
+            if (Float.floatToRawIntBits(expected[i]) != Float.floatToRawIntBits(actual[i])) {
+                throw new AssertionError("Native Blender " + label + " mismatch at " + i
+                        + ": java=" + expected[i] + ", native=" + actual[i]);
+            }
+        }
+        JPEOptimizer.LOGGER.info("JPE_NATIVE_BLENDER_PARITY case={} samples={} bitExact=true",
+                label, expected.length);
     }
 
     private static void assertNativePerlinParity(float[] expected, float[] actual, String mode) {
