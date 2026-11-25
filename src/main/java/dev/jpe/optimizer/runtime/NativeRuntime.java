@@ -339,6 +339,14 @@ public final class NativeRuntime implements AutoCloseable {
      * plan directly in C++; only a cache miss invokes Java graph capture and FFM node
      * serialization. The returned handle is ready to execute during world generation.
      */
+    public PreparedDensityGraph prepareDensityGraph(Path cacheDirectory,
+                                                     DensityGraphCache.Identity identity,
+                                                     Supplier<DensityGraphIr> capture,
+                                                     boolean experimental) throws IOException {
+        Objects.requireNonNull(identity, "identity");
+        return prepareDensityGraph(cacheDirectory, identity.stableKey(), capture, experimental);
+    }
+
     public PreparedDensityGraph prepareDensityGraph(Path cacheDirectory, String cacheKey,
                                                      Supplier<DensityGraphIr> capture,
                                                      boolean experimental) throws IOException {
