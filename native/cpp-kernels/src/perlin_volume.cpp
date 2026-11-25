@@ -192,7 +192,9 @@ int32_t perlin_add_volume_impl(
     float amplitude,
     float* output,
     uint64_t output_length,
-    uint32_t flags
+    uint32_t flags,
+    double fudge_y_scale = 0.0,
+    bool smeared_y = false
 ) noexcept {
     if (size_x == 0 || size_y == 0 || size_z == 0) return 1;
     if (permutation == nullptr || output == nullptr || step_x == 0 || step_y == 0 || step_z == 0) return 1;
@@ -225,14 +227,24 @@ int32_t perlin_add_volume_impl(
         }
     }
     for (uint32_t iy = 0; iy < size_y; ++iy) {
-        const double y = wrap_coordinate(
-            static_cast<double>(axis_coordinate(min_y, iy, step_y)) * y_scale, far_lands) + offset_y;
+        const double original_y = static_cast<double>(axis_coordinate(min_y, iy, step_y)) * y_scale;
+        const double y = wrap_coordinate(original_y, far_lands) + offset_y;
         const int32_t floor_y = floor_to_i32(y);
         y_floors[iy] = floor_y;
         if constexpr (CacheY) {
-            const float relative_y = static_cast<float>(y - static_cast<double>(floor_y));
-            y_relative[iy] = relative_y;
+            const double relative_y_double = y - static_cast<double>(floor_y);
+            const float relative_y = static_cast<float>(relative_y_double);
             y_alpha[iy] = smoothstep(relative_y);
+            if (smeared_y) {
+                const double fudge_limit = (original_y >= 0.0 && original_y < relative_y_double)
+                    ? original_y : relative_y_double;
+                const int32_t fudge_steps = floor_to_i32(
+                    fudge_limit / fudge_y_scale + static_cast<double>(1.0E-7F));
+                const double fudge_y = static_cast<double>(fudge_steps) * fudge_y_scale;
+                y_relative[iy] = static_cast<float>(relative_y_double - fudge_y);
+            } else {
+                y_relative[iy] = relative_y;
+            }
         } else {
             y_coordinates[iy] = y;
         }
@@ -594,6 +606,40 @@ extern "C" int32_t jpe_cpp_perlin_add_volume(
     return perlin_add_volume_impl<true, false, false>(permutation,
         size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
         xz_scale, y_scale, amplitude, output, output_length, flags);
+}
+
+extern "C" int32_t jpe_cpp_smeared_perlin_add_volume(
+    const uint8_t* permutation,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    double offset_x, double offset_y, double offset_z,
+    double xz_scale, double y_scale, float amplitude,
+    double fudge_y_scale, float* output, uint64_t output_length, uint32_t flags
+) noexcept {
+#if (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
+    static const bool avx2_available = []() noexcept {
+        __builtin_cpu_init();
+        return __builtin_cpu_supports("avx2");
+    }();
+    const double y_step_magnitude = std::abs(static_cast<double>(step_y) * y_scale);
+    const uint32_t step_magnitude = step_y < 0
+        ? 0U - static_cast<uint32_t>(step_y)
+        : static_cast<uint32_t>(step_y);
+    const double avx2_step_limit = step_magnitude >= 8U ? (1.0 / 16.0)
+        : step_magnitude >= 4U ? (1.0 / 32.0)
+        : (1.0 / 64.0);
+    if (avx2_available && y_step_magnitude <= avx2_step_limit) {
+        return perlin_add_volume_impl<true, false, true>(permutation,
+            size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z,
+            offset_x, offset_y, offset_z, xz_scale, y_scale, amplitude,
+            output, output_length, flags, fudge_y_scale, true);
+    }
+#endif
+    return perlin_add_volume_impl<true, false, false>(permutation,
+        size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z,
+        offset_x, offset_y, offset_z, xz_scale, y_scale, amplitude,
+        output, output_length, flags, fudge_y_scale, true);
 }
 
 extern "C" int32_t jpe_cpp_perlin_add_volume_scalar_cached_y(
