@@ -83,10 +83,8 @@ public final class DensityGraphCapture {
         ArrayList<DensityGraphIr.Node> nodes = new ArrayList<>(capacity);
         ArrayList<DensityGraphIr.Diagnostic> diagnostics = new ArrayList<>();
         IdentityHashMap<Object, Integer> indices = new IdentityHashMap<>(capacity);
-        IdentityHashMap<Object, Boolean> scheduled = new IdentityHashMap<>(capacity);
         ArrayDeque<Frame> stack = new ArrayDeque<>();
         stack.push(new Frame(root));
-        scheduled.put(root, Boolean.TRUE);
 
         while (!stack.isEmpty()) {
             Frame frame = stack.peek();
@@ -109,12 +107,8 @@ public final class DensityGraphCapture {
 
             if (value instanceof Binary binary && !frame.expanded) {
                 frame.expanded = true;
-                if (!indices.containsKey(binary.right()) && scheduled.put(binary.right(), Boolean.TRUE) == null) {
-                    stack.push(new Frame(binary.right()));
-                }
-                if (!indices.containsKey(binary.left()) && scheduled.put(binary.left(), Boolean.TRUE) == null) {
-                    stack.push(new Frame(binary.left()));
-                }
+                if (!indices.containsKey(binary.right())) stack.push(new Frame(binary.right()));
+                if (!indices.containsKey(binary.left())) stack.push(new Frame(binary.left()));
                 continue;
             }
 
