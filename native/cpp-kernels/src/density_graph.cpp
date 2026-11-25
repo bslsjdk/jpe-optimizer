@@ -362,17 +362,21 @@ extern "C" uint64_t jpe_cpp_density_graph_load_cache(
     return jpe_cpp_density_graph_compile(nodes.data(), count, root, ir_version, configuration);
 } catch (...) { return 0; }
 
-extern "C" int32_t jpe_cpp_density_graph_evaluate_with_inputs(
+extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
     uint64_t graph_handle,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
     const float* inputs, uint32_t input_count,
-    float* output, uint64_t output_length
+    const uint32_t* output_nodes, uint32_t output_count,
+    float* outputs, uint64_t output_length
 ) try {
-    if (output == nullptr || !valid_volume(size_x, size_y, size_z,
-            step_x, step_y, step_z, output_length) || input_count > 256
-        || (input_count > 0 && inputs == nullptr)) return 1;
+    const uint64_t volume_length = static_cast<uint64_t>(size_x) * size_y * size_z;
+    if (outputs == nullptr || size_x == 0 || size_y == 0 || size_z == 0
+        || step_x == 0 || step_y == 0 || step_z == 0
+        || volume_length > kMaxVolumeElements || input_count > 256
+        || (input_count > 0 && inputs == nullptr)
+        || output_count > 256) return 1;
 
     std::shared_ptr<CompiledGraph> graph;
     {
@@ -381,6 +385,19 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_with_inputs(
         if (found == g_handles.end()) return 2;
         graph = found->second;
     }
+
+    std::vector<uint32_t> selected_roots;
+    if (output_count == 0) {
+        if (output_nodes != nullptr) return 1;
+        selected_roots.push_back(graph->root);
+    } else {
+        if (output_nodes == nullptr) return 1;
+        selected_roots.assign(output_nodes, output_nodes + output_count);
+        for (uint32_t root : selected_roots) if (root >= graph->nodes.size()) return 1;
+    }
+    if (selected_roots.empty()
+        || static_cast<uint64_t>(selected_roots.size()) > 16777216ULL / volume_length
+        || output_length != volume_length * selected_roots.size()) return 1;
 
     // Evaluate a bounded tile of samples at once. Node-major storage lets the
     // compiler vectorize each ADD/MUL across contiguous samples while preserving
@@ -469,12 +486,29 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_with_inputs(
             }
         }
 
-        const float* root_values = tile_values.data()
-            + static_cast<size_t>(graph->root) * tile_capacity;
-        std::copy_n(root_values, count, output + tile_start);
+        for (size_t output_index = 0; output_index < selected_roots.size(); ++output_index) {
+            const float* root_values = tile_values.data()
+                + static_cast<size_t>(selected_roots[output_index]) * tile_capacity;
+            std::copy_n(root_values, count,
+                outputs + static_cast<uint64_t>(output_index) * volume_length + tile_start);
+        }
     }
     return 0;
 } catch (...) { return 3; }
+
+extern "C" int32_t jpe_cpp_density_graph_evaluate_with_inputs(
+    uint64_t graph_handle,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    const float* inputs, uint32_t input_count,
+    float* output, uint64_t output_length
+) {
+    return jpe_cpp_density_graph_evaluate_multi_with_inputs(
+        graph_handle, size_x, size_y, size_z,
+        min_x, min_y, min_z, step_x, step_y, step_z,
+        inputs, input_count, nullptr, 0, output, output_length);
+}
 
 extern "C" int32_t jpe_cpp_density_graph_evaluate(
     uint64_t graph_handle,
