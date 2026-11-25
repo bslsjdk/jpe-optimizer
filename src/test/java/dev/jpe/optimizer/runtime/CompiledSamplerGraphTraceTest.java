@@ -140,4 +140,23 @@ class CompiledSamplerGraphTraceTest {
         assertEquals(CompiledSamplerGraphIr.Op.CONSTANT, graph.nodes().get(0).op());
         assertEquals("0.125", graph.nodes().get(0).scalarValues().get("value"));
     }
+    @Test
+    void classifiesMinecraftClampSamplerAndPreservesFloatBounds() {
+        CompiledSamplerGraphTrace.Snapshot snapshot = new CompiledSamplerGraphTrace.Snapshot(
+                java.util.List.of(new CompiledSamplerGraphTrace.NodeInfo(0,
+                        "net.minecraft.world.level.levelgen.densityfunction.op.ClampFunction$Sampler",
+                        java.util.List.of(1), java.util.List.of(
+                                new CompiledSamplerGraphTrace.ComponentValue("min", "float", "-0.0"),
+                                new CompiledSamplerGraphTrace.ComponentValue("max", "float", "1.25")), ""),
+                        new CompiledSamplerGraphTrace.NodeInfo(1, "custom.NoiseSampler",
+                                java.util.List.of(), java.util.List.of(), "not a record")),
+                0, 0);
+
+        CompiledSamplerGraphIr.Node clamp = CompiledSamplerGraphIr.lower(snapshot).nodes().get(0);
+
+        assertEquals(CompiledSamplerGraphIr.Op.CLAMP, clamp.op());
+        assertEquals("-0.0", clamp.scalarValues().get("min"));
+        assertEquals("1.25", clamp.scalarValues().get("max"));
+    }
+
 }
