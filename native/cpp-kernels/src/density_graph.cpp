@@ -378,8 +378,7 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
     const uint64_t xy = static_cast<uint64_t>(size_x) * size_y;
     if (xy > kMaxVolumeElements / size_z) return 1;
     const uint64_t volume_length = xy * size_z;
-    if (volume_length == 0
-        || static_cast<uint64_t>(input_count) > 16777216ULL / volume_length) return 1;
+    if (volume_length == 0) return 1;
 
     std::shared_ptr<CompiledGraph> graph;
     {
@@ -399,7 +398,7 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
         for (uint32_t root : selected_roots) if (root >= graph->nodes.size()) return 1;
     }
     if (selected_roots.empty()
-        || static_cast<uint64_t>(selected_roots.size()) > 16777216ULL / volume_length
+        || static_cast<uint64_t>(input_count + selected_roots.size()) > 16777216ULL / volume_length
         || output_length != volume_length * selected_roots.size()) return 1;
 
     // Evaluate a bounded tile of samples at once. Node-major storage lets the
