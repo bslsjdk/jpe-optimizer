@@ -91,7 +91,9 @@ enum {
     JPE_DENSITY_MUL = 6,
     /* Experimental-only: emits NaN while allowing surrounding known nodes to execute. */
     JPE_DENSITY_OPAQUE = 7,
-    JPE_DENSITY_SUB = 8
+    JPE_DENSITY_SUB = 8,
+    /* Reads one external float32 volume from the evaluate_with_inputs input matrix. */
+    JPE_DENSITY_INPUT = 9
 };
 /* Returns a retained compiled-plan handle, or zero for an invalid graph. */
 JPE_API uint64_t jpe_runtime_density_graph_compile(
@@ -104,6 +106,15 @@ JPE_API int32_t jpe_runtime_density_graph_evaluate(
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
+    float *output, uint64_t output_length
+);
+/* Evaluates a graph with input-major external volumes: inputs[i * volume_length + sample]. */
+JPE_API int32_t jpe_runtime_density_graph_evaluate_with_inputs(
+    uint64_t graph_handle,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    const float *inputs, uint32_t input_count,
     float *output, uint64_t output_length
 );
 /* Releases one retained handle. Active evaluations keep their immutable plan alive. */
