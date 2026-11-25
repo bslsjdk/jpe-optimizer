@@ -46,6 +46,8 @@ TARGET_CLASSES = (
     "net/minecraft/world/level/levelgen/densityfunction/generator/NoiseFunction",
     "net/minecraft/world/level/levelgen/synth/NoiseStack",
     "net/minecraft/world/level/levelgen/synth/PerlinNoise",
+    "net/minecraft/world/level/levelgen/synth/GradientNoise",
+    "net/minecraft/world/level/levelgen/synth/Noise",
 )
 
 TARGET_CLASS_PREFIXES = (
@@ -438,6 +440,10 @@ def source_inspection(vanilla_root: Path, patched_root: Path) -> list[str]:
                          "lambda$blendDensity$1"},
         "BlendingData.java": {"getDensity", "getHeight", "getAlpha", "getOffset",
                               "iterateDensities", "getCellYIndex", "getMinY"},
+        "NoiseStack.java": {"addToVolume", "get", "NoiseStack", "build"},
+        "PerlinNoise.java": {"getValue", "getOctaveNoise", "maxValue", "PerlinNoise"},
+        "GradientNoise.java": {"getValue", "get", "GradientNoise", "wrap"},
+        "Noise.java": {"addToVolume", "get"},
     }
     lines: list[str] = []
     for label, root in (("MOJANG_VANILLA", vanilla_root), ("NEOFORGE_PATCHED", patched_root)):
@@ -512,6 +518,13 @@ def bytecode_inspection(vanilla_jar: Path, patched_jar: Path) -> list[str]:
         "net.minecraft.world.level.levelgen.densityfunction.generator.ShiftNoiseFunction",
         "net.minecraft.world.level.levelgen.densityfunction.generator.DistanceToPointFunction",
         "net.minecraft.world.level.levelgen.densityfunction.generator.GradientFunction",
+        "net.minecraft.world.level.levelgen.synth.NoiseStack",
+        "net.minecraft.world.level.levelgen.synth.NoiseStack$Layer",
+        "net.minecraft.world.level.levelgen.synth.NoiseStack$Perlin",
+        "net.minecraft.world.level.levelgen.synth.NoiseStack$SmearedPerlin",
+        "net.minecraft.world.level.levelgen.synth.Noise",
+        "net.minecraft.world.level.levelgen.synth.PerlinNoise",
+        "net.minecraft.world.level.levelgen.synth.GradientNoise",
     ]
     lines: list[str] = []
     for label, archive in (("MOJANG_VANILLA", vanilla_jar), ("NEOFORGE_PATCHED", patched_jar)):
