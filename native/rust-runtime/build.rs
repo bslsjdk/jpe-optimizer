@@ -17,8 +17,9 @@ fn main() {
         .file("../cpp-kernels/src/density_graph.cpp")
         .include("../include")
         .define("JPE_NATIVE_BUILD", None);
-    // Keep the scalar comparison helper out of release runtime artifacts.
-    if std::env::var("PROFILE").as_deref() == Ok("debug") {
+    // The scalar comparison helper is present only in explicit benchmark builds,
+    // never in the normal release runtime artifact.
+    if std::env::var_os("CARGO_FEATURE_DENSITY_GRAPH_BENCHMARK").is_some() {
         build.define("JPE_DENSITY_GRAPH_TEST_REFERENCE", None);
     }
     build.compile("jpe_cpp_kernels");
