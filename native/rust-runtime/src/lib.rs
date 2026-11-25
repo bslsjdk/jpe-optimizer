@@ -59,8 +59,7 @@ unsafe extern "C" {
     fn jpe_cpp_density_graph_release(graph_handle: u64) -> i32;
     fn jpe_cpp_density_graph_load_cache(path: *const std::ffi::c_char, cache_key: *const std::ffi::c_char) -> u64;
     fn jpe_cpp_density_graph_save_cache(graph_handle: u64, path: *const std::ffi::c_char, cache_key: *const std::ffi::c_char) -> i32;
-    fn jpe_cpp_density_graph_load_cache(path: *const std::ffi::c_char, cache_key: *const std::ffi::c_char) -> u64;
-    fn jpe_cpp_density_graph_save_cache(graph_handle: u64, path: *const std::ffi::c_char, cache_key: *const std::ffi::c_char) -> i32;
+
 }
 
 #[no_mangle]
