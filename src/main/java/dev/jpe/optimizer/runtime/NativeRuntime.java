@@ -17,6 +17,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Supplier;
 import dev.jpe.optimizer.mixin.GradientNoiseAccessor;
 import dev.jpe.optimizer.mixin.NoiseStackLayerAccessor;
 import net.minecraft.world.level.levelgen.synth.Noise;
@@ -316,6 +317,32 @@ public final class NativeRuntime implements AutoCloseable {
     }
 
     /** Compiles or reuses an immutable native density graph. */
+    /**
+     * Startup/pre-world-creation preparation. On a cache hit this never invokes the
+     * Java DensityFunction capture supplier: it reads the persisted IR and uploads it
+     * once to the native runtime. Keep the returned executable alive for worldgen.
+     */
+    public PreparedDensityGraph prepareDensityGraph(Path cacheDirectory, String cacheKey,
+                                                     Supplier<DensityGraphIr> capture,
+                                                     boolean experimental) throws IOException {
+        Objects.requireNonNull(capture, "capture");
+        DensityGraphCache.LoadResult loaded = DensityGraphCache.loadOrBuild(
+                cacheDirectory, cacheKey, capture);
+        NativeDensityGraph executable = experimental
+                ? compileDensityGraphExperimental(loaded.graph())
+                : compileDensityGraph(loaded.graph());
+        int opaqueCount = (int) loaded.graph().nodes().stream()
+                .filter(node -> node.opcode() == DensityGraphIr.OPAQUE).count();
+        return new PreparedDensityGraph(executable, loaded.cacheHit(), loaded.cacheFile(),
+                loaded.graph().nodes().size(), opaqueCount);
+    }
+
+    public record PreparedDensityGraph(NativeDensityGraph executable, boolean cacheHit,
+                                       Path cacheFile, int nodeCount, int opaqueNodeCount)
+            implements AutoCloseable {
+        @Override public void close() { executable.close(); }
+    }
+
     /** Compiles only strict graphs; experimental sentinels require the explicit method below. */
     public NativeDensityGraph compileDensityGraph(DensityGraphIr graph) {
         return compileDensityGraphInternal(graph, false);
