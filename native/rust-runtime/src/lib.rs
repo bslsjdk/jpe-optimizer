@@ -38,6 +38,7 @@ const DENSITY_Z: u32 = 4;
 const DENSITY_ADD: u32 = 5;
 const DENSITY_MUL: u32 = 6;
 const DENSITY_OPAQUE: u32 = 7;
+const DENSITY_SUB: u32 = 8;
 #[cfg(test)]
 static CACHE_TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -611,10 +612,10 @@ mod tests {
                 input_b: 1, reserved: 0, immediate: 0.0 },
         ];
         let first = unsafe {
-            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 3, 0x1234)
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 4, 0x1234)
         };
         let second = unsafe {
-            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 3, 0x1234)
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 4, 0x1234)
         };
         assert_ne!(first, 0);
         assert_eq!(first, second, "identical graph/config should reuse the cached handle");
@@ -722,7 +723,7 @@ mod tests {
                 input_b: 1, reserved: 0, immediate: 0.0 },
         ];
         let handle = unsafe {
-            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 2, 3, 0xE771)
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 2, 4, 0xE771)
         };
         assert_ne!(handle, 0, "experimental graph should reach the native compiler");
         let mut output = [0.0_f32; 2];
@@ -752,7 +753,7 @@ mod tests {
                 input_b: 3, reserved: 0, immediate: 0.0 },
         ];
         let handle = unsafe {
-            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 3, 0xF32)
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 4, 0xF32)
         };
         assert_ne!(handle, 0);
         let mut output = [1.0_f32; 1];
@@ -790,7 +791,7 @@ mod tests {
                 input_b: 7, reserved: 0, immediate: 0.0 },
         ];
         let handle = unsafe {
-            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 8, 3, 0x71_1E)
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 8, 4, 0x71_1E)
         };
         assert_ne!(handle, 0);
         let (sx, sy, sz) = (32usize, 64usize, 32usize);
@@ -898,14 +899,14 @@ mod tests {
                 input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 },
         ];
         assert_eq!(unsafe {
-            jpe_runtime_density_graph_compile(invalid.as_ptr(), 2, 0, 3, 7)
+            jpe_runtime_density_graph_compile(invalid.as_ptr(), 2, 0, 4, 7)
         }, 0);
 
         let valid = [JpeDensityNode { opcode: DENSITY_CONST,
             input_a: DENSITY_NO_INPUT, input_b: DENSITY_NO_INPUT,
             reserved: 0, immediate: 1.0 }];
         let handle = unsafe {
-            jpe_runtime_density_graph_compile(valid.as_ptr(), 1, 0, 3, 7)
+            jpe_runtime_density_graph_compile(valid.as_ptr(), 1, 0, 4, 7)
         };
         assert_ne!(handle, 0);
         let mut output = [0.0_f32; 1];
