@@ -122,12 +122,12 @@ jobs:
           test "$(grep -c 'JPE_CLIMATE_RTREE_REAL fanOut=' build/climate-rtree-benchmark/overworld.log)" -eq 6
 
       - name: Real compiled-sampler Native parity during overworld generation
-        if: github.event_name == 'workflow_dispatch'
+        if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           mkdir -p build/sampler-parity
           rm -rf run
           mkdir -p run
-          printf 'eula=true\\n' > run/eula.txt
+          printf '%s\n' 'eula=true' > run/eula.txt
           cat > run/server.properties <<'PROPERTIES'
           level-seed=12648430
           level-type=minecraft:normal
