@@ -14,12 +14,23 @@ import java.util.Set;
 /** Lowers a pure compiled-sampler island to native density IR. */
 public final class CompiledSamplerArithmeticLowering {
     public record LoweredIsland(int islandId, DensityGraphIr graph,
-                                List<Integer> inputSourceNodeIds, int outputSourceNodeId,
+                                List<Integer> inputSourceNodeIds, List<Integer> outputSourceNodeIds,
                                 Map<Integer, Integer> nativeNodeBySourceNode) {
         public LoweredIsland {
             Objects.requireNonNull(graph, "graph");
             inputSourceNodeIds = List.copyOf(inputSourceNodeIds);
+            outputSourceNodeIds = List.copyOf(outputSourceNodeIds);
+            if (outputSourceNodeIds.isEmpty()) throw new IllegalArgumentException("An arithmetic island needs at least one output");
             nativeNodeBySourceNode = Map.copyOf(nativeNodeBySourceNode);
+        }
+        /** Compatibility accessor for callers that only consume the first output. */
+        public int outputSourceNodeId() { return outputSourceNodeIds.get(0); }
+        public List<Integer> nativeOutputNodeIds() {
+            return outputSourceNodeIds.stream().map(id -> {
+                Integer index = nativeNodeBySourceNode.get(id);
+                if (index == null) throw new IllegalStateException("Missing lowered output node " + id);
+                return index;
+            }).toList();
         }
     }
 
@@ -48,13 +59,13 @@ public final class CompiledSamplerArithmeticLowering {
                 throw new IllegalArgumentException("Island contains missing or unsupported node " + id);
             }
         }
-        if (island.outputNodeIds().size() != 1) {
-            throw new IllegalArgumentException(
-                    "Native single-root evaluator requires exactly one island output; found "
-                            + island.outputNodeIds().size());
+        if (island.outputNodeIds().isEmpty()) {
+            throw new IllegalArgumentException("Arithmetic island has no outputs");
+        }
+        for (int outputSource : island.outputNodeIds()) {
+            if (!members.contains(outputSource)) throw new IllegalArgumentException("Island output is not a member");
         }
         int outputSource = island.outputNodeIds().get(0);
-        if (!members.contains(outputSource)) throw new IllegalArgumentException("Island output is not a member");
 
         LinkedHashSet<Integer> externalSources = new LinkedHashSet<>();
         for (int id : island.nodeIds()) {
@@ -128,7 +139,7 @@ public final class CompiledSamplerArithmeticLowering {
         Integer root = nativeIndex.get(outputSource);
         if (root == null) throw new IllegalArgumentException("Unable to resolve island output");
         DensityGraphIr graph = new DensityGraphIr(lowered, root, configurationFingerprint);
-        return new LoweredIsland(island.id(), graph, orderedInputs, outputSource, nativeIndex);
+        return new LoweredIsland(island.id(), graph, orderedInputs, island.outputNodeIds(), nativeIndex);
     }
 
     private static int resolveChild(int child, Set<Integer> members,
