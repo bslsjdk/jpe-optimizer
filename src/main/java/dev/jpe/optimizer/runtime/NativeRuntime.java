@@ -86,6 +86,8 @@ public final class NativeRuntime implements AutoCloseable {
         private final Arena arena = Arena.ofShared();
         private MemorySegment encoded;
         private int capacity;
+        private MemorySegment output;
+        private int outputCapacity;
         private final AtomicBoolean leased = new AtomicBoolean();
 
         private boolean tryAcquire() { return leased.compareAndSet(false, true); }
@@ -101,6 +103,16 @@ public final class NativeRuntime implements AutoCloseable {
                 capacity = next;
             }
             return encoded;
+        }
+        private MemorySegment ensureOutputCapacity(int requiredFloats) {
+            if (outputCapacity < requiredFloats) {
+                int next = Math.max(1024, outputCapacity);
+                while (next < requiredFloats) next = Math.multiplyExact(next, 2);
+                output = arena.allocate(Math.multiplyExact((long) next, ValueLayout.JAVA_FLOAT.byteSize()),
+                        ValueLayout.JAVA_FLOAT.byteAlignment());
+                outputCapacity = next;
+            }
+            return output;
         }
         @Override public void close() {
             if (leased.get()) throw new IllegalStateException("Cannot close a leased density scratch arena");
@@ -488,14 +500,14 @@ public final class NativeRuntime implements AutoCloseable {
                                       int stepX, int stepY, int stepZ,
                                       float[] output) {
         lifecycle.readLock().lock();
+        DensityScratch scratch = null;
         try {
             ensureOpen();
             int length = validateDensityVolume(sizeX, sizeY, sizeZ, stepX, stepY, stepZ, output);
             if (graph.closed) throw new IllegalStateException("Native density graph has been released");
-            try (Arena arena = Arena.ofConfined()) {
-                MemorySegment nativeOutput = arena.allocate(
-                        Math.multiplyExact((long) length, ValueLayout.JAVA_FLOAT.byteSize()),
-                        ValueLayout.JAVA_FLOAT.byteAlignment());
+            scratch = acquireDensityScratch();
+            MemorySegment nativeOutput = scratch.ensureOutputCapacity(length);
+            try {
                 int status = (int) evaluateDensityGraph.invokeExact(
                         graph.handle, sizeX, sizeY, sizeZ,
                         minX, minY, minZ, stepX, stepY, stepZ,
@@ -506,6 +518,7 @@ public final class NativeRuntime implements AutoCloseable {
                 throw rethrow("Unable to evaluate native density graph", failure);
             }
         } finally {
+            if (scratch != null) scratch.release();
             lifecycle.readLock().unlock();
         }
     }
