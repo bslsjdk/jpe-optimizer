@@ -4,12 +4,14 @@ import java.util.EnumMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import net.minecraft.world.level.levelgen.densityfunction.DensitySampler;
+import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
 
 /** Opt-in, one-shot inventory of the real compiled final-density sampler graph. */
 public final class CompiledSamplerGraphDiagnostics {
     private static final System.Logger LOGGER =
             System.getLogger(CompiledSamplerGraphDiagnostics.class.getName());
     private static final AtomicBoolean CAPTURED = new AtomicBoolean();
+    private static final AtomicBoolean PARITY_ATTEMPTED = new AtomicBoolean();
     private static final boolean ENABLED = Boolean.getBoolean("jpe.traceCompiledSamplers");
     private static volatile CompiledSamplerGraphTrace.Snapshot lastSnapshot;
     private static volatile CompiledSamplerGraphIr.Graph lastGraph;
@@ -77,7 +79,65 @@ public final class CompiledSamplerGraphDiagnostics {
             }
         } catch (RuntimeException | LinkageError failure) {
             LOGGER.log(System.Logger.Level.WARNING,
-                    "Compiled sampler graph inventory failed without affecting world generation: {0}",
+                    "Compiled sampler graph inventory failed without affecting wor
+
+    /**
+     * Runs one bounded, shadow-only parity check against a real compiled sampler
+     * graph. It is deliberately separate from normal capture and disabled unless
+     * jpe.verifyCompiledSamplerParity=true and a native library path is configured.
+     */
+    public static void verifyNativeParityOnce(DensitySampler.Bound bound, DensityVolume volume) {
+        if (!Boolean.getBoolean("jpe.verifyCompiledSamplerParity")
+                || !PARITY_ATTEMPTED.compareAndSet(false, true)) return;
+        try {
+            NativeRuntime runtime = NativePerlinNoiseBackend.runtimeForDiagnostics();
+            if (runtime == null) {
+                LOGGER.log(System.Logger.Level.WARNING,
+                        "Native sampler parity was requested but no native runtime could be loaded");
+                return;
+            }
+            CompiledSamplerGraphTrace.CapturedGraph captured =
+                    CompiledSamplerGraphTrace.captureDetailed(
+                            bound.sampler(), DensitySampler.class::isInstance, 65_536);
+            CompiledSamplerGraphIr.Graph graph = CompiledSamplerGraphIr.lower(captured.snapshot());
+            String semanticFingerprint = CompiledSamplerGraphIr.semanticFingerprint(graph);
+            CompiledSamplerArithmeticIslands.Plan plan = CompiledSamplerArithmeticIslands.plan(graph);
+            CompiledSamplerArithmeticIslands.Island selected = plan.islands().stream()
+                    .filter(island -> !island.outputNodeIds().isEmpty())
+                    .max(java.util.Comparator.comparingInt(island -> island.nodeIds().size()))
+                    .orElse(null);
+            if (selected == null) {
+                LOGGER.log(System.Logger.Level.WARNING,
+                        "Native sampler parity found no eligible arithmetic island; nodes={0}, boundaries={1}",
+                        graph.nodes().size(), plan.boundaryNodeCount());
+                return;
+            }
+
+            long fingerprint = Long.parseUnsignedLong(semanticFingerprint.substring(0, 16), 16);
+            CompiledSamplerArithmeticLowering.LoweredIsland lowered =
+                    CompiledSamplerArithmeticLowering.lower(graph, selected, fingerprint);
+            try (NativeRuntime.NativeDensityGraph executable = runtime.compileDensityGraph(lowered.graph())) {
+                CompiledSamplerNativeParity.Report report = CompiledSamplerNativeParity.verify(
+                        executable, captured, lowered, bound, volume,
+                        volume.sizeX(), volume.sizeY(), volume.sizeZ(),
+                        volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
+                        volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ());
+                LOGGER.log(System.Logger.Level.INFO,
+                        "Native sampler parity: exact={0}, outputs={1}, samplesPerOutput={2}, compared={3}, mismatches={4}, firstOutput={5}, firstSample={6}, expectedBits=0x{7}, actualBits=0x{8}, islandNodes={9}, graphFingerprint={10}",
+                        report.exact(), report.outputCount(), report.samplesPerOutput(),
+                        report.comparedValues(), report.mismatches(), report.firstOutputIndex(),
+                        report.firstSampleIndex(), Integer.toHexString(report.expectedBits()),
+                        Integer.toHexString(report.actualBits()), selected.nodeIds().size(),
+                        semanticFingerprint);
+            }
+        } catch (RuntimeException | LinkageError failure) {
+            LOGGER.log(System.Logger.Level.WARNING,
+                    "Native sampler parity failed in shadow mode; Java worldgen remains authoritative: {0}",
+                    failure.toString());
+        }
+    }
+
+ld generation: {0}",
                     failure.toString());
         }
     }
