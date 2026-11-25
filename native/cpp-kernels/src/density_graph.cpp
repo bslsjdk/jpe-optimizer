@@ -383,23 +383,34 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate(
     std::array<float, kMaxTileSamples> z_values{};
     const uint64_t plane_size = static_cast<uint64_t>(size_x) * size_y;
 
+    // Static leaves do not change between tiles, so initialize their lanes once
+    // per volume rather than refilling every tile.
+    for (const StaticBinding& binding : graph->static_values) {
+        float* destination = tile_values.data() + static_cast<size_t>(binding.node) * tile_capacity;
+        std::fill_n(destination, tile_capacity, binding.value);
+    }
+
     for (uint64_t tile_start = 0; tile_start < output_length; tile_start += tile_capacity) {
         const uint32_t count = static_cast<uint32_t>(
             std::min<uint64_t>(tile_capacity, output_length - tile_start));
 
-        for (const StaticBinding& binding : graph->static_values) {
-            float* destination = tile_values.data() + static_cast<size_t>(binding.node) * tile_capacity;
-            std::fill_n(destination, count, binding.value);
-        }
+        const uint32_t z_start = static_cast<uint32_t>(tile_start / plane_size);
+        const uint64_t within_plane = tile_start - static_cast<uint64_t>(z_start) * plane_size;
+        uint32_t x_index = static_cast<uint32_t>(within_plane / size_y);
+        uint32_t y_index = static_cast<uint32_t>(within_plane - static_cast<uint64_t>(x_index) * size_y);
+        uint32_t z_index = z_start;
 
         for (uint32_t sample = 0; sample < count; ++sample) {
-            const uint64_t linear = tile_start + sample;
-            const uint32_t y_index = static_cast<uint32_t>(linear % size_y);
-            const uint32_t x_index = static_cast<uint32_t>((linear / size_y) % size_x);
-            const uint32_t z_index = static_cast<uint32_t>(linear / plane_size);
             x_values[sample] = static_cast<float>(wrapped_coordinate(min_x, x_index, step_x));
             y_values[sample] = static_cast<float>(wrapped_coordinate(min_y, y_index, step_y));
             z_values[sample] = static_cast<float>(wrapped_coordinate(min_z, z_index, step_z));
+            if (++y_index == size_y) {
+                y_index = 0;
+                if (++x_index == size_x) {
+                    x_index = 0;
+                    ++z_index;
+                }
+            }
         }
 
         for (const CoordinateBinding& binding : graph->coordinates) {
