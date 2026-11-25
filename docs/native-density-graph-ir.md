@@ -147,3 +147,24 @@ A successful arithmetic microbenchmark is not evidence of a Minecraft worldgen s
 - Moving BlockState, registries, chunk mutation, heightmaps, structures, carvers, or arbitrary mod callbacks into C++.
 - Uploading generated terrain directly to the GPU. Terrain density evaluation is CPU worldgen; rendering uploads are a separate later pipeline.
 - Claiming speedup before exact-output and full-chunk measurements.
+
+
+## Runtime trace compiler experiment
+
+The Java side now contains an opt-in `RuntimeDensityTrace` collector. Instrumentation can
+open nested scopes around observed DensityFunction calls, record caller/callee identity
+edges, and attach branch-outcome guards. Capture is bounded by a configurable event
+budget and snapshots contain implementation class names and integer IDs only; they do
+not retain Minecraft object references after the trace is stopped.
+
+This collector is deliberately not wired into world generation yet. A generic call trace
+does not recover arithmetic operands, exact float/double conversion points, random/noise
+state, cache semantics, or side effects. It is evidence about an execution path, not a
+native-executable graph. The next integration step must instrument only methods confirmed
+from the exact 26.3 NeoForge-patched artifact, then add explicit semantic adapters for
+supported node types. Any unknown stateful or branch-sensitive node keeps the complete
+path on Java.
+
+The collector's unit tests cover nested caller/callee edges, branch outcomes, disabled
+capture, and event-budget overflow. No live DensityFunction trace or worldgen speedup is
+claimed by this scaffolding.
