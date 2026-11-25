@@ -31,6 +31,10 @@ import net.minecraft.world.level.levelgen.synth.PerlinNoise;
 public final class NativeRuntime implements AutoCloseable {
     public static final int EXPECTED_ABI_VERSION = 6;
     private static final long PERLIN_LAYER_SIZE = 56L;
+    private static final MemoryLayout DENSITY_NODE_LAYOUT = MemoryLayout.structLayout(
+            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+            ValueLayout.JAVA_DOUBLE
+    );
 
     public static final int JOB_COMPLETE = 0;
     public static final int JOB_PENDING = 1;
@@ -52,7 +56,11 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle waitJob;
     private final MethodHandle cancelJob;
     private final MethodHandle releaseJob;
+    private final MethodHandle compileDensityGraph;
+    private final MethodHandle evaluateDensityGraph;
+    private final MethodHandle releaseDensityGraph;
     private final ConcurrentHashMap<Long, NativeJob> jobs = new ConcurrentHashMap<>();
+    private final java.util.Set<NativeDensityGraph> densityGraphs = ConcurrentHashMap.newKeySet();
     private final ReentrantReadWriteLock lifecycle = new ReentrantReadWriteLock();
     // Keep one reusable FFM scratch arena per calling worldgen worker. Only
     // permutation and output buffers remain after axis-coordinate generation moved native-side.
@@ -129,7 +137,9 @@ public final class NativeRuntime implements AutoCloseable {
     private NativeRuntime(MethodHandle configureWorkers, int workerCount,
                           MethodHandle add, MethodHandle perlin, MethodHandle perlinStack, MethodHandle submit, MethodHandle submitStack,
                           MethodHandle status, MethodHandle wait,
-                          MethodHandle cancel, MethodHandle release) {
+                          MethodHandle cancel, MethodHandle release,
+                          MethodHandle compileDensityGraph, MethodHandle evaluateDensityGraph,
+                          MethodHandle releaseDensityGraph) {
         this.configureWorkers = configureWorkers;
         this.workerCount = workerCount;
         this.addF32 = add;
@@ -141,6 +151,9 @@ public final class NativeRuntime implements AutoCloseable {
         this.waitJob = wait;
         this.cancelJob = cancel;
         this.releaseJob = release;
+        this.compileDensityGraph = compileDensityGraph;
+        this.evaluateDensityGraph = evaluateDensityGraph;
+        this.releaseDensityGraph = releaseDensityGraph;
     }
 
     public static NativeRuntime load(Path libraryPath) throws IOException {
@@ -210,6 +223,20 @@ public final class NativeRuntime implements AutoCloseable {
             MethodHandle release = linker.downcallHandle(
                     lookup.find("jpe_runtime_release_job").orElseThrow(() -> new IllegalStateException("Missing async release symbol")),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG));
+            MethodHandle compileDensityGraph = linker.downcallHandle(
+                    lookup.find("jpe_runtime_density_graph_compile").orElseThrow(() -> new IllegalStateException("Missing density graph compile symbol")),
+                    FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS,
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG));
+            MethodHandle evaluateDensityGraph = linker.downcallHandle(
+                    lookup.find("jpe_runtime_density_graph_evaluate").orElseThrow(() -> new IllegalStateException("Missing density graph evaluate symbol")),
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG,
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                            ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
+            MethodHandle releaseDensityGraph = linker.downcallHandle(
+                    lookup.find("jpe_runtime_density_graph_release").orElseThrow(() -> new IllegalStateException("Missing density graph release symbol")),
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG));
 
             int actual = (int) version.invokeExact();
             if (actual != EXPECTED_ABI_VERSION) {
@@ -218,7 +245,8 @@ public final class NativeRuntime implements AutoCloseable {
             int requestedWorkers = requestedNativeWorkers();
             int actualWorkers = (int) configureWorkers.invokeExact(requestedWorkers);
             if (actualWorkers < 1) throw new IllegalStateException("Unable to configure native workers: " + actualWorkers);
-            return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, perlinStack, submit, submitStack, status, wait, cancel, release);
+            return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, perlinStack, submit, submitStack, status, wait, cancel, release,
+                    compileDensityGraph, evaluateDensityGraph, releaseDensityGraph);
         } catch (Throwable failure) {
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
         }
@@ -242,6 +270,124 @@ public final class NativeRuntime implements AutoCloseable {
         }
         if (requested < 1) throw new IllegalArgumentException("jpe.nativeWorkers must be 'auto' or a positive integer");
         return Math.min(requested, available);
+    }
+
+    /** Compiles or reuses an immutable native density graph. */
+    public NativeDensityGraph compileDensityGraph(DensityGraphIr graph) {
+        Objects.requireNonNull(graph, "graph");
+        lifecycle.readLock().lock();
+        try {
+            ensureOpen();
+            List<DensityGraphIr.Node> nodes = graph.nodes();
+            try (Arena arena = Arena.ofConfined()) {
+                long bytes = Math.multiplyExact((long) nodes.size(), DENSITY_NODE_LAYOUT.byteSize());
+                MemorySegment encoded = arena.allocate(bytes, DENSITY_NODE_LAYOUT.byteAlignment());
+                for (int i = 0; i < nodes.size(); ++i) {
+                    DensityGraphIr.Node node = nodes.get(i);
+                    long base = Math.multiplyExact((long) i, DENSITY_NODE_LAYOUT.byteSize());
+                    encoded.set(ValueLayout.JAVA_INT, base, node.opcode());
+                    encoded.set(ValueLayout.JAVA_INT, base + 4L, node.inputA() < 0 ? 0xffff_ffff : node.inputA());
+                    encoded.set(ValueLayout.JAVA_INT, base + 8L, node.inputB() < 0 ? 0xffff_ffff : node.inputB());
+                    encoded.set(ValueLayout.JAVA_INT, base + 12L, 0);
+                    encoded.set(ValueLayout.JAVA_DOUBLE, base + 16L, node.immediate());
+                }
+                long handle = (long) compileDensityGraph.invokeExact(
+                        encoded, nodes.size(), graph.rootNode(), graph.configurationFingerprint());
+                if (handle == 0L) throw new IllegalStateException("Native density graph compiler rejected the IR");
+                NativeDensityGraph compiled = new NativeDensityGraph(this, handle);
+                densityGraphs.add(compiled);
+                return compiled;
+            } catch (Throwable failure) {
+                throw rethrow("Unable to compile native density graph", failure);
+            }
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    private static int validateDensityVolume(int sizeX, int sizeY, int sizeZ,
+                                             int stepX, int stepY, int stepZ, float[] output) {
+        Objects.requireNonNull(output, "output");
+        if (sizeX <= 0 || sizeY <= 0 || sizeZ <= 0
+                || stepX == 0 || stepY == 0 || stepZ == 0) {
+            throw new IllegalArgumentException("Invalid density volume dimensions or axis steps");
+        }
+        long elements = Math.multiplyExact(Math.multiplyExact((long) sizeX, sizeY), sizeZ);
+        if (elements > 1_048_576L || elements > output.length) {
+            throw new IllegalArgumentException("Density output is too small or exceeds the native volume limit");
+        }
+        return Math.toIntExact(elements);
+    }
+
+    private void evaluateDensityGraph(NativeDensityGraph graph,
+                                      int sizeX, int sizeY, int sizeZ,
+                                      int minX, int minY, int minZ,
+                                      int stepX, int stepY, int stepZ,
+                                      float[] output) {
+        lifecycle.readLock().lock();
+        try {
+            ensureOpen();
+            int length = validateDensityVolume(sizeX, sizeY, sizeZ, stepX, stepY, stepZ, output);
+            if (graph.closed) throw new IllegalStateException("Native density graph has been released");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment nativeOutput = arena.allocate(
+                        Math.multiplyExact((long) length, ValueLayout.JAVA_FLOAT.byteSize()),
+                        ValueLayout.JAVA_FLOAT.byteAlignment());
+                int status = (int) evaluateDensityGraph.invokeExact(
+                        graph.handle, sizeX, sizeY, sizeZ,
+                        minX, minY, minZ, stepX, stepY, stepZ,
+                        nativeOutput, (long) length);
+                checkStatus(status, "density-graph-evaluate");
+                MemorySegment.copy(nativeOutput, ValueLayout.JAVA_FLOAT, 0L, output, 0, length);
+            } catch (Throwable failure) {
+                throw rethrow("Unable to evaluate native density graph", failure);
+            }
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    private void releaseDensityGraph(NativeDensityGraph graph) {
+        lifecycle.readLock().lock();
+        try {
+            ensureOpen();
+            if (graph.closed) return;
+            try {
+                int status = (int) releaseDensityGraph.invokeExact(graph.handle);
+                checkStatus(status, "density-graph-release");
+                graph.closed = true;
+                densityGraphs.remove(graph);
+            } catch (Throwable failure) {
+                throw rethrow("Unable to release native density graph", failure);
+            }
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    public static final class NativeDensityGraph implements AutoCloseable {
+        private final NativeRuntime runtime;
+        private final long handle;
+        private volatile boolean closed;
+
+        private NativeDensityGraph(NativeRuntime runtime, long handle) {
+            this.runtime = runtime;
+            this.handle = handle;
+        }
+
+        public synchronized void evaluate(int sizeX, int sizeY, int sizeZ,
+                                           int minX, int minY, int minZ,
+                                           int stepX, int stepY, int stepZ,
+                                           float[] output) {
+            if (closed) throw new IllegalStateException("Native density graph has been released");
+            runtime.evaluateDensityGraph(this, sizeX, sizeY, sizeZ,
+                    minX, minY, minZ, stepX, stepY, stepZ, output);
+        }
+
+        @Override
+        public synchronized void close() {
+            if (!closed) runtime.releaseDensityGraph(this);
+        }
     }
 
     public float[] addEachValueToItself(float[] input) {
@@ -581,6 +727,10 @@ public final class NativeRuntime implements AutoCloseable {
         if (!jobs.isEmpty()) {
             throw new IllegalStateException("Cannot unload native library while " + jobs.size()
                     + " jobs are still owned; cancel, await completion, and release each job first");
+        }
+        if (!densityGraphs.isEmpty()) {
+            throw new IllegalStateException("Cannot unload native library while " + densityGraphs.size()
+                    + " compiled density graphs are still retained; close each graph first");
         }
         closed = true;
         PerlinScratch scratch;
