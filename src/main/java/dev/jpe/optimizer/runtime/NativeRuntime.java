@@ -178,20 +178,6 @@ public final class NativeRuntime implements AutoCloseable {
             }
         }
 
-        public void evaluateWithInputs(int sizeX, int sizeY, int sizeZ,
-                                       int minX, int minY, int minZ,
-                                       int stepX, int stepY, int stepZ,
-                                       float[][] inputs, float[] output) {
-            graphLifecycle.readLock().lock();
-            try {
-                if (closed) throw new IllegalStateException("Native density graph has been released");
-                runtime.evaluateDensityGraphWithInputs(this, sizeX, sizeY, sizeZ,
-                        minX, minY, minZ, stepX, stepY, stepZ, inputs, output);
-            } finally {
-                graphLifecycle.readLock().unlock();
-            }
-        }
-
         @Override
         public void close() {
             if (leased.get()) throw new IllegalStateException("Cannot close a leased Perlin scratch arena");
@@ -657,6 +643,20 @@ public final class NativeRuntime implements AutoCloseable {
                 if (closed) throw new IllegalStateException("Native density graph has been released");
                 runtime.evaluateDensityGraph(this, sizeX, sizeY, sizeZ,
                         minX, minY, minZ, stepX, stepY, stepZ, output);
+            } finally {
+                graphLifecycle.readLock().unlock();
+            }
+        }
+
+        public void evaluateWithInputs(int sizeX, int sizeY, int sizeZ,
+                                       int minX, int minY, int minZ,
+                                       int stepX, int stepY, int stepZ,
+                                       float[][] inputs, float[] output) {
+            graphLifecycle.readLock().lock();
+            try {
+                if (closed) throw new IllegalStateException("Native density graph has been released");
+                runtime.evaluateDensityGraphWithInputs(this, sizeX, sizeY, sizeZ,
+                        minX, minY, minZ, stepX, stepY, stepZ, inputs, output);
             } finally {
                 graphLifecycle.readLock().unlock();
             }
