@@ -72,6 +72,14 @@ struct XyPermutationCache {
 
 #if (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
 __attribute__((target("avx2")))
+inline bool perlin_eight_floors_same_avx2(const int32_t* floors) noexcept {
+    const __m256i values = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(floors));
+    const __m256i first = _mm256_set1_epi32(floors[0]);
+    const __m256i equal = _mm256_cmpeq_epi32(values, first);
+    return _mm256_movemask_epi8(equal) == -1;
+}
+
+__attribute__((target("avx2")))
 inline void perlin_evaluate_8_avx2(
     const float* relative_y, const float* alpha_y, float* output,
     const float* corner_xz, const float* corner_y,
@@ -324,13 +332,8 @@ int32_t perlin_add_volume_impl(
 #if (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
                 if constexpr (CacheY && UseAvx2) {
                     if (iy + 8 <= size_y) {
-                        bool same_floor = true;
-                        for (uint32_t lane = 1; lane < 8; ++lane) {
-                            if (y_floors[iy + lane] != y_floors[iy]) {
-                                same_floor = false;
-                                break;
-                            }
-                        }
+                        const bool same_floor =
+                            perlin_eight_floors_same_avx2(y_floors.data() + iy);
                         if (!same_floor) {
                             float unique_corner_xz[8][8]{};
                             float unique_corner_y[8][8]{};
