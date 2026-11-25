@@ -184,6 +184,12 @@ public final class CompiledSamplerArithmeticLowering {
                     int constant = appendConstant(lowered, node, "left");
                     lowered.add(DensityGraphIr.Node.divide(constant, input));
                 }
+                case CLAMP -> {
+                    int input = resolveOnlyChild(node, members, nativeIndex, inputSlot);
+                    float min = readFloatComponent(node, "min");
+                    float max = readFloatComponent(node, "max");
+                    lowered.add(DensityGraphIr.Node.clamp(input, min, max));
+                }
                 default -> throw new IllegalArgumentException("Unsupported sampler operation " + node.op());
             }
             nativeIndex.put(sourceId, lowered.size() - 1);
@@ -243,6 +249,18 @@ public final class CompiledSamplerArithmeticLowering {
         return lowered.size() - 1;
     }
 
+    private static float readFloatComponent(CompiledSamplerGraphIr.Node node, String component) {
+        String raw = node.scalarValues().get(component);
+        if (raw == null) {
+            throw new IllegalArgumentException("Sampler " + node.id() + " has no " + component + " float component");
+        }
+        try {
+            return Float.parseFloat(raw);
+        } catch (NumberFormatException failure) {
+            throw new IllegalArgumentException("Invalid float32 " + component + " on sampler " + node.id(), failure);
+        }
+    }
+
     private static double readFloatConstant(CompiledSamplerGraphIr.Node node) {
         String raw = node.scalarValues().get("value");
         if (raw == null) {
@@ -262,6 +280,7 @@ public final class CompiledSamplerArithmeticLowering {
                 || op == CompiledSamplerGraphIr.Op.CONST_ADD_RIGHT
                 || op == CompiledSamplerGraphIr.Op.CONST_SUB_LEFT
                 || op == CompiledSamplerGraphIr.Op.CONST_MUL_RIGHT
-                || op == CompiledSamplerGraphIr.Op.CONST_DIV_LEFT;
+                || op == CompiledSamplerGraphIr.Op.CONST_DIV_LEFT
+                || op == CompiledSamplerGraphIr.Op.CLAMP;
     }
 }
