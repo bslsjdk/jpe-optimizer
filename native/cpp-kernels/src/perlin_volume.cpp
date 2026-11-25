@@ -105,6 +105,37 @@ inline void perlin_evaluate_8_avx2(
     const __m256 old_output = _mm256_loadu_ps(output);
     _mm256_storeu_ps(output, _mm256_add_ps(old_output, sample));
 }
+__attribute__((target("avx2")))
+inline void perlin_evaluate_8_avx2_independent(
+    const float* relative_y, const float* alpha_y, float* output,
+    const float corner_xz[8][8], const float corner_y[8][8],
+    float alpha_x, float alpha_z, float amplitude
+) noexcept {
+    const __m256 ry = _mm256_loadu_ps(relative_y);
+    const __m256 ay = _mm256_loadu_ps(alpha_y);
+    const __m256 one = _mm256_set1_ps(1.0F);
+    const __m256 ax = _mm256_set1_ps(alpha_x);
+    const __m256 az = _mm256_set1_ps(alpha_z);
+    const __m256 amp = _mm256_set1_ps(amplitude);
+    const __m256 ry1 = _mm256_sub_ps(ry, one);
+    __m256 values[8];
+    for (int i = 0; i < 8; ++i) {
+        const __m256 cx = _mm256_loadu_ps(corner_xz[i]);
+        const __m256 cy = _mm256_loadu_ps(corner_y[i]);
+        const __m256 relative = (i == 2 || i == 3 || i == 6 || i == 7) ? ry1 : ry;
+        values[i] = _mm256_add_ps(cx, _mm256_mul_ps(cy, relative));
+    }
+    const __m256 lower0 = _mm256_add_ps(_mm256_mul_ps(_mm256_sub_ps(values[1], values[0]), ax), values[0]);
+    const __m256 lower1 = _mm256_add_ps(_mm256_mul_ps(_mm256_sub_ps(values[3], values[2]), ax), values[2]);
+    const __m256 upper0 = _mm256_add_ps(_mm256_mul_ps(_mm256_sub_ps(values[5], values[4]), ax), values[4]);
+    const __m256 upper1 = _mm256_add_ps(_mm256_mul_ps(_mm256_sub_ps(values[7], values[6]), ax), values[6]);
+    const __m256 lower = _mm256_add_ps(_mm256_mul_ps(_mm256_sub_ps(lower1, lower0), ay), lower0);
+    const __m256 upper = _mm256_add_ps(_mm256_mul_ps(_mm256_sub_ps(upper1, upper0), ay), upper0);
+    const __m256 interpolated = _mm256_add_ps(_mm256_mul_ps(_mm256_sub_ps(upper, lower), az), lower);
+    const __m256 sample = _mm256_mul_ps(amp, interpolated);
+    const __m256 old_output = _mm256_loadu_ps(output);
+    _mm256_storeu_ps(output, _mm256_add_ps(old_output, sample));
+}
 #endif
 
 template<bool CacheY, bool CacheXY, bool UseAvx2>
@@ -229,6 +260,44 @@ int32_t perlin_add_volume_impl(
 
             uint32_t iy = 0;
             while (iy < size_y) {
+#if (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
+                if constexpr (CacheY && UseAvx2) {
+                    if (iy + 8 <= size_y) {
+                        bool same_floor = true;
+                        for (uint32_t lane = 1; lane < 8; ++lane) {
+                            if (y_floors[iy + lane] != y_floors[iy]) {
+                                same_floor = false;
+                                break;
+                            }
+                        }
+                        if (!same_floor) {
+                            float lane_corner_xz[8][8];
+                            float lane_corner_y[8][8];
+                            for (uint32_t lane = 0; lane < 8; ++lane) {
+                                const int32_t lane_floor = y_floors[iy + lane];
+                                const int32_t lane_xy00 = static_cast<int32_t>(permute_sum(permutation, x0, lane_floor));
+                                const int32_t lane_xy01 = static_cast<int32_t>(permute_sum(permutation, x0, lane_floor, 1));
+                                const int32_t lane_xy10 = static_cast<int32_t>(permute_sum(permutation, x1, lane_floor));
+                                const int32_t lane_xy11 = static_cast<int32_t>(permute_sum(permutation, x1, lane_floor, 1));
+                                corner(permutation, static_cast<uint32_t>(lane_xy00) + static_cast<uint32_t>(floor_z), relative_x, relative_z, lane_corner_xz[0][lane], lane_corner_y[0][lane]);
+                                corner(permutation, static_cast<uint32_t>(lane_xy10) + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z, lane_corner_xz[1][lane], lane_corner_y[1][lane]);
+                                corner(permutation, static_cast<uint32_t>(lane_xy01) + static_cast<uint32_t>(floor_z), relative_x, relative_z, lane_corner_xz[2][lane], lane_corner_y[2][lane]);
+                                corner(permutation, static_cast<uint32_t>(lane_xy11) + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z, lane_corner_xz[3][lane], lane_corner_y[3][lane]);
+                                corner(permutation, static_cast<uint32_t>(lane_xy00) + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F, lane_corner_xz[4][lane], lane_corner_y[4][lane]);
+                                corner(permutation, static_cast<uint32_t>(lane_xy10) + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F, lane_corner_xz[5][lane], lane_corner_y[5][lane]);
+                                corner(permutation, static_cast<uint32_t>(lane_xy01) + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F, lane_corner_xz[6][lane], lane_corner_y[6][lane]);
+                                corner(permutation, static_cast<uint32_t>(lane_xy11) + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F, lane_corner_xz[7][lane], lane_corner_y[7][lane]);
+                            }
+                            perlin_evaluate_8_avx2_independent(
+                                y_relative.data() + iy, y_alpha.data() + iy,
+                                output + base + iy, lane_corner_xz, lane_corner_y,
+                                alpha_x, alpha_z, amplitude);
+                            iy += 8;
+                            continue;
+                        }
+                    }
+                }
+#endif
                 // Gradient corners depend on floor(Y), not on the fractional Y
                 // coordinate. Reuse them for the whole contiguous run that maps
                 // to the same lattice cell.
