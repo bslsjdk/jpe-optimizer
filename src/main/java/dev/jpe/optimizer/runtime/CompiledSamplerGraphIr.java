@@ -68,7 +68,10 @@ public final class CompiledSamplerGraphIr {
                         "Preserve left-first evaluation; left == +/-0 returns +0 without evaluating right";
                 case MIN_RIGHT_BOUND -> "Preserve rightMinValue guard and Java Math.min(float,float)";
                 case MAX_RIGHT_BOUND -> "Preserve rightMaxValue guard and Java Math.max(float,float)";
-                case CONST_MUL_RIGHT, CONST_DIV_LEFT ->
+                case CONST_ADD_RIGHT -> "Exact left + right-float operation; preserve the sampler's float32 constant";
+                case CONST_SUB_LEFT -> "Exact left-float - right operation; preserve operand order and float32 constant";
+                case CONST_MUL_RIGHT -> "Exact left * right-float operation; no generic binary zero shortcut";
+                case CONST_DIV_LEFT ->
                         "Preserve operand order and Java float32 arithmetic; no generic zero shortcut";
                 case CONSTANT -> "Exact float32 constant sampler; value remains a float scalar";
                 case CACHE_BOUNDARY -> "Do not inline across Minecraft cache identity or volume lifetime";
