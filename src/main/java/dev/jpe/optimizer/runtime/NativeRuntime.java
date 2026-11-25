@@ -366,15 +366,16 @@ public final class NativeRuntime implements AutoCloseable {
             MethodHandle saveDensityGraphCache = linker.downcallHandle(
                     lookup.find("jpe_runtime_density_graph_save_cache").orElseThrow(() -> new IllegalStateException("Missing native density cache save symbol")),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
-            MethodHandle blendDensityVolume = linker.downcallHandle(
-                    lookup.find("jpe_runtime_blend_density_volume").orElseThrow(() -> new IllegalStateException("Missing native Blender density volume symbol")),
-                    FunctionDescriptor.of(ValueLayout.JAVA_INT,
-                            ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
-                            ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
-                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
-                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
-                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
-                            ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
+            MethodHandle blendDensityVolume = lookup.find("jpe_runtime_blend_density_volume")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                                    ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)))
+                    .orElse(null);
 
             int actual = (int) version.invokeExact();
             if (actual != EXPECTED_ABI_VERSION) {
@@ -424,6 +425,10 @@ public final class NativeRuntime implements AutoCloseable {
             encoded.set(ValueLayout.JAVA_INT, base + 8L, view.minSectionY());
             encoded.set(ValueLayout.JAVA_INT, base + 12L, view.sectionCount());
             float[][] columns = view.densityColumns();
+            int requiredColumnLength = Math.multiplyExact(view.sectionCount(), 2);
+            if (view.sectionCount() <= 0 || view.sectionCount() > 128) {
+                throw new IllegalArgumentException("BlendingData section count is outside the native limit");
+            }
             for (int column = 0; column < 16; ++column) {
                 long pointerOffset = base + BLENDING_DATA_POINTERS_OFFSET
                         + (long) column * ValueLayout.ADDRESS.byteSize();
@@ -432,10 +437,13 @@ public final class NativeRuntime implements AutoCloseable {
                     encoded.set(ValueLayout.ADDRESS, pointerOffset, MemorySegment.NULL);
                     continue;
                 }
+                if (source.length < requiredColumnLength) {
+                    throw new IllegalArgumentException("BlendingData density column is shorter than its section range");
+                }
                 MemorySegment rawColumn = arena.allocate(
-                        Math.multiplyExact((long) source.length, ValueLayout.JAVA_FLOAT.byteSize()),
+                        Math.multiplyExact((long) requiredColumnLength, ValueLayout.JAVA_FLOAT.byteSize()),
                         ValueLayout.JAVA_FLOAT.byteAlignment());
-                MemorySegment.copy(source, 0, rawColumn, ValueLayout.JAVA_FLOAT, 0, source.length);
+                MemorySegment.copy(source, 0, rawColumn, ValueLayout.JAVA_FLOAT, 0, requiredColumnLength);
                 encoded.set(ValueLayout.ADDRESS, pointerOffset, rawColumn);
             }
         }
@@ -447,11 +455,14 @@ public final class NativeRuntime implements AutoCloseable {
      * Java only exposes raw BlendingData arrays and volume metadata; all cell mapping,
      * fixed lookup, spatial indexing, neighbor search, weighting, and interpolation are C++.
      */
+    public boolean supportsBlenderDensityVolume() { return blendDensityVolume != null; }
+
     public void blendDensityVolume(Blender blender, DensityVolume volume,
                                    float[] noiseValues, float[] outputValues) {
         lifecycle.readLock().lock();
         try {
             ensureOpen();
+            if (blendDensityVolume == null) throw new UnsupportedOperationException("Native runtime does not export Blender density volume support");
             Objects.requireNonNull(blender, "blender");
             Objects.requireNonNull(volume, "volume");
             Objects.requireNonNull(noiseValues, "noiseValues");

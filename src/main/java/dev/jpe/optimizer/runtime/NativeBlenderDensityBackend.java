@@ -30,7 +30,7 @@ public final class NativeBlenderDensityBackend {
         }
         ATTEMPTS.increment();
         NativeRuntime runtime = NativePerlinNoiseBackend.runtimeForDiagnostics();
-        if (runtime == null) {
+        if (runtime == null || !runtime.supportsBlenderDensityVolume()) {
             FALLBACKS.increment();
             return false;
         }
