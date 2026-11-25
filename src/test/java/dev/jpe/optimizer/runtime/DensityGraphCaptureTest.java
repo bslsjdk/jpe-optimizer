@@ -93,4 +93,21 @@ class DensityGraphCaptureTest {
         assertTrue(capture.lastStats().conversionNanos() >= 0);
     }
 
+    @Test
+    void preservesSharedCrossEdgesDuringIterativePostOrderTraversal() {
+        DensityGraphCapture capture = new DensityGraphCapture();
+        DensityNode shared = new DensityNode();
+        DensityNode leftOnly = new DensityNode();
+        DensityNode left = new DensityNode();
+        DensityNode root = new DensityNode();
+        capture.constant(shared, 2.0);
+        capture.constant(leftOnly, 3.0);
+        capture.add(left, shared, leftOnly);
+        capture.multiply(root, left, shared);
+        DensityGraphIr graph = capture.finish(root, 0L);
+        assertEquals(4, graph.nodes().size());
+        assertEquals(0, graph.nodes().get(2).inputA());
+        assertEquals(0, graph.nodes().get(3).inputB());
+    }
+
 }
