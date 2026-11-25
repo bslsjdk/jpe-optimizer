@@ -38,6 +38,7 @@ const DENSITY_Y: u32 = 3;
 const DENSITY_Z: u32 = 4;
 const DENSITY_ADD: u32 = 5;
 const DENSITY_MUL: u32 = 6;
+const DENSITY_OPAQUE: u32 = 7;
 
 unsafe extern "C" {
     fn jpe_cpp_density_graph_compile(
@@ -608,6 +609,32 @@ mod tests {
                 output.as_mut_ptr(), 1,
             )
         }, 2);
+    }
+
+    #[test]
+    fn experimental_opaque_node_propagates_nan_without_rejecting_known_graph() {
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 4.0 },
+            JpeDensityNode { opcode: DENSITY_OPAQUE, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 1, immediate: f64::NAN },
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 0,
+                input_b: 1, reserved: 0, immediate: 0.0 },
+        ];
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 2, 1, 0xE771)
+        };
+        assert_ne!(handle, 0, "experimental graph should reach the native compiler");
+        let mut output = [0.0_f32; 2];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                handle, 2, 1, 1, 0, 0, 0, 1, 1, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        assert!(output.iter().all(|value| value.is_nan()),
+            "opaque result must be visible as NaN, not replaced by a guessed value");
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
     }
 
     #[test]
