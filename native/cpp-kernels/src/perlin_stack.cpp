@@ -252,14 +252,20 @@ extern "C" int32_t jpe_cpp_perlin_add_stack(
     if (!validate_stack(layers, layer_count, size_x, size_y, size_z,
                         step_x, step_y, step_z, output, output_length)) return 1;
 
-    // The fused path is bit-exact against ordered per-layer evaluation.
-    // Test it on real full-chunk generation; retain the scalar/per-layer reference
-    // in the native verification suite for immediate rollback if end-to-end regresses.
-    return jpe_cpp_perlin_add_stack_fused(
-        layers, layer_count,
-        size_x, size_y, size_z,
-        min_x, min_y, min_z,
-        step_x, step_y, step_z,
-        output, output_length, flags
-    );
+    // The fused path is bit-exact, but it regresses the full-chunk benchmark.
+    // Keep the per-layer AVX2-dispatched volume kernel as the production path.
+    for (uint32_t i = 0; i < layer_count; ++i) {
+        const JpePerlinLayer& layer = layers[i];
+        const int32_t status = jpe_cpp_perlin_add_volume(
+            layer.permutation,
+            size_x, size_y, size_z,
+            min_x, min_y, min_z,
+            step_x, step_y, step_z,
+            layer.offset_x, layer.offset_y, layer.offset_z,
+            layer.xz_scale, layer.y_scale, layer.amplitude,
+            output, output_length, flags
+        );
+        if (status != 0) return status;
+    }
+    return 0;
 }
