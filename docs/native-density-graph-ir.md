@@ -189,3 +189,19 @@ Extraction uses identity-based memoization to preserve shared subgraphs, pre-siz
 The current OPAQUE sentinel retains up to two child dependency edges, but it does not yet serialize arbitrary child arity, runtime operands, branch guards, random state, or side-effect metadata. Its children are evaluated as ordinary preceding IR nodes, while the opaque operation itself deliberately emits NaN. The next semantic-capture iteration must add those as explicit compact descriptors; do not interpret a NaN placeholder as a successful translation.
 
 The FFM bridge also reuses a geometrically grown, per-worldgen-thread shared-arena node buffer for graph compilation. Repeated compilation no longer allocates and closes a fresh confined arena for every graph; scratch is leased during the synchronous native copy and released afterward, then closed with the runtime. This removes one allocation/arena lifecycle per compile, but the current path still encodes each node and the native side still hashes and validates the full payload on each compile request. Those costs remain measurable optimization targets.
+
+
+## Startup prewarm and native-owned persistent plans
+
+World-generation hot paths must not perform Java object traversal, graph lowering, node serialization, or per-node FFM calls. The intended lifecycle is:
+
+1. During game bootstrap, after registries, mod extensions, dimension types, and world-generation settings are available but before a world starts generating chunks, construct a complete cache identity and call `NativeRuntime.prepareDensityGraph(...)`.
+2. On the first run, the supplied Java capture callback builds the IR once. The Java IR cache is written atomically, the graph is transferred once to C++, and C++ writes its own portable binary plan cache.
+3. On later launches, `prepareDensityGraph` first asks C++ to load the native plan file directly. A native cache hit does not invoke the Java capture callback, does not deserialize Java IR, and does not serialize individual nodes through FFM.
+4. Keep the returned `PreparedDensityGraph` alive for the lifetime of the relevant world-generation configuration. Chunk generation should only invoke its already-loaded native executable in volume-sized batches. It must not call `prepareDensityGraph` or `compileDensityGraph` per chunk.
+
+The cache identity must change whenever semantics can change: Minecraft and loader versions, native ABI/compiler version, IR version, mod set and relevant mod versions, dimension, world-generation settings, registry contents, and any graph-affecting configuration. Strict and experimental plans use separate cache identities. A stale or corrupt native cache is treated as a miss and rebuilt from the Java IR cache or capture callback.
+
+The current native plan is a persisted, validated topological execution graph interpreted by C++; it is **not yet machine-code JIT output**. The native cache removes repeated Java extraction and cross-language node transfer, but native loading still reconstructs the in-memory plan at startup. The next optimization is to lower supported graphs into compact native execution blocks or generated machine code, then persist that executable representation where platform and ABI compatibility permit it.
+
+Important integration boundary: the bootstrap API exists, but the Minecraft lifecycle hook that enumerates every active dimension/worldgen graph and prewarms all of them is not yet wired. Until that integration is complete, the API is a foundation, not a claim that world creation already runs exclusively through C++.
