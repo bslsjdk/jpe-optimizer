@@ -32,7 +32,7 @@ class DensityGraphIrTest {
         ), 2, 0x5ABL);
 
         assertEquals(DensityGraphIr.SUB, graph.nodes().get(2).opcode());
-        assertEquals(6, DensityGraphIr.VERSION);
+        assertEquals(7, DensityGraphIr.VERSION);
     }
 
     @Test
@@ -43,6 +43,33 @@ class DensityGraphIrTest {
         ), 2, 0xD1L);
         assertEquals(DensityGraphIr.DIV, graph.nodes().get(2).opcode());
         assertEquals(6, DensityGraphIr.VERSION);
+    }
+
+    @Test
+    void encodesClampBoundsAsExactFloat32Payload() {
+        float min = Float.intBitsToFloat(0x80000000);
+        float max = Float.intBitsToFloat(0x7fc01234);
+        DensityGraphIr graph = new DensityGraphIr(List.of(
+                DensityGraphIr.Node.input(0), DensityGraphIr.Node.clamp(0, min, max)
+        ), 1, 0xC1A4L);
+        DensityGraphIr.Node clamp = graph.nodes().get(1);
+        assertEquals(DensityGraphIr.CLAMP, clamp.opcode());
+        assertEquals(0, clamp.inputA());
+        assertEquals(DensityGraphIr.NO_INPUT, clamp.inputB());
+        long bits = Double.doubleToRawLongBits(clamp.immediate());
+        assertEquals(0x800000007fc01234L, bits);
+    }
+
+    @Test
+    void rejectsClampWithSecondInputOrForwardReference() {
+        assertThrows(IllegalArgumentException.class, () -> new DensityGraphIr(List.of(
+                DensityGraphIr.Node.constant(1.0),
+                new DensityGraphIr.Node(DensityGraphIr.CLAMP, 0, 0, 0.0)
+        ), 1, 0L));
+        assertThrows(IllegalArgumentException.class, () -> new DensityGraphIr(List.of(
+                new DensityGraphIr.Node(DensityGraphIr.CLAMP, 1, DensityGraphIr.NO_INPUT, 0.0),
+                DensityGraphIr.Node.constant(1.0)
+        ), 0, 0L));
     }
 
     @Test
