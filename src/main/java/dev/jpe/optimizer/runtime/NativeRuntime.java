@@ -434,7 +434,7 @@ public final class NativeRuntime implements AutoCloseable {
             }
             if (scratch.layerPermutationSources[i] != permutation) {
                 MemorySegment.copy(permutation, 0, scratch.layerPermutations, ValueLayout.JAVA_BYTE,
-                        (long) i * 256L, 256L);
+                        (long) i * 256L, 256);
                 scratch.layerPermutationSources[i] = permutation;
             }
             double frequency = layer.jpe$frequency();
@@ -446,6 +446,32 @@ public final class NativeRuntime implements AutoCloseable {
             scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 32L, xzScale * frequency);
             scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 40L, yScale * frequency);
             scratch.layerDescriptors.set(ValueLayout.JAVA_FLOAT, base + 48L, amplitude * layer.jpe$amplitude());
+        }
+    }
+
+
+    // Compatibility path for asynchronous jobs and diagnostics. The synchronous
+    // hot path uses Object[] directly and reuses cached permutation segments.
+    private static void writePerlinLayers(List<PerlinLayer> layers, PerlinScratch scratch) {
+        for (int i = 0; i < layers.size(); ++i) {
+            PerlinLayer layer = Objects.requireNonNull(layers.get(i), "layer");
+            byte[] permutation = layer.permutation();
+            if (permutation == null || permutation.length != 256) {
+                throw new IllegalArgumentException("Each Perlin layer permutation must contain 256 bytes");
+            }
+            if (scratch.layerPermutationSources[i] != permutation) {
+                MemorySegment.copy(permutation, 0, scratch.layerPermutations, ValueLayout.JAVA_BYTE,
+                        (long) i * 256L, 256);
+                scratch.layerPermutationSources[i] = permutation;
+            }
+            long base = Math.multiplyExact((long) i, PERLIN_LAYER_SIZE);
+            scratch.layerDescriptors.set(ValueLayout.ADDRESS, base, scratch.layerPermutationSegments[i]);
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 8L, layer.offsetX());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 16L, layer.offsetY());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 24L, layer.offsetZ());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 32L, layer.xzScale());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 40L, layer.yScale());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_FLOAT, base + 48L, layer.amplitude());
         }
     }
 
