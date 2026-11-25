@@ -11,18 +11,28 @@ import java.util.function.Predicate;
 
 /**
  * Bounded diagnostic inventory of Minecraft's already-compiled sampler graph.
- *
- * It deliberately inspects only Java record components and follows only values
- * accepted by the supplied sampler predicate. It never walks arbitrary object
- * fields, contexts, registries, noise objects, or world state.
+ * It inspects record components only and never walks arbitrary object fields,
+ * contexts, registries, noise objects, or world state.
  */
 public final class CompiledSamplerGraphTrace {
     public record ComponentValue(String name, String type, String value) {}
+    public record ChildEdge(String componentName, int childId) {
+        public ChildEdge {
+            Objects.requireNonNull(componentName, "componentName");
+            if (childId < 0) throw new IllegalArgumentException("childId must be non-negative");
+        }
+    }
     public record NodeInfo(int id, String implementation, List<Integer> children,
-                           List<ComponentValue> values, String limitation) {
+                           List<ChildEdge> childEdges, List<ComponentValue> values, String limitation) {
         public NodeInfo {
             children = List.copyOf(children);
+            childEdges = List.copyOf(childEdges);
             values = List.copyOf(values);
+        }
+        /** Compatibility constructor for synthetic fixtures created before named edges were added. */
+        public NodeInfo(int id, String implementation, List<Integer> children,
+                        List<ComponentValue> values, String limitation) {
+            this(id, implementation, children, List.of(), values, limitation);
         }
     }
     public record Snapshot(List<NodeInfo> nodes, int rootId, long droppedNodes) {
@@ -33,6 +43,7 @@ public final class CompiledSamplerGraphTrace {
         final int id;
         final Object source;
         final ArrayList<Integer> children = new ArrayList<>();
+        final ArrayList<ChildEdge> childEdges = new ArrayList<>();
         final ArrayList<ComponentValue> values = new ArrayList<>();
         String limitation = "";
         RecordComponent[] components;
@@ -45,10 +56,7 @@ public final class CompiledSamplerGraphTrace {
 
     private CompiledSamplerGraphTrace() {}
 
-    /**
-     * Captures a record-based sampler DAG without invoking sampler evaluation.
-     * Non-record sampler implementations remain explicit opaque leaves.
-     */
+    /** Captures a record-based sampler DAG without invoking sampler evaluation. */
     public static Snapshot capture(Object root, Predicate<Object> isSampler, int maxNodes) {
         Objects.requireNonNull(root, "root");
         Objects.requireNonNull(isSampler, "isSampler");
@@ -90,9 +98,6 @@ public final class CompiledSamplerGraphTrace {
             final Object value;
             try {
                 var accessor = component.getAccessor();
-                // Minecraft sampler records are often private nested records.
-                // Their public accessor can still be inaccessible through a
-                // non-public declaring class, so request access explicitly.
                 if (!accessor.canAccess(current.source) && !accessor.trySetAccessible()) {
                     current.limitation = "Record accessor is not accessible: " + component.getName();
                     continue;
@@ -117,9 +122,11 @@ public final class CompiledSamplerGraphTrace {
                     NodeBuilder child = new NodeBuilder(childId, value);
                     builders.add(child);
                     current.children.add(childId);
+                    current.childEdges.add(new ChildEdge(component.getName(), childId));
                     stack.push(child);
                 } else {
                     current.children.add(childId);
+                    current.childEdges.add(new ChildEdge(component.getName(), childId));
                 }
             } else if (isSafeScalar(value)) {
                 String rendered = renderScalar(value);
@@ -135,7 +142,7 @@ public final class CompiledSamplerGraphTrace {
         ArrayList<NodeInfo> result = new ArrayList<>(builders.size());
         for (NodeBuilder builder : builders) {
             result.add(new NodeInfo(builder.id, builder.source.getClass().getName(),
-                    builder.children, builder.values, builder.limitation));
+                    builder.children, builder.childEdges, builder.values, builder.limitation));
         }
         return new Snapshot(result, 0, dropped);
     }
