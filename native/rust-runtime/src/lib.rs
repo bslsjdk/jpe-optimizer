@@ -1362,6 +1362,7 @@ mod tests {
 
     #[test]
     fn smeared_perlin_multilayer_full_chunk_matches_fused_stack() {
+        use std::time::Instant;
         const SX: usize = 5;
         const SY: usize = 49;
         const SZ: usize = 5;
