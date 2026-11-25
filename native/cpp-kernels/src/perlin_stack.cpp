@@ -276,8 +276,19 @@ extern "C" int32_t jpe_cpp_perlin_add_stack(
     if (!validate_stack(layers, layer_count, size_x, size_y, size_z,
                         step_x, step_y, step_z, output, output_length)) return 1;
 
-    // The fused path is bit-exact, but it regresses the full-chunk benchmark.
-    // Keep the per-layer AVX2-dispatched volume kernel as the production path.
+    // SmearedPerlin needs the stack kernel's shared Y interpolation state:
+    // the alpha uses raw relativeY while gradient dot products use fudged Y.
+    // The ordinary Perlin path keeps the separately measured AVX2 volume kernel.
+    for (uint32_t i = 0; i < layer_count; ++i) {
+        if ((layers[i].flags & 1U) != 0U) {
+            return jpe_cpp_perlin_add_stack_fused(
+                layers, layer_count, size_x, size_y, size_z,
+                min_x, min_y, min_z, step_x, step_y, step_z,
+                output, output_length, flags);
+        }
+    }
+    // The fused path regresses ordinary full-chunk workloads, so retain the
+    // per-layer AVX2-dispatched volume kernel for non-smeared stacks.
     for (uint32_t i = 0; i < layer_count; ++i) {
         const JpePerlinLayer& layer = layers[i];
         const int32_t status = jpe_cpp_perlin_add_volume(
