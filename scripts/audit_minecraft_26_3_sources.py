@@ -277,25 +277,55 @@ def compare_method_inventories(
     return lines
 
 def extract_method_blocks(source: str, method_names: set[str]) -> list[str]:
-    """Extract selected decompiled Java method bodies with multiline signatures."""
+    """Extract method/constructor bodies using balanced delimiters, not line-shaped signatures."""
     import re
 
-    names = "|".join(map(re.escape, sorted(method_names)))
-    declaration = re.compile(
-        r"(?m)^[ \t]*(?:(?:public|protected|private|static|final|synchronized|native|abstract|strictfp)\s+)*"
-        + r"(?:[\w$.,<>?\[\]]+\s+)?(" + names
-        + r")\s*\([^;{}]*\)\s*(?:throws\s+[^{};]+)?\s*\{",
-        re.DOTALL,
-    )
+    if not method_names:
+        return []
+    names = "|".join(map(re.escape, sorted(method_names, key=len, reverse=True)))
+    candidates = re.compile(r"\b(" + names + r")\s*\(")
     results: list[str] = []
-    for match in declaration.finditer(source):
-        header_start = match.start()
-        brace = source.find("{", match.start(), match.end())
-        if brace < 0:
-            continue
+    seen: set[tuple[int, int]] = set()
+
+    def skip_space(index: int) -> int:
+        while index < len(source) and source[index].isspace():
+            index += 1
+        return index
+
+    def matching_paren(opening: int) -> int | None:
         depth = 0
         state = "code"
-        i = brace
+        i = opening
+        while i < len(source):
+            ch = source[i]
+            nxt = source[i + 1] if i + 1 < len(source) else ""
+            if state == "code":
+                if ch == '"': state = "string"
+                elif ch == "'": state = "char"
+                elif ch == "/" and nxt == "*": state = "block"; i += 1
+                elif ch == "/" and nxt == "/": state = "line"; i += 1
+                elif ch == "(": depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0:
+                        return i
+            elif state == "string":
+                if ch == "\\": i += 1
+                elif ch == '"': state = "code"
+            elif state == "char":
+                if ch == "\\": i += 1
+                elif ch == "'": state = "code"
+            elif state == "block":
+                if ch == "*" and nxt == "/": state = "code"; i += 1
+            elif state == "line":
+                if ch == "\n": state = "code"
+            i += 1
+        return None
+
+    def matching_body(opening: int) -> int | None:
+        depth = 0
+        state = "code"
+        i = opening
         while i < len(source):
             ch = source[i]
             nxt = source[i + 1] if i + 1 < len(source) else ""
@@ -308,8 +338,7 @@ def extract_method_blocks(source: str, method_names: set[str]) -> list[str]:
                 elif ch == "}":
                     depth -= 1
                     if depth == 0:
-                        results.append(source[header_start:i + 1].strip())
-                        break
+                        return i
             elif state == "string":
                 if ch == "\\": i += 1
                 elif ch == '"': state = "code"
@@ -321,8 +350,63 @@ def extract_method_blocks(source: str, method_names: set[str]) -> list[str]:
             elif state == "line":
                 if ch == "\n": state = "code"
             i += 1
+        return None
+
+    for match in candidates.finditer(source):
+        # A qualified invocation (object.method(...)) is not a declaration.
+        if match.start() > 0 and source[match.start() - 1] in ".@":
+            continue
+        close = matching_paren(match.end() - 1)
+        if close is None:
+            continue
+        cursor = skip_space(close + 1)
+        if source.startswith("throws", cursor):
+            cursor += len("throws")
+            while cursor < len(source) and source[cursor] != "{":
+                if source[cursor] == ";":
+                    break
+                cursor += 1
+            cursor = skip_space(cursor)
+        if cursor >= len(source) or source[cursor] != "{":
+            continue
+        line_start = source.rfind("\n", 0, match.start()) + 1
+        prefix = source[line_start:match.start()]
+        # Reject expression/call sites while allowing package-private methods,
+        # constructors, annotations, and modifiers split over multiple lines.
+        if any(token in prefix for token in ("=", "->", "return ", "new ")):
+            continue
+        body_end = matching_body(cursor)
+        if body_end is None:
+            continue
+        span = (line_start, body_end + 1)
+        if span in seen:
+            continue
+        seen.add(span)
+        results.append(source[line_start:body_end + 1].strip())
     return results
 
+
+def _self_test_method_extractor() -> None:
+    sample = '''
+class Example {
+    Example(
+        int value
+    ) {
+        if (value > 0) { call(); }
+    }
+    float sampleVolume(
+        int x,
+        int y
+    ) throws IllegalStateException {
+        String text = "}";
+        return x + y;
+    }
+    void caller() { this.sampleVolume(1, 2); }
+}
+'''
+    extracted = extract_method_blocks(sample, {"Example", "sampleVolume"})
+    if len(extracted) != 2 or not any("String text" in body for body in extracted):
+        raise RuntimeError("Method extractor self-test failed for multiline signatures/brace literals")
 
 def source_inspection(vanilla_root: Path, patched_root: Path) -> list[str]:
     """Emit selected exact 26.3 method bodies from both vanilla and patched sources."""
@@ -364,6 +448,7 @@ def source_inspection(vanilla_root: Path, patched_root: Path) -> list[str]:
 
 
 def main() -> int:
+    _self_test_method_extractor()
     root = Path("build/source-audit")
     root.mkdir(parents=True, exist_ok=True)
     manifest_path = root / "version_manifest_v2.json"
