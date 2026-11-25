@@ -51,6 +51,18 @@ uint64_t checksum64(const uint8_t* bytes, size_t length) noexcept {
 }
 
 
+struct CoordinateBinding {
+    uint32_t node;
+    uint32_t axis; // 0 = X, 1 = Y, 2 = Z
+};
+
+struct ArithmeticInstruction {
+    uint32_t opcode;
+    uint32_t input_a;
+    uint32_t input_b;
+    uint32_t output;
+};
+
 struct CompiledGraph {
     uint64_t fingerprint = 0;
     uint64_t configuration_fingerprint = 0;
@@ -58,7 +70,47 @@ struct CompiledGraph {
     uint32_t root = 0;
     uint32_t references = 1;
     std::vector<JpeDensityNode> nodes;
+    // Lowered once at compile/load time: leaves are not redispatched per sample.
+    std::vector<float> initial_values;
+    std::vector<CoordinateBinding> coordinates;
+    std::vector<ArithmeticInstruction> arithmetic;
 };
+
+void build_execution_plan(CompiledGraph& graph) {
+    graph.initial_values.assign(graph.nodes.size(), 0.0F);
+    graph.coordinates.clear();
+    graph.arithmetic.clear();
+    graph.coordinates.reserve(graph.nodes.size());
+    graph.arithmetic.reserve(graph.nodes.size());
+
+    for (uint32_t i = 0; i < graph.nodes.size(); ++i) {
+        const JpeDensityNode& node = graph.nodes[i];
+        switch (node.opcode) {
+            case JPE_DENSITY_CONST:
+                graph.initial_values[i] = static_cast<float>(node.immediate);
+                break;
+            case JPE_DENSITY_X:
+                graph.coordinates.push_back({i, 0});
+                break;
+            case JPE_DENSITY_Y:
+                graph.coordinates.push_back({i, 1});
+                break;
+            case JPE_DENSITY_Z:
+                graph.coordinates.push_back({i, 2});
+                break;
+            case JPE_DENSITY_OPAQUE:
+                graph.initial_values[i] = std::numeric_limits<float>::quiet_NaN();
+                break;
+            case JPE_DENSITY_ADD:
+            case JPE_DENSITY_MUL:
+                graph.arithmetic.push_back({node.opcode, node.input_a, node.input_b, i});
+                break;
+            default:
+                // valid_graph() runs before this lowering step.
+                throw std::invalid_argument("Cannot lower an unknown density opcode");
+        }
+    }
+}
 
 std::mutex g_mutex;
 uint64_t g_next_handle = 1;
@@ -178,6 +230,7 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
     graph->ir_version = ir_version;
     graph->root = root_node;
     graph->nodes.assign(nodes, nodes + node_count);
+    build_execution_plan(*graph);
     uint64_t handle = g_next_handle++;
     if (handle == 0) handle = g_next_handle++;
     g_handles.emplace(handle, std::move(graph));
@@ -302,7 +355,9 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate(
         graph = found->second;
     }
 
-    std::vector<float> values(graph->nodes.size());
+    // Constants and opaque diagnostic sentinels are initialized once per volume.
+    // The per-sample loop updates only coordinate leaves and executes arithmetic ops.
+    std::vector<float> values = graph->initial_values;
     uint64_t output_index = 0;
     for (uint32_t z = 0; z < size_z; ++z) {
         const float world_z = static_cast<float>(wrapped_coordinate(min_z, z, step_z));
@@ -310,28 +365,19 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate(
             const float world_x = static_cast<float>(wrapped_coordinate(min_x, x, step_x));
             for (uint32_t y = 0; y < size_y; ++y) {
                 const float world_y = static_cast<float>(wrapped_coordinate(min_y, y, step_y));
-                for (size_t n = 0; n < graph->nodes.size(); ++n) {
-                    const JpeDensityNode& node = graph->nodes[n];
-                    switch (node.opcode) {
-                        case JPE_DENSITY_CONST: values[n] = static_cast<float>(node.immediate); break;
-                        case JPE_DENSITY_X: values[n] = world_x; break;
-                        case JPE_DENSITY_Y: values[n] = world_y; break;
-                        case JPE_DENSITY_Z: values[n] = world_z; break;
-                        case JPE_DENSITY_OPAQUE:
-                            // Preserve graph execution around unknown semantics and expose the
-                            // unsupported subgraph as NaN instead of inventing a value.
-                            values[n] = std::numeric_limits<float>::quiet_NaN();
-                            break;
-                        case JPE_DENSITY_ADD:
-                            values[n] = values[node.input_a] + values[node.input_b];
-                            break;
-                        case JPE_DENSITY_MUL:
-                            values[n] = values[node.input_a] * values[node.input_b];
-                            break;
-                        default: return 1; // Defensive: compiled plans are immutable and validated.
-                    }
+                for (const CoordinateBinding& binding : graph->coordinates) {
+                    values[binding.node] = binding.axis == 0 ? world_x
+                        : binding.axis == 1 ? world_y : world_z;
                 }
-                output[output_index++] = static_cast<float>(values[graph->root]);
+                // This list is already topologically ordered. Do not reorder operations:
+                // each ADD/MUL retains its float32 rounding point from the source graph.
+                for (const ArithmeticInstruction& instruction : graph->arithmetic) {
+                    const float left = values[instruction.input_a];
+                    const float right = values[instruction.input_b];
+                    values[instruction.output] = instruction.opcode == JPE_DENSITY_ADD
+                        ? left + right : left * right;
+                }
+                output[output_index++] = values[graph->root];
             }
         }
     }
