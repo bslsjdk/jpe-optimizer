@@ -329,8 +329,7 @@ struct PerlinTask {
     min_x: i32, min_y: i32, min_z: i32,
     step_x: i32, step_y: i32, step_z: i32,
     offset_x: f64, offset_y: f64, offset_z: f64,
-    xz_scale: f64, y_scale: f64, amplitude: f32,
-                fudge_y_scale: 0.0, flags: 0, reserved: 0, flags: u32,
+    xz_scale: f64, y_scale: f64, amplitude: f32, flags: u32,
 }
 
 struct PerlinStackTask {
@@ -1248,7 +1247,7 @@ mod tests {
             offset_z: 0.37 * (i as f64 + 1.0),
             xz_scale: 0.45 * (i as f64 + 1.0),
             y_scale: 0.7 * (i as f64 + 1.0),
-            amplitude: 0.5_f32.powi(i as i32 + 1),,
+            amplitude: 0.5_f32.powi(i as i32 + 1),
                 fudge_y_scale: 0.0, flags: 0, reserved: 0,
             });
         for flags in [0_u32, 1_u32] {
@@ -1291,7 +1290,7 @@ mod tests {
             offset_z: 0.23 * (i as f64 + 1.0),
             xz_scale: 0.375 * (i as f64 + 1.0),
             y_scale: 0.625 * (i as f64 + 1.0),
-            amplitude: 0.5_f32.powi(i as i32 + 1),,
+            amplitude: 0.5_f32.powi(i as i32 + 1),
                 fudge_y_scale: 0.0, flags: 0, reserved: 0,
             });
         let len = SX * SY * SZ;
@@ -1368,7 +1367,7 @@ mod tests {
             offset_z: 0.31 * (i as f64 + 1.0),
             xz_scale: 0.41 * (i as f64 + 1.0),
             y_scale: 0.61 * (i as f64 + 1.0),
-            amplitude: 0.5_f32.powi(i as i32 + 1),,
+            amplitude: 0.5_f32.powi(i as i32 + 1),
                 fudge_y_scale: 0.0, flags: 0, reserved: 0,
             });
         for flags in [0_u32, 1_u32] {
@@ -1414,7 +1413,7 @@ mod tests {
             offset_z: 0.23 * (i as f64 + 1.0),
             xz_scale: 0.375 * (i as f64 + 1.0),
             y_scale: 0.625 * (i as f64 + 1.0),
-            amplitude: 0.5_f32.powi(i as i32 + 1),,
+            amplitude: 0.5_f32.powi(i as i32 + 1),
                 fudge_y_scale: 0.0, flags: 0, reserved: 0,
             });
         let len = SX * SY * SZ;
@@ -1498,7 +1497,7 @@ mod tests {
             offset_z: 0.23 * (i as f64 + 1.0),
             xz_scale: 0.375 * (i as f64 + 1.0),
             y_scale: 0.625 * (i as f64 + 1.0),
-            amplitude: 0.5_f32.powi(i as i32 + 1),,
+            amplitude: 0.5_f32.powi(i as i32 + 1),
                 fudge_y_scale: 0.0, flags: 0, reserved: 0,
             });
         let len = SX * SY * SZ;
@@ -1586,7 +1585,7 @@ mod tests {
             offset_z: 0.23 * (i as f64 + 1.0),
             xz_scale: 0.375 * (i as f64 + 1.0),
             y_scale: 0.625 * (i as f64 + 1.0),
-            amplitude: 0.5_f32.powi(i as i32 + 1),,
+            amplitude: 0.5_f32.powi(i as i32 + 1),
                 fudge_y_scale: 0.0, flags: 0, reserved: 0,
             });
         let len = SX * SY * SZ;
@@ -1672,7 +1671,7 @@ mod tests {
             offset_z: 0.23 * (i as f64 + 1.0),
             xz_scale: 0.375 * (i as f64 + 1.0),
             y_scale: 0.625 * (i as f64 + 1.0),
-            amplitude: 0.5_f32.powi(i as i32 + 1),,
+            amplitude: 0.5_f32.powi(i as i32 + 1),
                 fudge_y_scale: 0.0, flags: 0, reserved: 0,
             });
         let len = SX * SY * SZ;
