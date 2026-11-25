@@ -74,7 +74,7 @@ int main() {
         return 0;
     }
 
-    const size_t sizes[] = {8, 16, 32, 64, 128, 256, 300, 301, 512, 1024, 2048, 4096, 16384};
+    const size_t sizes[] = {8, 16, 32, 64, 128, 256, 300, 301, 320, 384, 512, 640, 768, 1024, 1536, 2048, 3072, 4096, 16384};
     std::puts("JPE_DENSITY_BATCH_AVX2 threshold=0.0 comparison=scalar-vs-avx2");
     std::puts("batch samples scalar_ns avx2_ns speedup samples_per_ns parity");
     for (size_t count : sizes) {
