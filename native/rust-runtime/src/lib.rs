@@ -39,6 +39,7 @@ const DENSITY_ADD: u32 = 5;
 const DENSITY_MUL: u32 = 6;
 const DENSITY_OPAQUE: u32 = 7;
 const DENSITY_SUB: u32 = 8;
+const DENSITY_INPUT: u32 = 9;
 #[cfg(test)]
 static CACHE_TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -1865,5 +1866,33 @@ mod tests {
         assert_eq!(output, [6.5, 6.5, 7.5, 7.5]);
         assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
     }
+
+    #[test]
+    fn density_graph_reads_batched_external_volume_inputs() {
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_X, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_INPUT, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 0,
+                input_b: 1, reserved: 0, immediate: 0.0 },
+        ];
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 2, 4, 0x1A9)
+        };
+        assert_ne!(handle, 0);
+        // Input-major layout, with samples ordered ((z * size_x + x) * size_y + y).
+        let inputs = [1.0_f32, 2.0, 3.0, 4.0];
+        let mut output = [0.0_f32; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_with_inputs(
+                handle, 2, 2, 1, 10, 0, 0, 1, 1, 1,
+                inputs.as_ptr(), 1, output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(output, [11.0, 12.0, 14.0, 15.0]);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
+    }
+
 
 }
