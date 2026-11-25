@@ -137,6 +137,39 @@ JPE_API int32_t jpe_runtime_density_graph_release(uint64_t graph_handle);
 JPE_API uint64_t jpe_runtime_density_graph_load_cache(const char *path, const char *cache_key);
 JPE_API int32_t jpe_runtime_density_graph_save_cache(uint64_t graph_handle, const char *path, const char *cache_key);
 
+
+/* Exact Minecraft 26.3 Blender density adapter.
+ * Each view exposes raw BlendingData.densities columns. Column pointers may be null.
+ * chunk_x/chunk_z are chunk coordinates; min_section_y is LevelHeightAccessor.getMinSectionY().
+ * The density map array must preserve the iteration order of Blender's densityBlendingData.forEach.
+ */
+enum { JPE_BLENDING_COLUMN_COUNT = 16 };
+typedef struct JpeBlendingDataView {
+    int32_t chunk_x;
+    int32_t chunk_z;
+    int32_t min_section_y;
+    uint32_t section_count;
+    const float *density_columns[JPE_BLENDING_COLUMN_COUNT];
+} JpeBlendingDataView;
+
+typedef struct JpeBlendDensityQuery {
+    int32_t block_x;
+    int32_t block_y;
+    int32_t block_z;
+    float noise_value;
+} JpeBlendDensityQuery;
+
+/* height_data models Blender.heightAndBiomeBlendingData for exact fixed-cell lookup.
+ * density_data models Blender.densityBlendingData for weighted neighborhood blending.
+ * The call is synchronous; all descriptors and source float columns may be released on return.
+ */
+JPE_API int32_t jpe_runtime_blend_density_batch(
+    const JpeBlendingDataView *height_data, uint32_t height_data_count,
+    const JpeBlendingDataView *density_data, uint32_t density_data_count,
+    const JpeBlendDensityQuery *queries, uint32_t query_count,
+    float *outputs, uint32_t output_count
+);
+
 #ifdef __cplusplus
 }
 #endif

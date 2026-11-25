@@ -15,6 +15,7 @@ fn main() {
         .file("../cpp-kernels/src/perlin_volume.cpp")
         .file("../cpp-kernels/src/perlin_stack.cpp")
         .file("../cpp-kernels/src/density_graph.cpp")
+        .file("../cpp-kernels/src/blender.cpp")
         .include("../include")
         .define("JPE_NATIVE_BUILD", None);
     // The scalar comparison helper is present only in explicit benchmark builds,
