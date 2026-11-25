@@ -1361,6 +1361,47 @@ mod tests {
     }
 
     #[test]
+    fn smeared_perlin_multilayer_full_chunk_matches_fused_stack() {
+        const SX: usize = 5;
+        const SY: usize = 49;
+        const SZ: usize = 5;
+        const LAYERS: usize = 8;
+        let permutations: [[u8; 256]; LAYERS] = std::array::from_fn(|layer| {
+            std::array::from_fn(|i| ((i * (37 + layer * 6) + 11 + layer * 17) & 255) as u8)
+        });
+        let layers: [JpePerlinLayer; LAYERS] = std::array::from_fn(|i| JpePerlinLayer {
+            permutation: permutations[i].as_ptr(),
+            offset_x: 0.13 * (i as f64 + 1.0),
+            offset_y: -0.17 * (i as f64 + 1.0),
+            offset_z: 0.23 * (i as f64 + 1.0),
+            xz_scale: 0.375 * (i as f64 + 1.0),
+            y_scale: 0.0625 * (i as f64 + 1.0),
+            amplitude: 0.5_f32.powi(i as i32 + 1),
+            fudge_y_scale: 0.25 + 0.03125 * i as f64,
+            flags: 1,
+            reserved: 0,
+        });
+        let mut ordered = vec![0.0_f32; SX * SY * SZ];
+        let mut fused = vec![0.0_f32; ordered.len()];
+        assert_eq!(unsafe {
+            jpe_runtime_perlin_add_stack(
+                layers.as_ptr(), LAYERS as u32, SX as u32, SY as u32, SZ as u32,
+                0, -64, 0, 4, 8, 4,
+                ordered.as_mut_ptr(), ordered.len() as u64, 0,
+            )
+        }, STATUS_OK);
+        assert_eq!(unsafe {
+            jpe_cpp_perlin_add_stack_fused(
+                layers.as_ptr(), LAYERS as u32, SX as u32, SY as u32, SZ as u32,
+                0, -64, 0, 4, 8, 4,
+                fused.as_mut_ptr(), fused.len() as u64, 0,
+            )
+        }, STATUS_OK);
+        assert_eq!(ordered, fused,
+            "ordered per-layer SmearedPerlin and fused C++ stack must match on a complete chunk lattice");
+    }
+
+    #[test]
     fn cached_y_interpolation_matches_uncached_reference_bit_for_bit() {
         let permutations: [[u8; 256]; 3] = std::array::from_fn(|layer| {
             std::array::from_fn(|i| ((i * (31 + layer * 8) + 17 + layer * 13) & 255) as u8)
