@@ -21,7 +21,9 @@ public final class DensityGraphCapture {
     private record Unsupported(String reason, List<Object> children) implements Captured {}
     private static final class Frame {
         final Object source;
-        boolean expanded;
+        Captured value;
+        List<Object> dependencies = List.of();
+        int nextDependency;
         Frame(Object source) { this.source = source; }
     }
 
@@ -99,42 +101,52 @@ public final class DensityGraphCapture {
         ArrayList<DensityGraphIr.Diagnostic> diagnostics = new ArrayList<>();
         IdentityHashMap<Object, Integer> indices = new IdentityHashMap<>(capacity);
         ArrayDeque<Frame> stack = new ArrayDeque<>();
+        IdentityHashMap<Object, Byte> states = new IdentityHashMap<>();
         stack.push(new Frame(root));
+        states.put(root, (byte) 1);
 
         while (!stack.isEmpty()) {
             Frame frame = stack.peek();
             Object source = frame.source;
-            if (indices.containsKey(source)) {
-                stack.pop();
-                continue;
-            }
-            Captured value = captured.get(source);
-            if (value == null) {
-                if (mode == Mode.STRICT) {
-                    throw new IllegalStateException("Missing semantic adapter for " + source.getClass().getName());
-                }
-                value = new Unsupported("No semantic adapter was registered for this runtime object", List.of());
-            }
-            if (value instanceof Unsupported unsupported && mode == Mode.STRICT) {
-                throw new IllegalStateException("Native lowering rejected "
-                        + source.getClass().getName() + ": " + unsupported.reason());
-            }
-
-            if ((value instanceof Binary || value instanceof Unsupported) && !frame.expanded) {
-                frame.expanded = true;
-                if (value instanceof Binary binary) {
-                    if (!indices.containsKey(binary.right())) stack.push(new Frame(binary.right()));
-                    if (!indices.containsKey(binary.left())) stack.push(new Frame(binary.left()));
-                } else {
-                    List<Object> children = ((Unsupported) value).children();
-                    for (int child = children.size() - 1; child >= 0; --child) {
-                        Object dependency = children.get(child);
-                        if (!indices.containsKey(dependency)) stack.push(new Frame(dependency));
+            if (frame.value == null) {
+                Captured value = captured.get(source);
+                if (value == null) {
+                    if (mode == Mode.STRICT) {
+                        throw new IllegalStateException("Missing semantic adapter for " + source.getClass().getName());
                     }
+                    value = new Unsupported("No semantic adapter was registered for this runtime object", List.of());
                 }
-                continue;
+                if (value instanceof Unsupported unsupported && mode == Mode.STRICT) {
+                    throw new IllegalStateException("Native lowering rejected "
+                            + source.getClass().getName() + ": " + unsupported.reason());
+                }
+                frame.value = value;
+                if (value instanceof Binary binary) {
+                    frame.dependencies = List.of(binary.left(), binary.right());
+                } else if (value instanceof Unsupported unsupported) {
+                    frame.dependencies = unsupported.children();
+                }
             }
 
+            boolean descended = false;
+            while (frame.nextDependency < frame.dependencies.size()) {
+                Object dependency = frame.dependencies.get(frame.nextDependency++);
+                if (indices.containsKey(dependency)) continue;
+                byte state = states.getOrDefault(dependency, (byte) 0);
+                if (state == 1) {
+                    throw new IllegalStateException("Density graph contains a cyclic dependency at "
+                            + dependency.getClass().getName());
+                }
+                if (state == 0) {
+                    states.put(dependency, (byte) 1);
+                    stack.push(new Frame(dependency));
+                    descended = true;
+                    break;
+                }
+            }
+            if (descended) continue;
+
+            Captured value = frame.value;
             DensityGraphIr.Node node;
             if (value instanceof Leaf leaf) {
                 node = leaf.node();
@@ -142,7 +154,7 @@ public final class DensityGraphCapture {
                 Integer left = indices.get(binary.left());
                 Integer right = indices.get(binary.right());
                 if (left == null || right == null) {
-                    throw new IllegalStateException("Density graph contains a cyclic or unresolved dependency");
+                    throw new IllegalStateException("Density graph contains an unresolved dependency");
                 }
                 node = binary.opcode() == DensityGraphIr.ADD
                         ? DensityGraphIr.Node.add(left, right)
@@ -165,6 +177,7 @@ public final class DensityGraphCapture {
                 diagnostics.add(new DensityGraphIr.Diagnostic(
                         index, source.getClass().getName(), unsupported.reason(), childIndices));
             }
+            states.put(source, (byte) 2);
             stack.pop();
         }
 
