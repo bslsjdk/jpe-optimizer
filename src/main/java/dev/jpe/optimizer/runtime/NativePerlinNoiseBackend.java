@@ -537,6 +537,11 @@ public final class NativePerlinNoiseBackend {
         }
     }
 
+    /** Shared native runtime for opt-in diagnostics; does not enable native Perlin interception. */
+    public static NativeRuntime runtimeForDiagnostics() {
+        return runtime();
+    }
+
     private static NativeRuntime runtime() {
         NativeRuntime current = runtime;
         if (current != null) return current;
