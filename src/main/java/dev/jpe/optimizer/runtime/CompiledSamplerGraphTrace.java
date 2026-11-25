@@ -89,7 +89,15 @@ public final class CompiledSamplerGraphTrace {
             RecordComponent component = current.components[current.nextComponent++];
             final Object value;
             try {
-                value = component.getAccessor().invoke(current.source);
+                var accessor = component.getAccessor();
+                // Minecraft sampler records are often private nested records.
+                // Their public accessor can still be inaccessible through a
+                // non-public declaring class, so request access explicitly.
+                if (!accessor.canAccess(current.source) && !accessor.trySetAccessible()) {
+                    current.limitation = "Record accessor is not accessible: " + component.getName();
+                    continue;
+                }
+                value = accessor.invoke(current.source);
             } catch (IllegalAccessException | InvocationTargetException | RuntimeException failure) {
                 current.limitation = "Unable to read record component " + component.getName()
                         + ": " + failure.getClass().getSimpleName();
