@@ -35,8 +35,13 @@ public final class RuntimeDensityTrace {
 
     private final int maxEvents;
     private final AtomicBoolean recording = new AtomicBoolean();
-    private final ThreadLocal<ArrayDeque<Integer>> callStack =
-            ThreadLocal.withInitial(ArrayDeque::new);
+    private static final class StackState {
+        final long generation;
+        final ArrayDeque<Integer> stack = new ArrayDeque<>();
+        StackState(long generation) { this.generation = generation; }
+    }
+    private final ThreadLocal<StackState> callStack = new ThreadLocal<>();
+    private long generation;
     private final IdentityHashMap<Object, Integer> ids = new IdentityHashMap<>();
     private final ArrayList<NodeInfo> nodes = new ArrayList<>();
     private final ArrayList<Edge> edges = new ArrayList<>();
@@ -63,6 +68,7 @@ public final class RuntimeDensityTrace {
         droppedEvents = 0;
         edgeKeys.clear();
         guardKeys.clear();
+        generation++;
         callStack.remove();
         recording.set(true);
     }
@@ -70,6 +76,7 @@ public final class RuntimeDensityTrace {
     /** Stops capture and returns an immutable snapshot. */
     public synchronized Snapshot stop() {
         recording.set(false);
+        generation++;
         callStack.remove();
         return new Snapshot(nodes, edges, guards, droppedEvents);
     }
@@ -78,21 +85,25 @@ public final class RuntimeDensityTrace {
      * Enters an observed DensityFunction implementation. Call close() in a
      * finally/try-with-resources block so nested call relationships stay valid.
      */
-    public Scope enter(Object densityFunction) {
+    public synchronized Scope enter(Object densityFunction) {
         Objects.requireNonNull(densityFunction, "densityFunction");
         if (!recording.get()) return Scope.NOOP;
         int id = nodeId(densityFunction);
         // The event budget may be exhausted while the capture is still active.
         // Never push the -1 sentinel: it would corrupt parent/child nesting.
         if (id < 0) return Scope.NOOP;
-        ArrayDeque<Integer> stack = callStack.get();
-        if (!stack.isEmpty()) addEdge(stack.peek(), id);
-        stack.push(id);
-        return new Scope(this, id, Thread.currentThread());
+        StackState state = callStack.get();
+        if (state == null || state.generation != generation) {
+            state = new StackState(generation);
+            callStack.set(state);
+        }
+        if (!state.stack.isEmpty()) addEdge(state.stack.peek(), id);
+        state.stack.push(id);
+        return new Scope(this, id, Thread.currentThread(), generation);
     }
 
     /** Records a runtime branch outcome; it is a guard, not a constant fold. */
-    public void branch(Object densityFunction, int guardId, boolean outcome) {
+    public synchronized void branch(Object densityFunction, int guardId, boolean outcome) {
         Objects.requireNonNull(densityFunction, "densityFunction");
         if (!recording.get()) return;
         if (guardId < 0) throw new IllegalArgumentException("guardId must be non-negative");
@@ -137,17 +148,16 @@ public final class RuntimeDensityTrace {
         return nodes.size() + edges.size() + guards.size();
     }
 
-    private void leave(int id, Thread owner) {
-        // stop() may have ended capture on another worker. Clear that worker's
-        // ThreadLocal stack when its outstanding scope finally closes.
-        if (!recording.get()) {
-            if (Thread.currentThread() == owner) callStack.remove();
-            return;
-        }
+    private synchronized void leave(int id, Thread owner, long scopeGeneration) {
+        // A scope from an earlier capture must never pop a newer capture stack.
+        // Stale worker-local state is discarded lazily by the next enter().
+        if (scopeGeneration != generation || !recording.get()) return;
         if (Thread.currentThread() != owner) {
             throw new IllegalStateException("Density trace scope closed on a different thread");
         }
-        ArrayDeque<Integer> stack = callStack.get();
+        StackState state = callStack.get();
+        if (state == null || state.generation != generation) return;
+        ArrayDeque<Integer> stack = state.stack;
         if (stack.isEmpty() || stack.pop() != id) {
             stack.clear();
             throw new IllegalStateException("Density trace scopes closed out of order");
@@ -160,11 +170,17 @@ public final class RuntimeDensityTrace {
         private RuntimeDensityTrace owner;
         private final int id;
         private final Thread thread;
+        private final long generation;
 
         private Scope(RuntimeDensityTrace owner, int id, Thread thread) {
+            this(owner, id, thread, -1);
+        }
+
+        private Scope(RuntimeDensityTrace owner, int id, Thread thread, long generation) {
             this.owner = owner;
             this.id = id;
             this.thread = thread;
+            this.generation = generation;
         }
 
         @Override
@@ -172,7 +188,7 @@ public final class RuntimeDensityTrace {
             RuntimeDensityTrace current = owner;
             if (current == null) return;
             owner = null;
-            current.leave(id, thread);
+            current.leave(id, thread, generation);
         }
     }
 }
