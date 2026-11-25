@@ -434,6 +434,7 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate(
     return 0;
 } catch (...) { return 3; }
 
+#ifdef JPE_DENSITY_GRAPH_TEST_REFERENCE
 // Test-only scalar reference retained to quantify the tiled evaluator against
 // the previous sample-major interpreter. It is intentionally not declared in
 // the public native API header.
@@ -488,6 +489,8 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_scalar_reference(
     }
     return 0;
 } catch (...) { return 3; }
+
+#endif // JPE_DENSITY_GRAPH_TEST_REFERENCE
 
 extern "C" int32_t jpe_cpp_density_graph_release(uint64_t graph_handle) try {
     std::lock_guard<std::mutex> lock(g_mutex);
