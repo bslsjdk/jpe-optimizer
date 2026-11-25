@@ -202,7 +202,7 @@ pub unsafe extern "C" fn jpe_runtime_blend_density_volume(
         .and_then(|v| v.checked_mul(size_z as u64)) else {
         return STATUS_INVALID_ARGUMENT;
     };
-    if volume == 0 || volume > MAX_VOLUME_ELEMENTS || volume != output_count {
+    if volume == 0 || volume > MAX_VOLUME_ELEMENTS as u64 || volume != output_count {
         return STATUS_INVALID_ARGUMENT;
     }
     unsafe {
