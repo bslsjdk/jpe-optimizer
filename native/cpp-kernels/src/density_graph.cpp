@@ -429,6 +429,61 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate(
     return 0;
 } catch (...) { return 3; }
 
+// Test-only scalar reference retained to quantify the tiled evaluator against
+// the previous sample-major interpreter. It is intentionally not declared in
+// the public native API header.
+extern "C" int32_t jpe_cpp_density_graph_evaluate_scalar_reference(
+    uint64_t graph_handle,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    float* output, uint64_t output_length
+) try {
+    if (output == nullptr || !valid_volume(size_x, size_y, size_z,
+            step_x, step_y, step_z, output_length)) return 1;
+
+    std::shared_ptr<CompiledGraph> graph;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        const auto found = g_handles.find(graph_handle);
+        if (found == g_handles.end()) return 2;
+        graph = found->second;
+    }
+
+    std::vector<float> values(graph->nodes.size());
+    uint64_t output_index = 0;
+    for (uint32_t z = 0; z < size_z; ++z) {
+        const float world_z = static_cast<float>(wrapped_coordinate(min_z, z, step_z));
+        for (uint32_t x = 0; x < size_x; ++x) {
+            const float world_x = static_cast<float>(wrapped_coordinate(min_x, x, step_x));
+            for (uint32_t y = 0; y < size_y; ++y) {
+                const float world_y = static_cast<float>(wrapped_coordinate(min_y, y, step_y));
+                for (size_t n = 0; n < graph->nodes.size(); ++n) {
+                    const JpeDensityNode& node = graph->nodes[n];
+                    switch (node.opcode) {
+                        case JPE_DENSITY_CONST: values[n] = static_cast<float>(node.immediate); break;
+                        case JPE_DENSITY_X: values[n] = world_x; break;
+                        case JPE_DENSITY_Y: values[n] = world_y; break;
+                        case JPE_DENSITY_Z: values[n] = world_z; break;
+                        case JPE_DENSITY_OPAQUE:
+                            values[n] = std::numeric_limits<float>::quiet_NaN();
+                            break;
+                        case JPE_DENSITY_ADD:
+                            values[n] = values[node.input_a] + values[node.input_b];
+                            break;
+                        case JPE_DENSITY_MUL:
+                            values[n] = values[node.input_a] * values[node.input_b];
+                            break;
+                        default: return 1;
+                    }
+                }
+                output[output_index++] = values[graph->root];
+            }
+        }
+    }
+    return 0;
+} catch (...) { return 3; }
+
 extern "C" int32_t jpe_cpp_density_graph_release(uint64_t graph_handle) try {
     std::lock_guard<std::mutex> lock(g_mutex);
     const auto found = g_handles.find(graph_handle);
