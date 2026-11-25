@@ -39,6 +39,24 @@ class DensityGraphIrTest {
     }
 
     @Test
+    void rejectsOpaqueInputsThatDisagreeWithDiagnosticDependencies() {
+        assertThrows(IllegalArgumentException.class, () -> new DensityGraphIr(
+                List.of(DensityGraphIr.Node.constant(1.0), DensityGraphIr.Node.opaque(0, -1)),
+                List.of(new DensityGraphIr.Diagnostic(1, "ExampleOpaque", "test", List.of(1))),
+                1, 0L));
+    }
+
+    @Test
+    void rejectsDuplicateOpaqueDiagnostics() {
+        assertThrows(IllegalArgumentException.class, () -> new DensityGraphIr(
+                List.of(DensityGraphIr.Node.constant(1.0), DensityGraphIr.Node.opaque(0, -1)),
+                List.of(
+                        new DensityGraphIr.Diagnostic(1, "ExampleOpaque", "first", List.of(0)),
+                        new DensityGraphIr.Diagnostic(1, "ExampleOpaque", "second", List.of(0))),
+                1, 0L));
+    }
+
+    @Test
     void rejectsUnknownOpcodesAndInvalidRoots() {
         assertThrows(IllegalArgumentException.class, () -> new DensityGraphIr(List.of(
                 new DensityGraphIr.Node(99, -1, -1, 0.0)
