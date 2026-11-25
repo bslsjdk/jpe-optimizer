@@ -39,7 +39,7 @@ jobs:
       - name: Build native runtime
         run: cargo build --release --manifest-path native/rust-runtime/Cargo.toml
 
-      - name: Run one fixed-seed full-chunk Java baseline and one native comparison
+      - name: Run native full-chunk comparison against the saved one-time Java baseline
         shell: bash
         env:
           NATIVE_LIBRARY: ${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
@@ -75,14 +75,15 @@ jobs:
           }
 
           # FULL LevelChunks: 3 warmup rows, then 20 measured rows x 17 chunks = 340 chunks.
-          # The Java scalar baseline runs exactly once; no repeated baseline run.
-          run_worldgen java_scalar_baseline "-Djpe.forceScalar=true"
+          # Reuse the saved Java scalar result; never spend another run on the baseline.
+          cp benchmarks/baselines/full-chunk-java-scalar-12648430.log build/full-chunk-benchmark/java_scalar_baseline.log
+          cat build/full-chunk-benchmark/java_scalar_baseline.log
 
-          # Synchronous native calls execute on Minecraft's own worldgen workers.
-          # This avoids adding a second worker pool and queue-polling overhead.
+          # The synchronous stack entry must execute on Minecraft's worldgen worker,
+          # without queue submission, polling, or a second native worker pool.
           run_worldgen native_sync "-Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeLibraryPath=${NATIVE_LIBRARY}"
 
-          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin-sync.*nativeSyncCalls=[1-9][0-9]*' build/full-chunk-benchmark/native_sync.log
+          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin-sync.*completedChunks=340.*failedChunks=0.*nativeCalls=[1-9][0-9]*.*nativeCompleted=[1-9][0-9]*.*nativeFallbacks=0.*nativeSyncCalls=[1-9][0-9]*' build/full-chunk-benchmark/native_sync.log
 
       - name: Upload full-chunk benchmark logs
         if: always()
