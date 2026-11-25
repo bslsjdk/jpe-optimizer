@@ -13,6 +13,7 @@ public final class CompiledSamplerGraphDiagnostics {
     private static final AtomicBoolean CAPTURED = new AtomicBoolean();
     private static final AtomicBoolean PARITY_ATTEMPTED = new AtomicBoolean();
     private static final boolean ENABLED = Boolean.getBoolean("jpe.traceCompiledSamplers");
+    private static final boolean PARITY_ENABLED = Boolean.getBoolean("jpe.verifyCompiledSamplerParity");
     private static volatile CompiledSamplerGraphTrace.Snapshot lastSnapshot;
     private static volatile CompiledSamplerGraphIr.Graph lastGraph;
     private static volatile CompiledSamplerArithmeticIslands.Plan lastArithmeticPlan;
@@ -87,8 +88,7 @@ public final class CompiledSamplerGraphDiagnostics {
      * jpe.verifyCompiledSamplerParity=true and a native library path is configured.
      */
     public static void verifyNativeParityOnce(DensitySampler.Bound bound, DensityVolume volume) {
-        if (!Boolean.getBoolean("jpe.verifyCompiledSamplerParity")
-                || !PARITY_ATTEMPTED.compareAndSet(false, true)) return;
+        if (!PARITY_ENABLED || !PARITY_ATTEMPTED.compareAndSet(false, true)) return;
         try {
             NativeRuntime runtime = NativePerlinNoiseBackend.runtimeForDiagnostics();
             if (runtime == null) {
@@ -102,8 +102,14 @@ public final class CompiledSamplerGraphDiagnostics {
             CompiledSamplerGraphIr.Graph graph = CompiledSamplerGraphIr.lower(captured.snapshot());
             String semanticFingerprint = CompiledSamplerGraphIr.semanticFingerprint(graph);
             CompiledSamplerArithmeticIslands.Plan plan = CompiledSamplerArithmeticIslands.plan(graph);
+            java.util.Map<Integer, CompiledSamplerGraphIr.Node> nodesById = new java.util.HashMap<>();
+            for (CompiledSamplerGraphIr.Node node : graph.nodes()) nodesById.put(node.id(), node);
             CompiledSamplerArithmeticIslands.Island selected = plan.islands().stream()
                     .filter(island -> !island.outputNodeIds().isEmpty())
+                    .filter(island -> island.nodeIds().stream().anyMatch(id -> {
+                        CompiledSamplerGraphIr.Op op = nodesById.get(id).op();
+                        return op != CompiledSamplerGraphIr.Op.CONSTANT;
+                    }))
                     .max(java.util.Comparator.comparingInt(island -> island.nodeIds().size()))
                     .orElse(null);
             if (selected == null) {
