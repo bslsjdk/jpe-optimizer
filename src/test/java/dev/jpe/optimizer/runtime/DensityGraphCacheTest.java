@@ -76,4 +76,19 @@ class DensityGraphCacheTest {
         assertEquals(experimental.nodes(), second.graph().nodes());
         assertEquals(experimental.diagnostics(), second.graph().diagnostics());
     }
+    @Test
+    void canonicalIdentityChangesWhenDimensionOrModSetChanges() {
+        DensityGraphCache.Identity base = new DensityGraphCache.Identity(
+                "26.3", "NeoForge", "jpe-native-1", "mods-hash-A",
+                "minecraft:overworld", 123L, 456L);
+        DensityGraphCache.Identity otherDimension = new DensityGraphCache.Identity(
+                "26.3", "NeoForge", "jpe-native-1", "mods-hash-A",
+                "minecraft:the_nether", 123L, 456L);
+        DensityGraphCache.Identity otherMods = new DensityGraphCache.Identity(
+                "26.3", "NeoForge", "jpe-native-1", "mods-hash-B",
+                "minecraft:overworld", 123L, 456L);
+        assertNotEquals(base.stableKey(), otherDimension.stableKey());
+        assertNotEquals(base.stableKey(), otherMods.stableKey());
+    }
+
 }
