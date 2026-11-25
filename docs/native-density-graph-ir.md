@@ -1,4 +1,4 @@
-# Native density graph IR v3
+# Native density graph IR v4
 
 Status: design contract only. No Minecraft density graph is executed by this IR yet. The native backend must remain opt-in until the exact-output and real-worldgen gates below pass.
 
@@ -36,9 +36,9 @@ The extraction point should be the stable, inspectable DensityFunction graph and
 - Returns a status and result buffer; it never retains Java heap pointers or Minecraft object references.
 - Does not silently emulate unsupported nodes.
 
-## IR v1 wire model
+## Versioned wire model
 
-The transport is a flat topologically ordered node array. Every input index must refer to an earlier node; this makes cycles impossible and allows validation in one pass. IR version 1 is passed explicitly through the C ABI and participates in the cache fingerprint. The Java FFM bridge now exposes compile, bulk volume evaluate, and reference-counted release. Native output is `float[]`-compatible to match Minecraft's `DensityBuffer`; intermediate prototype registers are `double` and are converted to float only at the volume boundary. Constants and parameters are stored as fixed-width numeric fields. The wire format contains no native pointers, Java object IDs, class names, or platform-sized integers.
+The transport is a flat topologically ordered node array. Every input index must refer to an earlier node; this makes cycles impossible and allows validation in one pass. The current IR version is passed explicitly through the C ABI and participates in the cache fingerprint. The Java FFM bridge now exposes compile, bulk volume evaluate, and reference-counted release. Native output is `float[]`-compatible to match Minecraft's `DensityBuffer`; intermediate prototype registers are `double` and are converted to float only at the volume boundary. Constants and parameters are stored as fixed-width numeric fields. The wire format contains no native pointers, Java object IDs, class names, or platform-sized integers.
 
 Each graph carries:
 - `ir_version` and `semantic_version`
@@ -66,7 +66,7 @@ The initial compiler should be deliberately narrow. Candidate pure operations in
 - clamp and the simple unary transforms whose exact formulas are confirmed from the target artifact
 - noise references only after permutation, octave order, coordinate wrapping, and float/double conversion points have parity tests
 
-These are a proposed allowlist, not a claim that every opcode is already implemented. The first native prototype currently implements only `CONST`, `X`, `Y`, `Z`, `ADD`, and `MUL` in `native/cpp-kernels/src/density_graph.cpp`. Its C ABI supports versioned compile/cache, full-volume evaluation, and reference-counted release; Java 25 FFM wrappers are present in `NativeRuntime`. Rust unit tests exercise the arithmetic graph, cache reuse, malformed topological references, and invalid volume rejection. Java unit tests exercise IR validation. The prototype API is callable from Java, but no Minecraft `DensityFunction` extractor or `NoiseRouter` integration exists yet. It is not a terrain speedup.
+These are a proposed allowlist, not a claim that every opcode is already implemented. The current native prototype implements `CONST`, `X`, `Y`, `Z`, `ADD`, `SUB`, and `MUL` in `native/cpp-kernels/src/density_graph.cpp`. Its C ABI supports versioned compile/cache, full-volume evaluation, and reference-counted release; Java 25 FFM wrappers are present in `NativeRuntime`. Rust unit tests exercise the arithmetic graph, cache reuse, malformed topological references, and invalid volume rejection. Java unit tests exercise IR validation. The prototype API is callable from Java, but no Minecraft `DensityFunction` extractor or `NoiseRouter` integration exists yet. It is not a terrain speedup.
 
 The following require dedicated semantic work and must not be approximated as ordinary arithmetic:
 
@@ -294,3 +294,10 @@ to compiler auto-vectorization while preserving instruction order and float32
 rounding between dependent nodes. A large-volume parity test checks the
 z/x/y ordering and tile tail. This is a SIMD-friendly execution layout, not yet
 a measured Minecraft chunk speedup; benchmark results must be recorded separately.
+
+
+## IR v4 subtraction opcode
+
+IR v4 adds `SUB` (opcode 8) to the Java model, C ABI header, Rust bridge, C++ validator/lowering, tiled evaluator, and scalar reference evaluator. The operation is evaluated as ordered float32 `left - right`; it does not introduce reassociation or fused operations. The IR version is incremented so v3 persistent entries are rejected rather than misinterpreted. Rust tests cover a full volume with the established z/x/y output layout, and Java tests cover opcode construction and validation.
+
+This addition makes subtraction representable by the native graph engine. It does not yet connect `CompiledSamplerArithmeticIslands` to native graph compilation, nor does it mean compiled Minecraft sampler graphs are being executed natively.
