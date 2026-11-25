@@ -277,13 +277,8 @@ public final class NativePerlinNoiseBackend {
         boolean terminal = false;
         try {
             GradientNoiseAccessor access = (GradientNoiseAccessor) (Object) noise;
-            if (Boolean.getBoolean("jpe.nativePerlinProfile")) {
-                profilePerlinYRuns(List.of(new NativeRuntime.PerlinLayer(
-                        access.jpe$perms(),
-                        access.jpe$offsetX(), access.jpe$offsetY(), access.jpe$offsetZ(),
-                        xzScale, yScale, amplitude
-                )), volume);
-            }
+            // Real-world stack profiling is handled by tryAddToStack. This
+            // single-layer fallback path is not used by the stack interception.
             float[] target = ((DensityBufferAccessor) buffer).jpe$values();
             if (target.length < expectedElements) {
                 BUFFER_VOLUME_MISMATCHES.increment();
