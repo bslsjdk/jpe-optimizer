@@ -102,18 +102,6 @@ inline bool perlin_eight_floors_same_avx2(const int32_t* floors) noexcept {
 }
 
 __attribute__((target("avx2")))
-inline bool perlin_eight_floors_strict_monotonic_avx2(const int32_t* floors) noexcept {
-    const __m256i values = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(floors));
-    const __m256i previous = _mm256_permutevar8x32_epi32(
-        values, _mm256_setr_epi32(0, 0, 1, 2, 3, 4, 5, 6));
-    const __m256i ascending = _mm256_cmpgt_epi32(values, previous);
-    const __m256i descending = _mm256_cmpgt_epi32(previous, values);
-    const int ascending_mask = _mm256_movemask_ps(_mm256_castsi256_ps(ascending));
-    const int descending_mask = _mm256_movemask_ps(_mm256_castsi256_ps(descending));
-    return (ascending_mask == 0xFE) || (descending_mask == 0xFE);
-}
-
-__attribute__((target("avx2")))
 inline void perlin_evaluate_8_avx2(
     const float* relative_y, const float* alpha_y, float* output,
     const float* corner_xz, const float* corner_y,
@@ -388,21 +376,9 @@ int32_t perlin_add_volume_impl(
                             bool monotonic_floors = true;
                             int floor_direction = 0;
 
-                            // Strictly monotonic floors are the common cross-floor case.
-                            // Detect them with AVX2 adjacent comparisons and skip the
-                            // per-lane map-building branches. Repeated or irregular floors
-                            // retain the general mapping path below.
-                            const bool strict_monotonic =
-                                perlin_eight_floors_strict_monotonic_avx2(y_floors.data() + iy);
-                            if (strict_monotonic) {
-                                unique_count = 8;
-                                for (uint32_t lane = 0; lane < 8; ++lane) {
-                                    unique_floors[lane] = y_floors[iy + lane];
-                                    unique_representative_lanes[lane] = lane;
-                                    lane_unique_indices[lane] = static_cast<int32_t>(lane);
-                                }
-                            } else {
-                            // Build the lane-to-floor map for repeated or irregular floors.
+                            // Build the lane-to-floor map while checking monotonicity.
+                            // The common affine Y sequence needs only an adjacent comparison;
+                            // arbitrary wrapped/non-monotonic inputs fall back to general lookup.
                             for (uint32_t lane = 0; lane < 8; ++lane) {
                                 const int32_t lane_floor = y_floors[iy + lane];
                                 int lane_direction = 0;
@@ -455,7 +431,6 @@ int32_t perlin_add_volume_impl(
                                     break;
                                 }
                                 lane_unique_indices[lane] = static_cast<int32_t>(unique_index);
-                            }
                             }
 
                             // Compute each distinct floor's eight corners exactly once.
