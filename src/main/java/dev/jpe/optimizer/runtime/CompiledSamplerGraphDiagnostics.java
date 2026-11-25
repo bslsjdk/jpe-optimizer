@@ -14,6 +14,7 @@ public final class CompiledSamplerGraphDiagnostics {
     private static volatile CompiledSamplerGraphTrace.Snapshot lastSnapshot;
     private static volatile CompiledSamplerGraphIr.Graph lastGraph;
     private static volatile CompiledSamplerArithmeticIslands.Plan lastArithmeticPlan;
+    private static volatile java.util.List<CompiledSamplerArithmeticLowering.LoweredIsland> lastLoweredIslands = java.util.List.of();
 
     private CompiledSamplerGraphDiagnostics() {}
 
@@ -36,6 +37,19 @@ public final class CompiledSamplerGraphDiagnostics {
             CompiledSamplerArithmeticIslands.Plan arithmeticPlan =
                     CompiledSamplerArithmeticIslands.plan(graph);
             lastArithmeticPlan = arithmeticPlan;
+            java.util.ArrayList<CompiledSamplerArithmeticLowering.LoweredIsland> loweredIslands =
+                    new java.util.ArrayList<>();
+            for (CompiledSamplerArithmeticIslands.Island island : arithmeticPlan.islands()) {
+                try {
+                    // Fingerprint zero marks this as a diagnostic lowering preview only.
+                    // World/settings/seed-specific identity must be supplied before execution.
+                    loweredIslands.add(CompiledSamplerArithmeticLowering.lower(graph, island, 0L));
+                } catch (IllegalArgumentException unsupported) {
+                    LOGGER.log(System.Logger.Level.DEBUG,
+                            "arithmetic-island[{0}] not lowerable yet: {1}", island.id(), unsupported.getMessage());
+                }
+            }
+            lastLoweredIslands = java.util.List.copyOf(loweredIslands);
             EnumMap<CompiledSamplerGraphIr.Op, Integer> counts =
                     new EnumMap<>(CompiledSamplerGraphIr.Op.class);
             java.util.TreeMap<String, Integer> opaqueClasses = new java.util.TreeMap<>();
@@ -46,10 +60,10 @@ public final class CompiledSamplerGraphDiagnostics {
                 }
             }
             LOGGER.log(System.Logger.Level.INFO,
-                    "Compiled sampler graph inventory: nodes={0}, dropped={1}, root={2}, ops={3}, opaqueClasses={4}, arithmeticIslands={5}, arithmeticNodes={6}, boundaryNodes={7}",
+                    "Compiled sampler graph inventory: nodes={0}, dropped={1}, root={2}, ops={3}, opaqueClasses={4}, arithmeticIslands={5}, arithmeticNodes={6}, boundaryNodes={7}, lowerableIslands={8}",
                     snapshot.nodes().size(), snapshot.droppedNodes(), snapshot.rootId(), counts, opaqueClasses,
                     arithmeticPlan.islands().size(), arithmeticPlan.eligibleNodeCount(),
-                    arithmeticPlan.boundaryNodeCount());
+                    arithmeticPlan.boundaryNodeCount(), loweredIslands.size());
             for (CompiledSamplerArithmeticIslands.Island island : arithmeticPlan.islands()) {
                 LOGGER.log(System.Logger.Level.DEBUG,
                         "arithmetic-island[{0}] nodes={1} inputs={2} outputs={3}",
@@ -78,5 +92,9 @@ public final class CompiledSamplerGraphDiagnostics {
 
     public static CompiledSamplerArithmeticIslands.Plan lastArithmeticPlan() {
         return lastArithmeticPlan;
+    }
+
+    public static java.util.List<CompiledSamplerArithmeticLowering.LoweredIsland> lastLoweredIslands() {
+        return lastLoweredIslands;
     }
 }
