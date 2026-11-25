@@ -81,6 +81,7 @@ public final class CompiledSamplerGraphIr {
                 case CONST_DIV_LEFT ->
                         "Preserve operand order and Java float32 arithmetic; no generic zero shortcut";
                 case CONSTANT -> "Exact float32 constant sampler; value remains a float scalar";
+                case CLAMP -> "Minecraft Mth.clamp: value < min ? min : Math.min(value, max), preserving Java NaN and signed-zero semantics";
                 case CACHE_BOUNDARY -> "Do not inline across Minecraft cache identity or volume lifetime";
                 case CONTEXT_BOUNDARY -> "Resolve through SamplerContext; fallback is not an unconditional child";
                 case OPAQUE -> source.limitation().isEmpty()
