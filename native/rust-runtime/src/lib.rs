@@ -234,6 +234,7 @@ pub unsafe extern "C" fn jpe_runtime_density_graph_save_cache(
     unsafe { jpe_cpp_density_graph_save_cache(graph_handle, path, cache_key) }
 }
 
+#[repr(C)]
 pub struct JpePerlinLayer {
     pub permutation: *const u8,
     pub offset_x: f64,
@@ -707,6 +708,21 @@ pub extern "C" fn jpe_runtime_release_job(job_id: u64) -> i32 {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn perlin_layer_ffi_layout_matches_c_header() {
+        use std::mem::{align_of, offset_of, size_of};
+        assert_eq!(size_of::<JpePerlinLayer>(), 56);
+        assert_eq!(align_of::<JpePerlinLayer>(), 8);
+        assert_eq!(offset_of!(JpePerlinLayer, permutation), 0);
+        assert_eq!(offset_of!(JpePerlinLayer, offset_x), 8);
+        assert_eq!(offset_of!(JpePerlinLayer, offset_y), 16);
+        assert_eq!(offset_of!(JpePerlinLayer, offset_z), 24);
+        assert_eq!(offset_of!(JpePerlinLayer, xz_scale), 32);
+        assert_eq!(offset_of!(JpePerlinLayer, y_scale), 40);
+        assert_eq!(offset_of!(JpePerlinLayer, amplitude), 48);
+    }
+
     use super::*;
     #[cfg(feature = "density-graph-benchmark")]
     use std::time::Instant;
