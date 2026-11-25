@@ -575,7 +575,17 @@ extern "C" int32_t jpe_cpp_perlin_add_volume(
         return __builtin_cpu_supports("avx2");
     }();
     const double y_step_magnitude = std::abs(static_cast<double>(step_y) * y_scale);
-    if (avx2_available && y_step_magnitude <= (1.0 / 16.0)) {
+    // The real 26.3 workload is dominated by stepY=8 volumes. Shape probes
+    // show that the same 1/16 gate is wasteful for smaller vertical steps:
+    // stepY=1 benefits at <=1/64, stepY=4 at <=1/32, while stepY>=8
+    // retains useful AVX2 coverage through 1/16.
+    const uint32_t step_magnitude = step_y < 0
+        ? 0U - static_cast<uint32_t>(step_y)
+        : static_cast<uint32_t>(step_y);
+    const double avx2_step_limit = step_magnitude >= 8U ? (1.0 / 16.0)
+        : step_magnitude >= 4U ? (1.0 / 32.0)
+        : (1.0 / 64.0);
+    if (avx2_available && y_step_magnitude <= avx2_step_limit) {
         return perlin_add_volume_impl<true, false, true>(permutation,
             size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
             xz_scale, y_scale, amplitude, output, output_length, flags);
