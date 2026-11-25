@@ -339,61 +339,84 @@ int32_t perlin_add_volume_impl(
                             uint32_t unique_count = 0;
                             bool monotonic_floors = true;
                             int floor_direction = 0;
-                            for (uint32_t lane = 1; lane < 8; ++lane) {
-                                const int32_t previous = y_floors[iy + lane - 1];
-                                const int32_t current = y_floors[iy + lane];
-                                const int direction = current > previous ? 1 : (current < previous ? -1 : 0);
-                                if (direction != 0) {
-                                    if (floor_direction == 0) floor_direction = direction;
-                                    else if (direction != floor_direction) {
-                                        monotonic_floors = false;
-                                        break;
-                                    }
-                                }
-                            }
+
+                            // Build the lane-to-floor map while checking monotonicity.
+                            // The common affine Y sequence needs only an adjacent comparison;
+                            // arbitrary wrapped/non-monotonic inputs fall back to general lookup.
                             for (uint32_t lane = 0; lane < 8; ++lane) {
                                 const int32_t lane_floor = y_floors[iy + lane];
+                                if (lane > 0) {
+                                    const int32_t previous = y_floors[iy + lane - 1];
+                                    const int direction = lane_floor > previous ? 1 : (lane_floor < previous ? -1 : 0);
+                                    if (direction != 0) {
+                                        if (floor_direction == 0) floor_direction = direction;
+                                        else if (direction != floor_direction) {
+                                            monotonic_floors = false;
+                                        }
+                                    }
+                                }
+
                                 uint32_t unique_index;
                                 if (monotonic_floors) {
                                     if (lane > 0 && lane_floor == y_floors[iy + lane - 1]) {
                                         unique_index = static_cast<uint32_t>(lane_unique_indices[lane - 1]);
                                     } else {
-                                        unique_index = unique_count;
+                                        unique_index = unique_count++;
+                                        unique_floors[unique_index] = lane_floor;
                                     }
                                 } else {
-                                    unique_index = 0;
-                                    while (unique_index < unique_count &&
-                                           unique_floors[unique_index] != lane_floor) {
-                                        ++unique_index;
+                                    // A direction change invalidates the adjacent-only map.
+                                    // Rebuild the complete map with the general bounded search.
+                                    unique_count = 0;
+                                    for (uint32_t rebuild_lane = 0; rebuild_lane <= lane; ++rebuild_lane) {
+                                        const int32_t rebuild_floor = y_floors[iy + rebuild_lane];
+                                        uint32_t found = 0;
+                                        while (found < unique_count && unique_floors[found] != rebuild_floor) ++found;
+                                        if (found == unique_count) unique_floors[unique_count++] = rebuild_floor;
+                                        lane_unique_indices[rebuild_lane] = static_cast<int32_t>(found);
                                     }
-                                }
-                                if (unique_index == unique_count) {
-                                    unique_floors[unique_count] = lane_floor;
-                                    const XyPermutationCache& lane_xy =
-                                        cross_floor_xy_cache[static_cast<size_t>(ix) * size_y + iy + lane];
-                                    const uint32_t xy00 = lane_xy.xy00;
-                                    const uint32_t xy01 = lane_xy.xy01;
-                                    const uint32_t xy10 = lane_xy.xy10;
-                                    const uint32_t xy11 = lane_xy.xy11;
-                                    corner(permutation, xy00 + static_cast<uint32_t>(floor_z), relative_x, relative_z,
-                                           unique_corner_xz[0][unique_count], unique_corner_y[0][unique_count]);
-                                    corner(permutation, xy10 + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z,
-                                           unique_corner_xz[1][unique_count], unique_corner_y[1][unique_count]);
-                                    corner(permutation, xy01 + static_cast<uint32_t>(floor_z), relative_x, relative_z,
-                                           unique_corner_xz[2][unique_count], unique_corner_y[2][unique_count]);
-                                    corner(permutation, xy11 + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z,
-                                           unique_corner_xz[3][unique_count], unique_corner_y[3][unique_count]);
-                                    corner(permutation, xy00 + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F,
-                                           unique_corner_xz[4][unique_count], unique_corner_y[4][unique_count]);
-                                    corner(permutation, xy10 + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F,
-                                           unique_corner_xz[5][unique_count], unique_corner_y[5][unique_count]);
-                                    corner(permutation, xy01 + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F,
-                                           unique_corner_xz[6][unique_count], unique_corner_y[6][unique_count]);
-                                    corner(permutation, xy11 + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F,
-                                           unique_corner_xz[7][unique_count], unique_corner_y[7][unique_count]);
-                                    ++unique_count;
+                                    for (uint32_t remaining = lane + 1; remaining < 8; ++remaining) {
+                                        const int32_t remaining_floor = y_floors[iy + remaining];
+                                        uint32_t found = 0;
+                                        while (found < unique_count && unique_floors[found] != remaining_floor) ++found;
+                                        if (found == unique_count) unique_floors[unique_count++] = remaining_floor;
+                                        lane_unique_indices[remaining] = static_cast<int32_t>(found);
+                                    }
+                                    break;
                                 }
                                 lane_unique_indices[lane] = static_cast<int32_t>(unique_index);
+                            }
+
+                            // Compute each distinct floor's eight corners exactly once.
+                            for (uint32_t unique = 0; unique < unique_count; ++unique) {
+                                const int32_t floor_y = unique_floors[unique];
+                                uint32_t representative_lane = 0;
+                                while (static_cast<uint32_t>(lane_unique_indices[representative_lane]) != unique) {
+                                    ++representative_lane;
+                                }
+                                const XyPermutationCache& lane_xy =
+                                    cross_floor_xy_cache[static_cast<size_t>(ix) * size_y + iy + representative_lane];
+                                const uint32_t xy00 = lane_xy.xy00;
+                                const uint32_t xy01 = lane_xy.xy01;
+                                const uint32_t xy10 = lane_xy.xy10;
+                                const uint32_t xy11 = lane_xy.xy11;
+                                (void)floor_y;
+                                corner(permutation, xy00 + static_cast<uint32_t>(floor_z), relative_x, relative_z,
+                                       unique_corner_xz[0][unique], unique_corner_y[0][unique]);
+                                corner(permutation, xy10 + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z,
+                                       unique_corner_xz[1][unique], unique_corner_y[1][unique]);
+                                corner(permutation, xy01 + static_cast<uint32_t>(floor_z), relative_x, relative_z,
+                                       unique_corner_xz[2][unique], unique_corner_y[2][unique]);
+                                corner(permutation, xy11 + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z,
+                                       unique_corner_xz[3][unique], unique_corner_y[3][unique]);
+                                corner(permutation, xy00 + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F,
+                                       unique_corner_xz[4][unique], unique_corner_y[4][unique]);
+                                corner(permutation, xy10 + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F,
+                                       unique_corner_xz[5][unique], unique_corner_y[5][unique]);
+                                corner(permutation, xy01 + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F,
+                                       unique_corner_xz[6][unique], unique_corner_y[6][unique]);
+                                corner(permutation, xy11 + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F,
+                                       unique_corner_xz[7][unique], unique_corner_y[7][unique]);
                             }
                             perlin_evaluate_8_avx2_independent(
                                 y_relative.data() + iy, y_alpha.data() + iy,
