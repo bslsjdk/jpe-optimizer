@@ -122,7 +122,7 @@ public final class CompiledSamplerGraphTrace {
                     current.children.add(childId);
                 }
             } else if (isSafeScalar(value)) {
-                String rendered = String.valueOf(value);
+                String rendered = renderScalar(value);
                 if (rendered.length() > 256) rendered = rendered.substring(0, 256);
                 current.values.add(new ComponentValue(component.getName(),
                         component.getType().getName(), rendered));
@@ -141,7 +141,15 @@ public final class CompiledSamplerGraphTrace {
     }
 
     private static boolean isSafeScalar(Object value) {
-        return value == null || value instanceof String || value instanceof Number
-                || value instanceof Boolean || value instanceof Character || value instanceof Enum<?>;
+        if (value == null || value instanceof String || value instanceof Boolean
+                || value instanceof Character || value instanceof Enum<?>) return true;
+        Class<?> type = value.getClass();
+        return type == Byte.class || type == Short.class || type == Integer.class
+                || type == Long.class || type == Float.class || type == Double.class;
+    }
+
+    private static String renderScalar(Object value) {
+        if (value instanceof Enum<?> enumValue) return enumValue.name();
+        return String.valueOf(value);
     }
 }
