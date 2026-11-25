@@ -66,7 +66,7 @@ inline void corner(const uint8_t* p, uint32_t hash, float rx, float rz,
 inline void corner_for_lanes(
     const uint8_t* p, uint32_t hash, float rx, float rz,
     float lane_xz[8][8], float lane_y[8][8], uint32_t corner_index,
-    uint32_t unique_index, const int32_t lane_unique_indices[8],
+    uint32_t unique_index, const uint8_t lane_members[8], uint32_t member_count,
     bool identity_lanes
 ) noexcept {
     float xz;
@@ -77,11 +77,10 @@ inline void corner_for_lanes(
         lane_y[corner_index][unique_index] = y;
         return;
     }
-    for (uint32_t lane = 0; lane < 8; ++lane) {
-        if (static_cast<uint32_t>(lane_unique_indices[lane]) == unique_index) {
-            lane_xz[corner_index][lane] = xz;
-            lane_y[corner_index][lane] = y;
-        }
+    for (uint32_t member = 0; member < member_count; ++member) {
+        const uint32_t lane = lane_members[member];
+        lane_xz[corner_index][lane] = xz;
+        lane_y[corner_index][lane] = y;
     }
 }
 
@@ -416,6 +415,16 @@ int32_t perlin_add_volume_impl(
                                 lane_unique_indices[lane] = static_cast<int32_t>(unique_index);
                             }
 
+                            // Materialize compact lane membership once, so each corner
+                            // writes only its destination lanes without eight-way comparisons.
+                            uint8_t unique_lane_members[8][8]{};
+                            uint8_t unique_lane_counts[8]{};
+                            for (uint32_t lane = 0; lane < 8; ++lane) {
+                                const uint32_t unique = static_cast<uint32_t>(lane_unique_indices[lane]);
+                                unique_lane_members[unique][unique_lane_counts[unique]++] =
+                                    static_cast<uint8_t>(lane);
+                            }
+
                             // Compute each distinct floor's eight corners exactly once.
                             for (uint32_t unique = 0; unique < unique_count; ++unique) {
                                 const uint32_t representative_lane = unique_representative_lanes[unique];
@@ -427,21 +436,29 @@ int32_t perlin_add_volume_impl(
                                 const uint32_t xy11 = lane_xy.xy11;
                                 const bool identity_lanes = unique_count == 8;
                                 corner_for_lanes(permutation, xy00 + static_cast<uint32_t>(floor_z), relative_x, relative_z,
-                                    lane_corner_xz, lane_corner_y, 0, unique, lane_unique_indices, identity_lanes);
+                                    lane_corner_xz, lane_corner_y, 0, unique,
+                                    unique_lane_members[unique], unique_lane_counts[unique], identity_lanes);
                                 corner_for_lanes(permutation, xy10 + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z,
-                                    lane_corner_xz, lane_corner_y, 1, unique, lane_unique_indices, identity_lanes);
+                                    lane_corner_xz, lane_corner_y, 1, unique,
+                                    unique_lane_members[unique], unique_lane_counts[unique], identity_lanes);
                                 corner_for_lanes(permutation, xy01 + static_cast<uint32_t>(floor_z), relative_x, relative_z,
-                                    lane_corner_xz, lane_corner_y, 2, unique, lane_unique_indices, identity_lanes);
+                                    lane_corner_xz, lane_corner_y, 2, unique,
+                                    unique_lane_members[unique], unique_lane_counts[unique], identity_lanes);
                                 corner_for_lanes(permutation, xy11 + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z,
-                                    lane_corner_xz, lane_corner_y, 3, unique, lane_unique_indices, identity_lanes);
+                                    lane_corner_xz, lane_corner_y, 3, unique,
+                                    unique_lane_members[unique], unique_lane_counts[unique], identity_lanes);
                                 corner_for_lanes(permutation, xy00 + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F,
-                                    lane_corner_xz, lane_corner_y, 4, unique, lane_unique_indices, identity_lanes);
+                                    lane_corner_xz, lane_corner_y, 4, unique,
+                                    unique_lane_members[unique], unique_lane_counts[unique], identity_lanes);
                                 corner_for_lanes(permutation, xy10 + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F,
-                                    lane_corner_xz, lane_corner_y, 5, unique, lane_unique_indices, identity_lanes);
+                                    lane_corner_xz, lane_corner_y, 5, unique,
+                                    unique_lane_members[unique], unique_lane_counts[unique], identity_lanes);
                                 corner_for_lanes(permutation, xy01 + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F,
-                                    lane_corner_xz, lane_corner_y, 6, unique, lane_unique_indices, identity_lanes);
+                                    lane_corner_xz, lane_corner_y, 6, unique,
+                                    unique_lane_members[unique], unique_lane_counts[unique], identity_lanes);
                                 corner_for_lanes(permutation, xy11 + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F,
-                                    lane_corner_xz, lane_corner_y, 7, unique, lane_unique_indices, identity_lanes);
+                                    lane_corner_xz, lane_corner_y, 7, unique,
+                                    unique_lane_members[unique], unique_lane_counts[unique], identity_lanes);
                             }
                             perlin_evaluate_8_avx2_independent(
                                 y_relative.data() + iy, y_alpha.data() + iy,
