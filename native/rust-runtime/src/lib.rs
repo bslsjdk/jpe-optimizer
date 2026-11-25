@@ -653,7 +653,7 @@ mod tests {
                 input_b: 1, reserved: 0, immediate: 0.0 },
         ];
         let first = unsafe {
-            jpe_runtime_density_graph_compile(nodes.as_ptr(), 3, 2, 1, 0xCA_CHE)
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), 3, 2, 1, 0xCAC0_E001)
         };
         assert_ne!(first, 0);
         assert_eq!(unsafe { jpe_cpp_density_graph_save_cache(first, path_string.as_ptr(), key.as_ptr()) }, 0);
