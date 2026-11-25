@@ -109,15 +109,13 @@ public final class RuntimeDensityTrace {
         if (guardId < 0) throw new IllegalArgumentException("guardId must be non-negative");
         int id = nodeId(densityFunction);
         if (id < 0) return;
-        synchronized (this) {
-            BranchKey key = new BranchKey(id, guardId, outcome);
-            if (!guardKeys.add(key)) return;
-            if (eventCount() >= maxEvents) {
-                droppedEvents++;
-                return;
-            }
-            guards.add(new BranchGuard(id, guardId, outcome));
+        BranchKey key = new BranchKey(id, guardId, outcome);
+        if (!guardKeys.add(key)) return;
+        if (eventCount() >= maxEvents) {
+            droppedEvents++;
+            return;
         }
+        guards.add(new BranchGuard(id, guardId, outcome));
     }
 
     private synchronized int nodeId(Object value) {
@@ -187,8 +185,11 @@ public final class RuntimeDensityTrace {
         public void close() {
             RuntimeDensityTrace current = owner;
             if (current == null) return;
-            owner = null;
+            // Clear ownership only after a successful close. If a caller
+            // violates thread confinement, the owning worker can still close
+            // the scope correctly instead of leaking its ThreadLocal stack.
             current.leave(id, thread, generation);
+            owner = null;
         }
     }
 }
