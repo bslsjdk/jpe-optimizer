@@ -80,7 +80,10 @@ public final class CompiledSamplerGraphDiagnostics {
             }
         } catch (RuntimeException | LinkageError failure) {
             LOGGER.log(System.Logger.Level.WARNING,
-                    "Compiled sampler graph inventory failed without affecting wor
+                    "Compiled sampler graph inventory failed without affecting world generation: {0}"",
+                    failure.toString());
+        }
+    }
 
     /**
      * Runs one bounded, shadow-only parity check against a real compiled sampler
@@ -143,10 +146,6 @@ public final class CompiledSamplerGraphDiagnostics {
         }
     }
 
-ld generation: {0}",
-                    failure.toString());
-        }
-    }
 
     public static CompiledSamplerGraphTrace.Snapshot lastSnapshot() {
         return lastSnapshot;
