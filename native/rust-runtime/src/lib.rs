@@ -6,7 +6,7 @@ use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-const ABI_VERSION: u32 = 6;
+const ABI_VERSION: u32 = 7;
 const STATUS_OK: i32 = 0;
 const STATUS_INVALID_ARGUMENT: i32 = 1;
 const STATUS_CPP_FAILURE: i32 = 2;
@@ -40,6 +40,8 @@ const DENSITY_ADD: u32 = 5;
 const DENSITY_MUL: u32 = 6;
 const DENSITY_OPAQUE: u32 = 7;
 
+
+
 unsafe extern "C" {
     fn jpe_cpp_density_graph_compile(
         nodes: *const JpeDensityNode, node_count: u32, root_node: u32,
@@ -53,6 +55,8 @@ unsafe extern "C" {
         output: *mut f32, output_length: u64,
     ) -> i32;
     fn jpe_cpp_density_graph_release(graph_handle: u64) -> i32;
+    fn jpe_cpp_density_graph_load_cache(path: *const std::ffi::c_char, cache_key: *const std::ffi::c_char) -> u64;
+    fn jpe_cpp_density_graph_save_cache(graph_handle: u64, path: *const std::ffi::c_char, cache_key: *const std::ffi::c_char) -> i32;
 }
 
 #[no_mangle]
@@ -85,6 +89,21 @@ pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate(
 #[no_mangle]
 pub unsafe extern "C" fn jpe_runtime_density_graph_release(graph_handle: u64) -> i32 {
     unsafe { jpe_cpp_density_graph_release(graph_handle) }
+}
+
+
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_load_cache(
+    path: *const std::ffi::c_char, cache_key: *const std::ffi::c_char,
+) -> u64 {
+    unsafe { jpe_cpp_density_graph_load_cache(path, cache_key) }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_save_cache(
+    graph_handle: u64, path: *const std::ffi::c_char, cache_key: *const std::ffi::c_char,
+) -> i32 {
+    unsafe { jpe_cpp_density_graph_save_cache(graph_handle, path, cache_key) }
 }
 
 pub struct JpePerlinLayer {
