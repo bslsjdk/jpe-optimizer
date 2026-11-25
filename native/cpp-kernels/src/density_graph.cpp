@@ -358,7 +358,7 @@ extern "C" uint64_t jpe_cpp_density_graph_load_cache(
             || !read_u64(bytes, offset, immediate_bits)) return 0;
         std::memcpy(&node.immediate, &immediate_bits, sizeof(immediate_bits));
     }
-    if (offset != payload_length || ir_version != 4 || !valid_graph(nodes.data(), count, root)) return 0;
+    if (offset != payload_length || ir_version != 5 || !valid_graph(nodes.data(), count, root)) return 0;
     return jpe_cpp_density_graph_compile(nodes.data(), count, root, ir_version, configuration);
 } catch (...) { return 0; }
 
