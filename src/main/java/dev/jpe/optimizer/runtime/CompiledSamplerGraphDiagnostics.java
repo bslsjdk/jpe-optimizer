@@ -187,6 +187,14 @@ public final class CompiledSamplerGraphDiagnostics {
                             report.nativeEvaluateNanos() / 1_000_000.0,
                             report.javaReferenceNanos() / 1_000_000.0,
                             report.compareNanos() / 1_000_000.0, semanticFingerprint);
+                    sharedInputs.samplingStats().entrySet().stream()
+                            .sorted(java.util.Map.Entry.<String, CompiledSamplerExternalInputs.SamplingStats>
+                                    comparingByValue(java.util.Comparator.comparingLong(
+                                            CompiledSamplerExternalInputs.SamplingStats::elapsedNanos)).reversed())
+                            .forEach(entry -> LOGGER.log(System.Logger.Level.INFO,
+                                    "JPE_NATIVE_SAMPLER_BOUNDARY class={0} calls={1} samples={2} sampleMs={3}",
+                                    entry.getKey(), entry.getValue().calls(), entry.getValue().samples(),
+                                    entry.getValue().elapsedNanos() / 1_000_000.0));
                 }
             } catch (RuntimeException | LinkageError batchFailure) {
                 LOGGER.log(System.Logger.Level.WARNING,
