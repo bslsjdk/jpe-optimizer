@@ -26,7 +26,7 @@ class CompiledSamplerBatchCacheKeyTest {
 
     private static List<CompiledSamplerArithmeticIslands.Island> islands() {
         return List.of(new CompiledSamplerArithmeticIslands.Island(
-                0, List.of(0), List.of(1, 2), List.of(0)));
+                0, List.of(0), List.of(), List.of(0)));
     }
 
     @Test
@@ -58,9 +58,9 @@ class CompiledSamplerBatchCacheKeyTest {
     @Test
     void outputOrderAndIslandMembershipArePartOfTheKey() {
         var twoOutputs = List.of(new CompiledSamplerArithmeticIslands.Island(
-                0, List.of(0, 3), List.of(1, 2), List.of(0, 3)));
+                0, List.of(0, 3), List.of(), List.of(0, 3)));
         var reordered = List.of(new CompiledSamplerArithmeticIslands.Island(
-                0, List.of(0, 3), List.of(1, 2), List.of(3, 0)));
+                0, List.of(0, 3), List.of(), List.of(3, 0)));
         String first = CompiledSamplerBatchCacheKey.create(identity(), graphWithSecondOutput(), twoOutputs, 12648430L);
         String second = CompiledSamplerBatchCacheKey.create(identity(), graphWithSecondOutput(), reordered, 12648430L);
         assertNotEquals(first, second);
