@@ -76,11 +76,25 @@ class CompiledSamplerArithmeticLoweringTest {
         assertEquals(List.of(2), batch.inputSourceNodeIds());
         assertEquals(List.of(0, 1), batch.outputSourceNodeIds());
         assertEquals(2, batch.nativeOutputNodeIds().size());
-        assertEquals(DensityGraphIr.INPUT, batch.graph().nodes().get(0).opcode());
-        assertEquals(DensityGraphIr.CONST, batch.graph().nodes().get(1).opcode());
-        assertEquals(DensityGraphIr.CONST, batch.graph().nodes().get(2).opcode());
-        assertEquals(DensityGraphIr.ADD, batch.graph().nodes().get(3).opcode());
-        assertEquals(DensityGraphIr.SUB, batch.graph().nodes().get(4).opcode());
+        assertEquals(1, batch.graph().nodes().stream()
+                .filter(node -> node.opcode() == DensityGraphIr.INPUT).count());
+        assertEquals(2, batch.graph().nodes().stream()
+                .filter(node -> node.opcode() == DensityGraphIr.CONST).count());
+        assertEquals(1, batch.graph().nodes().stream()
+                .filter(node -> node.opcode() == DensityGraphIr.ADD).count());
+        assertEquals(1, batch.graph().nodes().stream()
+                .filter(node -> node.opcode() == DensityGraphIr.SUB).count());
+        assertEquals(DensityGraphIr.ADD,
+                batch.graph().nodes().get(batch.nativeOutputNodeIds().get(0)).opcode());
+        assertEquals(DensityGraphIr.SUB,
+                batch.graph().nodes().get(batch.nativeOutputNodeIds().get(1)).opcode());
+        for (int i = 0; i < batch.graph().nodes().size(); i++) {
+            DensityGraphIr.Node node = batch.graph().nodes().get(i);
+            if (node.opcode() == DensityGraphIr.ADD || node.opcode() == DensityGraphIr.SUB) {
+                assertTrue(node.inputA() >= 0 && node.inputA() < i);
+                assertTrue(node.inputB() >= 0 && node.inputB() < i);
+            }
+        }
     }
 
     @Test
