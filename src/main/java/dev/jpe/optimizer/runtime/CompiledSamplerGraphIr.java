@@ -32,6 +32,7 @@ public final class CompiledSamplerGraphIr {
         CONST_DIV_LEFT,
         CONST_MIN_RIGHT,
         CONST_MAX_RIGHT,
+        CLAMP,
         CACHE_BOUNDARY,
         CONTEXT_BOUNDARY,
         OPAQUE
