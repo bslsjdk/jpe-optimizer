@@ -122,6 +122,11 @@ public final class NativePerlinNoiseBackend {
                 OVERSIZED_VOLUMES.increment();
                 return false;
             }
+            List<NativeRuntime.PerlinLayer> layers = null;
+            if (Boolean.getBoolean("jpe.nativePerlinProfile")
+                    || !Boolean.getBoolean("jpe.nativePerlinSynchronous")) {
+                layers = toPerlinLayers(sourceLayers, xzScale, yScale, amplitude);
+            }
             if (Boolean.getBoolean("jpe.nativePerlinProfile")) {
                 profilePerlinYRuns(layers, volume);
             }
@@ -386,6 +391,23 @@ public final class NativePerlinNoiseBackend {
      * Y-coordinate wrapping/floor grouping and reports how much work can enter the
      * current eight-wide AVX2 loop. Disabled by default; profiling itself scans Y.
      */
+
+    private static List<NativeRuntime.PerlinLayer> toPerlinLayers(Object[] sourceLayers,
+                                                                   double xzScale, double yScale,
+                                                                   float amplitude) {
+        List<NativeRuntime.PerlinLayer> layers = new ArrayList<>(sourceLayers.length);
+        for (Object sourceLayer : sourceLayers) {
+            NoiseStackLayerAccessor layer = (NoiseStackLayerAccessor) sourceLayer;
+            GradientNoiseAccessor noise = (GradientNoiseAccessor) layer.jpe$noise();
+            double frequency = layer.jpe$frequency();
+            layers.add(new NativeRuntime.PerlinLayer(noise.jpe$perms(),
+                    noise.jpe$offsetX(), noise.jpe$offsetY(), noise.jpe$offsetZ(),
+                    xzScale * frequency, yScale * frequency,
+                    amplitude * layer.jpe$amplitude()));
+        }
+        return layers;
+    }
+
     private static void profilePerlinYRuns(List<NativeRuntime.PerlinLayer> layers,
                                            DensityVolume volume) {
         long sequence = PROFILE_CALLS.incrementAndGet();
