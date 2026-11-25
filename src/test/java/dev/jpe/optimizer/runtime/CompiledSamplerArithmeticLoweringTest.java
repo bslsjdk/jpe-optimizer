@@ -1,7 +1,6 @@
 package dev.jpe.optimizer.runtime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.util.List;
 import java.util.Map;
@@ -61,7 +60,7 @@ class CompiledSamplerArithmeticLoweringTest {
     }
 
     @Test
-    void refusesMultiOutputIslandUntilNativeAbiSupportsMultipleRoots() {
+    void lowersAllOutputsOfOneSharedArithmeticIsland() {
         CompiledSamplerGraphIr.Graph graph = new CompiledSamplerGraphIr.Graph(List.of(
                 node(0, CompiledSamplerGraphIr.Op.ADD, List.of(1, 2), Map.of()),
                 node(1, CompiledSamplerGraphIr.Op.CONSTANT, List.of(), Map.of("value", "1.0")),
@@ -71,7 +70,12 @@ class CompiledSamplerArithmeticLoweringTest {
                 new CompiledSamplerArithmeticIslands.Island(0, List.of(0, 1, 2),
                         List.of(), List.of(0, 1, 2));
 
-        assertThrows(IllegalArgumentException.class,
-                () -> CompiledSamplerArithmeticLowering.lower(graph, multiOutput, 0));
+        CompiledSamplerArithmeticLowering.LoweredIsland lowered =
+                CompiledSamplerArithmeticLowering.lower(graph, multiOutput, 0);
+
+        assertEquals(List.of(0, 1, 2), lowered.outputSourceNodeIds());
+        assertEquals(List.of(2, 1, 0), lowered.nativeOutputNodeIds());
+        assertEquals(2, lowered.graph().rootNode());
+        assertEquals(3, lowered.graph().nodes().size());
     }
 }
