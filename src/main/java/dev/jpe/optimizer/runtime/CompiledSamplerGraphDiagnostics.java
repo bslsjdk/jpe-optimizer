@@ -46,8 +46,8 @@ public final class CompiledSamplerGraphDiagnostics {
                     snapshot.nodes().size(), snapshot.droppedNodes(), snapshot.rootId(), counts, opaqueClasses);
             for (CompiledSamplerGraphIr.Node node : graph.nodes()) {
                 LOGGER.log(System.Logger.Level.DEBUG,
-                        "sampler[{0}] op={1} source={2} children={3} values={4} note={5}",
-                        node.id(), node.op(), node.sourceClass(), node.children(),
+                        "sampler[{0}] op={1} source={2} children={3} edges={4} values={5} note={6}",
+                        node.id(), node.op(), node.sourceClass(), node.children(), node.childEdges(),
                         node.scalarValues(), node.note());
             }
         } catch (RuntimeException | LinkageError failure) {
