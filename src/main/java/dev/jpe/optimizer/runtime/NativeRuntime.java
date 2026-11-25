@@ -288,7 +288,7 @@ public final class NativeRuntime implements AutoCloseable {
                     encoded.set(ValueLayout.JAVA_INT, base, node.opcode());
                     encoded.set(ValueLayout.JAVA_INT, base + 4L, node.inputA() < 0 ? 0xffff_ffff : node.inputA());
                     encoded.set(ValueLayout.JAVA_INT, base + 8L, node.inputB() < 0 ? 0xffff_ffff : node.inputB());
-                    encoded.set(ValueLayout.JAVA_INT, base + 12L, 0);
+                    encoded.set(ValueLayout.JAVA_INT, base + 12L, node.opcode() == DensityGraphIr.OPAQUE ? 1 : 0);
                     encoded.set(ValueLayout.JAVA_DOUBLE, base + 16L, node.immediate());
                 }
                 long handle = (long) compileDensityGraph.invokeExact(
