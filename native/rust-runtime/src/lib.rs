@@ -935,12 +935,16 @@ mod tests {
             jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 8 , 6, 0x71_1E)
         };
         assert_ne!(handle, 0);
-        let (sx, sy, sz) = (32usize, 64usize, 32usize);
+        // One complete Overworld chunk column footprint: 16x16 blocks,
+        // sampled at every block Y from -64 through 319 (384 levels).
+        // This is deliberately the real chunk workload, not an arbitrary
+        // 32x64x32 volume that can favor a particular cache/SIMD strategy.
+        let (sx, sy, sz) = (16usize, 384usize, 16usize);
         let mut output = vec![0.0_f32; sx * sy * sz];
         assert_eq!(unsafe {
             jpe_runtime_density_graph_evaluate(
                 handle, sx as u32, sy as u32, sz as u32,
-                -16, -64, 48, 1, 2, 1,
+                0, -64, 0, 1, 1, 1,
                 output.as_mut_ptr(), output.len() as u64,
             )
         }, STATUS_OK);
@@ -949,9 +953,9 @@ mod tests {
             for x in 0..sx {
                 for y in 0..sy {
                     let index = (z * sx + x) * sy + y;
-                    let world_x = (-16 + x as i32) as f32;
-                    let world_y = (-64 + (y as i32) * 2) as f32;
-                    let world_z = (48 + z as i32) as f32;
+                    let world_x = x as f32;
+                    let world_y = (-64 + y as i32) as f32;
+                    let world_z = z as f32;
                     let shifted_x = world_x + 2.0;
                     let horizontal = shifted_x * world_y;
                     let vertical = world_z * 0.25;
