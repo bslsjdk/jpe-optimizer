@@ -95,7 +95,7 @@ bool valid_volume(uint32_t sx, uint32_t sy, uint32_t sz,
 extern "C" uint64_t jpe_runtime_density_graph_compile(
     const JpeDensityNode* nodes, uint32_t node_count, uint32_t root_node,
     uint64_t configuration_fingerprint
-) {
+) try {
     if (!valid_graph(nodes, node_count, root_node)) return 0;
     const uint64_t fingerprint = hash_graph(nodes, node_count, root_node, configuration_fingerprint);
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -123,15 +123,15 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
     g_handles.emplace(handle, std::move(graph));
     g_cache.emplace(fingerprint, handle);
     return handle;
-}
+} catch (...) { return 0; }
 
 extern "C" int32_t jpe_runtime_density_graph_evaluate(
     uint64_t graph_handle,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
-    double* output, uint64_t output_length
-) {
+    float* output, uint64_t output_length
+) try {
     if (output == nullptr || !valid_volume(size_x, size_y, size_z,
             step_x, step_y, step_z, output_length)) return 1;
 
@@ -167,14 +167,14 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate(
                         default: return 1; // Defensive: compiled plans are immutable and validated.
                     }
                 }
-                output[output_index++] = values[graph->root];
+                output[output_index++] = static_cast<float>(values[graph->root]);
             }
         }
     }
     return 0;
-}
+} catch (...) { return 3; }
 
-extern "C" int32_t jpe_runtime_density_graph_release(uint64_t graph_handle) {
+extern "C" int32_t jpe_runtime_density_graph_release(uint64_t graph_handle) try {
     std::lock_guard<std::mutex> lock(g_mutex);
     const auto found = g_handles.find(graph_handle);
     if (found == g_handles.end()) return 2;
@@ -190,4 +190,4 @@ extern "C" int32_t jpe_runtime_density_graph_release(uint64_t graph_handle) {
         }
     }
     return 0;
-}
+} catch (...) { return 3; }
