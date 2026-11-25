@@ -13,6 +13,7 @@ public final class CompiledSamplerGraphDiagnostics {
     private static final boolean ENABLED = Boolean.getBoolean("jpe.traceCompiledSamplers");
     private static volatile CompiledSamplerGraphTrace.Snapshot lastSnapshot;
     private static volatile CompiledSamplerGraphIr.Graph lastGraph;
+    private static volatile CompiledSamplerArithmeticIslands.Plan lastArithmeticPlan;
 
     private CompiledSamplerGraphDiagnostics() {}
 
@@ -32,6 +33,9 @@ public final class CompiledSamplerGraphDiagnostics {
             lastSnapshot = snapshot;
             CompiledSamplerGraphIr.Graph graph = CompiledSamplerGraphIr.lower(snapshot);
             lastGraph = graph;
+            CompiledSamplerArithmeticIslands.Plan arithmeticPlan =
+                    CompiledSamplerArithmeticIslands.plan(graph);
+            lastArithmeticPlan = arithmeticPlan;
             EnumMap<CompiledSamplerGraphIr.Op, Integer> counts =
                     new EnumMap<>(CompiledSamplerGraphIr.Op.class);
             java.util.TreeMap<String, Integer> opaqueClasses = new java.util.TreeMap<>();
@@ -42,8 +46,15 @@ public final class CompiledSamplerGraphDiagnostics {
                 }
             }
             LOGGER.log(System.Logger.Level.INFO,
-                    "Compiled sampler graph inventory: nodes={0}, dropped={1}, root={2}, ops={3}, opaqueClasses={4}",
-                    snapshot.nodes().size(), snapshot.droppedNodes(), snapshot.rootId(), counts, opaqueClasses);
+                    "Compiled sampler graph inventory: nodes={0}, dropped={1}, root={2}, ops={3}, opaqueClasses={4}, arithmeticIslands={5}, arithmeticNodes={6}, boundaryNodes={7}",
+                    snapshot.nodes().size(), snapshot.droppedNodes(), snapshot.rootId(), counts, opaqueClasses,
+                    arithmeticPlan.islands().size(), arithmeticPlan.eligibleNodeCount(),
+                    arithmeticPlan.boundaryNodeCount());
+            for (CompiledSamplerArithmeticIslands.Island island : arithmeticPlan.islands()) {
+                LOGGER.log(System.Logger.Level.DEBUG,
+                        "arithmetic-island[{0}] nodes={1} inputs={2} outputs={3}",
+                        island.id(), island.nodeIds(), island.externalInputs(), island.outputNodeIds());
+            }
             for (CompiledSamplerGraphIr.Node node : graph.nodes()) {
                 LOGGER.log(System.Logger.Level.DEBUG,
                         "sampler[{0}] op={1} source={2} children={3} edges={4} values={5} note={6}",
@@ -63,5 +74,9 @@ public final class CompiledSamplerGraphDiagnostics {
 
     public static CompiledSamplerGraphIr.Graph lastGraph() {
         return lastGraph;
+    }
+
+    public static CompiledSamplerArithmeticIslands.Plan lastArithmeticPlan() {
+        return lastArithmeticPlan;
     }
 }
