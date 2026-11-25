@@ -1,6 +1,7 @@
 package dev.jpe.optimizer.mixin;
 
 import dev.jpe.optimizer.mixin.AquiferNoiseBasedAccessor;
+import dev.jpe.optimizer.runtime.CompiledSamplerGraphDiagnostics;
 import dev.jpe.optimizer.worldgen.DensityVolumeIndex;
 import dev.jpe.optimizer.worldgen.SectionCachePolicy;
 import dev.jpe.optimizer.worldgen.WorldgenMetrics;
@@ -59,6 +60,8 @@ public abstract class NoiseBasedChunkGeneratorMixin {
         BlockState defaultBlock = generatorSettings.defaultBlock();
         DensitySampler.Bound finalDensity = noiseChunk.cachingSamplers()
                 .get(generatorSettings.noiseRouter().finalDensity());
+        // One-shot diagnostic only; disabled by default and never evaluates the sampler.
+        CompiledSamplerGraphDiagnostics.captureOnce(finalDensity.sampler());
 
         boolean profile = WorldgenMetrics.enabled();
         if (profile) {
