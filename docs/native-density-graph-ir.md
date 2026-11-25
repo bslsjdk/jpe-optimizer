@@ -316,7 +316,7 @@ This is now a native execution primitive and Java bridge API, not yet a Minecraf
 
 `CompiledSamplerArithmeticLowering` now converts an eligible ADD/SUB/CONSTANT island into the IR v5 wire graph. It deliberately reorders the root-first diagnostic sampler inventory into a stable child-before-parent topological order, creates BUFFER_INPUT slots for external sampler dependencies, and deduplicates an external source node shared by multiple consumers. The result retains the source-node-to-native-node mapping and the ordered list of source sampler IDs whose complete float32 volumes must be supplied by the caller.
 
-The first adapter is intentionally conservative: it accepts only islands with exactly one output because the current native graph ABI has a single output root. Multi-output islands are rejected rather than silently dropping values or recomputing shared subgraphs. The diagnostic capture path now attempts this lowering and reports how many islands are lowerable. It does not compile or execute them; configuration fingerprint zero is a diagnostic placeholder and is not a valid persistent worldgen cache identity.
+The lowering now retains every output root in an eligible island. The native multi-output ABI evaluates all roots in one pass, sharing intermediate nodes rather than recompiling or recomputing the island per output. The diagnostic capture path attempts this lowering and reports how many islands are lowerable. It does not compile or execute them; configuration fingerprint zero is a diagnostic placeholder and is not a valid persistent worldgen cache identity.
 
 The adapter still requires a runtime provider for each external sampler volume, exact matching of Minecraft's sampler volume/context/cache lifetime, and Java-vs-native bitwise comparison before worldgen execution can be enabled.
 
@@ -351,3 +351,23 @@ This is the first real bridge from captured compiled-sampler nodes to live Minec
 `CompiledSamplerNativeParity.verify` is an opt-in diagnostic harness for a lowered arithmetic island. It resolves all external inputs through the live `DensitySampler.Bound` context, executes every native output in one call, then evaluates each original Java output sampler into an unpooled `DensityBuffer`. It compares every sample with `Float.floatToRawIntBits`, reporting the first mismatch and total mismatch count.
 
 The verifier refuses combined input/output staging above 64 MiB and never changes block placement or the final-density buffer. A successful result proves bitwise parity only for the specific sampler instances, context, volume, and inputs tested. It does not prove parity for other seeds, dimensions, mods, or branches, and it does not itself enable native world generation.
+
+
+### Exact sampler compilation and context-wrapper findings (Minecraft 26.3)
+
+The 2026-11-25 javap -p -c -s audit of both the official and NeoForge-patched 26.3 artifacts confirms an important cache boundary:
+
+- RandomState constructs one DensityFunctionCompiler in its constructor. That compiler owns a ConcurrentHashMap<DensityFunction, DensitySampler> and getSampler(function) calls samplers.computeIfAbsent(function, optimizeAndCompile). The key is the DensityFunction object under its Java equals/hashCode contract, not an identity-keyed map. On a cache miss, the compiler applies its optimizer rewrite and calls compileSampler(context) while holding its compile lock. Thus vanilla already memoizes compiled samplers for the lifetime of a RandomState; a native layer must not recompile the same source graph independently for every chunk.
+- RandomState.samplersWithContext(context) creates a new anonymous RandomState$2 wrapper on every invocation. That wrapper stores the current SamplerContext; its get(function) calls the owning RandomState.getSampler(function) and then bind(context), while sampleValue(...) delegates to the same cached sampler with the current context. The wrapper itself is therefore context-scoped and must not be used as a persistent cache key.
+- NoiseChunk is constructed per chunk and creates its own SamplerContext (including its buffer arena, enabled caches, and chunk user fields) before calling randomState.samplersWithContext(...). The per-chunk wrapper and DensitySampler.Bound are ephemeral, but the underlying compiled sampler is obtained from the world-scoped RandomState compiler cache.
+- RandomState also creates its DensityFunctionCompiler with a compile context that resolves Noise and random sources through that RandomState. These compiled sampler closures can therefore retain seed-derived resources. A serialized arithmetic topology may be reusable across compatible worlds only after all seed-derived noise/random state is externalized; otherwise the cache identity must include the relevant seed-derived semantics.
+
+Consequences for the native design:
+
+1. Do not cache RandomState$2, SamplerContext, DensitySampler.Bound, NoiseChunk, DensityBuffer, or captured sampler object references across chunks.
+2. Reuse the vanilla DensityFunctionCompiler result as the source of compiled sampler topology. Extract/lower only after RandomState has initialized its compiler and before the first chunk needs the graph; avoid repeating traversal in each doFill.
+3. Cache the pointer-free native arithmetic plan by a canonical semantic graph fingerprint plus Minecraft/loader, IR, adapter, and relevant mod/config versions. Keep world-seed-derived noise state in a per-world parameter binding unless the compiled node semantics force it into the key.
+4. Bind current chunk context and volume at execution time. Existing CachingDensitySampler, ContextBoundSampler, buffer-arena and cache-cell behavior remain Java-owned boundaries until explicitly represented and parity-tested.
+5. Because vanilla's compiler cache is a ConcurrentHashMap, source-function key equality follows equals/hashCode; do not assume distinct but equal DensityFunction instances compile into distinct samplers, or assume object identity alone is the vanilla cache contract.
+
+The audit artifact for commit 00e443900923c72da73ddc2e04fb3f835a88cd82 confirms these method bodies in both artifacts. This is a bytecode/lifecycle finding, not evidence that the native graph is integrated into world generation or that it is faster.
