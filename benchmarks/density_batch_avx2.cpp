@@ -1,5 +1,6 @@
 #include <immintrin.h>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -59,9 +60,10 @@ static double bench(Fn fn, const std::vector<float>& input, std::vector<uint8_t>
     uint64_t sink = 0;
     for (size_t n = 0; n < iterations; ++n) {
         fn(input.data(), output.data(), input.size());
-        sink ^= checksum(output);
+        std::atomic_signal_fence(std::memory_order_seq_cst);
     }
     const auto end = std::chrono::steady_clock::now();
+    sink = checksum(output);
     volatile uint64_t keep = sink;
     (void)keep;
     return std::chrono::duration<double, std::nano>(end - start).count() / iterations;
