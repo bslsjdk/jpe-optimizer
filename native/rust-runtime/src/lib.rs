@@ -681,7 +681,7 @@ mod tests {
                 input_b: 1, reserved: 0, immediate: 0.0 },
         ];
         let first = unsafe {
-            jpe_runtime_density_graph_compile(nodes.as_ptr(), 3, 2, 3, 0xCAC0_E001)
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), 3, 2, 4, 0xCAC0_E001)
         };
         assert_ne!(first, 0);
         assert_eq!(unsafe { jpe_cpp_density_graph_save_cache(first, path_string.as_ptr(), key.as_ptr()) }, 0);
@@ -1813,4 +1813,30 @@ mod tests {
 
     #[test]
     fn unknown_job_ids_are_rejected() { assert_eq!(jpe_runtime_job_status(u64::MAX), -1); }
+
+    #[test]
+    fn density_graph_subtracts_float32_values_across_a_full_volume() {
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_X, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 3.5 },
+            JpeDensityNode { opcode: DENSITY_SUB, input_a: 0,
+                input_b: 1, reserved: 0, immediate: 0.0 },
+        ];
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 2, 4, 0x5AB)
+        };
+        assert_ne!(handle, 0);
+        let mut output = [0.0_f32; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                handle, 2, 2, 1, 10, 3, 0, 1, 1, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, 0);
+        assert_eq!(output, [6.5, 7.5, 6.5, 7.5]);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
+    }
+
 }
