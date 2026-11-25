@@ -461,6 +461,37 @@ def source_inspection(vanilla_root: Path, patched_root: Path) -> list[str]:
     return lines
 
 
+def bytecode_inspection(vanilla_jar: Path, patched_jar: Path) -> list[str]:
+    """Disassemble exact critical classes from both official and NeoForge-patched jars."""
+    classes = [
+        "net.minecraft.world.level.levelgen.NoiseChunk",
+        "net.minecraft.world.level.levelgen.RandomState",
+        "net.minecraft.world.level.levelgen.densityfunction.DensityVolume",
+        "net.minecraft.world.level.levelgen.densityfunction.SamplerContext",
+        "net.minecraft.world.level.levelgen.densityfunction.DensityBufferArena",
+        "net.minecraft.world.level.levelgen.densityfunction.DensityBufferPool",
+        "net.minecraft.world.level.levelgen.densityfunction.DensityFunctionCompiler",
+        "net.minecraft.world.level.levelgen.densityfunction.DensitySampler",
+        "net.minecraft.world.level.levelgen.densityfunction.DensitySampler$Bound",
+        "net.minecraft.world.level.levelgen.densityfunction.ContextBoundSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.CachingDensitySampler",
+    ]
+    lines: list[str] = []
+    for label, archive in (("MOJANG_VANILLA", vanilla_jar), ("NEOFORGE_PATCHED", patched_jar)):
+        lines.append(f"===== JAVAP {label} =====")
+        for class_name in classes:
+            result = subprocess.run(
+                ["javap", "-classpath", str(archive), "-p", "-c", "-s", class_name],
+                text=True, capture_output=True,
+            )
+            lines.append(f"--- {class_name} (exit={result.returncode}) ---")
+            if result.returncode != 0:
+                lines.append("CLASS_NOT_FOUND_OR_NOT_LOADABLE: " + result.stderr.strip())
+                continue
+            lines.append(result.stdout.rstrip())
+    return lines
+
+
 def main() -> int:
     _self_test_method_extractor()
     root = Path("build/source-audit")
@@ -513,6 +544,7 @@ def main() -> int:
     patched_subset = root / "neoforge-target-classes.jar"
     vanilla_hashes = make_subset(vanilla_inner, vanilla_subset)
     patched_hashes = make_subset(PATCHED_JAR, patched_subset)
+    bytecode_report = bytecode_inspection(vanilla_subset, patched_subset)
 
     vineflower = root / f"vineflower-{VINEFLOWER_VERSION}.jar"
     if not vineflower.is_file() or hashlib.sha256(vineflower.read_bytes()).hexdigest() != VINEFLOWER_SHA256:
