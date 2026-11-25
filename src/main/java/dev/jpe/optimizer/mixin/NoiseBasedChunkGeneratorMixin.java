@@ -1,5 +1,6 @@
 package dev.jpe.optimizer.mixin;
 
+import dev.jpe.optimizer.mixin.AquiferNoiseBasedAccessor;
 import dev.jpe.optimizer.worldgen.DensityVolumeIndex;
 import dev.jpe.optimizer.worldgen.SectionCachePolicy;
 import dev.jpe.optimizer.worldgen.WorldgenMetrics;
@@ -45,6 +46,10 @@ public abstract class NoiseBasedChunkGeneratorMixin {
         Heightmap oceanFloor = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.OCEAN_FLOOR_WG);
         Heightmap worldSurface = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.WORLD_SURFACE_WG);
         Aquifer aquifer = noiseChunk.aquifer();
+        // NoiseBasedAquifer's positive-density branch only clears this flag and returns null.
+        // Mirror that exact fast path without entering the full aquifer lookup.
+        AquiferNoiseBasedAccessor noiseAquifer = aquifer instanceof Aquifer.NoiseBasedAquifer
+                ? (AquiferNoiseBasedAccessor) aquifer : null;
         BlockPos.MutableBlockPos blockPos = new BlockPos.MutableBlockPos();
         DensityVolume volume = noiseChunk.volume();
 
@@ -63,6 +68,8 @@ public abstract class NoiseBasedChunkGeneratorMixin {
         long sampledAquiferNanos = 0L;
         long sampledPlacementNanos = 0L;
         long timingSampleCount = 0L;
+        long aquiferCallsExecuted = 0L;
+        long aquiferCallsSkipped = 0L;
 
         try {
             try (ScopedDensityBuffer densityBuffer = finalDensity.sampleVolume(volume)) {
@@ -106,7 +113,17 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                             // profiling overhead bounded while separating Aquifer from placement.
                             boolean sampleTiming = profile && (densityIndex & 63) == 0;
                             long aquiferStart = sampleTiming ? System.nanoTime() : 0L;
-                            BlockState state = aquifer.computeSubstance(worldX, blockY, blockZ, density);
+                            BlockState state;
+                            if (density > 0.0F && noiseAquifer != null) {
+                                // Vanilla NoiseBasedAquifer.computeSubstance() does exactly this:
+                                // clear the fluid-update flag and return null for positive density.
+                                noiseAquifer.jpe$setShouldScheduleFluidUpdate(false);
+                                state = defaultBlock;
+                                ++aquiferCallsSkipped;
+                            } else {
+                                state = aquifer.computeSubstance(worldX, blockY, blockZ, density);
+                                ++aquiferCallsExecuted;
+                            }
                             if (sampleTiming) {
                                 sampledAquiferNanos += System.nanoTime() - aquiferStart;
                             }
@@ -150,7 +167,8 @@ public abstract class NoiseBasedChunkGeneratorMixin {
 
         if (profile) {
             WorldgenMetrics.record(densityNanos, System.nanoTime() - fillStart, volume.size(),
-                    sampledAquiferNanos, sampledPlacementNanos, timingSampleCount);
+                    sampledAquiferNanos, sampledPlacementNanos, timingSampleCount,
+                    aquiferCallsExecuted, aquiferCallsSkipped);
         }
     }
 
