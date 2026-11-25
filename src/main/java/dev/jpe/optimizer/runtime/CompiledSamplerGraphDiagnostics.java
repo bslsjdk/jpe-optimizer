@@ -1,5 +1,6 @@
 package dev.jpe.optimizer.runtime;
 
+import dev.jpe.optimizer.JPEOptimizer;
 import java.util.EnumMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -131,8 +132,8 @@ public final class CompiledSamplerGraphDiagnostics {
                         volume.sizeX(), volume.sizeY(), volume.sizeZ(),
                         volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
                         volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ());
-                LOGGER.log(System.Logger.Level.INFO,
-                        "Native sampler parity: exact={0}, outputs={1}, samplesPerOutput={2}, compared={3}, mismatches={4}, firstOutput={5}, firstSample={6}, expectedBits=0x{7}, actualBits=0x{8}, islandNodes={9}, graphFingerprint={10}",
+                JPEOptimizer.LOGGER.info(
+                        "JPE_NATIVE_SAMPLER_PARITY exact={} outputs={} samplesPerOutput={} compared={} mismatches={} firstOutput={} firstSample={} expectedBits=0x{} actualBits=0x{} islandNodes={} graphFingerprint={}",
                         report.exact(), report.outputCount(), report.samplesPerOutput(),
                         report.comparedValues(), report.mismatches(), report.firstOutputIndex(),
                         report.firstSampleIndex(), Integer.toHexString(report.expectedBits()),
