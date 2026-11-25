@@ -1290,14 +1290,13 @@ mod tests {
     fn perlin_avx2_minecraft_profile_workload_microbenchmark() {
         use std::time::Instant;
 
-        // Representative 5x49x5 density volumes observed in the fixed-seed
-        // Minecraft 26.3 worldgen profile (stepY=8). These are workload-shaped
-        // kernel measurements, not end-to-end worldgen claims.
+        // Representative 5x49x5 density volumes. stepY=8 covers the existing
+        // same-floor vector path; stepY=1 and 4 exercise the cross-floor prototype.
+        // These are kernel microbenchmarks, not end-to-end worldgen claims.
         const SX: usize = 5;
         const SY: usize = 49;
         const SZ: usize = 5;
         const STEP_X: i32 = 4;
-        const STEP_Y: i32 = 8;
         const STEP_Z: i32 = 4;
         const REPEATS: usize = 64;
         const ROUNDS: usize = 21;
@@ -1305,13 +1304,16 @@ mod tests {
             std::array::from_fn(|i| ((i * 37 + 11) & 255) as u8);
         let len = SX * SY * SZ;
 
-        // Scales are taken from the highest-contribution eligible layers in
-        // artifact 45468917657. Include both common and very long-run cases.
-        for (case, y_scale) in [
-            ("profile-common-1-256", 0.00390625_f64),
-            ("profile-common-1-251-44", 0.003977058157099698_f64),
-            ("profile-common-1-128", 0.0078125_f64),
-            ("profile-long-1-2048", 0.00048828125_f64),
+        // Every case stays within the current |stepY * yScale| <= 1/16
+        // dispatch gate. Offsets and coordinate ranges deliberately cross
+        // lattice floors so the independent-lane branch is actually exercised.
+        for (case, step_y, y_scale) in [
+            ("profile-step1-1-64", 1_i32, 1.0 / 64.0),
+            ("profile-step1-1-32", 1_i32, 1.0 / 32.0),
+            ("profile-step1-1-16", 1_i32, 1.0 / 16.0),
+            ("profile-step4-1-256", 4_i32, 1.0 / 256.0),
+            ("profile-step4-1-128", 4_i32, 1.0 / 128.0),
+            ("profile-step4-1-64", 4_i32, 1.0 / 64.0),
         ] {
             let mut dispatched = vec![0.125_f32; len];
             let mut scalar = dispatched.clone();
@@ -1320,7 +1322,7 @@ mod tests {
                     out.fill(0.125);
                     assert_eq!(unsafe { jpe_cpp_perlin_add_volume(
                         permutation.as_ptr(), SX as u32, SY as u32, SZ as u32,
-                        -32, -64, -32, STEP_X, STEP_Y, STEP_Z,
+                        -32, -64, -32, STEP_X, step_y, STEP_Z,
                         0.13, -0.17, 0.23, 0.00390625, y_scale, 0.75,
                         out.as_mut_ptr(), len as u64, 0
                     ) }, STATUS_OK);
@@ -1331,7 +1333,7 @@ mod tests {
                     out.fill(0.125);
                     assert_eq!(unsafe { jpe_cpp_perlin_add_volume_scalar_cached_y(
                         permutation.as_ptr(), SX as u32, SY as u32, SZ as u32,
-                        -32, -64, -32, STEP_X, STEP_Y, STEP_Z,
+                        -32, -64, -32, STEP_X, step_y, STEP_Z,
                         0.13, -0.17, 0.23, 0.00390625, y_scale, 0.75,
                         out.as_mut_ptr(), len as u64, 0
                     ) }, STATUS_OK);
@@ -1364,9 +1366,9 @@ mod tests {
             let dispatched_median = dispatched_ns[ROUNDS / 2];
             let scalar_median = scalar_ns[ROUNDS / 2];
             eprintln!(
-                "JPE_PERLIN_AVX2_PROFILE_SHAPE case={} avx2_available={} dims={}x{}x{} steps={}x{}x{} repeats={} rounds={} scalar_median_ms={:.3} dispatched_median_ms={:.3} speedup={:.3}x",
+                "JPE_PERLIN_AVX2_CROSS_FLOOR_SHAPE case={} avx2_available={} dims={}x{}x{} steps={}x{}x{} repeats={} rounds={} scalar_median_ms={:.3} dispatched_median_ms={:.3} speedup={:.3}x",
                 case, unsafe { jpe_cpp_perlin_avx2_supported() != 0 },
-                SX, SY, SZ, STEP_X, STEP_Y, STEP_Z, REPEATS, ROUNDS,
+                SX, SY, SZ, STEP_X, step_y, STEP_Z, REPEATS, ROUNDS,
                 scalar_median as f64 / 1_000_000.0,
                 dispatched_median as f64 / 1_000_000.0,
                 scalar_median as f64 / dispatched_median as f64
