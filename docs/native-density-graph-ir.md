@@ -310,3 +310,12 @@ IR v5 adds `INPUT` (opcode 9). Its immediate is an integer slot in `[0,255]`; it
 The original evaluate API remains available for graphs without external inputs. The input count is bounded at 256, every referenced slot must be supplied, and the input and output buffers are borrowed only for the synchronous call. Java's `NativeDensityGraph.evaluateWithInputs` currently stages Java float arrays into a reusable shared FFM arena, so this is one batched transfer per input matrix, not zero-copy. The Java caller still owns the source arrays and must keep them stable for the duration of the call.
 
 This is now a native execution primitive and Java bridge API, not yet a Minecraft sampler integration. The diagnostic arithmetic-island planner does not automatically construct these wire graphs or populate input slots; that adapter and exact sampler parity tests remain required before worldgen can use the path.
+
+
+## Compiled sampler arithmetic-island lowering
+
+`CompiledSamplerArithmeticLowering` now converts an eligible ADD/SUB/CONSTANT island into the IR v5 wire graph. It deliberately reorders the root-first diagnostic sampler inventory into a stable child-before-parent topological order, creates BUFFER_INPUT slots for external sampler dependencies, and deduplicates an external source node shared by multiple consumers. The result retains the source-node-to-native-node mapping and the ordered list of source sampler IDs whose complete float32 volumes must be supplied by the caller.
+
+The first adapter is intentionally conservative: it accepts only islands with exactly one output because the current native graph ABI has a single output root. Multi-output islands are rejected rather than silently dropping values or recomputing shared subgraphs. The diagnostic capture path now attempts this lowering and reports how many islands are lowerable. It does not compile or execute them; configuration fingerprint zero is a diagnostic placeholder and is not a valid persistent worldgen cache identity.
+
+The adapter still requires a runtime provider for each external sampler volume, exact matching of Minecraft's sampler volume/context/cache lifetime, and Java-vs-native bitwise comparison before worldgen execution can be enabled.
