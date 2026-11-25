@@ -27,7 +27,7 @@ class CompiledSamplerArithmeticIslandsTest {
         CompiledSamplerArithmeticIslands.Plan plan =
                 CompiledSamplerArithmeticIslands.plan(graph);
 
-        assertEquals(1, plan.eligibleNodeCount());
+        assertEquals(4, plan.eligibleNodeCount());
         assertEquals(1, plan.boundaryNodeCount());
         assertEquals(1, plan.islands().size());
         assertEquals(List.of(0, 2, 4, 1), plan.islands().get(0).nodeIds());
@@ -52,9 +52,10 @@ class CompiledSamplerArithmeticIslandsTest {
         CompiledSamplerArithmeticIslands.Plan plan =
                 CompiledSamplerArithmeticIslands.plan(graph);
 
-        assertEquals(2, plan.islands().size());
+        assertEquals(3, plan.islands().size());
         assertEquals(List.of(0, 2), plan.islands().get(0).nodeIds());
-        assertEquals(List.of(5, 7, 6), plan.islands().get(1).nodeIds());
+        assertEquals(List.of(3), plan.islands().get(1).nodeIds());
+        assertEquals(List.of(5, 7, 6), plan.islands().get(2).nodeIds());
     }
 
     @Test
