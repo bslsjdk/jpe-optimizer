@@ -13,7 +13,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* ABI v7. Axis coordinates use min + index * step with Java int wrap semantics. */
+/* ABI v8. Axis coordinates use min + index * step with Java int wrap semantics. */
 JPE_API uint32_t jpe_runtime_abi_version(void);
 /* requested=0 selects all process-visible CPUs; positive values are capped to that count. */
 /* Zero selects available CPUs. Repeating the active count is safe after startup;
@@ -35,6 +35,9 @@ typedef struct JpePerlinLayer {
     double offset_x, offset_y, offset_z;
     double xz_scale, y_scale;
     float amplitude;
+    double fudge_y_scale;
+    uint32_t flags; /* bit 0: SmearedPerlinNoise layer */
+    uint32_t reserved;
 } JpePerlinLayer;
 /* Batch a complete ordered stack into one output volume. */
 JPE_API int32_t jpe_runtime_perlin_add_stack(
