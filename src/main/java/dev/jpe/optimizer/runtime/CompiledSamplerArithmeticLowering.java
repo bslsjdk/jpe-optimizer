@@ -32,6 +32,23 @@ public final class CompiledSamplerArithmeticLowering {
                 return index;
             }).toList();
         }
+        /** Runs every island output in one native batch, sharing all intermediate calculations. */
+        public void evaluate(NativeRuntime.NativeDensityGraph executable,
+                             int sizeX, int sizeY, int sizeZ,
+                             int minX, int minY, int minZ,
+                             int stepX, int stepY, int stepZ,
+                             float[][] externalInputVolumes, float[][] outputVolumes) {
+            Objects.requireNonNull(executable, "executable");
+            Objects.requireNonNull(outputVolumes, "outputVolumes");
+            if (outputVolumes.length != outputSourceNodeIds.size()) {
+                throw new IllegalArgumentException("Output volume count must match the lowered island outputs");
+            }
+            List<Integer> roots = nativeOutputNodeIds();
+            int[] nativeRoots = roots.stream().mapToInt(Integer::intValue).toArray();
+            executable.evaluateMultiWithInputs(sizeX, sizeY, sizeZ,
+                    minX, minY, minZ, stepX, stepY, stepZ,
+                    externalInputVolumes, nativeRoots, outputVolumes);
+        }
     }
 
     private CompiledSamplerArithmeticLowering() {}
