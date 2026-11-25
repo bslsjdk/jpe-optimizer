@@ -17,6 +17,10 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import dev.jpe.optimizer.mixin.GradientNoiseAccessor;
+import dev.jpe.optimizer.mixin.NoiseStackLayerAccessor;
+import net.minecraft.world.level.levelgen.synth.Noise;
+import net.minecraft.world.level.levelgen.synth.PerlinNoise;
 
 /**
  * Optional Java 25 FFM bridge. Native worldgen is not loaded or enabled automatically.
@@ -68,6 +72,8 @@ public final class NativeRuntime implements AutoCloseable {
         private int outputCapacity;
         private MemorySegment layerDescriptors;
         private MemorySegment layerPermutations;
+        private MemorySegment[] layerPermutationSegments;
+        private byte[][] layerPermutationSources;
         private int layerCapacity;
         private final AtomicBoolean leased = new AtomicBoolean();
 
@@ -94,6 +100,11 @@ public final class NativeRuntime implements AutoCloseable {
             if (layerCapacity < layerCount) {
                 layerDescriptors = arena.allocate(Math.multiplyExact((long) layerCount, PERLIN_LAYER_SIZE), 8);
                 layerPermutations = allocateBytes(arena, Math.multiplyExact(layerCount, 256));
+                layerPermutationSegments = new MemorySegment[layerCount];
+                layerPermutationSources = new byte[layerCount][];
+                for (int i = 0; i < layerCount; ++i) {
+                    layerPermutationSegments[i] = layerPermutations.asSlice((long) i * 256L, 256L);
+                }
                 layerCapacity = layerCount;
             }
         }
@@ -290,7 +301,8 @@ public final class NativeRuntime implements AutoCloseable {
     }
 
     /** Executes an ordered Perlin stack synchronously on the calling Minecraft worldgen worker. */
-    public void perlinAddStack(List<PerlinLayer> layers,
+    public void perlinAddStack(Object[] sourceLayers,
+                               double xzScale, double yScale, float amplitude,
                                int sizeX, int sizeY, int sizeZ,
                                int minX, int minY, int minZ,
                                int stepX, int stepY, int stepZ,
@@ -299,14 +311,25 @@ public final class NativeRuntime implements AutoCloseable {
         PerlinScratch scratch = null;
         try {
             ensureOpen();
-            int outputLength = validatePerlinStackInputs(layers, sizeX, sizeY, sizeZ,
-                    stepX, stepY, stepZ, output);
+            Objects.requireNonNull(sourceLayers, "sourceLayers");
+            Objects.requireNonNull(output, "output");
+            if (sourceLayers.length == 0 || sourceLayers.length > 64) {
+                throw new IllegalArgumentException("Perlin stack must contain between 1 and 64 layers");
+            }
+            if (sizeX <= 0 || sizeY <= 0 || sizeZ <= 0 || stepX == 0 || stepY == 0 || stepZ == 0) {
+                throw new IllegalArgumentException("Invalid Perlin volume dimensions or axis steps");
+            }
+            int outputLength = Math.toIntExact(Math.multiplyExact(
+                    Math.multiplyExact((long) sizeX, sizeY), sizeZ));
+            if (outputLength > output.length || outputLength > 1_048_576) {
+                throw new IllegalArgumentException("Perlin output buffer is too small or volume exceeds native limit");
+            }
             scratch = acquirePerlinScratch();
-            scratch.ensureStackCapacity(layers.size(), outputLength);
+            scratch.ensureStackCapacity(sourceLayers.length, outputLength);
             copyPrefix(output, outputLength, scratch.output);
-            writePerlinLayers(layers, scratch);
+            writePerlinLayers(sourceLayers, xzScale, yScale, amplitude, scratch);
             int status = (int) perlinAddStackHandle.invokeExact(
-                    scratch.layerDescriptors, layers.size(),
+                    scratch.layerDescriptors, sourceLayers.length,
                     sizeX, sizeY, sizeZ,
                     minX, minY, minZ, stepX, stepY, stepZ,
                     scratch.output, (long) outputLength, farLands ? 1 : 0);
@@ -395,23 +418,34 @@ public final class NativeRuntime implements AutoCloseable {
         }
     }
 
-    private static void writePerlinLayers(List<PerlinLayer> layers, PerlinScratch scratch) {
-        for (int i = 0; i < layers.size(); ++i) {
-            PerlinLayer layer = Objects.requireNonNull(layers.get(i), "layer");
-            byte[] permutation = layer.permutation();
+    private static void writePerlinLayers(Object[] sourceLayers,
+                                          double xzScale, double yScale, float amplitude,
+                                          PerlinScratch scratch) {
+        for (int i = 0; i < sourceLayers.length; ++i) {
+            NoiseStackLayerAccessor layer = (NoiseStackLayerAccessor) Objects.requireNonNull(sourceLayers[i], "layer");
+            Noise layerNoise = layer.jpe$noise();
+            if (layerNoise == null || layerNoise.getClass() != PerlinNoise.class) {
+                throw new IllegalArgumentException("Native Perlin stack only accepts exact PerlinNoise layers");
+            }
+            GradientNoiseAccessor noise = (GradientNoiseAccessor) layerNoise;
+            byte[] permutation = noise.jpe$perms();
             if (permutation == null || permutation.length != 256) {
                 throw new IllegalArgumentException("Each Perlin layer permutation must contain 256 bytes");
             }
+            if (scratch.layerPermutationSources[i] != permutation) {
+                MemorySegment.copy(permutation, 0, scratch.layerPermutations, ValueLayout.JAVA_BYTE,
+                        (long) i * 256L, 256L);
+                scratch.layerPermutationSources[i] = permutation;
+            }
+            double frequency = layer.jpe$frequency();
             long base = Math.multiplyExact((long) i, PERLIN_LAYER_SIZE);
-            MemorySegment permutationSlice = scratch.layerPermutations.asSlice((long) i * 256L, 256L);
-            copy(permutation, permutationSlice);
-            scratch.layerDescriptors.set(ValueLayout.ADDRESS, base, permutationSlice);
-            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 8L, layer.offsetX());
-            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 16L, layer.offsetY());
-            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 24L, layer.offsetZ());
-            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 32L, layer.xzScale());
-            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 40L, layer.yScale());
-            scratch.layerDescriptors.set(ValueLayout.JAVA_FLOAT, base + 48L, layer.amplitude());
+            scratch.layerDescriptors.set(ValueLayout.ADDRESS, base, scratch.layerPermutationSegments[i]);
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 8L, noise.jpe$offsetX());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 16L, noise.jpe$offsetY());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 24L, noise.jpe$offsetZ());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 32L, xzScale * frequency);
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 40L, yScale * frequency);
+            scratch.layerDescriptors.set(ValueLayout.JAVA_FLOAT, base + 48L, amplitude * layer.jpe$amplitude());
         }
     }
 
