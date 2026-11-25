@@ -5,7 +5,7 @@ import java.util.Objects;
 
 /** Compact, topologically ordered density graph transport model. */
 public final class DensityGraphIr {
-    public static final int VERSION = 2;
+    public static final int VERSION = 3;
     public static final int MAX_NODES = 65_536;
     public static final int NO_INPUT = -1;
 
@@ -24,11 +24,24 @@ public final class DensityGraphIr {
     }
 
     /** Sidecar diagnostic. It is deliberately not part of the hot native node record. */
-    public record Diagnostic(int nodeIndex, String sourceClass, String reason) {
+    public record Diagnostic(int nodeIndex, String sourceClass, String reason, List<Integer> childIndices) {
+        public Diagnostic(int nodeIndex, String sourceClass, String reason) {
+            this(nodeIndex, sourceClass, reason, List.of());
+        }
         public Diagnostic {
             if (nodeIndex < 0) throw new IllegalArgumentException("Negative diagnostic node index");
             Objects.requireNonNull(sourceClass, "sourceClass");
             Objects.requireNonNull(reason, "reason");
+            Objects.requireNonNull(childIndices, "childIndices");
+            childIndices = List.copyOf(childIndices);
+            if (childIndices.size() > MAX_NODES) {
+                throw new IllegalArgumentException("Opaque dependency list exceeds the IR limit");
+            }
+            for (int child : childIndices) {
+                if (child < 0 || child >= nodeIndex) {
+                    throw new IllegalArgumentException("Opaque dependency must reference an earlier node");
+                }
+            }
         }
     }
 
