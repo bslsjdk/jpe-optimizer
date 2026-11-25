@@ -75,6 +75,43 @@ class RuntimeDensityTraceTest {
         assertEquals(1, snapshot.guards().size());
     }
 
+
+    @Test
+    void wrongThreadCloseDoesNotConsumeScopeOrCorruptOwnerStack() throws InterruptedException {
+        RuntimeDensityTrace trace = new RuntimeDensityTrace();
+        Node root = new Node();
+        Child child = new Child();
+        Node afterRoot = new Node();
+        trace.start();
+
+        RuntimeDensityTrace.Scope rootScope = trace.enter(root);
+        java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Thread wrongThread = new Thread(() -> {
+            try {
+                rootScope.close();
+            } catch (Throwable expected) {
+                failure.set(expected);
+            }
+        });
+        wrongThread.start();
+        wrongThread.join();
+
+        assertInstanceOf(IllegalStateException.class, failure.get());
+        try (RuntimeDensityTrace.Scope ignored = trace.enter(child)) {
+            // The original root must still be the active parent.
+        }
+        rootScope.close();
+        try (RuntimeDensityTrace.Scope ignored = trace.enter(afterRoot)) {
+            // Closing root on its owner thread must have emptied the stack.
+        }
+
+        RuntimeDensityTrace.Snapshot snapshot = trace.stop();
+        assertEquals(1, snapshot.edges().size());
+        assertEquals(root.getClass().getName(), snapshot.nodes().get(0).implementation());
+        assertEquals(child.getClass().getName(), snapshot.nodes().get(1).implementation());
+    }
+
     @Test
     void disabledRecorderDoesNotCaptureEvents() {
         RuntimeDensityTrace trace = new RuntimeDensityTrace();
