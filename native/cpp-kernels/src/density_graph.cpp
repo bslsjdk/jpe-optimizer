@@ -201,6 +201,7 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
             case JPE_DENSITY_ADD:
             case JPE_DENSITY_MUL:
             case JPE_DENSITY_SUB:
+            case JPE_DENSITY_DIV:
                 if (node.reserved != 0 || node.input_a >= i || node.input_b >= i) return false;
                 break;
             default:

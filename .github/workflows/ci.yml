@@ -146,7 +146,8 @@ jobs:
           set -o pipefail
           env JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector -Djpe.forceScalar=true -Djpe.benchmark.ticksPerColumn=22 -Djpe.continuousWorldgenBenchmark=true -Djpe.worldgenMetrics=true -Djpe.verifyCompiledSamplerParity=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so -Djpe.perlinVectorEnabled=false" \
             gradle runServer --no-daemon --stacktrace 2>&1 | tee build/sampler-parity/overworld.log
-          grep -F 'JPE_NATIVE_SAMPLER_PARITY exact=true' build/sampler-parity/overworld.log
+          grep -E 'JPE_NATIVE_SAMPLER_PARITY_ISLAND .*exact=true' build/sampler-parity/overworld.log
+          grep -E 'JPE_NATIVE_SAMPLER_PARITY_SUMMARY testedIslands=[1-9][0-9]* failedIslands=0 compared=[1-9][0-9]* mismatches=0' build/sampler-parity/overworld.log
           grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*completedChunks=340.*failedChunks=0.*doFillCalls=[1-9][0-9]*.*doFillSamples=[1-9][0-9]*' build/sampler-parity/overworld.log
 
       - name: Dedicated continuous run-worldgen benchmark (scalar/vector ABBA, four fresh servers)

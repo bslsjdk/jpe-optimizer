@@ -1,6 +1,6 @@
 # Native density graph IR v6
 
-Status: design contract only. No Minecraft density graph is executed by this IR yet. The native backend must remain opt-in until the exact-output and real-worldgen gates below pass.
+Status: experimental shadow execution. Compiled-sampler arithmetic islands are evaluated by Native during real Minecraft world generation and compared bit-for-bit with Java. Native results are not committed to chunks; Java remains authoritative until broader exact-output and end-to-end performance gates pass.
 
 ## Goal
 
@@ -404,9 +404,9 @@ Incomplete captures with dropped nodes and graphs with missing/duplicate node re
 
 ### Opt-in live Native sampler parity hook
 
-The final-density fill boundary now has a separate shadow-only parity hook. Set both a valid jpe.nativeLibraryPath and -Djpe.verifyCompiledSamplerParity=true to enable it. The hook loads the existing shared Native runtime without enabling the Perlin interception switch, captures the real bound sampler graph once, chooses the largest nontrivial eligible arithmetic island, lowers and compiles it, resolves its external inputs using the current DensitySampler.Bound context and DensityVolume, and compares every output float bit-for-bit with the original Java sampler.
+The final-density fill boundary has a separate shadow-only parity hook. Set both a valid `jpe.nativeLibraryPath` and `-Djpe.verifyCompiledSamplerParity=true` to enable it. The hook loads the shared Native runtime without enabling Perlin interception, captures the real bound sampler graph once, lowers every eligible non-constant arithmetic island, and compares every island output float bit-for-bit with its original Java sampler. One per-volume boundary resolver is shared across islands so repeated external sampler identities are sampled once. Aggregate input and output staging is capped at 64 MiB.
 
-Only one island is attempted per JVM to cap diagnostic overhead. A missing library, unsupported graph, oversized staging request, Native error, or parity mismatch is logged and does not affect block placement; the original Java density sampler remains authoritative. The hook is disabled by default and does not change the normal jpe.nativePerlinEnabled setting. This is the first live execution path for the arithmetic-island primitive, but it is a diagnostic comparison only, not a production Native worldgen replacement.
+A missing library, unsupported island, oversized staging request, Native error, or parity mismatch is logged and does not affect block placement; the original Java density sampler remains authoritative. The hook is disabled by default and does not change `jpe.nativePerlinEnabled`. This is still diagnostic shadow execution, not a production Native worldgen replacement.
 
 
 ### Float32 division and multi-island parity (IR v6)
