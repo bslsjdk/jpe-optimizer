@@ -110,18 +110,18 @@ class CompiledSamplerArithmeticLoweringTest {
         assertEquals(DensityGraphIr.INPUT, lowered.graph().nodes().get(0).opcode());
         assertEquals(DensityGraphIr.INPUT, lowered.graph().nodes().get(1).opcode());
         assertEquals(DensityGraphIr.CONST, lowered.graph().nodes().get(2).opcode());
-        assertEquals(DensityGraphIr.ADD, lowered.graph().nodes().get(3).opcode());
-        assertEquals(0, lowered.graph().nodes().get(3).inputA());
-        assertEquals(2, lowered.graph().nodes().get(3).inputB());
+        assertEquals(DensityGraphIr.SUB, lowered.graph().nodes().get(3).opcode());
+        assertEquals(2, lowered.graph().nodes().get(3).inputA());
+        assertEquals(0, lowered.graph().nodes().get(3).inputB());
         assertEquals(DensityGraphIr.CONST, lowered.graph().nodes().get(4).opcode());
-        assertEquals(DensityGraphIr.SUB, lowered.graph().nodes().get(5).opcode());
-        assertEquals(4, lowered.graph().nodes().get(5).inputA());
-        assertEquals(1, lowered.graph().nodes().get(5).inputB());
+        assertEquals(DensityGraphIr.MUL, lowered.graph().nodes().get(5).opcode());
+        assertEquals(1, lowered.graph().nodes().get(5).inputA());
+        assertEquals(4, lowered.graph().nodes().get(5).inputB());
         assertEquals(DensityGraphIr.CONST, lowered.graph().nodes().get(6).opcode());
-        assertEquals(DensityGraphIr.MUL, lowered.graph().nodes().get(7).opcode());
-        assertEquals(1, lowered.graph().nodes().get(7).inputA());
+        assertEquals(DensityGraphIr.ADD, lowered.graph().nodes().get(7).opcode());
+        assertEquals(5, lowered.graph().nodes().get(7).inputA());
         assertEquals(6, lowered.graph().nodes().get(7).inputB());
         assertEquals(DensityGraphIr.ADD, lowered.graph().nodes().get(8).opcode());
-        assertEquals(3, lowered.graph().nodes().get(8).inputA());
-        assertEquals(5, lowered.graph().nodes().get(8).inputB());
+        assertEquals(7, lowered.graph().nodes().get(8).inputA());
+        assertEquals(3, lowered.graph().nodes().get(8).inputB());
     }
