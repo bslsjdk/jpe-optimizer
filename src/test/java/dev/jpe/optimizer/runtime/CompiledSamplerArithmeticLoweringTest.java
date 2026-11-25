@@ -78,7 +78,6 @@ class CompiledSamplerArithmeticLoweringTest {
         assertEquals(2, lowered.graph().rootNode());
         assertEquals(3, lowered.graph().nodes().size());
     }
-}
 
 
     @Test
@@ -125,3 +124,4 @@ class CompiledSamplerArithmeticLoweringTest {
         assertEquals(7, lowered.graph().nodes().get(8).inputA());
         assertEquals(3, lowered.graph().nodes().get(8).inputB());
     }
+}
