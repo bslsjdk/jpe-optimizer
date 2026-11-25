@@ -23,12 +23,12 @@ const MAX_TRACKED_JOBS: usize = 32;
 #[repr(C)]
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct JpeDensityNode {
-    opcode: u32,
-    input_a: u32,
-    input_b: u32,
-    reserved: u32,
-    immediate: f64,
+pub struct JpeDensityNode {
+    pub opcode: u32,
+    pub input_a: u32,
+    pub input_b: u32,
+    pub reserved: u32,
+    pub immediate: f64,
 }
 
 const DENSITY_NO_INPUT: u32 = u32::MAX;
@@ -40,18 +40,50 @@ const DENSITY_ADD: u32 = 5;
 const DENSITY_MUL: u32 = 6;
 
 unsafe extern "C" {
-    fn jpe_runtime_density_graph_compile(
+    fn jpe_cpp_density_graph_compile(
         nodes: *const JpeDensityNode, node_count: u32, root_node: u32,
         ir_version: u32, configuration_fingerprint: u64,
     ) -> u64;
-    fn jpe_runtime_density_graph_evaluate(
+    fn jpe_cpp_density_graph_evaluate(
         graph_handle: u64,
         size_x: u32, size_y: u32, size_z: u32,
         min_x: i32, min_y: i32, min_z: i32,
         step_x: i32, step_y: i32, step_z: i32,
         output: *mut f32, output_length: u64,
     ) -> i32;
-    fn jpe_runtime_density_graph_release(graph_handle: u64) -> i32;
+    fn jpe_cpp_density_graph_release(graph_handle: u64) -> i32;
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_compile(
+    nodes: *const JpeDensityNode, node_count: u32, root_node: u32,
+    ir_version: u32, configuration_fingerprint: u64,
+) -> u64 {
+    unsafe {
+        jpe_cpp_density_graph_compile(nodes, node_count, root_node, ir_version, configuration_fingerprint)
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate(
+    graph_handle: u64,
+    size_x: u32, size_y: u32, size_z: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    step_x: i32, step_y: i32, step_z: i32,
+    output: *mut f32, output_length: u64,
+) -> i32 {
+    unsafe {
+        jpe_cpp_density_graph_evaluate(
+            graph_handle, size_x, size_y, size_z,
+            min_x, min_y, min_z, step_x, step_y, step_z,
+            output, output_length,
+        )
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_release(graph_handle: u64) -> i32 {
+    unsafe { jpe_cpp_density_graph_release(graph_handle) }
 }
 
 pub struct JpePerlinLayer {
