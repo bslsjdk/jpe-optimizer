@@ -301,3 +301,12 @@ a measured Minecraft chunk speedup; benchmark results must be recorded separatel
 IR v4 adds `SUB` (opcode 8) to the Java model, C ABI header, Rust bridge, C++ validator/lowering, tiled evaluator, and scalar reference evaluator. The operation is evaluated as ordered float32 `left - right`; it does not introduce reassociation or fused operations. The IR version is incremented so v3 persistent entries are rejected rather than misinterpreted. Rust tests cover a full volume with the established z/x/y output layout, and Java tests cover opcode construction and validation.
 
 This addition makes subtraction representable by the native graph engine. It does not yet connect `CompiledSamplerArithmeticIslands` to native graph compilation, nor does it mean compiled Minecraft sampler graphs are being executed natively.
+
+
+## IR v5 batched external volume inputs
+
+IR v5 adds `INPUT` (opcode 9). Its immediate is an integer slot in `[0,255]`; it has no graph-node dependencies. The new `evaluate_with_inputs` ABI accepts an input-major matrix where `inputs[slot * volume_length + sample]` is the float32 value for that external volume sample. The evaluator copies only the current bounded tile into its node-major scratch and then executes the arithmetic island. This preserves a single coarse native call per island/volume rather than crossing the language boundary for each arithmetic node.
+
+The original evaluate API remains available for graphs without external inputs. The input count is bounded at 256, every referenced slot must be supplied, and the input and output buffers are borrowed only for the synchronous call. Java's `NativeDensityGraph.evaluateWithInputs` currently stages Java float arrays into a reusable shared FFM arena, so this is one batched transfer per input matrix, not zero-copy. The Java caller still owns the source arrays and must keep them stable for the duration of the call.
+
+This is now a native execution primitive and Java bridge API, not yet a Minecraft sampler integration. The diagnostic arithmetic-island planner does not automatically construct these wire graphs or populate input slots; that adapter and exact sampler parity tests remain required before worldgen can use the path.
