@@ -57,6 +57,12 @@ unsafe extern "C" {
         output: *mut f32, output_length: u64,
     ) -> i32;
     fn jpe_cpp_density_graph_release(graph_handle: u64) -> i32;
+    fn jpe_cpp_density_graph_evaluate_with_inputs(
+        graph_handle: u64, size_x: u32, size_y: u32, size_z: u32,
+        min_x: i32, min_y: i32, min_z: i32,
+        step_x: i32, step_y: i32, step_z: i32,
+        inputs: *const f32, input_count: u32, output: *mut f32, output_length: u64,
+    ) -> i32;
     fn jpe_cpp_density_graph_load_cache(path: *const std::ffi::c_char, cache_key: *const std::ffi::c_char) -> u64;
     fn jpe_cpp_density_graph_save_cache(graph_handle: u64, path: *const std::ffi::c_char, cache_key: *const std::ffi::c_char) -> i32;
 
@@ -85,6 +91,27 @@ pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate(
             graph_handle, size_x, size_y, size_z,
             min_x, min_y, min_z, step_x, step_y, step_z,
             output, output_length,
+        )
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate_with_inputs(
+    graph_handle: u64,
+    size_x: u32, size_y: u32, size_z: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    step_x: i32, step_y: i32, step_z: i32,
+    inputs: *const f32, input_count: u32,
+    output: *mut f32, output_length: u64,
+) -> i32 {
+    if input_count > 256 || (input_count > 0 && inputs.is_null()) || output.is_null() {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_density_graph_evaluate_with_inputs(
+            graph_handle, size_x, size_y, size_z,
+            min_x, min_y, min_z, step_x, step_y, step_z,
+            inputs, input_count, output, output_length,
         )
     }
 }
