@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Objects;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -22,6 +23,14 @@ import dev.jpe.optimizer.mixin.GradientNoiseAccessor;
 import dev.jpe.optimizer.mixin.NoiseStackLayerAccessor;
 import net.minecraft.world.level.levelgen.synth.Noise;
 import net.minecraft.world.level.levelgen.synth.PerlinNoise;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import net.minecraft.core.ChunkPos;
+import net.minecraft.world.level.LevelHeightAccessor;
+import net.minecraft.world.level.levelgen.blending.Blender;
+import net.minecraft.world.level.levelgen.blending.BlendingData;
+import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
+import dev.jpe.optimizer.mixin.BlenderAccessor;
+import dev.jpe.optimizer.mixin.BlendingDataAccessor;
 
 /**
  * Optional Java 25 FFM bridge. Native worldgen is not loaded or enabled automatically.
@@ -32,6 +41,12 @@ import net.minecraft.world.level.levelgen.synth.PerlinNoise;
 public final class NativeRuntime implements AutoCloseable {
     public static final int EXPECTED_ABI_VERSION = 7;
     private static final long PERLIN_LAYER_SIZE = 56L;
+    private static final MemoryLayout BLENDING_DATA_VIEW_LAYOUT = MemoryLayout.structLayout(
+            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+            MemoryLayout.sequenceLayout(16, ValueLayout.ADDRESS)
+    );
+    private static final long BLENDING_DATA_VIEW_SIZE = BLENDING_DATA_VIEW_LAYOUT.byteSize();
+    private static final long BLENDING_DATA_POINTERS_OFFSET = 4L * ValueLayout.JAVA_INT.byteSize();
     private static final MemoryLayout DENSITY_NODE_LAYOUT = MemoryLayout.structLayout(
             ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
             ValueLayout.JAVA_DOUBLE
@@ -64,6 +79,7 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle releaseDensityGraph;
     private final MethodHandle loadDensityGraphCache;
     private final MethodHandle saveDensityGraphCache;
+    private final MethodHandle blendDensityVolume;
     private final ConcurrentHashMap<Long, NativeJob> jobs = new ConcurrentHashMap<>();
     private final java.util.Set<NativeDensityGraph> densityGraphs = ConcurrentHashMap.newKeySet();
     private final ReentrantReadWriteLock lifecycle = new ReentrantReadWriteLock();
@@ -226,7 +242,7 @@ public final class NativeRuntime implements AutoCloseable {
                           MethodHandle compileDensityGraph, MethodHandle evaluateDensityGraph,
                           MethodHandle evaluateDensityGraphWithInputs, MethodHandle evaluateDensityGraphMultiWithInputs,
                           MethodHandle releaseDensityGraph, MethodHandle loadDensityGraphCache,
-                          MethodHandle saveDensityGraphCache) {
+                          MethodHandle saveDensityGraphCache, MethodHandle blendDensityVolume) {
         this.configureWorkers = configureWorkers;
         this.workerCount = workerCount;
         this.addF32 = add;
@@ -245,6 +261,7 @@ public final class NativeRuntime implements AutoCloseable {
         this.releaseDensityGraph = releaseDensityGraph;
         this.loadDensityGraphCache = loadDensityGraphCache;
         this.saveDensityGraphCache = saveDensityGraphCache;
+        this.blendDensityVolume = blendDensityVolume;
     }
 
     public static NativeRuntime load(Path libraryPath) throws IOException {
@@ -349,6 +366,15 @@ public final class NativeRuntime implements AutoCloseable {
             MethodHandle saveDensityGraphCache = linker.downcallHandle(
                     lookup.find("jpe_runtime_density_graph_save_cache").orElseThrow(() -> new IllegalStateException("Missing native density cache save symbol")),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+            MethodHandle blendDensityVolume = linker.downcallHandle(
+                    lookup.find("jpe_runtime_blend_density_volume").orElseThrow(() -> new IllegalStateException("Missing native Blender density volume symbol")),
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                            ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                            ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                            ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG));
 
             int actual = (int) version.invokeExact();
             if (actual != EXPECTED_ABI_VERSION) {
@@ -359,9 +385,112 @@ public final class NativeRuntime implements AutoCloseable {
             if (actualWorkers < 1) throw new IllegalStateException("Unable to configure native workers: " + actualWorkers);
             return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, perlinStack, submit, submitStack, status, wait, cancel, release,
                     compileDensityGraph, evaluateDensityGraph, evaluateDensityGraphWithInputs, evaluateDensityGraphMultiWithInputs, releaseDensityGraph,
-                    loadDensityGraphCache, saveDensityGraphCache);
+                    loadDensityGraphCache, saveDensityGraphCache, blendDensityVolume);
         } catch (Throwable failure) {
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
+        }
+    }
+
+
+    private record RawBlendingDataView(int chunkX, int chunkZ, int minSectionY,
+                                       int sectionCount, float[][] densityColumns) {}
+
+    private static List<RawBlendingDataView> captureRawBlendingData(
+            Long2ObjectOpenHashMap<BlendingData> source) {
+        ArrayList<RawBlendingDataView> views = new ArrayList<>(source.size());
+        // Match Blender's own fastutil forEach iteration order. Native preserves this
+        // ordinal when accumulating weighted densities, so floating-point sums remain stable.
+        source.forEach((long packedChunk, BlendingData data) -> {
+            BlendingDataAccessor accessor = (BlendingDataAccessor) data;
+            LevelHeightAccessor height = accessor.jpe$areaWithOldGeneration();
+            views.add(new RawBlendingDataView(
+                    ChunkPos.getX(packedChunk), ChunkPos.getZ(packedChunk),
+                    height.getMinSectionY(), height.getSectionsCount(),
+                    accessor.jpe$densities()));
+        });
+        return views;
+    }
+
+    private static MemorySegment encodeRawBlendingData(Arena arena, List<RawBlendingDataView> views) {
+        if (views.isEmpty()) return MemorySegment.NULL;
+        MemorySegment encoded = arena.allocate(
+                Math.multiplyExact(BLENDING_DATA_VIEW_SIZE, views.size()),
+                BLENDING_DATA_VIEW_LAYOUT.byteAlignment());
+        for (int i = 0; i < views.size(); ++i) {
+            RawBlendingDataView view = views.get(i);
+            long base = Math.multiplyExact((long) i, BLENDING_DATA_VIEW_SIZE);
+            encoded.set(ValueLayout.JAVA_INT, base, view.chunkX());
+            encoded.set(ValueLayout.JAVA_INT, base + 4L, view.chunkZ());
+            encoded.set(ValueLayout.JAVA_INT, base + 8L, view.minSectionY());
+            encoded.set(ValueLayout.JAVA_INT, base + 12L, view.sectionCount());
+            float[][] columns = view.densityColumns();
+            for (int column = 0; column < 16; ++column) {
+                long pointerOffset = base + BLENDING_DATA_POINTERS_OFFSET
+                        + (long) column * ValueLayout.ADDRESS.byteSize();
+                float[] source = columns != null && column < columns.length ? columns[column] : null;
+                if (source == null || source.length == 0) {
+                    encoded.set(ValueLayout.ADDRESS, pointerOffset, MemorySegment.NULL);
+                    continue;
+                }
+                MemorySegment rawColumn = arena.allocate(
+                        Math.multiplyExact((long) source.length, ValueLayout.JAVA_FLOAT.byteSize()),
+                        ValueLayout.JAVA_FLOAT.byteAlignment());
+                MemorySegment.copy(source, 0, rawColumn, ValueLayout.JAVA_FLOAT, 0, source.length);
+                encoded.set(ValueLayout.ADDRESS, pointerOffset, rawColumn);
+            }
+        }
+        return encoded;
+    }
+
+    /**
+     * Executes Blender over a complete DensityVolume in one synchronous Native call.
+     * Java only exposes raw BlendingData arrays and volume metadata; all cell mapping,
+     * fixed lookup, spatial indexing, neighbor search, weighting, and interpolation are C++.
+     */
+    public void blendDensityVolume(Blender blender, DensityVolume volume,
+                                   float[] noiseValues, float[] outputValues) {
+        lifecycle.readLock().lock();
+        try {
+            ensureOpen();
+            Objects.requireNonNull(blender, "blender");
+            Objects.requireNonNull(volume, "volume");
+            Objects.requireNonNull(noiseValues, "noiseValues");
+            Objects.requireNonNull(outputValues, "outputValues");
+            int sizeX = volume.sizeX(), sizeY = volume.sizeY(), sizeZ = volume.sizeZ();
+            int length = Math.toIntExact(Math.multiplyExact(
+                    Math.multiplyExact((long) sizeX, sizeY), sizeZ));
+            if (length <= 0 || length > 1_048_576 || volume.size() != length
+                    || noiseValues.length < length || outputValues.length < length) {
+                throw new IllegalArgumentException("Invalid Blender density volume buffers or dimensions");
+            }
+            BlenderAccessor blenderAccessor = (BlenderAccessor) blender;
+            List<RawBlendingDataView> heightViews = captureRawBlendingData(
+                    blenderAccessor.jpe$heightAndBiomeBlendingData());
+            List<RawBlendingDataView> densityViews = captureRawBlendingData(
+                    blenderAccessor.jpe$densityBlendingData());
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment nativeHeightViews = encodeRawBlendingData(arena, heightViews);
+                MemorySegment nativeDensityViews = encodeRawBlendingData(arena, densityViews);
+                long floatBytes = Math.multiplyExact((long) length, ValueLayout.JAVA_FLOAT.byteSize());
+                MemorySegment nativeNoise = arena.allocate(floatBytes, ValueLayout.JAVA_FLOAT.byteAlignment());
+                MemorySegment nativeOutput = arena.allocate(floatBytes, ValueLayout.JAVA_FLOAT.byteAlignment());
+                MemorySegment.copy(noiseValues, 0, nativeNoise, ValueLayout.JAVA_FLOAT, 0, length);
+                int minX = volume.minBlockX(), minY = volume.minBlockY(), minZ = volume.minBlockZ();
+                int stepX = sizeX > 1 ? volume.blockX(1) - minX : 1;
+                int stepY = sizeY > 1 ? volume.blockY(1) - minY : 1;
+                int stepZ = sizeZ > 1 ? volume.blockZ(1) - minZ : 1;
+                int status = (int) blendDensityVolume.invokeExact(
+                        nativeHeightViews, heightViews.size(), nativeDensityViews, densityViews.size(),
+                        sizeX, sizeY, sizeZ, minX, minY, minZ, stepX, stepY, stepZ,
+                        nativeNoise, nativeOutput, (long) length);
+                checkStatus(status, "blend-density-volume");
+                MemorySegment.copy(nativeOutput, ValueLayout.JAVA_FLOAT, 0L,
+                        outputValues, 0, length);
+            } catch (Throwable failure) {
+                throw rethrow("Native Blender density volume call failed", failure);
+            }
+        } finally {
+            lifecycle.readLock().unlock();
         }
     }
 
