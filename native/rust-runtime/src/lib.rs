@@ -29,86 +29,6 @@ pub struct JpeDensityNode {
     pub reserved: u32,
     pub immediate: f64,
 
-    #[test]
-    fn blender_density_batch_preserves_empty_fallback_and_fixed_density_override() {
-        let mut output = [0.0_f32; 2];
-        let queries = [
-            JpeBlendDensityQuery { block_x: 0, block_y: -32, block_z: 0, noise_value: 7.25 },
-            JpeBlendDensityQuery { block_x: -1, block_y: -31, block_z: -1, noise_value: -3.5 },
-        ];
-        assert_eq!(unsafe {
-            jpe_runtime_blend_density_batch(
-                std::ptr::null(), 0, std::ptr::null(), 0,
-                queries.as_ptr(), 2, output.as_mut_ptr(), 2,
-            )
-        }, STATUS_OK);
-        assert_eq!(output, [7.25, -3.5]);
-
-        let mut columns: [Vec<f32>; 16] = std::array::from_fn(|_| vec![0.0; 16]);
-        // Local cell (0,0) maps to inside column index 3. minY=-8, columnMinY=-7,
-        // so cellY=-4 selects yIndex=3. Raw BlendingData values are scaled by 0.1F.
-        columns[3][3] = 5.0;
-        let view = JpeBlendingDataView {
-            chunk_x: 0, chunk_z: 0, min_section_y: -4, section_count: 8,
-            density_columns: std::array::from_fn(|i| columns[i].as_ptr()),
-        };
-        assert_eq!(unsafe {
-            jpe_runtime_blend_density_batch(
-                &view, 1, std::ptr::null(), 0,
-                queries.as_ptr(), 2, output.as_mut_ptr(), 2,
-            )
-        }, STATUS_OK);
-        assert_eq!(output[0].to_bits(), 0.5_f32.to_bits());
-        assert_eq!(output[1].to_bits(), (-3.5_f32).to_bits());
-    }
-
-    #[test]
-    fn blender_density_batch_executes_native_neighborhood_weighting() {
-        let mut columns: [Vec<f32>; 16] = std::array::from_fn(|_| vec![0.0; 16]);
-        // One old density point at quart cell (0,-4,0), raw value 10 -> density 1.0.
-        // Query at (1,-4,0) has distance 1, alpha=1/3, so lerp(1, 4, 1/3)=2.
-        columns[3][3] = 10.0;
-        let view = JpeBlendingDataView {
-            chunk_x: 0, chunk_z: 0, min_section_y: -4, section_count: 8,
-            density_columns: std::array::from_fn(|i| columns[i].as_ptr()),
-        };
-        let query = [JpeBlendDensityQuery {
-            block_x: 4, block_y: -32, block_z: 0, noise_value: 4.0,
-        }];
-        let mut output = [0.0_f32; 1];
-        assert_eq!(unsafe {
-            jpe_runtime_blend_density_batch(
-                std::ptr::null(), 0, &view, 1,
-                query.as_ptr(), 1, output.as_mut_ptr(), 1,
-            )
-        }, STATUS_OK);
-        assert_eq!(output[0].to_bits(), 2.0_f32.to_bits());
-    }
-
-    #[test]
-    fn blender_density_batch_handles_negative_quart_coordinates_and_boundary_fallback() {
-        let mut columns: [Vec<f32>; 16] = std::array::from_fn(|_| vec![0.0; 16]);
-        // Query cellX=0/cellZ=0 first checks section (0,0), then the diagonal
-        // previous section (-1,-1), where local coordinates become (4,4).
-        // The outside column index is 7 + 4 + 4 - 4 = 11.
-        columns[11][3] = 12.5;
-        let view = JpeBlendingDataView {
-            chunk_x: -1, chunk_z: -1, min_section_y: -4, section_count: 8,
-            density_columns: std::array::from_fn(|i| columns[i].as_ptr()),
-        };
-        let query = [JpeBlendDensityQuery {
-            block_x: 0, block_y: -32, block_z: 0, noise_value: 9.0,
-        }];
-        let mut output = [0.0_f32; 1];
-        assert_eq!(unsafe {
-            jpe_runtime_blend_density_batch(
-                &view, 1, std::ptr::null(), 0,
-                query.as_ptr(), 1, output.as_mut_ptr(), 1,
-            )
-        }, STATUS_OK);
-        assert_eq!(output[0].to_bits(), 1.25_f32.to_bits());
-    }
-
 }
 
 
@@ -2146,4 +2066,84 @@ mod tests {
         }, STATUS_INVALID_ARGUMENT);
         assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
     }
+
+    #[test]
+    fn blender_density_batch_preserves_empty_fallback_and_fixed_density_override() {
+        let mut output = [0.0_f32; 2];
+        let queries = [
+            JpeBlendDensityQuery { block_x: 0, block_y: -32, block_z: 0, noise_value: 7.25 },
+            JpeBlendDensityQuery { block_x: -1, block_y: -31, block_z: -1, noise_value: -3.5 },
+        ];
+        assert_eq!(unsafe {
+            jpe_runtime_blend_density_batch(
+                std::ptr::null(), 0, std::ptr::null(), 0,
+                queries.as_ptr(), 2, output.as_mut_ptr(), 2,
+            )
+        }, STATUS_OK);
+        assert_eq!(output, [7.25, -3.5]);
+
+        let mut column = vec![0.0_f32; 16];
+        column[3] = 5.0;
+        let mut density_columns = [std::ptr::null(); 16];
+        density_columns[3] = column.as_ptr();
+        let view = JpeBlendingDataView {
+            chunk_x: 0, chunk_z: 0, min_section_y: -4, section_count: 8,
+            density_columns,
+        };
+        assert_eq!(unsafe {
+            jpe_runtime_blend_density_batch(
+                &view, 1, std::ptr::null(), 0,
+                queries.as_ptr(), 2, output.as_mut_ptr(), 2,
+            )
+        }, STATUS_OK);
+        assert_eq!(output[0].to_bits(), 0.5_f32.to_bits());
+        assert_eq!(output[1].to_bits(), (-3.5_f32).to_bits());
+    }
+
+    #[test]
+    fn blender_density_batch_executes_native_neighborhood_weighting() {
+        let mut column = vec![0.0_f32; 16];
+        column[3] = 10.0;
+        let mut density_columns = [std::ptr::null(); 16];
+        density_columns[3] = column.as_ptr();
+        let view = JpeBlendingDataView {
+            chunk_x: 0, chunk_z: 0, min_section_y: -4, section_count: 8,
+            density_columns,
+        };
+        let query = [JpeBlendDensityQuery {
+            block_x: 4, block_y: -32, block_z: 0, noise_value: 4.0,
+        }];
+        let mut output = [0.0_f32; 1];
+        assert_eq!(unsafe {
+            jpe_runtime_blend_density_batch(
+                std::ptr::null(), 0, &view, 1,
+                query.as_ptr(), 1, output.as_mut_ptr(), 1,
+            )
+        }, STATUS_OK);
+        assert_eq!(output[0].to_bits(), 2.0_f32.to_bits());
+    }
+
+    #[test]
+    fn blender_density_batch_handles_negative_quart_coordinates_and_boundary_fallback() {
+        let mut column = vec![0.0_f32; 16];
+        column[3] = 12.5;
+        let mut density_columns = [std::ptr::null(); 16];
+        density_columns[11] = column.as_ptr();
+        let view = JpeBlendingDataView {
+            chunk_x: -1, chunk_z: -1, min_section_y: -4, section_count: 8,
+            density_columns,
+        };
+        let query = [JpeBlendDensityQuery {
+            block_x: 0, block_y: -32, block_z: 0, noise_value: 9.0,
+        }];
+        let mut output = [0.0_f32; 1];
+        assert_eq!(unsafe {
+            jpe_runtime_blend_density_batch(
+                &view, 1, std::ptr::null(), 0,
+                query.as_ptr(), 1, output.as_mut_ptr(), 1,
+            )
+        }, STATUS_OK);
+        assert_eq!(output[0].to_bits(), 1.25_f32.to_bits());
+    }
+
 }
