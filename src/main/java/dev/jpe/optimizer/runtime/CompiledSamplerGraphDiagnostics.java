@@ -34,12 +34,16 @@ public final class CompiledSamplerGraphDiagnostics {
             lastGraph = graph;
             EnumMap<CompiledSamplerGraphIr.Op, Integer> counts =
                     new EnumMap<>(CompiledSamplerGraphIr.Op.class);
+            java.util.TreeMap<String, Integer> opaqueClasses = new java.util.TreeMap<>();
             for (CompiledSamplerGraphIr.Node node : graph.nodes()) {
                 counts.merge(node.op(), 1, Integer::sum);
+                if (node.op() == CompiledSamplerGraphIr.Op.OPAQUE) {
+                    opaqueClasses.merge(node.sourceClass(), 1, Integer::sum);
+                }
             }
             LOGGER.log(System.Logger.Level.INFO,
-                    "Compiled sampler graph inventory: nodes={0}, dropped={1}, root={2}, ops={3}",
-                    snapshot.nodes().size(), snapshot.droppedNodes(), snapshot.rootId(), counts);
+                    "Compiled sampler graph inventory: nodes={0}, dropped={1}, root={2}, ops={3}, opaqueClasses={4}",
+                    snapshot.nodes().size(), snapshot.droppedNodes(), snapshot.rootId(), counts, opaqueClasses);
             for (CompiledSamplerGraphIr.Node node : graph.nodes()) {
                 LOGGER.log(System.Logger.Level.DEBUG,
                         "sampler[{0}] op={1} source={2} children={3} values={4} note={5}",
