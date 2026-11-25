@@ -6,7 +6,7 @@ use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-const ABI_VERSION: u32 = 7;
+const ABI_VERSION: u32 = 8;
 const STATUS_OK: i32 = 0;
 const STATUS_INVALID_ARGUMENT: i32 = 1;
 const STATUS_CPP_FAILURE: i32 = 2;
@@ -243,6 +243,10 @@ pub struct JpePerlinLayer {
     pub xz_scale: f64,
     pub y_scale: f64,
     pub amplitude: f32,
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
+    pub fudge_y_scale: f64,
+    pub flags: u32,
+    pub reserved: u32,
 }
 
 unsafe extern "C" {
@@ -268,6 +272,7 @@ unsafe extern "C" {
     step_x: i32, step_y: i32, step_z: i32,
         offset_x: f64, offset_y: f64, offset_z: f64,
         xz_scale: f64, y_scale: f64, amplitude: f32,
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
         output: *mut f32, output_length: u64, flags: u32,
     ) -> i32;
     fn jpe_cpp_perlin_add_volume_scalar_cached_y(
@@ -277,6 +282,7 @@ unsafe extern "C" {
         step_x: i32, step_y: i32, step_z: i32,
         offset_x: f64, offset_y: f64, offset_z: f64,
         xz_scale: f64, y_scale: f64, amplitude: f32,
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
         output: *mut f32, output_length: u64, flags: u32,
     ) -> i32;
     fn jpe_cpp_perlin_avx2_supported() -> i32;
@@ -287,6 +293,7 @@ unsafe extern "C" {
         step_x: i32, step_y: i32, step_z: i32,
         offset_x: f64, offset_y: f64, offset_z: f64,
         xz_scale: f64, y_scale: f64, amplitude: f32,
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
         output: *mut f32, output_length: u64, flags: u32,
     ) -> i32;
     fn jpe_cpp_perlin_add_volume_cached_xy(
@@ -296,6 +303,7 @@ unsafe extern "C" {
         step_x: i32, step_y: i32, step_z: i32,
         offset_x: f64, offset_y: f64, offset_z: f64,
         xz_scale: f64, y_scale: f64, amplitude: f32,
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
         output: *mut f32, output_length: u64, flags: u32,
     ) -> i32;
     fn jpe_cpp_perlin_add_volume_uncached_xy(
@@ -305,6 +313,7 @@ unsafe extern "C" {
         step_x: i32, step_y: i32, step_z: i32,
         offset_x: f64, offset_y: f64, offset_z: f64,
         xz_scale: f64, y_scale: f64, amplitude: f32,
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
         output: *mut f32, output_length: u64, flags: u32,
     ) -> i32;
 }
@@ -326,7 +335,8 @@ struct PerlinTask {
     min_x: i32, min_y: i32, min_z: i32,
     step_x: i32, step_y: i32, step_z: i32,
     offset_x: f64, offset_y: f64, offset_z: f64,
-    xz_scale: f64, y_scale: f64, amplitude: f32, flags: u32,
+    xz_scale: f64, y_scale: f64, amplitude: f32,
+                fudge_y_scale: 0.0, flags: 0, reserved: 0, flags: u32,
 }
 
 struct PerlinStackTask {
@@ -471,6 +481,7 @@ pub unsafe extern "C" fn jpe_runtime_perlin_add_volume(
     step_x: i32, step_y: i32, step_z: i32,
     offset_x: f64, offset_y: f64, offset_z: f64,
     xz_scale: f64, y_scale: f64, amplitude: f32,
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
     output: *mut f32, output_length: u64, flags: u32,
 ) -> i32 {
     if size_x == 0 || size_y == 0 || size_z == 0 || permutation.is_null() || output.is_null()
@@ -596,6 +607,7 @@ pub unsafe extern "C" fn jpe_runtime_submit_perlin_volume(
     step_x: i32, step_y: i32, step_z: i32,
     offset_x: f64, offset_y: f64, offset_z: f64,
     xz_scale: f64, y_scale: f64, amplitude: f32,
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
     output_buffer: *mut f32, output_length: u64, flags: u32,
 ) -> u64 {
     catch_unwind(AssertUnwindSafe(|| {
@@ -712,7 +724,7 @@ mod tests {
     #[test]
     fn perlin_layer_ffi_layout_matches_c_header() {
         use std::mem::{align_of, offset_of, size_of};
-        assert_eq!(size_of::<JpePerlinLayer>(), 56);
+        assert_eq!(size_of::<JpePerlinLayer>(), 72);
         assert_eq!(align_of::<JpePerlinLayer>(), 8);
         assert_eq!(offset_of!(JpePerlinLayer, permutation), 0);
         assert_eq!(offset_of!(JpePerlinLayer, offset_x), 8);
@@ -1164,9 +1176,11 @@ mod tests {
             JpePerlinLayer { permutation: permutation_a.as_ptr(),
                 offset_x: 0.13, offset_y: 0.29, offset_z: 0.41,
                 xz_scale: 0.75, y_scale: 1.25, amplitude: 0.5 },
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
             JpePerlinLayer { permutation: permutation_b.as_ptr(),
                 offset_x: -0.31, offset_y: 0.17, offset_z: 0.23,
                 xz_scale: 1.5, y_scale: 0.625, amplitude: -0.125 },
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
         ];
         let mut expected = [0.375_f32; 24];
         let mut actual = expected;
@@ -1197,12 +1211,15 @@ mod tests {
             JpePerlinLayer { permutation: permutation_a.as_ptr(),
                 offset_x: 0.13, offset_y: 0.29, offset_z: 0.41,
                 xz_scale: 0.75, y_scale: 1.25, amplitude: 0.5 },
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
             JpePerlinLayer { permutation: permutation_b.as_ptr(),
                 offset_x: -0.31, offset_y: 0.17, offset_z: 0.23,
                 xz_scale: 1.5, y_scale: 0.625, amplitude: -0.125 },
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
             JpePerlinLayer { permutation: permutation_c.as_ptr(),
                 offset_x: 0.07, offset_y: -0.33, offset_z: 0.19,
                 xz_scale: 0.375, y_scale: 2.0, amplitude: 0.0625 },
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
         ];
         let mut expected = [0.375_f32; 60];
         let mut actual = expected;
@@ -1235,6 +1252,7 @@ mod tests {
             xz_scale: 0.45 * (i as f64 + 1.0),
             y_scale: 0.7 * (i as f64 + 1.0),
             amplitude: 0.5_f32.powi(i as i32 + 1),
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
         });
         for flags in [0_u32, 1_u32] {
             let mut expected = vec![0.375_f32; 5 * 7 * 4];
@@ -1277,6 +1295,7 @@ mod tests {
             xz_scale: 0.375 * (i as f64 + 1.0),
             y_scale: 0.625 * (i as f64 + 1.0),
             amplitude: 0.5_f32.powi(i as i32 + 1),
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
         });
         let len = SX * SY * SZ;
         let mut cached = vec![0.125_f32; len];
@@ -1353,6 +1372,7 @@ mod tests {
             xz_scale: 0.41 * (i as f64 + 1.0),
             y_scale: 0.61 * (i as f64 + 1.0),
             amplitude: 0.5_f32.powi(i as i32 + 1),
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
         });
         for flags in [0_u32, 1_u32] {
             let mut expected = vec![0.25_f32; 32 * 64 * 16];
@@ -1398,6 +1418,7 @@ mod tests {
             xz_scale: 0.375 * (i as f64 + 1.0),
             y_scale: 0.625 * (i as f64 + 1.0),
             amplitude: 0.5_f32.powi(i as i32 + 1),
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
         });
         let len = SX * SY * SZ;
         let mut cached = vec![0.125_f32; len];
@@ -1481,6 +1502,7 @@ mod tests {
             xz_scale: 0.375 * (i as f64 + 1.0),
             y_scale: 0.625 * (i as f64 + 1.0),
             amplitude: 0.5_f32.powi(i as i32 + 1),
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
         });
         let len = SX * SY * SZ;
         let mut cached = vec![0.125_f32; len];
@@ -1568,6 +1590,7 @@ mod tests {
             xz_scale: 0.375 * (i as f64 + 1.0),
             y_scale: 0.625 * (i as f64 + 1.0),
             amplitude: 0.5_f32.powi(i as i32 + 1),
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
         });
         let len = SX * SY * SZ;
         let mut repeated = vec![0.125_f32; len];
@@ -1653,6 +1676,7 @@ mod tests {
             xz_scale: 0.375 * (i as f64 + 1.0),
             y_scale: 0.625 * (i as f64 + 1.0),
             amplitude: 0.5_f32.powi(i as i32 + 1),
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
         });
         let len = SX * SY * SZ;
         let mut repeated = vec![0.125_f32; len];
@@ -1744,9 +1768,11 @@ mod tests {
             JpePerlinLayer { permutation: permutation_a.as_ptr(),
                 offset_x: 0.11, offset_y: 0.27, offset_z: 0.39,
                 xz_scale: 0.8, y_scale: 1.2, amplitude: 0.75 },
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
             JpePerlinLayer { permutation: permutation_b.as_ptr(),
                 offset_x: -0.21, offset_y: 0.19, offset_z: 0.31,
                 xz_scale: 1.1, y_scale: 0.7, amplitude: -0.25 },
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
         ];
         let mut expected = [0.125_f32; 24];
         let mut actual = expected;
@@ -1771,9 +1797,11 @@ mod tests {
             JpePerlinLayer { permutation: permutation.as_ptr(),
                 offset_x: 0.0, offset_y: 0.0, offset_z: 0.0,
                 xz_scale: 1.0, y_scale: 1.0, amplitude: 1.0 },
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
             JpePerlinLayer { permutation: std::ptr::null(),
                 offset_x: 0.0, offset_y: 0.0, offset_z: 0.0,
                 xz_scale: 1.0, y_scale: 1.0, amplitude: 1.0 },
+                fudge_y_scale: 0.0, flags: 0, reserved: 0,
         ];
         let mut output = [0.375_f32; 8];
         let before = output;
