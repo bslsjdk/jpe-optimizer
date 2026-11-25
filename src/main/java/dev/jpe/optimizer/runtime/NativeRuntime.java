@@ -273,8 +273,21 @@ public final class NativeRuntime implements AutoCloseable {
     }
 
     /** Compiles or reuses an immutable native density graph. */
+    /** Compiles only strict graphs; experimental sentinels require the explicit method below. */
     public NativeDensityGraph compileDensityGraph(DensityGraphIr graph) {
+        return compileDensityGraphInternal(graph, false);
+    }
+
+    /** Executes the experimental compiler path. OPAQUE nodes evaluate to NaN and must not feed worldgen. */
+    public NativeDensityGraph compileDensityGraphExperimental(DensityGraphIr graph) {
+        return compileDensityGraphInternal(graph, true);
+    }
+
+    private NativeDensityGraph compileDensityGraphInternal(DensityGraphIr graph, boolean allowExperimental) {
         Objects.requireNonNull(graph, "graph");
+        if (graph.experimental() && !allowExperimental) {
+            throw new IllegalArgumentException("Experimental density graph requires compileDensityGraphExperimental");
+        }
         lifecycle.readLock().lock();
         try {
             ensureOpen();
