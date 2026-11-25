@@ -58,6 +58,29 @@ This confirms the split required by the native design:
 
 Do not serialize a context-bound sampler or a particular chunk's coordinates as if they were reusable graph structure.
 
+## Density node layouts verified from bytecode
+
+The audited concrete node records expose these fields:
+
+- `BinaryFunction`: `type`, `left`, and `right`. The presence of a type enum means the adapter must inspect the exact operation type; it must not assume every binary node is ADD or MUL.
+- `ClampFunction`: `input`, `min`, and `max`.
+- `RangeChoiceFunction`: `input`, `minInclusive`, `maxExclusive`, `whenInRange`, and `whenOutOfRange`. This is a true data-dependent branch and cannot be lowered by recording only the branch taken during one trace.
+- `NoiseFunction`: a `Holder<NormalNoise>`, `xzScale`, `yScale`, and three shift density dependencies (`shiftX/Y/Z`). The Holder resolves seed/world-specific noise state, so it cannot be replaced by a seed-independent constant in a persistent topology cache.
+- `CacheFunction`: wraps an `input`; its `compileSampler` method explicitly throws if called before deduplication. Cache wrappers therefore need to preserve Minecraft's dedup/cache semantics rather than being treated as an ordinary arithmetic node.
+
+These field layouts are confirmed from the Mojang 26.3 bytecode report. The operation bodies and enum values still require dedicated inspection before any exact lowering is claimed.
+
+## DensityBuffer storage and copy cost
+
+The audited `DensityBuffer` stores values in a protected final Java `float[] values`, with a separate logical `size`. Its `copyFrom` method checks the logical sizes and then invokes `System.arraycopy` over the active range. `ScopedDensityBuffer` extends this class and returns its storage to a `DensityBufferArena` when its scope closes.
+
+This has two consequences:
+
+1. The current FFM route's native output staging buffer followed by a Java array copy is a real avoidable transfer.
+2. The backing storage is a heap array, not a direct/native buffer. FFM cannot simply treat the Java array as an ordinary native address. A JNI experiment using primitive-array access or a different buffer integration could avoid the explicit staging copy, but pinning/copy behavior is JVM-dependent and a long critical region can interfere with garbage collection. It must be benchmarked and have a safe fallback before being adopted.
+
+A suitable experiment should write into the actual target array only while the owning `DensityBuffer` is exclusively in use, respect its logical size, and never retain a pointer after the JNI call or after a `ScopedDensityBuffer` is closed.
+
 ## Current limitations
 
 - The existing native graph IR supports only constants, X/Y/Z, ADD, MUL, and experimental OPAQUE sentinels.
