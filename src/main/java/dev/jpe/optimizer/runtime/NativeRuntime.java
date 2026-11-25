@@ -65,12 +65,45 @@ public final class NativeRuntime implements AutoCloseable {
     // Keep one reusable FFM scratch arena per calling worldgen worker. Only
     // permutation and output buffers remain after axis-coordinate generation moved native-side.
     private final ConcurrentLinkedQueue<PerlinScratch> perlinScratchArenas = new ConcurrentLinkedQueue<>();
+    // Reuses the node-wire buffer across graph compilations on each worldgen thread.
+    private final ConcurrentLinkedQueue<DensityScratch> densityScratchArenas = new ConcurrentLinkedQueue<>();
+    private final ThreadLocal<DensityScratch> densityScratch = ThreadLocal.withInitial(() -> {
+        DensityScratch scratch = new DensityScratch();
+        densityScratchArenas.add(scratch);
+        return scratch;
+    });
     private final ThreadLocal<PerlinScratch> perlinScratch = ThreadLocal.withInitial(() -> {
         PerlinScratch scratch = new PerlinScratch();
         perlinScratchArenas.add(scratch);
         return scratch;
     });
     private volatile boolean closed;
+
+    private static final class DensityScratch implements AutoCloseable {
+        private final Arena arena = Arena.ofShared();
+        private MemorySegment encoded;
+        private int capacity;
+        private final AtomicBoolean leased = new AtomicBoolean();
+
+        private boolean tryAcquire() { return leased.compareAndSet(false, true); }
+        private void release() {
+            if (!leased.compareAndSet(true, false)) throw new IllegalStateException("Density scratch lease was not active");
+        }
+        private MemorySegment ensureCapacity(int requiredNodes) {
+            if (capacity < requiredNodes) {
+                int next = Math.max(256, capacity);
+                while (next < requiredNodes) next = Math.min(DensityGraphIr.MAX_NODES, Math.multiplyExact(next, 2));
+                encoded = arena.allocate(Math.multiplyExact((long) next, DENSITY_NODE_LAYOUT.byteSize()),
+                        DENSITY_NODE_LAYOUT.byteAlignment());
+                capacity = next;
+            }
+            return encoded;
+        }
+        @Override public void close() {
+            if (leased.get()) throw new IllegalStateException("Cannot close a leased density scratch arena");
+            arena.close();
+        }
+    }
 
     private static final class PerlinScratch implements AutoCloseable {
         private final Arena arena = Arena.ofShared();
@@ -122,6 +155,16 @@ public final class NativeRuntime implements AutoCloseable {
             if (leased.get()) throw new IllegalStateException("Cannot close a leased Perlin scratch arena");
             arena.close();
         }
+    }
+
+    private DensityScratch acquireDensityScratch() {
+        DensityScratch scratch = densityScratch.get();
+        if (scratch.tryAcquire()) return scratch;
+        scratch = new DensityScratch();
+        densityScratch.set(scratch);
+        densityScratchArenas.add(scratch);
+        if (!scratch.tryAcquire()) throw new IllegalStateException("Unable to acquire density scratch arena");
+        return scratch;
     }
 
     private PerlinScratch acquirePerlinScratch() {
@@ -289,21 +332,22 @@ public final class NativeRuntime implements AutoCloseable {
             throw new IllegalArgumentException("Experimental density graph requires compileDensityGraphExperimental");
         }
         lifecycle.readLock().lock();
+        DensityScratch scratch = null;
         try {
             ensureOpen();
             List<DensityGraphIr.Node> nodes = graph.nodes();
-            try (Arena arena = Arena.ofConfined()) {
-                long bytes = Math.multiplyExact((long) nodes.size(), DENSITY_NODE_LAYOUT.byteSize());
-                MemorySegment encoded = arena.allocate(bytes, DENSITY_NODE_LAYOUT.byteAlignment());
-                for (int i = 0; i < nodes.size(); ++i) {
-                    DensityGraphIr.Node node = nodes.get(i);
-                    long base = Math.multiplyExact((long) i, DENSITY_NODE_LAYOUT.byteSize());
-                    encoded.set(ValueLayout.JAVA_INT, base, node.opcode());
-                    encoded.set(ValueLayout.JAVA_INT, base + 4L, node.inputA() < 0 ? 0xffff_ffff : node.inputA());
-                    encoded.set(ValueLayout.JAVA_INT, base + 8L, node.inputB() < 0 ? 0xffff_ffff : node.inputB());
-                    encoded.set(ValueLayout.JAVA_INT, base + 12L, node.opcode() == DensityGraphIr.OPAQUE ? 1 : 0);
-                    encoded.set(ValueLayout.JAVA_DOUBLE, base + 16L, node.immediate());
-                }
+            scratch = acquireDensityScratch();
+            MemorySegment encoded = scratch.ensureCapacity(nodes.size());
+            for (int i = 0; i < nodes.size(); ++i) {
+                DensityGraphIr.Node node = nodes.get(i);
+                long base = Math.multiplyExact((long) i, DENSITY_NODE_LAYOUT.byteSize());
+                encoded.set(ValueLayout.JAVA_INT, base, node.opcode());
+                encoded.set(ValueLayout.JAVA_INT, base + 4L, node.inputA() < 0 ? 0xffff_ffff : node.inputA());
+                encoded.set(ValueLayout.JAVA_INT, base + 8L, node.inputB() < 0 ? 0xffff_ffff : node.inputB());
+                encoded.set(ValueLayout.JAVA_INT, base + 12L, node.opcode() == DensityGraphIr.OPAQUE ? 1 : 0);
+                encoded.set(ValueLayout.JAVA_DOUBLE, base + 16L, node.immediate());
+            }
+            try {
                 long handle = (long) compileDensityGraph.invokeExact(
                         encoded, nodes.size(), graph.rootNode(), DensityGraphIr.VERSION, graph.configurationFingerprint());
                 if (handle == 0L) throw new IllegalStateException("Native density graph compiler rejected the IR");
@@ -314,6 +358,7 @@ public final class NativeRuntime implements AutoCloseable {
                 throw rethrow("Unable to compile native density graph", failure);
             }
         } finally {
+            if (scratch != null) scratch.release();
             lifecycle.readLock().unlock();
         }
     }
@@ -761,6 +806,8 @@ public final class NativeRuntime implements AutoCloseable {
         while ((scratch = perlinScratchArenas.poll()) != null) {
             scratch.close();
         }
+        DensityScratch density;
+        while ((density = densityScratchArenas.poll()) != null) density.close();
         // The global FFM arena intentionally keeps the Rust library loaded until JVM exit.
     
         } finally {
