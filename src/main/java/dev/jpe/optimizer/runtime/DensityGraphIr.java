@@ -20,6 +20,7 @@ public final class DensityGraphIr {
         public static Node multiply(int left, int right) { return new Node(MUL, left, right, 0.0); }
         /** Experimental sentinel: native evaluation emits NaN and continues through parents. */
         public static Node opaque() { return new Node(OPAQUE, NO_INPUT, NO_INPUT, Double.NaN); }
+        public static Node opaque(int inputA, int inputB) { return new Node(OPAQUE, inputA, inputB, Double.NaN); }
     }
 
     /** Sidecar diagnostic. It is deliberately not part of the hot native node record. */
@@ -67,9 +68,16 @@ public final class DensityGraphIr {
         for (int i = 0; i < nodes.size(); ++i) {
             Node node = Objects.requireNonNull(nodes.get(i), "node");
             switch (node.opcode()) {
-                case CONST, X, Y, Z, OPAQUE -> {
+                case CONST, X, Y, Z -> {
                     if (node.inputA() != NO_INPUT || node.inputB() != NO_INPUT) {
                         throw new IllegalArgumentException("Leaf node " + i + " must not have inputs");
+                    }
+                }
+                case OPAQUE -> {
+                    if (node.inputA() == NO_INPUT && node.inputB() != NO_INPUT
+                            || node.inputA() != NO_INPUT && (node.inputA() < 0 || node.inputA() >= i)
+                            || node.inputB() != NO_INPUT && (node.inputB() < 0 || node.inputB() >= i)) {
+                        throw new IllegalArgumentException("Opaque node " + i + " has invalid child references");
                     }
                 }
                 case ADD, MUL -> {
