@@ -30,6 +30,7 @@ import net.neoforged.neoforge.registries.DeferredRegister;
 import dev.jpe.optimizer.mixin.DensityBufferAccessor;
 import dev.jpe.optimizer.mixin.GradientNoiseAccessor;
 import dev.jpe.optimizer.runtime.NativeRuntime;
+import dev.jpe.optimizer.runtime.DensityGraphIr;
 import dev.jpe.optimizer.runtime.NativePerlinNoiseBackend;
 import dev.jpe.optimizer.vector.DensityVectorRuntime;
 import dev.jpe.optimizer.vector.PerlinNoiseVectorizer;
@@ -57,6 +58,9 @@ public final class GameTests {
 
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> PERLIN_NATIVE_PARITY =
             TEST_FUNCTIONS.register("perlin_native_parity", () -> GameTests::perlinNativeParity);
+
+    public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> DENSITY_GRAPH_NATIVE_PARITY =
+            TEST_FUNCTIONS.register("density_graph_native_parity", () -> GameTests::densityGraphNativeParity);
 
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> PALETTE_HASH_CONFIGURATION =
             TEST_FUNCTIONS.register("palette_hash_configuration", () -> GameTests::paletteHashConfiguration);
@@ -99,6 +103,10 @@ public final class GameTests {
         event.registerTest(
                 Identifier.parse("jpe_optimizer:perlin_native_parity"),
                 new FunctionGameTestInstance(PERLIN_NATIVE_PARITY.getKey(), data)
+        );
+        event.registerTest(
+                Identifier.parse("jpe_optimizer:density_graph_native_parity"),
+                new FunctionGameTestInstance(DENSITY_GRAPH_NATIVE_PARITY.getKey(), data)
         );
         event.registerTest(
                 Identifier.parse("jpe_optimizer:palette_hash_configuration"),
@@ -301,6 +309,40 @@ public final class GameTests {
         helper.succeed();
     }
 
+
+    /** Verifies the versioned Java FFM graph API against a known full-volume result. */
+    private static void densityGraphNativeParity(GameTestHelper helper) {
+        String library = System.getProperty("jpe.nativeLibraryPath");
+        if (library == null || library.isBlank()) {
+            throw new AssertionError("Set -Djpe.nativeLibraryPath to the freshly built native runtime library");
+        }
+
+        DensityGraphIr graph = new DensityGraphIr(List.of(
+                DensityGraphIr.Node.x(),
+                DensityGraphIr.Node.y(),
+                DensityGraphIr.Node.constant(2.0),
+                DensityGraphIr.Node.add(0, 2),
+                DensityGraphIr.Node.multiply(3, 1)
+        ), 4, 0x4A50454752415048L);
+        float[] output = new float[4];
+        try (NativeRuntime runtime = NativeRuntime.load(java.nio.file.Path.of(library));
+             NativeRuntime.NativeDensityGraph compiled = runtime.compileDensityGraph(graph)) {
+            compiled.evaluate(2, 2, 1, 10, 3, 0, 1, 1, 1, output);
+        } catch (Exception failure) {
+            throw new AssertionError("Native density graph FFM parity test failed", failure);
+        }
+
+        float[] expected = {36.0F, 48.0F, 39.0F, 52.0F};
+        for (int i = 0; i < expected.length; ++i) {
+            if (Float.floatToRawIntBits(expected[i]) != Float.floatToRawIntBits(output[i])) {
+                throw new AssertionError("Density graph output mismatch at index " + i
+                        + ": expected=" + expected[i] + ", actual=" + output[i]);
+            }
+        }
+        JPEOptimizer.LOGGER.info("JPE_DENSITY_GRAPH_NATIVE_PARITY nodes={} samples={} bitExact=true",
+                graph.nodes().size(), output.length);
+        helper.succeed();
+    }
 
     /** Compares the Rust/C++ Perlin volume backend against vanilla output bit-for-bit. */
     private static void perlinNativeParity(GameTestHelper helper) {
