@@ -108,4 +108,67 @@ class DensityGraphCacheTest {
     }
 
 
+
+    @Test
+    void semanticFingerprintIsStableAcrossMapInsertionOrderButPreservesOperandOrder() {
+        var firstValues = new java.util.LinkedHashMap<String, String>();
+        firstValues.put("right", "2.5");
+        firstValues.put("left", "9.0");
+        var reorderedValues = new java.util.LinkedHashMap<String, String>();
+        reorderedValues.put("left", "9.0");
+        reorderedValues.put("right", "2.5");
+        var first = new CompiledSamplerGraphIr.Graph(java.util.List.of(
+                new CompiledSamplerGraphIr.Node(0, CompiledSamplerGraphIr.Op.CONST_SUB_LEFT,
+                        "sampler.ConstSub", java.util.List.of(1), java.util.List.of(), firstValues, "diagnostic A"),
+                new CompiledSamplerGraphIr.Node(1, CompiledSamplerGraphIr.Op.OPAQUE,
+                        "sampler.Noise", java.util.List.of(), java.util.List.of(), java.util.Map.of(), "")
+        ), 0, 0);
+        var sameSemantics = new CompiledSamplerGraphIr.Graph(java.util.List.of(
+                new CompiledSamplerGraphIr.Node(0, CompiledSamplerGraphIr.Op.CONST_SUB_LEFT,
+                        "sampler.ConstSub", java.util.List.of(1), java.util.List.of(), reorderedValues, "diagnostic B"),
+                new CompiledSamplerGraphIr.Node(1, CompiledSamplerGraphIr.Op.OPAQUE,
+                        "sampler.Noise", java.util.List.of(), java.util.List.of(), java.util.Map.of(), "")
+        ), 0, 0);
+        var reversed = new CompiledSamplerGraphIr.Graph(java.util.List.of(
+                new CompiledSamplerGraphIr.Node(0, CompiledSamplerGraphIr.Op.CONST_SUB_LEFT,
+                        "sampler.ConstSub", java.util.List.of(2), java.util.List.of(), reorderedValues, ""),
+                new CompiledSamplerGraphIr.Node(1, CompiledSamplerGraphIr.Op.OPAQUE,
+                        "sampler.Noise", java.util.List.of(), java.util.List.of(), java.util.Map.of(), ""),
+                new CompiledSamplerGraphIr.Node(2, CompiledSamplerGraphIr.Op.OPAQUE,
+                        "sampler.OtherNoise", java.util.List.of(), java.util.List.of(), java.util.Map.of(), "")
+        ), 0, 0);
+
+        assertEquals(CompiledSamplerGraphIr.semanticFingerprint(first),
+                CompiledSamplerGraphIr.semanticFingerprint(sameSemantics));
+        assertNotEquals(CompiledSamplerGraphIr.semanticFingerprint(first),
+                CompiledSamplerGraphIr.semanticFingerprint(reversed));
+    }
+
+    @Test
+    void semanticCacheKeyIncludesLoaderSettingsAndSamplerGraph() {
+        DensityGraphCache.Identity identity = new DensityGraphCache.Identity(
+                "26.3", "NeoForge-26.3.0.115", "native-build-A", "mods-A",
+                "minecraft:overworld", 12L, 34L);
+        var graph = new CompiledSamplerGraphIr.Graph(java.util.List.of(
+                new CompiledSamplerGraphIr.Node(0, CompiledSamplerGraphIr.Op.CONSTANT,
+                        "sampler.Constant", java.util.List.of(), java.util.List.of(),
+                        java.util.Map.of("value", "1.25"), "")
+        ), 0, 0);
+        String key = DensityGraphCache.semanticCacheKey(identity, graph);
+        assertTrue(key.startsWith(identity.stableKey() + ":"));
+        assertNotEquals(key, DensityGraphCache.semanticCacheKey(
+                new DensityGraphCache.Identity("26.3", "NeoForge-26.3.0.115", "native-build-A",
+                        "mods-A", "minecraft:the_nether", 12L, 34L), graph));
+    }
+
+    @Test
+    void refusesToFingerprintTruncatedSamplerGraphs() {
+        var incomplete = new CompiledSamplerGraphIr.Graph(java.util.List.of(
+                new CompiledSamplerGraphIr.Node(0, CompiledSamplerGraphIr.Op.OPAQUE,
+                        "sampler.Root", java.util.List.of(), java.util.List.of(), java.util.Map.of(), "")
+        ), 0, 1);
+        assertThrows(IllegalArgumentException.class,
+                () -> CompiledSamplerGraphIr.semanticFingerprint(incomplete));
+    }
+
 }
