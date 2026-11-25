@@ -67,14 +67,16 @@ inline void corner_for_lanes(
     const uint8_t* p, uint32_t hash, float rx, float rz,
     float lane_xz[8][8], float lane_y[8][8], uint32_t corner_index,
     uint32_t unique_index, const int32_t lane_unique_indices[8],
-    bool identity_lanes
+    uint32_t lane_begin, uint32_t lane_end, bool contiguous_lanes
 ) noexcept {
     float xz;
     float y;
     corner(p, hash, rx, rz, xz, y);
-    if (identity_lanes) {
-        lane_xz[corner_index][unique_index] = xz;
-        lane_y[corner_index][unique_index] = y;
+    if (contiguous_lanes) {
+        for (uint32_t lane = lane_begin; lane < lane_end; ++lane) {
+            lane_xz[corner_index][lane] = xz;
+            lane_y[corner_index][lane] = y;
+        }
         return;
     }
     for (uint32_t lane = 0; lane < 8; ++lane) {
@@ -355,6 +357,8 @@ int32_t perlin_add_volume_impl(
                             int32_t unique_floors[8];
                             int32_t lane_unique_indices[8];
                             uint32_t unique_representative_lanes[8];
+                            uint32_t unique_start_lanes[8];
+                            uint32_t unique_end_lanes[8];
                             uint32_t unique_count = 0;
                             bool monotonic_floors = true;
                             int floor_direction = 0;
@@ -384,6 +388,7 @@ int32_t perlin_add_volume_impl(
                                         unique_index = unique_count++;
                                         unique_floors[unique_index] = lane_floor;
                                         unique_representative_lanes[unique_index] = lane;
+                                        unique_start_lanes[unique_index] = lane;
                                     }
                                 } else {
                                     // A direction change invalidates the adjacent-only map.
@@ -414,6 +419,7 @@ int32_t perlin_add_volume_impl(
                                     break;
                                 }
                                 lane_unique_indices[lane] = static_cast<int32_t>(unique_index);
+                                if (monotonic_floors) unique_end_lanes[unique_index] = lane + 1;
                             }
 
                             // Compute each distinct floor's eight corners exactly once.
@@ -425,23 +431,30 @@ int32_t perlin_add_volume_impl(
                                 const uint32_t xy01 = lane_xy.xy01;
                                 const uint32_t xy10 = lane_xy.xy10;
                                 const uint32_t xy11 = lane_xy.xy11;
-                                const bool identity_lanes = unique_count == 8;
                                 corner_for_lanes(permutation, xy00 + static_cast<uint32_t>(floor_z), relative_x, relative_z,
-                                    lane_corner_xz, lane_corner_y, 0, unique, lane_unique_indices, identity_lanes);
+                                    lane_corner_xz, lane_corner_y, 0, unique, lane_unique_indices,
+                                    unique_start_lanes[unique], unique_end_lanes[unique], monotonic_floors);
                                 corner_for_lanes(permutation, xy10 + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z,
-                                    lane_corner_xz, lane_corner_y, 1, unique, lane_unique_indices, identity_lanes);
+                                    lane_corner_xz, lane_corner_y, 1, unique, lane_unique_indices,
+                                    unique_start_lanes[unique], unique_end_lanes[unique], monotonic_floors);
                                 corner_for_lanes(permutation, xy01 + static_cast<uint32_t>(floor_z), relative_x, relative_z,
-                                    lane_corner_xz, lane_corner_y, 2, unique, lane_unique_indices, identity_lanes);
+                                    lane_corner_xz, lane_corner_y, 2, unique, lane_unique_indices,
+                                    unique_start_lanes[unique], unique_end_lanes[unique], monotonic_floors);
                                 corner_for_lanes(permutation, xy11 + static_cast<uint32_t>(floor_z), relative_x - 1.0F, relative_z,
-                                    lane_corner_xz, lane_corner_y, 3, unique, lane_unique_indices, identity_lanes);
+                                    lane_corner_xz, lane_corner_y, 3, unique, lane_unique_indices,
+                                    unique_start_lanes[unique], unique_end_lanes[unique], monotonic_floors);
                                 corner_for_lanes(permutation, xy00 + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F,
-                                    lane_corner_xz, lane_corner_y, 4, unique, lane_unique_indices, identity_lanes);
+                                    lane_corner_xz, lane_corner_y, 4, unique, lane_unique_indices,
+                                    unique_start_lanes[unique], unique_end_lanes[unique], monotonic_floors);
                                 corner_for_lanes(permutation, xy10 + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F,
-                                    lane_corner_xz, lane_corner_y, 5, unique, lane_unique_indices, identity_lanes);
+                                    lane_corner_xz, lane_corner_y, 5, unique, lane_unique_indices,
+                                    unique_start_lanes[unique], unique_end_lanes[unique], monotonic_floors);
                                 corner_for_lanes(permutation, xy01 + static_cast<uint32_t>(floor_z) + 1U, relative_x, relative_z - 1.0F,
-                                    lane_corner_xz, lane_corner_y, 6, unique, lane_unique_indices, identity_lanes);
+                                    lane_corner_xz, lane_corner_y, 6, unique, lane_unique_indices,
+                                    unique_start_lanes[unique], unique_end_lanes[unique], monotonic_floors);
                                 corner_for_lanes(permutation, xy11 + static_cast<uint32_t>(floor_z) + 1U, relative_x - 1.0F, relative_z - 1.0F,
-                                    lane_corner_xz, lane_corner_y, 7, unique, lane_unique_indices, identity_lanes);
+                                    lane_corner_xz, lane_corner_y, 7, unique, lane_unique_indices,
+                                    unique_start_lanes[unique], unique_end_lanes[unique], monotonic_floors);
                             }
                             perlin_evaluate_8_avx2_independent(
                                 y_relative.data() + iy, y_alpha.data() + iy,
