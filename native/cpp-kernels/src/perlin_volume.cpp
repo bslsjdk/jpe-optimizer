@@ -120,8 +120,8 @@ inline void perlin_evaluate_8_avx2_independent(
     const __m256 ry1 = _mm256_sub_ps(ry, one);
     __m256 values[8];
     for (int i = 0; i < 8; ++i) {
-        const __m256 cx = _mm256_load_ps(corner_xz[i]);
-        const __m256 cy = _mm256_load_ps(corner_y[i]);
+        const __m256 cx = _mm256_loadu_ps(corner_xz[i]);
+        const __m256 cy = _mm256_loadu_ps(corner_y[i]);
         const __m256 relative = (i == 2 || i == 3 || i == 6 || i == 7) ? ry1 : ry;
         values[i] = _mm256_add_ps(cx, _mm256_mul_ps(cy, relative));
     }
@@ -317,8 +317,8 @@ int32_t perlin_add_volume_impl(
                             }
                         }
                         if (!same_floor) {
-                            alignas(32) float lane_corner_xz[8][8];
-                            alignas(32) float lane_corner_y[8][8];
+                            float lane_corner_xz[8][8];
+                            float lane_corner_y[8][8];
                             for (uint32_t lane = 0; lane < 8; ++lane) {
                                 const XyPermutationCache& lane_xy =
                                     cross_floor_xy_cache[static_cast<size_t>(ix) * size_y + iy + lane];
