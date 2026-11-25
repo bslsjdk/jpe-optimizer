@@ -74,6 +74,13 @@ public final class DensityGraphCache {
 
     private DensityGraphCache() {}
 
+
+    /** Combines environment identity with the canonical sampler graph digest. */
+    public static String semanticCacheKey(Identity identity, CompiledSamplerGraphIr.Graph graph) {
+        Objects.requireNonNull(identity, "identity");
+        return identity.stableKey() + ":" + CompiledSamplerGraphIr.semanticFingerprint(graph);
+    }
+
     public static Path nativeCachePath(Path directory, String cacheKey) {
         Objects.requireNonNull(directory, "directory");
         Objects.requireNonNull(cacheKey, "cacheKey");
