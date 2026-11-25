@@ -547,7 +547,7 @@ mod tests {
             jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 1, 0x1234)
         };
         let second = unsafe {
-            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 0x1234)
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 1, 0x1234)
         };
         assert_ne!(first, 0);
         assert_eq!(first, second, "identical graph/config should reuse the cached handle");
