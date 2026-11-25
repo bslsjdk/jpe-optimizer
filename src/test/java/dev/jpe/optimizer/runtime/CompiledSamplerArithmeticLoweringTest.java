@@ -97,7 +97,7 @@ class CompiledSamplerArithmeticLoweringTest {
         CompiledSamplerArithmeticIslands.Plan plan = CompiledSamplerArithmeticIslands.plan(graph);
         assertEquals(1, plan.islands().size());
         CompiledSamplerArithmeticIslands.Island island = plan.islands().get(0);
-        assertEquals(List.of(4, 5), island.externalInputs().stream()
+        assertEquals(List.of(5, 4), island.externalInputs().stream()
                 .map(CompiledSamplerArithmeticIslands.InputEdge::sourceNode).distinct().toList());
         assertEquals(List.of(0), island.outputNodeIds());
 
