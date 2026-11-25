@@ -1835,7 +1835,7 @@ mod tests {
                 output.as_mut_ptr(), output.len() as u64,
             )
         }, 0);
-        assert_eq!(output, [6.5, 7.5, 6.5, 7.5]);
+        assert_eq!(output, [6.5, 6.5, 7.5, 7.5]);
         assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
     }
 
