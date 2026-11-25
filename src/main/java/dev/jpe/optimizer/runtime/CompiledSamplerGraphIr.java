@@ -1,10 +1,17 @@
 package dev.jpe.optimizer.runtime;
 
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.TreeMap;
 
 /**
  * Semantic classification of the compiled Minecraft sampler inventory.
@@ -83,6 +90,79 @@ public final class CompiledSamplerGraphIr {
             nodes.add(new Node(source.id(), op, name, source.children(), source.childEdges(), values, note));
         }
         return new Graph(nodes, snapshot.rootId(), snapshot.droppedNodes());
+    }
+
+
+    /**
+     * Stable semantic digest for a complete pointer-free sampler inventory.
+     * Child order is significant (subtraction and short-circuit operations),
+     * while map insertion order and diagnostic prose are deliberately ignored.
+     */
+    public static String semanticFingerprint(Graph graph) {
+        Objects.requireNonNull(graph, "graph");
+        if (graph.droppedNodes() != 0) {
+            throw new IllegalArgumentException("Cannot fingerprint an incomplete sampler graph");
+        }
+        Map<Integer, Node> byId = new java.util.HashMap<>();
+        for (Node node : graph.nodes()) {
+            if (byId.put(node.id(), node) != null) {
+                throw new IllegalArgumentException("Duplicate sampler node id " + node.id());
+            }
+        }
+        if (!byId.containsKey(graph.rootId())) {
+            throw new IllegalArgumentException("Sampler graph root is missing");
+        }
+        for (Node node : graph.nodes()) {
+            for (int child : node.children()) {
+                if (!byId.containsKey(child)) {
+                    throw new IllegalArgumentException("Sampler graph has missing child " + child);
+                }
+            }
+        }
+
+        try {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            try (DataOutputStream out = new DataOutputStream(bytes)) {
+                out.writeInt(DensityGraphIr.VERSION);
+                out.writeInt(graph.rootId());
+                out.writeInt(graph.nodes().size());
+                for (Node node : graph.nodes()) {
+                    out.writeInt(node.id());
+                    writeText(out, node.op().name());
+                    writeText(out, node.sourceClass());
+                    out.writeInt(node.children().size());
+                    for (int child : node.children()) out.writeInt(child);
+                    out.writeInt(node.childEdges().size());
+                    for (CompiledSamplerGraphTrace.ChildEdge edge : node.childEdges()) {
+                        writeText(out, edge.componentName());
+                        out.writeInt(edge.childId());
+                    }
+                    TreeMap<String, String> values = new TreeMap<>(node.scalarValues());
+                    out.writeInt(values.size());
+                    for (Map.Entry<String, String> entry : values.entrySet()) {
+                        writeText(out, entry.getKey());
+                        writeText(out, entry.getValue());
+                    }
+                }
+            }
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(bytes.toByteArray());
+            StringBuilder result = new StringBuilder(digest.length * 2);
+            for (byte value : digest) {
+                result.append(Character.forDigit((value >>> 4) & 0xF, 16));
+                result.append(Character.forDigit(value & 0xF, 16));
+            }
+            return result.toString();
+        } catch (IOException impossible) {
+            throw new IllegalStateException("Unable to encode sampler graph fingerprint", impossible);
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new AssertionError("SHA-256 is required by the Java runtime", impossible);
+        }
+    }
+
+    private static void writeText(DataOutputStream out, String value) throws IOException {
+        byte[] encoded = value.getBytes(StandardCharsets.UTF_8);
+        out.writeInt(encoded.length);
+        out.write(encoded);
     }
 
     private static Op classify(String name) {
