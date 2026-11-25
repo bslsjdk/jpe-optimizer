@@ -23,6 +23,7 @@ public final class RuntimeDensityTrace {
     public record NodeInfo(int id, String implementation) {}
     public record Edge(int callerId, int calleeId) {}
     public record BranchGuard(int nodeId, int guardId, boolean outcome) {}
+    private record BranchKey(int nodeId, int guardId, boolean outcome) {}
     public record Snapshot(List<NodeInfo> nodes, List<Edge> edges,
                            List<BranchGuard> guards, long droppedEvents) {
         public Snapshot {
@@ -41,7 +42,7 @@ public final class RuntimeDensityTrace {
     private final ArrayList<Edge> edges = new ArrayList<>();
     private final ArrayList<BranchGuard> guards = new ArrayList<>();
     private final Set<Long> edgeKeys = new HashSet<>();
-    private final Set<Long> guardKeys = new HashSet<>();
+    private final Set<BranchKey> guardKeys = new HashSet<>();
     private long droppedEvents;
 
     public RuntimeDensityTrace() {
@@ -91,9 +92,11 @@ public final class RuntimeDensityTrace {
     public void branch(Object densityFunction, int guardId, boolean outcome) {
         Objects.requireNonNull(densityFunction, "densityFunction");
         if (!recording.get()) return;
+        if (guardId < 0) throw new IllegalArgumentException("guardId must be non-negative");
         int id = nodeId(densityFunction);
+        if (id < 0) return;
         synchronized (this) {
-            long key = (((long) id) << 32) ^ (guardId & 0xffffffffL) ^ (outcome ? 0x8000000000000000L : 0L);
+            BranchKey key = new BranchKey(id, guardId, outcome);
             if (!guardKeys.add(key)) return;
             if (eventCount() >= maxEvents) {
                 droppedEvents++;
