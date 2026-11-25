@@ -2,9 +2,10 @@ package dev.jpe.optimizer.runtime;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -34,13 +35,14 @@ public final class RuntimeDensityTrace {
 
     private final int maxEvents;
     private final AtomicBoolean recording = new AtomicBoolean();
-    private final AtomicInteger nextGuardId = new AtomicInteger();
     private final ThreadLocal<ArrayDeque<Integer>> callStack =
             ThreadLocal.withInitial(ArrayDeque::new);
     private final IdentityHashMap<Object, Integer> ids = new IdentityHashMap<>();
     private final ArrayList<NodeInfo> nodes = new ArrayList<>();
     private final ArrayList<Edge> edges = new ArrayList<>();
     private final ArrayList<BranchGuard> guards = new ArrayList<>();
+    private final Set<Long> edgeKeys = new HashSet<>();
+    private final Set<Long> guardKeys = new HashSet<>();
     private long droppedEvents;
 
     public RuntimeDensityTrace() {
@@ -59,7 +61,8 @@ public final class RuntimeDensityTrace {
         edges.clear();
         guards.clear();
         droppedEvents = 0;
-        nextGuardId.set(0);
+        edgeKeys.clear();
+        guardKeys.clear();
         callStack.remove();
         recording.set(true);
     }
@@ -86,16 +89,18 @@ public final class RuntimeDensityTrace {
     }
 
     /** Records a runtime branch outcome; it is a guard, not a constant fold. */
-    public void branch(Object densityFunction, boolean outcome) {
+    public void branch(Object densityFunction, int guardId, boolean outcome) {
         Objects.requireNonNull(densityFunction, "densityFunction");
         if (!recording.get()) return;
         int id = nodeId(densityFunction);
         synchronized (this) {
+            long key = (((long) id) << 32) ^ (guardId & 0xffffffffL) ^ (outcome ? 0x8000000000000000L : 0L);
+            if (!guardKeys.add(key)) return;
             if (eventCount() >= maxEvents) {
                 droppedEvents++;
                 return;
             }
-            guards.add(new BranchGuard(id, nextGuardId.getAndIncrement(), outcome));
+            guards.add(new BranchGuard(id, guardId, outcome));
         }
     }
 
@@ -114,6 +119,8 @@ public final class RuntimeDensityTrace {
 
     private synchronized void addEdge(int caller, int callee) {
         if (caller < 0 || callee < 0) return;
+        long key = (((long) caller) << 32) | (callee & 0xffffffffL);
+        if (!edgeKeys.add(key)) return;
         if (eventCount() >= maxEvents) {
             droppedEvents++;
             return;
