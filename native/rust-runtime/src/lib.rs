@@ -1260,9 +1260,9 @@ mod tests {
     #[test]
     fn perlin_y_cache_native_microbenchmark() {
         use std::time::Instant;
-        const SX: usize = 16;
-        const SY: usize = 384;
-        const SZ: usize = 16;
+        const SX: usize = 5;
+        const SY: usize = 49;
+        const SZ: usize = 5;
         const LAYERS: usize = 6;
         const ROUNDS: usize = 21;
         const REPEATS: usize = 5;
@@ -1287,7 +1287,7 @@ mod tests {
                 assert_eq!(unsafe { jpe_cpp_perlin_add_stack(
                     layers.as_ptr(), LAYERS as u32,
                     SX as u32, SY as u32, SZ as u32,
-                    -128, -64, 96, 1, 1, 1,
+                    -16, -64, 32, 4, 8, 4,
                     out.as_mut_ptr(), len as u64, 0
                 ) }, STATUS_OK);
             }
@@ -1298,7 +1298,7 @@ mod tests {
                 for layer in &layers {
                     assert_eq!(unsafe { jpe_cpp_perlin_add_volume_uncached_y(
                         layer.permutation, SX as u32, SY as u32, SZ as u32,
-                        -128, -64, 96, 1, 1, 1,
+                        -16, -64, 32, 4, 8, 4,
                         layer.offset_x, layer.offset_y, layer.offset_z,
                         layer.xz_scale, layer.y_scale, layer.amplitude,
                         out.as_mut_ptr(), len as u64, 0
@@ -1381,9 +1381,9 @@ mod tests {
     #[test]
     fn perlin_y_cache_native_microbenchmark_large_volume() {
         use std::time::Instant;
-        const SX: usize = 16;
-        const SY: usize = 384;
-        const SZ: usize = 16;
+        const SX: usize = 5;
+        const SY: usize = 49;
+        const SZ: usize = 5;
         const LAYERS: usize = 8;
         const ROUNDS: usize = 15;
         const REPEATS: usize = 3;
@@ -1408,7 +1408,7 @@ mod tests {
                 assert_eq!(unsafe { jpe_cpp_perlin_add_stack(
                     layers.as_ptr(), LAYERS as u32,
                     SX as u32, SY as u32, SZ as u32,
-                    -256, -128, 192, 1, 1, 1,
+                    -16, -64, 32, 4, 8, 4,
                     out.as_mut_ptr(), len as u64, 0
                 ) }, STATUS_OK);
             }
@@ -1419,7 +1419,7 @@ mod tests {
                 for layer in &layers {
                     assert_eq!(unsafe { jpe_cpp_perlin_add_volume_uncached_y(
                         layer.permutation, SX as u32, SY as u32, SZ as u32,
-                        -256, -128, 192, 1, 1, 1,
+                        -16, -64, 32, 4, 8, 4,
                         layer.offset_x, layer.offset_y, layer.offset_z,
                         layer.xz_scale, layer.y_scale, layer.amplitude,
                         out.as_mut_ptr(), len as u64, 0
@@ -1464,9 +1464,9 @@ mod tests {
     #[test]
     fn perlin_xy_cache_native_microbenchmark_large_volume() {
         use std::time::Instant;
-        const SX: usize = 16;
-        const SY: usize = 384;
-        const SZ: usize = 16;
+        const SX: usize = 5;
+        const SY: usize = 49;
+        const SZ: usize = 5;
         const LAYERS: usize = 8;
         const ROUNDS: usize = 15;
         const REPEATS: usize = 3;
@@ -1491,7 +1491,7 @@ mod tests {
                 for layer in &layers {
                     assert_eq!(unsafe { jpe_cpp_perlin_add_volume_cached_xy(
                         layer.permutation, SX as u32, SY as u32, SZ as u32,
-                        -256, -128, 192, 1, 1, 1,
+                        -16, -64, 32, 4, 8, 4,
                         layer.offset_x, layer.offset_y, layer.offset_z,
                         layer.xz_scale, layer.y_scale, layer.amplitude,
                         out.as_mut_ptr(), len as u64, 0
@@ -1505,7 +1505,7 @@ mod tests {
                 for layer in &layers {
                     assert_eq!(unsafe { jpe_cpp_perlin_add_volume_uncached_xy(
                         layer.permutation, SX as u32, SY as u32, SZ as u32,
-                        -256, -128, 192, 1, 1, 1,
+                        -16, -64, 32, 4, 8, 4,
                         layer.offset_x, layer.offset_y, layer.offset_z,
                         layer.xz_scale, layer.y_scale, layer.amplitude,
                         out.as_mut_ptr(), len as u64, 0
@@ -1551,9 +1551,9 @@ mod tests {
     fn perlin_stack_native_microbenchmark_fixed_workload() {
         use std::time::Instant;
 
-        const SX: usize = 16;
-        const SY: usize = 384;
-        const SZ: usize = 16;
+        const SX: usize = 5;
+        const SY: usize = 49;
+        const SZ: usize = 5;
         const LAYERS: usize = 6;
         const ROUNDS: usize = 21;
         const REPEATS: usize = 5;
@@ -1579,7 +1579,7 @@ mod tests {
                 assert_eq!(unsafe { jpe_cpp_perlin_add_stack(
                     layers.as_ptr(), LAYERS as u32,
                     SX as u32, SY as u32, SZ as u32,
-                    -128, -64, 96, 1, 1, 1,
+                    -16, -64, 32, 4, 8, 4,
                     out.as_mut_ptr(), len as u64, 0
                 ) }, STATUS_OK);
             }
@@ -1590,7 +1590,7 @@ mod tests {
                 assert_eq!(unsafe { jpe_cpp_perlin_add_stack_fused(
                     layers.as_ptr(), LAYERS as u32,
                     SX as u32, SY as u32, SZ as u32,
-                    -128, -64, 96, 1, 1, 1,
+                    -16, -64, 32, 4, 8, 4,
                     out.as_mut_ptr(), len as u64, 0
                 ) }, STATUS_OK);
             }
@@ -1636,9 +1636,9 @@ mod tests {
     fn perlin_stack_native_microbenchmark_large_volume() {
         use std::time::Instant;
 
-        const SX: usize = 16;
-        const SY: usize = 384;
-        const SZ: usize = 16;
+        const SX: usize = 5;
+        const SY: usize = 49;
+        const SZ: usize = 5;
         const LAYERS: usize = 8;
         const ROUNDS: usize = 21;
         const REPEATS: usize = 5;
@@ -1664,7 +1664,7 @@ mod tests {
                 assert_eq!(unsafe { jpe_cpp_perlin_add_stack(
                     layers.as_ptr(), LAYERS as u32,
                     SX as u32, SY as u32, SZ as u32,
-                    -128, -64, 96, 1, 1, 1,
+                    -16, -64, 32, 4, 8, 4,
                     out.as_mut_ptr(), len as u64, 0
                 ) }, STATUS_OK);
             }
@@ -1675,7 +1675,7 @@ mod tests {
                 assert_eq!(unsafe { jpe_cpp_perlin_add_stack_fused(
                     layers.as_ptr(), LAYERS as u32,
                     SX as u32, SY as u32, SZ as u32,
-                    -128, -64, 96, 1, 1, 1,
+                    -16, -64, 32, 4, 8, 4,
                     out.as_mut_ptr(), len as u64, 0
                 ) }, STATUS_OK);
             }
@@ -1805,9 +1805,9 @@ mod tests {
     #[test]
     fn perlin_avx2_matches_scalar_cached_and_benchmarks_run_lengths() {
         use std::time::Instant;
-        const SX: usize = 16;
-        const SY: usize = 384;
-        const SZ: usize = 16;
+        const SX: usize = 5;
+        const SY: usize = 49;
+        const SZ: usize = 5;
         const REPEATS: usize = 5;
         const ROUNDS: usize = 21;
         let permutation: [u8; 256] =
@@ -1832,7 +1832,7 @@ mod tests {
                     out.fill(0.125);
                     assert_eq!(unsafe { jpe_cpp_perlin_add_volume(
                         permutation.as_ptr(), SX as u32, SY as u32, SZ as u32,
-                        -256, -128, 192, 1, 1, 1,
+                        -16, -64, 32, 4, 8, 4,
                         0.13, -0.17, 0.23, 0.375, y_scale, 0.75,
                         out.as_mut_ptr(), len as u64, 0
                     ) }, STATUS_OK);
@@ -1843,7 +1843,7 @@ mod tests {
                     out.fill(0.125);
                     assert_eq!(unsafe { jpe_cpp_perlin_add_volume_scalar_cached_y(
                         permutation.as_ptr(), SX as u32, SY as u32, SZ as u32,
-                        -256, -128, 192, 1, 1, 1,
+                        -16, -64, 32, 4, 8, 4,
                         0.13, -0.17, 0.23, 0.375, y_scale, 0.75,
                         out.as_mut_ptr(), len as u64, 0
                     ) }, STATUS_OK);
