@@ -56,6 +56,26 @@ class RuntimeDensityTraceTest {
     }
 
     @Test
+    void staleScopeCannotCorruptANewerCaptureOnSameWorker() {
+        RuntimeDensityTrace trace = new RuntimeDensityTrace();
+        Node oldNode = new Node();
+        Node newNode = new Node();
+        trace.start();
+        RuntimeDensityTrace.Scope stale = trace.enter(oldNode);
+        trace.stop();
+
+        trace.start();
+        try (RuntimeDensityTrace.Scope current = trace.enter(newNode)) {
+            stale.close();
+            trace.branch(newNode, 19, true);
+        }
+        RuntimeDensityTrace.Snapshot snapshot = trace.stop();
+        assertEquals(1, snapshot.nodes().size());
+        assertEquals(newNode.getClass().getName(), snapshot.nodes().get(0).implementation());
+        assertEquals(1, snapshot.guards().size());
+    }
+
+    @Test
     void disabledRecorderDoesNotCaptureEvents() {
         RuntimeDensityTrace trace = new RuntimeDensityTrace();
         try (RuntimeDensityTrace.Scope ignored = trace.enter(new Node())) {
