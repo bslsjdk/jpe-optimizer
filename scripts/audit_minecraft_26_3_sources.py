@@ -282,8 +282,9 @@ def extract_method_blocks(source: str, method_names: set[str]) -> list[str]:
 
     names = "|".join(map(re.escape, sorted(method_names)))
     declaration = re.compile(
-        r"\b(?:public|protected|private)\b[^{};]*?\b(" + names
-        + r")\s*\([^{};]*\)\s*(?:throws\s+[^{};]+)?\s*\{",
+        r"(?m)^[ \t]*(?:(?:public|protected|private|static|final|synchronized|native|abstract|strictfp)\s+)*"
+        + r"(?:[\w$.,<>?\[\]]+\s+)?(" + names
+        + r")\s*\([^;{}]*\)\s*(?:throws\s+[^{};]+)?\s*\{",
         re.DOTALL,
     )
     results: list[str] = []
@@ -327,13 +328,24 @@ def source_inspection(vanilla_root: Path, patched_root: Path) -> list[str]:
     """Emit selected exact 26.3 method bodies from both vanilla and patched sources."""
     selected = {
         "NoiseBasedChunkGenerator.java": {"buildTerrain", "doFill", "createNoiseChunk"},
-        "NoiseChunk.java": {"forChunk", "create"},
-        "DensityFunctionCompiler.java": {"compile", "compileSampler"},
-        "DensityBufferArena.java": {"sampleVolume", "sampleVolumeCached"},
-        "DensityBuffer.java": {"addTo"},
-        "DensityVolume.java": {"get", "set", "index"},
-        "SamplerContext.java": {"get", "getOrCompute", "sample"},
-        "RandomState.java": {"create", "getOrCreate"},
+        "NoiseChunk.java": {"NoiseChunk", "cachingSamplers", "volume", "close"},
+        "RandomState.java": {"RandomState", "create", "getSampler", "samplersWithContext",
+                             "sampleBlockValueUncached", "acquireDensityBufferPool"},
+        "NoiseRouter.java": {"finalDensity", "createClimateSampler"},
+        "DensityFunctionCompiler.java": {"DensityFunctionCompiler", "getSampler",
+                                         "optimizeAndCompile", "compileSampler",
+                                         "prepareCache", "reuseOrPrepareCache"},
+        "DensitySampler.java": {"sampleVolume", "sampleValue", "bind"},
+        "DensityBufferArena.java": {"acquire", "release"},
+        "DensityBufferPool.java": {"tryTakeBest", "acquire", "release"},
+        "DensityBuffer.java": {"addTo", "get", "set", "setRange", "copyFrom", "fill"},
+        "DensityVolume.java": {"DensityVolume", "indexUnchecked", "sizeX", "sizeY", "sizeZ",
+                               "blockX", "blockY", "blockZ"},
+        "SamplerContext.java": {"SamplerContext", "acquireBuffer", "getCacheCell",
+                                "sampleValueCached", "sampleVolumeCached"},
+        "CachingDensitySampler.java": {"sampleVolume", "sampleValue", "bind"},
+        "ContextBoundSampler.java": {"sampleVolume", "sampleValue", "bind"},
+        "ScopedDensityBuffer.java": {"close"},
     }
     lines: list[str] = []
     for label, root in (("MOJANG_VANILLA", vanilla_root), ("NEOFORGE_PATCHED", patched_root)):
