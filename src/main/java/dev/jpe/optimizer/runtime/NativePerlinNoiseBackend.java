@@ -8,6 +8,7 @@ import net.minecraft.SharedConstants;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
 import net.minecraft.world.level.levelgen.synth.PerlinNoise;
+import net.minecraft.world.level.levelgen.synth.SmearedPerlinNoise;
 import net.minecraft.world.level.levelgen.synth.Noise;
 import net.minecraft.world.level.levelgen.synth.NoiseStack;
 import java.lang.reflect.Field;
@@ -113,7 +114,8 @@ public final class NativePerlinNoiseBackend {
             for (Object sourceLayer : sourceLayers) {
                 NoiseStackLayerAccessor layer = (NoiseStackLayerAccessor) sourceLayer;
                 Noise layerNoise = layer.jpe$noise();
-                if (layerNoise == null || layerNoise.getClass() != PerlinNoise.class) return false;
+                if (layerNoise == null || (layerNoise.getClass() != PerlinNoise.class
+                        && layerNoise.getClass() != SmearedPerlinNoise.class)) return false;
             }
 
             int sizeX = volume.sizeX();
