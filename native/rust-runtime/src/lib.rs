@@ -971,7 +971,7 @@ mod tests {
             assert_eq!(unsafe {
                 jpe_cpp_density_graph_evaluate_scalar_reference(
                     handle, sx as u32, sy as u32, sz as u32,
-                    -16, -64, 48, 1, 2, 1,
+                    0, -64, 0, 1, 1, 1,
                     scalar_output.as_mut_ptr(), scalar_output.len() as u64,
                 )
             }, STATUS_OK);
@@ -981,14 +981,14 @@ mod tests {
                 assert_eq!(unsafe {
                     jpe_runtime_density_graph_evaluate(
                         handle, sx as u32, sy as u32, sz as u32,
-                        -16, -64, 48, 1, 2, 1,
+                        0, -64, 0, 1, 1, 1,
                         output.as_mut_ptr(), output.len() as u64,
                     )
                 }, STATUS_OK);
                 assert_eq!(unsafe {
                     jpe_cpp_density_graph_evaluate_scalar_reference(
                         handle, sx as u32, sy as u32, sz as u32,
-                        -16, -64, 48, 1, 2, 1,
+                        0, -64, 0, 1, 1, 1,
                         scalar_output.as_mut_ptr(), scalar_output.len() as u64,
                     )
                 }, STATUS_OK);
@@ -1001,7 +1001,7 @@ mod tests {
                     assert_eq!(unsafe {
                         jpe_runtime_density_graph_evaluate(
                             handle, sx as u32, sy as u32, sz as u32,
-                            -16, -64, 48, 1, 2, 1,
+                            0, -64, 0, 1, 1, 1,
                             output.as_mut_ptr(), output.len() as u64,
                         )
                     }, STATUS_OK);
@@ -1013,7 +1013,7 @@ mod tests {
                     assert_eq!(unsafe {
                         jpe_cpp_density_graph_evaluate_scalar_reference(
                             handle, sx as u32, sy as u32, sz as u32,
-                            -16, -64, 48, 1, 2, 1,
+                            0, -64, 0, 1, 1, 1,
                             scalar_output.as_mut_ptr(), scalar_output.len() as u64,
                         )
                     }, STATUS_OK);
