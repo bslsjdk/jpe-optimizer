@@ -39,6 +39,12 @@ public final class DensityGraphCache {
 
     private DensityGraphCache() {}
 
+    public static Path nativeCachePath(Path directory, String cacheKey) {
+        Objects.requireNonNull(directory, "directory");
+        Objects.requireNonNull(cacheKey, "cacheKey");
+        return directory.resolve(hex(sha256(cacheKey.getBytes(StandardCharsets.UTF_8))) + ".jpenative");
+    }
+
     public static LoadResult loadOrBuild(Path directory, String cacheKey,
                                          Supplier<DensityGraphIr> builder) throws IOException {
         Objects.requireNonNull(directory, "directory");
