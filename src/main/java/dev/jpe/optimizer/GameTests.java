@@ -490,6 +490,19 @@ public final class GameTests {
                     new DensityVolume(1, 1, 1, 4, -32, 0, 1, 1, 1),
                     new float[]{4.0F}, "weighted-neighborhood");
 
+            BlendingData patternedData = createPatternedBlendingData();
+            Long2ObjectOpenHashMap<BlendingData> patternedMap = new Long2ObjectOpenHashMap<>();
+            patternedMap.put(ChunkPos.pack(0, 0), patternedData);
+            Blender patternedBlender = createSyntheticBlender(
+                    new Long2ObjectOpenHashMap<>(), patternedMap);
+            DensityVolume volume = new DensityVolume(5, 9, 5, 0, -48, 0, 4, 8, 4);
+            float[] noise = new float[volume.size()];
+            for (int i = 0; i < noise.length; ++i) {
+                noise[i] = (i % 31 - 15) * 0.0375F;
+            }
+            verifyBlenderCase(runtime, patternedBlender, volume, noise,
+                    "multi-sample-patterned-volume-225");
+
             BlendingData boundaryData = createSyntheticBlendingData(11, 12.5F);
             Long2ObjectOpenHashMap<BlendingData> boundaryMap = new Long2ObjectOpenHashMap<>();
             boundaryMap.put(ChunkPos.pack(-1, -1), boundaryData);
@@ -517,6 +530,25 @@ public final class GameTests {
         float[] values = new float[16];
         values[3] = rawValue;
         columns[columnIndex] = values;
+        return data;
+    }
+
+    private static BlendingData createPatternedBlendingData()
+            throws ReflectiveOperationException {
+        Constructor<BlendingData> constructor = BlendingData.class.getDeclaredConstructor(
+                int.class, int.class, Optional.class);
+        if (!constructor.trySetAccessible()) {
+            throw new IllegalStateException("BlendingData constructor is not reflectively accessible");
+        }
+        BlendingData data = constructor.newInstance(-4, 4, Optional.empty());
+        float[][] columns = ((BlendingDataAccessor) data).jpe$densities();
+        for (int column = 0; column < columns.length; ++column) {
+            float[] values = new float[16];
+            for (int y = 0; y < values.length; ++y) {
+                values[y] = 10.0F + column * 0.375F + y * 0.125F;
+            }
+            columns[column] = values;
+        }
         return data;
     }
 
