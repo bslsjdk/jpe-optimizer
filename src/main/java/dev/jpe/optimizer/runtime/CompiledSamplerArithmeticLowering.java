@@ -53,6 +53,30 @@ public final class CompiledSamplerArithmeticLowering {
 
     private CompiledSamplerArithmeticLowering() {}
 
+    /**
+     * Combines disjoint arithmetic islands into one graph with multiple roots.
+     * Opaque/cache/context nodes remain external inputs; batching never merges
+     * semantic boundaries.
+     */
+    public static LoweredIsland lowerAll(CompiledSamplerGraphIr.Graph source,
+                                         List<CompiledSamplerArithmeticIslands.Island> islands,
+                                         long configurationFingerprint) {
+        Objects.requireNonNull(islands, "islands");
+        if (islands.isEmpty()) throw new IllegalArgumentException("At least one arithmetic island is required");
+        LinkedHashSet<Integer> members = new LinkedHashSet<>();
+        ArrayList<Integer> outputs = new ArrayList<>();
+        for (CompiledSamplerArithmeticIslands.Island island : islands) {
+            Objects.requireNonNull(island, "island");
+            for (int id : island.nodeIds()) {
+                if (!members.add(id)) throw new IllegalArgumentException("Arithmetic islands overlap at node " + id);
+            }
+            outputs.addAll(island.outputNodeIds());
+        }
+        CompiledSamplerArithmeticIslands.Island combined = new CompiledSamplerArithmeticIslands.Island(
+                -1, new ArrayList<>(members), List.of(), outputs);
+        return lower(source, combined, configurationFingerprint);
+    }
+
     public static LoweredIsland lower(CompiledSamplerGraphIr.Graph source,
                                       CompiledSamplerArithmeticIslands.Island island,
                                       long configurationFingerprint) {

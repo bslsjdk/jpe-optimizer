@@ -60,6 +60,29 @@ class CompiledSamplerArithmeticLoweringTest {
     }
 
     @Test
+    void batchesIndependentIslandsIntoOneMultiOutputGraphAndDeduplicatesSharedInputs() {
+        CompiledSamplerGraphIr.Graph graph = new CompiledSamplerGraphIr.Graph(List.of(
+                node(0, CompiledSamplerGraphIr.Op.ADD, 2, 3),
+                node(1, CompiledSamplerGraphIr.Op.SUB, 2, 4),
+                node(2, CompiledSamplerGraphIr.Op.OPAQUE),
+                node(3, CompiledSamplerGraphIr.Op.CONSTANT),
+                node(4, CompiledSamplerGraphIr.Op.CONSTANT)
+        ), 0, 0);
+        CompiledSamplerArithmeticIslands.Plan plan = CompiledSamplerArithmeticIslands.plan(graph);
+        assertEquals(2, plan.islands().size());
+        CompiledSamplerArithmeticLowering.LoweredIsland batch =
+                CompiledSamplerArithmeticLowering.lowerAll(graph, plan.islands(), 0xD1);
+        assertEquals(List.of(2), batch.inputSourceNodeIds());
+        assertEquals(List.of(0, 1), batch.outputSourceNodeIds());
+        assertEquals(2, batch.nativeOutputNodeIds().size());
+        assertEquals(DensityGraphIr.INPUT, batch.graph().nodes().get(0).opcode());
+        assertEquals(DensityGraphIr.CONST, batch.graph().nodes().get(1).opcode());
+        assertEquals(DensityGraphIr.ADD, batch.graph().nodes().get(2).opcode());
+        assertEquals(DensityGraphIr.CONST, batch.graph().nodes().get(3).opcode());
+        assertEquals(DensityGraphIr.SUB, batch.graph().nodes().get(4).opcode());
+    }
+
+    @Test
     void lowersConstantLeftDivisionWithoutReversingOperands() {
         CompiledSamplerGraphIr.Graph graph = new CompiledSamplerGraphIr.Graph(List.of(
                 node(0, CompiledSamplerGraphIr.Op.CONST_DIV_LEFT, List.of(1), Map.of("left", "12.0")),

@@ -130,44 +130,89 @@ public final class CompiledSamplerGraphDiagnostics {
             }
 
             long fingerprint = Long.parseUnsignedLong(semanticFingerprint.substring(0, 16), 16);
-            CompiledSamplerExternalInputs sharedInputs = new CompiledSamplerExternalInputs(bound, volume);
-            long priorOutputFloats = 0L;
-            long compared = 0L;
-            long mismatches = 0L;
-            int testedIslands = 0;
+            java.util.ArrayList<CompiledSamplerArithmeticIslands.Island> lowerable = new java.util.ArrayList<>();
             int failedIslands = 0;
             for (CompiledSamplerArithmeticIslands.Island candidate : candidates) {
                 try {
-                    CompiledSamplerArithmeticLowering.LoweredIsland lowered =
-                            CompiledSamplerArithmeticLowering.lower(graph, candidate, fingerprint);
-                    try (NativeRuntime.NativeDensityGraph executable = runtime.compileDensityGraph(lowered.graph())) {
-                        CompiledSamplerNativeParity.Report report = CompiledSamplerNativeParity.verify(
-                                executable, captured, lowered, bound, volume, sharedInputs, priorOutputFloats,
-                                volume.sizeX(), volume.sizeY(), volume.sizeZ(),
-                                volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
-                                volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ());
-                        priorOutputFloats = Math.addExact(priorOutputFloats,
-                                Math.multiplyExact((long) report.outputCount(), report.samplesPerOutput()));
-                        compared = Math.addExact(compared, report.comparedValues());
-                        mismatches = Math.addExact(mismatches, report.mismatches());
-                        testedIslands++;
-                        JPEOptimizer.LOGGER.info(
-                                "JPE_NATIVE_SAMPLER_PARITY_ISLAND id={} exact={} outputs={} samplesPerOutput={} compared={} mismatches={} islandNodes={} externalInputs={} graphFingerprint={}",
-                                candidate.id(), report.exact(), report.outputCount(), report.samplesPerOutput(),
-                                report.comparedValues(), report.mismatches(), candidate.nodeIds().size(),
-                                candidate.externalInputs().size(), semanticFingerprint);
-                    }
-                } catch (RuntimeException | LinkageError islandFailure) {
+                    CompiledSamplerArithmeticLowering.lower(graph, candidate, fingerprint);
+                    lowerable.add(candidate);
+                } catch (RuntimeException unsupported) {
                     failedIslands++;
                     LOGGER.log(System.Logger.Level.WARNING,
-                            "Native sampler parity island[{0}] failed in shadow mode; continuing with other islands: {1}",
-                            candidate.id(), islandFailure.toString());
+                            "Native sampler parity island[{0}] is not lowerable; other islands remain eligible: {1}",
+                            candidate.id(), unsupported.toString());
+                }
+            }
+            if (lowerable.isEmpty()) {
+                LOGGER.log(System.Logger.Level.WARNING,
+                        "Native sampler parity found no lowerable arithmetic islands; candidates={0}", candidates.size());
+                return;
+            }
+
+            CompiledSamplerExternalInputs sharedInputs = new CompiledSamplerExternalInputs(bound, volume);
+            long compared = 0L;
+            long mismatches = 0L;
+            long outputFloats = 0L;
+            int testedIslands = lowerable.size();
+            try {
+                CompiledSamplerArithmeticLowering.LoweredIsland batch =
+                        CompiledSamplerArithmeticLowering.lowerAll(graph, lowerable, fingerprint);
+                try (NativeRuntime.NativeDensityGraph executable = runtime.compileDensityGraph(batch.graph())) {
+                    CompiledSamplerNativeParity.Report report = CompiledSamplerNativeParity.verify(
+                            executable, captured, batch, bound, volume, sharedInputs, 0L,
+                            volume.sizeX(), volume.sizeY(), volume.sizeZ(),
+                            volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
+                            volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ());
+                    compared = report.comparedValues();
+                    mismatches = report.mismatches();
+                    outputFloats = Math.multiplyExact((long) report.outputCount(), report.samplesPerOutput());
+                    JPEOptimizer.LOGGER.info(
+                            "JPE_NATIVE_SAMPLER_PARITY_BATCH exact={} islands={} outputs={} samplesPerOutput={} compared={} mismatches={} graphNodes={} externalInputs={} graphFingerprint={}",
+                            report.exact(), testedIslands, report.outputCount(), report.samplesPerOutput(),
+                            report.comparedValues(), report.mismatches(), batch.graph().nodes().size(),
+                            batch.inputSourceNodeIds().size(), semanticFingerprint);
+                }
+            } catch (RuntimeException | LinkageError batchFailure) {
+                LOGGER.log(System.Logger.Level.WARNING,
+                        "Batched Native sampler parity failed; retrying lowerable islands individually in shadow mode: {0}",
+                        batchFailure.toString());
+                testedIslands = 0;
+                compared = 0L;
+                mismatches = 0L;
+                outputFloats = 0L;
+                for (CompiledSamplerArithmeticIslands.Island candidate : lowerable) {
+                    try {
+                        CompiledSamplerArithmeticLowering.LoweredIsland lowered =
+                                CompiledSamplerArithmeticLowering.lower(graph, candidate, fingerprint);
+                        try (NativeRuntime.NativeDensityGraph executable = runtime.compileDensityGraph(lowered.graph())) {
+                            CompiledSamplerNativeParity.Report report = CompiledSamplerNativeParity.verify(
+                                    executable, captured, lowered, bound, volume, sharedInputs, outputFloats,
+                                    volume.sizeX(), volume.sizeY(), volume.sizeZ(),
+                                    volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
+                                    volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ());
+                            outputFloats = Math.addExact(outputFloats,
+                                    Math.multiplyExact((long) report.outputCount(), report.samplesPerOutput()));
+                            compared = Math.addExact(compared, report.comparedValues());
+                            mismatches = Math.addExact(mismatches, report.mismatches());
+                            testedIslands++;
+                            JPEOptimizer.LOGGER.info(
+                                    "JPE_NATIVE_SAMPLER_PARITY_ISLAND id={} exact={} outputs={} samplesPerOutput={} compared={} mismatches={} islandNodes={} externalInputs={} graphFingerprint={}",
+                                    candidate.id(), report.exact(), report.outputCount(), report.samplesPerOutput(),
+                                    report.comparedValues(), report.mismatches(), candidate.nodeIds().size(),
+                                    candidate.externalInputs().size(), semanticFingerprint);
+                        }
+                    } catch (RuntimeException | LinkageError islandFailure) {
+                        failedIslands++;
+                        LOGGER.log(System.Logger.Level.WARNING,
+                                "Native sampler parity island[{0}] failed in fallback shadow mode: {1}",
+                                candidate.id(), islandFailure.toString());
+                    }
                 }
             }
             JPEOptimizer.LOGGER.info(
                     "JPE_NATIVE_SAMPLER_PARITY_SUMMARY testedIslands={} failedIslands={} compared={} mismatches={} sharedBoundarySamplers={} sharedInputFloats={} outputFloats={} graphFingerprint={}",
                     testedIslands, failedIslands, compared, mismatches, sharedInputs.distinctSamplerCount(),
-                    sharedInputs.stagedFloatCount(), priorOutputFloats, semanticFingerprint);
+                    sharedInputs.stagedFloatCount(), outputFloats, semanticFingerprint);
         } catch (RuntimeException | LinkageError failure) {
             LOGGER.log(System.Logger.Level.WARNING,
                     "Native sampler parity failed in shadow mode; Java worldgen remains authoritative: {0}",

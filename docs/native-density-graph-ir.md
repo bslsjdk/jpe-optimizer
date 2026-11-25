@@ -414,3 +414,8 @@ A missing library, unsupported island, oversized staging request, Native error, 
 The compiled sampler `ConstDivSampler` is classified as `CONST_DIV_LEFT` and may join pure arithmetic islands. Its constant numerator is emitted before the external sampler denominator, and the native `DIV` opcode performs IEEE-754 float32 division in that exact operand order. Unlike ordinary `DivSampler`, this constant-specialized node has no left-zero short-circuit. Native tests cover finite and negative results, division by positive zero, and `0/0` NaN.
 
 The real-worldgen shadow verifier now visits every lowerable non-constant arithmetic island, not only the largest island. A single per-volume boundary-input resolver is shared across those islands so an identical external sampler is sampled only once. Aggregate input and output staging remains capped at 64 MiB. Each island is compared bit-for-bit against its original Java sampler; failures are isolated and never affect authoritative Java block placement.
+
+
+### Batched multi-island execution
+
+The shadow parity path validates candidate islands independently, then combines all lowerable disjoint islands into one Native graph with multiple output roots. External boundary samplers are deduplicated across the combined graph, so a shared source is sampled once and all island outputs are evaluated in one FFM/native dispatch. Opaque, cache, context, and short-circuit nodes remain boundaries; batching does not inline or reinterpret them. If combined lowering or execution fails, the verifier retries islands independently to retain fault isolation. The same 64 MiB aggregate input/output staging budget applies.
