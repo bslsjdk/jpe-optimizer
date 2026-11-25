@@ -371,12 +371,15 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
     const uint32_t* output_nodes, uint32_t output_count,
     float* outputs, uint64_t output_length
 ) try {
-    const uint64_t volume_length = static_cast<uint64_t>(size_x) * size_y * size_z;
     if (outputs == nullptr || size_x == 0 || size_y == 0 || size_z == 0
         || step_x == 0 || step_y == 0 || step_z == 0
-        || volume_length > kMaxVolumeElements || input_count > 256
-        || (input_count > 0 && inputs == nullptr)
-        || output_count > 256) return 1;
+        || input_count > 256 || output_count > 256
+        || (input_count > 0 && inputs == nullptr)) return 1;
+    const uint64_t xy = static_cast<uint64_t>(size_x) * size_y;
+    if (xy > kMaxVolumeElements / size_z) return 1;
+    const uint64_t volume_length = xy * size_z;
+    if (volume_length == 0
+        || static_cast<uint64_t>(input_count) > 16777216ULL / volume_length) return 1;
 
     std::shared_ptr<CompiledGraph> graph;
     {
