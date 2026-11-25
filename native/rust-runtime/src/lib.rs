@@ -1305,11 +1305,13 @@ mod tests {
                     let xy01 = perm(x0 + floor_y + 1);
                     let xy10 = perm(x1 + floor_y);
                     let xy11 = perm(x1 + floor_y + 1);
+                    // corner()/permuteToGrad performs exactly one permutation
+                    // lookup after adding the Z lattice coordinate.
                     let hashes = [
-                        perm(xy00 + floor_z), perm(xy10 + floor_z),
-                        perm(xy01 + floor_z), perm(xy11 + floor_z),
-                        perm(xy00 + floor_z + 1), perm(xy10 + floor_z + 1),
-                        perm(xy01 + floor_z + 1), perm(xy11 + floor_z + 1),
+                        xy00 + floor_z, xy10 + floor_z,
+                        xy01 + floor_z, xy11 + floor_z,
+                        xy00 + floor_z + 1, xy10 + floor_z + 1,
+                        xy01 + floor_z + 1, xy11 + floor_z + 1,
                     ];
                     let rxz = [rx, rx - 1.0, rx, rx - 1.0, rx, rx - 1.0, rx, rx - 1.0];
                     let rzz = [rz, rz, rz, rz, rz - 1.0, rz - 1.0, rz - 1.0, rz - 1.0];
