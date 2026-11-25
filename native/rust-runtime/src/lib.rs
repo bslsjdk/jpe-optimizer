@@ -1308,10 +1308,10 @@ mod tests {
         ] {
             let len = sx * SY * sz;
 
-            // Every case stays within the current |stepY * yScale| <= 1/16
-            // dispatch gate, including the real stepY=8 workload. Offsets and
-            // coordinate ranges deliberately cross lattice floors so the
-            // independent-lane branch is exercised.
+            // Cases span the step-aware AVX2 dispatch thresholds, including the
+            // dominant real stepY=8 workload. Offsets and coordinate ranges
+            // deliberately cross lattice floors so the independent-lane
+            // branch is exercised.
             for (case, step_y, y_scale) in [
                 ("step1-1-64", 1_i32, 1.0 / 64.0),
                 ("step1-1-32", 1_i32, 1.0 / 32.0),
@@ -1323,6 +1323,8 @@ mod tests {
                 ("step8-1-512", 8_i32, 1.0 / 512.0),
                 ("step8-1-256", 8_i32, 1.0 / 256.0),
                 ("step8-1-128", 8_i32, 1.0 / 128.0),
+                ("step16-1-1024", 16_i32, 1.0 / 1024.0),
+                ("step16-1-512", 16_i32, 1.0 / 512.0),
             ] {
                 let mut dispatched = vec![0.125_f32; len];
                 let mut scalar = dispatched.clone();
