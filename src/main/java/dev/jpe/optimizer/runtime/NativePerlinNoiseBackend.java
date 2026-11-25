@@ -132,10 +132,6 @@ public final class NativePerlinNoiseBackend {
             if (Boolean.getBoolean("jpe.nativePerlinProfile")) {
                 profilePerlinYRuns(sourceLayers, xzScale, yScale, amplitude, volume);
             }
-            List<NativeRuntime.PerlinLayer> layers = null;
-            if (!Boolean.getBoolean("jpe.nativePerlinSynchronous")) {
-                layers = toPerlinLayers(sourceLayers, xzScale, yScale, amplitude);
-            }
             float[] target = ((DensityBufferAccessor) buffer).jpe$values();
             if (target.length < expectedElements) {
                 BUFFER_VOLUME_MISMATCHES.increment();
@@ -160,7 +156,7 @@ public final class NativePerlinNoiseBackend {
                 return true;
             }
 
-            job = nativeRuntime.submitPerlinStack(layers,
+            job = nativeRuntime.submitPerlinStack(sourceLayers, xzScale, yScale, amplitude,
                     sizeX, sizeY, sizeZ,
                     volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
                     volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ(),
@@ -392,22 +388,6 @@ public final class NativePerlinNoiseBackend {
      * Y-coordinate wrapping/floor grouping and reports how much work can enter the
      * current eight-wide AVX2 loop. Disabled by default; profiling itself scans Y.
      */
-
-    private static List<NativeRuntime.PerlinLayer> toPerlinLayers(Object[] sourceLayers,
-                                                                   double xzScale, double yScale,
-                                                                   float amplitude) {
-        List<NativeRuntime.PerlinLayer> layers = new ArrayList<>(sourceLayers.length);
-        for (Object sourceLayer : sourceLayers) {
-            NoiseStackLayerAccessor layer = (NoiseStackLayerAccessor) sourceLayer;
-            GradientNoiseAccessor noise = (GradientNoiseAccessor) layer.jpe$noise();
-            double frequency = layer.jpe$frequency();
-            layers.add(new NativeRuntime.PerlinLayer(noise.jpe$perms(),
-                    noise.jpe$offsetX(), noise.jpe$offsetY(), noise.jpe$offsetZ(),
-                    xzScale * frequency, yScale * frequency,
-                    amplitude * layer.jpe$amplitude()));
-        }
-        return layers;
-    }
 
     private static void profilePerlinYRuns(Object[] sourceLayers,
                                            double xzScale, double yScale, float amplitude,

@@ -1051,6 +1051,51 @@ public final class NativeRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Submits the live Minecraft NoiseStack layer array directly. This avoids constructing
+     * a Java List and one PerlinLayer record per octave for every generated density volume.
+     */
+    public NativeJob submitPerlinStack(Object[] sourceLayers,
+                                       double xzScale, double yScale, float amplitude,
+                                       int sizeX, int sizeY, int sizeZ,
+                                       int minX, int minY, int minZ,
+                                       int stepX, int stepY, int stepZ,
+                                       float[] initialOutput, boolean farLands) {
+        if (submitPerlinStack == null) return null;
+        lifecycle.readLock().lock();
+        PerlinScratch scratch = null;
+        boolean transferred = false;
+        try {
+            ensureOpen();
+            Objects.requireNonNull(sourceLayers, "sourceLayers");
+            Objects.requireNonNull(initialOutput, "initialOutput");
+            if (sourceLayers.length == 0 || sourceLayers.length > 64) {
+                throw new IllegalArgumentException("Perlin stack must contain between 1 and 64 layers");
+            }
+            int outputLength = validatePerlinStackDimensions(sizeX, sizeY, sizeZ,
+                    stepX, stepY, stepZ, initialOutput);
+            scratch = acquirePerlinScratch();
+            scratch.ensureStackCapacity(sourceLayers.length, outputLength);
+            copyPrefix(initialOutput, outputLength, scratch.output);
+            writePerlinLayers(sourceLayers, xzScale, yScale, amplitude, scratch);
+            long id = (long) submitPerlinStack.invokeExact(
+                    scratch.layerDescriptors, sourceLayers.length,
+                    sizeX, sizeY, sizeZ,
+                    minX, minY, minZ, stepX, stepY, stepZ,
+                    scratch.output, (long) outputLength, farLands ? 1 : 0);
+            if (id == 0L) return null;
+            NativeJob job = new NativeJob(this, id, outputLength, scratch);
+            jobs.put(id, job);
+            transferred = true;
+            return job;
+        } catch (Throwable failure) {
+            throw rethrow("Unable to submit native Perlin stack job", failure);
+        } finally {
+            if (scratch != null && !transferred) scratch.release();
+            lifecycle.readLock().unlock();
+        }
+    }
+
     /** Submits a complete Perlin stack with one descriptor array and one shared output buffer. */
     public boolean supportsPerlinStack() { return submitPerlinStack != null; }
 
@@ -1148,6 +1193,21 @@ public final class NativeRuntime implements AutoCloseable {
 
     public record PerlinLayer(byte[] permutation, double offsetX, double offsetY, double offsetZ,
                               double xzScale, double yScale, float amplitude) {}
+
+    private static int validatePerlinStackDimensions(int sizeX, int sizeY, int sizeZ,
+                                                       int stepX, int stepY, int stepZ,
+                                                       float[] output) {
+        Objects.requireNonNull(output, "output");
+        if (sizeX <= 0 || sizeY <= 0 || sizeZ <= 0
+                || stepX == 0 || stepY == 0 || stepZ == 0) {
+            throw new IllegalArgumentException("Invalid Perlin volume dimensions or axis steps");
+        }
+        long expected = Math.multiplyExact(Math.multiplyExact((long) sizeX, sizeY), sizeZ);
+        if (expected > output.length || expected > 1_048_576L) {
+            throw new IllegalArgumentException("Perlin output buffer is too small or volume exceeds native limit");
+        }
+        return Math.toIntExact(expected);
+    }
 
     static int validatePerlinStackInputs(List<PerlinLayer> layers,
                                          int sizeX, int sizeY, int sizeZ,
