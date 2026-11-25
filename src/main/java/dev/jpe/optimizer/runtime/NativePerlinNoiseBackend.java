@@ -145,6 +145,19 @@ public final class NativePerlinNoiseBackend {
                 RUNTIME_UNAVAILABLE.increment();
                 return false;
             }
+            if (Boolean.getBoolean("jpe.nativePerlinSynchronous")) {
+                nativeRuntime.perlinAddStack(layers,
+                        sizeX, sizeY, sizeZ,
+                        volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
+                        volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ(),
+                        target, SharedConstants.DEBUG_ENABLE_FARLANDS);
+                SYNCHRONOUS_CALLS.increment();
+                LAST_CALL_NATIVE.set(true);
+                success = true;
+                COMPLETED.increment();
+                return true;
+            }
+
             job = nativeRuntime.submitPerlinStack(layers,
                     sizeX, sizeY, sizeZ,
                     volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
