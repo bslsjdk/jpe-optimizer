@@ -66,7 +66,8 @@ class DensityGraphCacheTest {
         DensityGraphIr experimental = new DensityGraphIr(
                 java.util.List.of(DensityGraphIr.Node.constant(7.0),
                         DensityGraphIr.Node.opaque(0, DensityGraphIr.NO_INPUT)),
-                java.util.List.of(new DensityGraphIr.Diagnostic(1, "example.UnknownDensity", "missing random context")),
+                java.util.List.of(new DensityGraphIr.Diagnostic(1, "example.UnknownDensity", "missing random context",
+                        java.util.List.of(0))),
                 1, 77L);
         var first = DensityGraphCache.loadOrBuild(temporaryDirectory, "experimental-key", () -> experimental);
         var second = DensityGraphCache.loadOrBuild(temporaryDirectory, "experimental-key",
@@ -90,5 +91,21 @@ class DensityGraphCacheTest {
         assertNotEquals(base.stableKey(), otherDimension.stableKey());
         assertNotEquals(base.stableKey(), otherMods.stableKey());
     }
+
+    @Test
+    void persistsAllOpaqueDependencyIndices() throws IOException {
+        DensityGraphIr graph = new DensityGraphIr(
+                java.util.List.of(DensityGraphIr.Node.constant(1), DensityGraphIr.Node.constant(2),
+                        DensityGraphIr.Node.constant(3), DensityGraphIr.Node.opaque(0, 1)),
+                java.util.List.of(new DensityGraphIr.Diagnostic(3, "example.Nary", "unknown fan-in",
+                        java.util.List.of(0, 1, 2))),
+                3, 91L);
+        var first = DensityGraphCache.loadOrBuild(temporaryDirectory, "nary-opaque", () -> graph);
+        var second = DensityGraphCache.loadOrBuild(temporaryDirectory, "nary-opaque",
+                () -> fail("cache should preserve opaque dependency metadata"));
+        assertTrue(second.cacheHit());
+        assertEquals(java.util.List.of(0, 1, 2), second.graph().diagnostics().get(0).childIndices());
+    }
+
 
 }
