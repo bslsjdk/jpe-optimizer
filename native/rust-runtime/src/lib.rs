@@ -1290,89 +1290,91 @@ mod tests {
     fn perlin_avx2_minecraft_profile_workload_microbenchmark() {
         use std::time::Instant;
 
-        // Representative 5x49x5 density volumes. stepY=8 covers the existing
-        // same-floor vector path; stepY=1 and 4 exercise the cross-floor prototype.
-        // These are kernel microbenchmarks, not end-to-end worldgen claims.
-        const SX: usize = 5;
+        // Exercise both the common 5x49x5 volume and the smaller 2x49x2
+        // shape observed in the fixed-seed Minecraft profile. These remain
+        // kernel microbenchmarks, not end-to-end worldgen claims.
         const SY: usize = 49;
-        const SZ: usize = 5;
-        const STEP_X: i32 = 4;
-        const STEP_Z: i32 = 4;
         const REPEATS: usize = 64;
         const ROUNDS: usize = 21;
         let permutation: [u8; 256] =
             std::array::from_fn(|i| ((i * 37 + 11) & 255) as u8);
-        let len = SX * SY * SZ;
 
-        // Every case stays within the current |stepY * yScale| <= 1/16
-        // dispatch gate. Offsets and coordinate ranges deliberately cross
-        // lattice floors so the independent-lane branch is actually exercised.
-        for (case, step_y, y_scale) in [
-            ("profile-step1-1-64", 1_i32, 1.0 / 64.0),
-            ("profile-step1-1-32", 1_i32, 1.0 / 32.0),
-            ("profile-step1-1-16", 1_i32, 1.0 / 16.0),
-            ("profile-step4-1-256", 4_i32, 1.0 / 256.0),
-            ("profile-step4-1-128", 4_i32, 1.0 / 128.0),
-            ("profile-step4-1-64", 4_i32, 1.0 / 64.0),
+        for (shape, sx, sz) in [
+            ("5x49x5", 5_usize, 5_usize),
+            ("2x49x2", 2_usize, 2_usize),
         ] {
-            let mut dispatched = vec![0.125_f32; len];
-            let mut scalar = dispatched.clone();
-            let run_dispatched = |out: &mut [f32]| {
-                for _ in 0..REPEATS {
-                    out.fill(0.125);
-                    assert_eq!(unsafe { jpe_cpp_perlin_add_volume(
-                        permutation.as_ptr(), SX as u32, SY as u32, SZ as u32,
-                        -32, -64, -32, STEP_X, step_y, STEP_Z,
-                        0.13, -0.17, 0.23, 0.00390625, y_scale, 0.75,
-                        out.as_mut_ptr(), len as u64, 0
-                    ) }, STATUS_OK);
-                }
-            };
-            let run_scalar = |out: &mut [f32]| {
-                for _ in 0..REPEATS {
-                    out.fill(0.125);
-                    assert_eq!(unsafe { jpe_cpp_perlin_add_volume_scalar_cached_y(
-                        permutation.as_ptr(), SX as u32, SY as u32, SZ as u32,
-                        -32, -64, -32, STEP_X, step_y, STEP_Z,
-                        0.13, -0.17, 0.23, 0.00390625, y_scale, 0.75,
-                        out.as_mut_ptr(), len as u64, 0
-                    ) }, STATUS_OK);
-                }
-            };
+            let len = sx * SY * sz;
 
-            for _ in 0..2 {
-                run_dispatched(&mut dispatched);
-                run_scalar(&mut scalar);
-            }
-            let mut dispatched_ns = Vec::with_capacity(ROUNDS);
-            let mut scalar_ns = Vec::with_capacity(ROUNDS);
-            for round in 0..ROUNDS {
-                if round % 2 == 0 {
-                    let start = Instant::now(); run_dispatched(&mut dispatched);
-                    dispatched_ns.push(start.elapsed().as_nanos());
-                    let start = Instant::now(); run_scalar(&mut scalar);
-                    scalar_ns.push(start.elapsed().as_nanos());
-                } else {
-                    let start = Instant::now(); run_scalar(&mut scalar);
-                    scalar_ns.push(start.elapsed().as_nanos());
-                    let start = Instant::now(); run_dispatched(&mut dispatched);
-                    dispatched_ns.push(start.elapsed().as_nanos());
+            // Every case stays within the current |stepY * yScale| <= 1/16
+            // dispatch gate. Offsets and coordinate ranges deliberately cross
+            // lattice floors so the independent-lane branch is exercised.
+            for (case, step_y, y_scale) in [
+                ("step1-1-64", 1_i32, 1.0 / 64.0),
+                ("step1-1-32", 1_i32, 1.0 / 32.0),
+                ("step1-1-16", 1_i32, 1.0 / 16.0),
+                ("step4-1-256", 4_i32, 1.0 / 256.0),
+                ("step4-1-128", 4_i32, 1.0 / 128.0),
+                ("step4-1-64", 4_i32, 1.0 / 64.0),
+            ] {
+                let mut dispatched = vec![0.125_f32; len];
+                let mut scalar = dispatched.clone();
+                let run_dispatched = |out: &mut [f32]| {
+                    for _ in 0..REPEATS {
+                        out.fill(0.125);
+                        assert_eq!(unsafe { jpe_cpp_perlin_add_volume(
+                            permutation.as_ptr(), sx as u32, SY as u32, sz as u32,
+                            -32, -64, -32, 4, step_y, 4,
+                            0.13, -0.17, 0.23, 0.00390625, y_scale, 0.75,
+                            out.as_mut_ptr(), len as u64, 0
+                        ) }, STATUS_OK);
+                    }
+                };
+                let run_scalar = |out: &mut [f32]| {
+                    for _ in 0..REPEATS {
+                        out.fill(0.125);
+                        assert_eq!(unsafe { jpe_cpp_perlin_add_volume_scalar_cached_y(
+                            permutation.as_ptr(), sx as u32, SY as u32, sz as u32,
+                            -32, -64, -32, 4, step_y, 4,
+                            0.13, -0.17, 0.23, 0.00390625, y_scale, 0.75,
+                            out.as_mut_ptr(), len as u64, 0
+                        ) }, STATUS_OK);
+                    }
+                };
+
+                for _ in 0..2 {
+                    run_dispatched(&mut dispatched);
+                    run_scalar(&mut scalar);
                 }
+                let mut dispatched_ns = Vec::with_capacity(ROUNDS);
+                let mut scalar_ns = Vec::with_capacity(ROUNDS);
+                for round in 0..ROUNDS {
+                    if round % 2 == 0 {
+                        let start = Instant::now(); run_dispatched(&mut dispatched);
+                        dispatched_ns.push(start.elapsed().as_nanos());
+                        let start = Instant::now(); run_scalar(&mut scalar);
+                        scalar_ns.push(start.elapsed().as_nanos());
+                    } else {
+                        let start = Instant::now(); run_scalar(&mut scalar);
+                        scalar_ns.push(start.elapsed().as_nanos());
+                        let start = Instant::now(); run_dispatched(&mut dispatched);
+                        dispatched_ns.push(start.elapsed().as_nanos());
+                    }
+                }
+                assert_eq!(dispatched.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                           scalar.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+                dispatched_ns.sort_unstable();
+                scalar_ns.sort_unstable();
+                let dispatched_median = dispatched_ns[ROUNDS / 2];
+                let scalar_median = scalar_ns[ROUNDS / 2];
+                eprintln!(
+                    "JPE_PERLIN_AVX2_CROSS_FLOOR_SHAPE shape={} case={} avx2_available={} dims={}x{}x{} steps=4x{}x4 repeats={} rounds={} scalar_median_ms={:.3} dispatched_median_ms={:.3} speedup={:.3}x",
+                    shape, case, unsafe { jpe_cpp_perlin_avx2_supported() != 0 },
+                    sx, SY, sz, step_y, REPEATS, ROUNDS,
+                    scalar_median as f64 / 1_000_000.0,
+                    dispatched_median as f64 / 1_000_000.0,
+                    scalar_median as f64 / dispatched_median as f64
+                );
             }
-            assert_eq!(dispatched.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
-                       scalar.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
-            dispatched_ns.sort_unstable();
-            scalar_ns.sort_unstable();
-            let dispatched_median = dispatched_ns[ROUNDS / 2];
-            let scalar_median = scalar_ns[ROUNDS / 2];
-            eprintln!(
-                "JPE_PERLIN_AVX2_CROSS_FLOOR_SHAPE case={} avx2_available={} dims={}x{}x{} steps={}x{}x{} repeats={} rounds={} scalar_median_ms={:.3} dispatched_median_ms={:.3} speedup={:.3}x",
-                case, unsafe { jpe_cpp_perlin_avx2_supported() != 0 },
-                SX, SY, SZ, STEP_X, step_y, STEP_Z, REPEATS, ROUNDS,
-                scalar_median as f64 / 1_000_000.0,
-                dispatched_median as f64 / 1_000_000.0,
-                scalar_median as f64 / dispatched_median as f64
-            );
         }
     }
 
