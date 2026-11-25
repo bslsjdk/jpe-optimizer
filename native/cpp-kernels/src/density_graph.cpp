@@ -185,6 +185,7 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                 break;
             case JPE_DENSITY_ADD:
             case JPE_DENSITY_MUL:
+            case JPE_DENSITY_SUB:
                 if (node.reserved != 0 || node.input_a >= i || node.input_b >= i) return false;
                 break;
             default:
@@ -343,7 +344,7 @@ extern "C" uint64_t jpe_cpp_density_graph_load_cache(
             || !read_u64(bytes, offset, immediate_bits)) return 0;
         std::memcpy(&node.immediate, &immediate_bits, sizeof(immediate_bits));
     }
-    if (offset != payload_length || ir_version != 3 || !valid_graph(nodes.data(), count, root)) return 0;
+    if (offset != payload_length || ir_version != 4 || !valid_graph(nodes.data(), count, root)) return 0;
     return jpe_cpp_density_graph_compile(nodes.data(), count, root, ir_version, configuration);
 } catch (...) { return 0; }
 
