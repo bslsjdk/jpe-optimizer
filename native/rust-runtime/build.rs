@@ -5,8 +5,8 @@ fn main() {
     println!("cargo:rerun-if-changed=../cpp-kernels/src/perlin_stack.cpp");
     println!("cargo:rerun-if-changed=../cpp-kernels/src/density_graph.cpp");
     println!("cargo:rerun-if-changed=../include/jpe_native_api.h");
-    let mut build = cc::Build::new()
-        .cpp(true)
+    let mut build = cc::Build::new();
+    build.cpp(true)
         .std("c++17")
         .flag_if_supported("-ffp-contract=off")
         .flag_if_supported("-fno-fast-math")
