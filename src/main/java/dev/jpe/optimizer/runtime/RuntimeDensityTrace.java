@@ -8,7 +8,6 @@ import java.util.List;
 import java.util.Set;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Bounded, opt-in runtime trace collector for DensityFunction instrumentation.
