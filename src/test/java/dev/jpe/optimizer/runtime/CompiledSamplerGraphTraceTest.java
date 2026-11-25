@@ -23,9 +23,15 @@ class CompiledSamplerGraphTraceTest {
         assertEquals(2, snapshot.nodes().size());
         assertEquals(0, snapshot.rootId());
         assertEquals(java.util.List.of(1, 1), snapshot.nodes().get(0).children());
+        assertEquals(java.util.List.of(
+                new CompiledSamplerGraphTrace.ChildEdge("left", 1),
+                new CompiledSamplerGraphTrace.ChildEdge("right", 1)),
+                snapshot.nodes().get(0).childEdges());
         assertEquals("3.0", snapshot.nodes().get(0).values().get(0).value());
         assertEquals("2.5", snapshot.nodes().get(1).values().get(0).value());
         assertEquals(0, snapshot.droppedNodes());
+        assertEquals(snapshot.nodes().get(0).childEdges(),
+                CompiledSamplerGraphIr.lower(snapshot).nodes().get(0).childEdges());
     }
 
     @Test
