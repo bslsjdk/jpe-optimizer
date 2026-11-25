@@ -62,6 +62,8 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                 .get(generatorSettings.noiseRouter().finalDensity());
         // One-shot diagnostic only; disabled by default and never evaluates the sampler.
         CompiledSamplerGraphDiagnostics.captureOnce(finalDensity.sampler());
+        // Optional one-island Native shadow comparison. It never supplies block states.
+        CompiledSamplerGraphDiagnostics.verifyNativeParityOnce(finalDensity, volume);
 
         boolean profile = WorldgenMetrics.enabled();
         if (profile) {
