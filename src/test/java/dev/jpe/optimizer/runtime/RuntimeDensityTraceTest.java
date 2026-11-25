@@ -17,7 +17,7 @@ class RuntimeDensityTraceTest {
         trace.start();
         try (RuntimeDensityTrace.Scope ignored = trace.enter(root)) {
             try (RuntimeDensityTrace.Scope ignoredChild = trace.enter(child)) {
-                trace.branch(child, true);
+                trace.branch(child, 7, true);
             }
         }
         RuntimeDensityTrace.Snapshot snapshot = trace.stop();
@@ -31,10 +31,28 @@ class RuntimeDensityTraceTest {
     }
 
     @Test
+    void repeatedEdgesAndGuardsAreDeduplicated() {
+        RuntimeDensityTrace trace = new RuntimeDensityTrace();
+        Node root = new Node();
+        Child child = new Child();
+        trace.start();
+        for (int i = 0; i < 1000; ++i) {
+            try (RuntimeDensityTrace.Scope ignored = trace.enter(root)) {
+                try (RuntimeDensityTrace.Scope ignoredChild = trace.enter(child)) {
+                    trace.branch(child, 11, true);
+                }
+            }
+        }
+        RuntimeDensityTrace.Snapshot snapshot = trace.stop();
+        assertEquals(1, snapshot.edges().size());
+        assertEquals(1, snapshot.guards().size());
+    }
+
+    @Test
     void disabledRecorderDoesNotCaptureEvents() {
         RuntimeDensityTrace trace = new RuntimeDensityTrace();
         try (RuntimeDensityTrace.Scope ignored = trace.enter(new Node())) {
-            trace.branch(new Node(), false);
+            trace.branch(new Node(), 3, false);
         }
         assertTrue(trace.stop().nodes().isEmpty());
     }
@@ -45,7 +63,7 @@ class RuntimeDensityTraceTest {
         trace.start();
         trace.enter(new Node()).close();
         trace.enter(new Child()).close();
-        trace.branch(new Node(), true);
+        trace.branch(new Node(), 3, true);
         RuntimeDensityTrace.Snapshot snapshot = trace.stop();
 
         assertTrue(snapshot.nodes().size() <= 2);
