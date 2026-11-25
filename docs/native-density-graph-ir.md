@@ -371,3 +371,16 @@ Consequences for the native design:
 5. Because vanilla's compiler cache is a ConcurrentHashMap, source-function key equality follows equals/hashCode; do not assume distinct but equal DensityFunction instances compile into distinct samplers, or assume object identity alone is the vanilla cache contract.
 
 The audit artifact for commit 00e443900923c72da73ddc2e04fb3f835a88cd82 confirms these method bodies in both artifacts. This is a bytecode/lifecycle finding, not evidence that the native graph is integrated into world generation or that it is faster.
+
+
+### Constant-specialized compiled arithmetic lowering
+
+The exact 26.3 sampler bytecode confirms that vanilla's optimizer emits record samplers for constant-specialized arithmetic. The native island planner now admits three exact forms in addition to generic ADD/SUB/CONSTANT:
+
+- ConstAddSampler(leftSampler, rightFloat) lowers to left + rightConstant.
+- ConstSubSampler(leftFloat, rightSampler) lowers to leftConstant - right.
+- ConstMulSampler(leftSampler, rightFloat) lowers to left * rightConstant.
+
+The constant fields are read as Java float record components and materialized as float32 constant nodes. Subtraction preserves the constant as the left operand; it is not rewritten as right - constant or as a negation plus addition. Multiplication uses the existing native float32 MUL opcode. No general MulSampler or DivSampler is admitted: their left-zero short-circuit behavior must remain explicit, and generic DIV is not implemented. Constant division, min, and max remain boundaries until their exact operation semantics are represented.
+
+The new unit fixture verifies that a shared arithmetic island containing these three constant-specialized samplers lowers to one graph, keeps the external inputs deduplicated, and preserves operand order. This expands the set of candidate islands but does not claim live Minecraft parity or worldgen execution; the full-volume parity verifier must pass on actual sampler instances before integration.
