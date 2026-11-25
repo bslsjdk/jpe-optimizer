@@ -1,5 +1,6 @@
 package dev.jpe.optimizer.runtime;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -11,14 +12,22 @@ import java.util.Objects;
  */
 public final class DensityGraphCapture {
     public enum Mode { STRICT, EXPERIMENTAL }
+    public record CaptureStats(long conversionNanos, int sourceObjects, int emittedNodes,
+                               int opaqueNodes, int unreachableObjects) {}
 
     private sealed interface Captured permits Leaf, Binary, Unsupported {}
     private record Leaf(DensityGraphIr.Node node) implements Captured {}
     private record Binary(int opcode, Object left, Object right) implements Captured {}
     private record Unsupported(String reason) implements Captured {}
+    private static final class Frame {
+        final Object source;
+        boolean expanded;
+        Frame(Object source) { this.source = source; }
+    }
 
     private final Mode mode;
     private final IdentityHashMap<Object, Captured> captured = new IdentityHashMap<>();
+    private volatile CaptureStats lastStats = new CaptureStats(0, 0, 0, 0, 0);
 
     public DensityGraphCapture() { this(Mode.STRICT); }
     public DensityGraphCapture(Mode mode) { this.mode = Objects.requireNonNull(mode, "mode"); }
@@ -40,7 +49,6 @@ public final class DensityGraphCapture {
     public void add(Object source, Object left, Object right) { binary(source, DensityGraphIr.ADD, left, right); }
     public void multiply(Object source, Object left, Object right) { binary(source, DensityGraphIr.MUL, left, right); }
 
-    /** Records a node whose exact operation or required context is not represented yet. */
     public void unsupported(Object source, String reason) {
         put(source, new Unsupported(Objects.requireNonNull(reason, "reason")));
     }
@@ -64,51 +72,84 @@ public final class DensityGraphCapture {
         }
     }
 
+    public CaptureStats lastStats() { return lastStats; }
+
     public DensityGraphIr finish(Object root, long configurationFingerprint) {
         Objects.requireNonNull(root, "root");
-        ArrayList<DensityGraphIr.Node> nodes = new ArrayList<>();
+        long started = System.nanoTime();
+        // Pre-size from the captured identity map and use iterative post-order traversal.
+        // This avoids repeated array growth and Java stack overflow on deep density chains.
+        int capacity = Math.min(Math.max(captured.size(), 1), DensityGraphIr.MAX_NODES);
+        ArrayList<DensityGraphIr.Node> nodes = new ArrayList<>(capacity);
         ArrayList<DensityGraphIr.Diagnostic> diagnostics = new ArrayList<>();
-        IdentityHashMap<Object, Integer> indices = new IdentityHashMap<>();
-        int rootIndex = append(root, nodes, diagnostics, indices);
-        return new DensityGraphIr(nodes, diagnostics, rootIndex, configurationFingerprint);
-    }
+        IdentityHashMap<Object, Integer> indices = new IdentityHashMap<>(capacity);
+        IdentityHashMap<Object, Boolean> scheduled = new IdentityHashMap<>(capacity);
+        ArrayDeque<Frame> stack = new ArrayDeque<>();
+        stack.push(new Frame(root));
+        scheduled.put(root, Boolean.TRUE);
 
-    private int append(Object source, List<DensityGraphIr.Node> nodes,
-                       List<DensityGraphIr.Diagnostic> diagnostics,
-                       IdentityHashMap<Object, Integer> indices) {
-        Integer existing = indices.get(source);
-        if (existing != null) return existing;
-        Captured value = captured.get(source);
-        if (value == null) {
-            if (mode == Mode.STRICT) {
-                throw new IllegalStateException("Missing semantic adapter for " + source.getClass().getName());
+        while (!stack.isEmpty()) {
+            Frame frame = stack.peek();
+            Object source = frame.source;
+            if (indices.containsKey(source)) {
+                stack.pop();
+                continue;
             }
-            value = new Unsupported("No semantic adapter was registered for this runtime object");
-        }
-        if (value instanceof Unsupported unsupported && mode == Mode.STRICT) {
-            throw new IllegalStateException("Native lowering rejected "
-                    + source.getClass().getName() + ": " + unsupported.reason());
+            Captured value = captured.get(source);
+            if (value == null) {
+                if (mode == Mode.STRICT) {
+                    throw new IllegalStateException("Missing semantic adapter for " + source.getClass().getName());
+                }
+                value = new Unsupported("No semantic adapter was registered for this runtime object");
+            }
+            if (value instanceof Unsupported unsupported && mode == Mode.STRICT) {
+                throw new IllegalStateException("Native lowering rejected "
+                        + source.getClass().getName() + ": " + unsupported.reason());
+            }
+
+            if (value instanceof Binary binary && !frame.expanded) {
+                frame.expanded = true;
+                if (!indices.containsKey(binary.right()) && scheduled.put(binary.right(), Boolean.TRUE) == null) {
+                    stack.push(new Frame(binary.right()));
+                }
+                if (!indices.containsKey(binary.left()) && scheduled.put(binary.left(), Boolean.TRUE) == null) {
+                    stack.push(new Frame(binary.left()));
+                }
+                continue;
+            }
+
+            DensityGraphIr.Node node;
+            if (value instanceof Leaf leaf) {
+                node = leaf.node();
+            } else if (value instanceof Binary binary) {
+                Integer left = indices.get(binary.left());
+                Integer right = indices.get(binary.right());
+                if (left == null || right == null) {
+                    throw new IllegalStateException("Density graph contains a cyclic or unresolved dependency");
+                }
+                node = binary.opcode() == DensityGraphIr.ADD
+                        ? DensityGraphIr.Node.add(left, right)
+                        : DensityGraphIr.Node.multiply(left, right);
+            } else {
+                node = DensityGraphIr.Node.opaque();
+            }
+            int index = nodes.size();
+            if (index >= DensityGraphIr.MAX_NODES) {
+                throw new IllegalStateException("Density graph exceeds the IR node limit");
+            }
+            nodes.add(node);
+            indices.put(source, index);
+            if (value instanceof Unsupported unsupported) {
+                diagnostics.add(new DensityGraphIr.Diagnostic(
+                        index, source.getClass().getName(), unsupported.reason()));
+            }
+            stack.pop();
         }
 
-        DensityGraphIr.Node node;
-        if (value instanceof Leaf leaf) {
-            node = leaf.node();
-        } else if (value instanceof Binary binary) {
-            int left = append(binary.left(), nodes, diagnostics, indices);
-            int right = append(binary.right(), nodes, diagnostics, indices);
-            node = binary.opcode() == DensityGraphIr.ADD
-                    ? DensityGraphIr.Node.add(left, right)
-                    : DensityGraphIr.Node.multiply(left, right);
-        } else {
-            node = DensityGraphIr.Node.opaque();
-        }
-        int index = nodes.size();
-        nodes.add(node);
-        indices.put(source, index);
-        if (value instanceof Unsupported unsupported) {
-            diagnostics.add(new DensityGraphIr.Diagnostic(
-                    index, source.getClass().getName(), unsupported.reason()));
-        }
-        return index;
+        Integer rootIndex = indices.get(root);
+        DensityGraphIr graph = new DensityGraphIr(nodes, diagnostics, rootIndex, configurationFingerprint);
+        lastStats = new CaptureStats(System.nanoTime() - started, captured.size(), nodes.size(),
+                diagnostics.size(), Math.max(0, captured.size() - nodes.size()));
+        return graph;
     }
 }
