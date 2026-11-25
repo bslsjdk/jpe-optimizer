@@ -226,7 +226,7 @@ public final class NativeRuntime implements AutoCloseable {
             MethodHandle compileDensityGraph = linker.downcallHandle(
                     lookup.find("jpe_runtime_density_graph_compile").orElseThrow(() -> new IllegalStateException("Missing density graph compile symbol")),
                     FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS,
-                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG));
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG));
             MethodHandle evaluateDensityGraph = linker.downcallHandle(
                     lookup.find("jpe_runtime_density_graph_evaluate").orElseThrow(() -> new IllegalStateException("Missing density graph evaluate symbol")),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG,
@@ -292,7 +292,7 @@ public final class NativeRuntime implements AutoCloseable {
                     encoded.set(ValueLayout.JAVA_DOUBLE, base + 16L, node.immediate());
                 }
                 long handle = (long) compileDensityGraph.invokeExact(
-                        encoded, nodes.size(), graph.rootNode(), graph.configurationFingerprint());
+                        encoded, nodes.size(), graph.rootNode(), DensityGraphIr.VERSION, graph.configurationFingerprint());
                 if (handle == 0L) throw new IllegalStateException("Native density graph compiler rejected the IR");
                 NativeDensityGraph compiled = new NativeDensityGraph(this, handle);
                 densityGraphs.add(compiled);
@@ -368,6 +368,7 @@ public final class NativeRuntime implements AutoCloseable {
     public static final class NativeDensityGraph implements AutoCloseable {
         private final NativeRuntime runtime;
         private final long handle;
+        private final ReentrantReadWriteLock graphLifecycle = new ReentrantReadWriteLock();
         private volatile boolean closed;
 
         private NativeDensityGraph(NativeRuntime runtime, long handle) {
@@ -375,18 +376,28 @@ public final class NativeRuntime implements AutoCloseable {
             this.handle = handle;
         }
 
-        public synchronized void evaluate(int sizeX, int sizeY, int sizeZ,
-                                           int minX, int minY, int minZ,
-                                           int stepX, int stepY, int stepZ,
-                                           float[] output) {
-            if (closed) throw new IllegalStateException("Native density graph has been released");
-            runtime.evaluateDensityGraph(this, sizeX, sizeY, sizeZ,
-                    minX, minY, minZ, stepX, stepY, stepZ, output);
+        public void evaluate(int sizeX, int sizeY, int sizeZ,
+                             int minX, int minY, int minZ,
+                             int stepX, int stepY, int stepZ,
+                             float[] output) {
+            graphLifecycle.readLock().lock();
+            try {
+                if (closed) throw new IllegalStateException("Native density graph has been released");
+                runtime.evaluateDensityGraph(this, sizeX, sizeY, sizeZ,
+                        minX, minY, minZ, stepX, stepY, stepZ, output);
+            } finally {
+                graphLifecycle.readLock().unlock();
+            }
         }
 
         @Override
-        public synchronized void close() {
-            if (!closed) runtime.releaseDensityGraph(this);
+        public void close() {
+            graphLifecycle.writeLock().lock();
+            try {
+                if (!closed) runtime.releaseDensityGraph(this);
+            } finally {
+                graphLifecycle.writeLock().unlock();
+            }
         }
     }
 
