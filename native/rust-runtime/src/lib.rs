@@ -582,10 +582,10 @@ pub extern "C" fn jpe_runtime_release_job(job_id: u64) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "density-graph-benchmark")]
     use std::time::Instant;
 
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "density-graph-benchmark")]
     unsafe extern "C" {
         fn jpe_cpp_density_graph_evaluate_scalar_reference(
             graph_handle: u64,
@@ -819,7 +819,7 @@ mod tests {
             }
         }
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "density-graph-benchmark")]
         {
             let mut scalar_output = vec![0.0_f32; output.len()];
             assert_eq!(unsafe {
