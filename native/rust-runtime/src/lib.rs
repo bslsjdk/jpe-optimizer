@@ -1236,6 +1236,48 @@ mod tests {
     }
 
     #[test]
+    fn smeared_perlin_stack_dispatches_to_fudged_y_kernel() {
+        let permutation: [u8; 256] = std::array::from_fn(|i| ((i * 37 + 11) & 255) as u8);
+        let mut layer = JpePerlinLayer {
+            permutation: permutation.as_ptr(),
+            offset_x: 0.13,
+            offset_y: 0.29,
+            offset_z: 0.41,
+            xz_scale: 0.75,
+            y_scale: 0.37,
+            amplitude: 0.5,
+            fudge_y_scale: 0.25,
+            flags: 1,
+            reserved: 0,
+        };
+        const SX: usize = 5;
+        const SY: usize = 49;
+        const SZ: usize = 5;
+        let mut smeared = vec![0.0_f32; SX * SY * SZ];
+        assert_eq!(unsafe {
+            jpe_runtime_perlin_add_stack(
+                &layer, 1, SX as u32, SY as u32, SZ as u32,
+                0, -64, 0, 4, 8, 4,
+                smeared.as_mut_ptr(), smeared.len() as u64, 0,
+            )
+        }, STATUS_OK);
+        assert!(smeared.iter().all(|value| value.is_finite()));
+
+        layer.fudge_y_scale = 0.0;
+        layer.flags = 0;
+        let mut ordinary = vec![0.0_f32; smeared.len()];
+        assert_eq!(unsafe {
+            jpe_runtime_perlin_add_stack(
+                &layer, 1, SX as u32, SY as u32, SZ as u32,
+                0, -64, 0, 4, 8, 4,
+                ordinary.as_mut_ptr(), ordinary.len() as u64, 0,
+            )
+        }, STATUS_OK);
+        assert!(ordinary.iter().all(|value| value.is_finite()));
+        assert_ne!(smeared, ordinary, "SmearedPerlin must apply its Y-coordinate fudge");
+    }
+
+    #[test]
     fn cached_y_interpolation_matches_uncached_reference_bit_for_bit() {
         let permutations: [[u8; 256]; 3] = std::array::from_fn(|layer| {
             std::array::from_fn(|i| ((i * (31 + layer * 8) + 17 + layer * 13) & 255) as u8)
