@@ -186,7 +186,7 @@ The capture API now has STRICT and EXPERIMENTAL modes. STRICT is the default. EX
 
 Extraction uses identity-based memoization to preserve shared subgraphs, pre-sizes its node/index containers from the captured object count, and performs iterative post-order traversal rather than recursive calls. This avoids repeated collection growth and stack overflow on deeply nested density graphs. DensityGraphCapture.lastStats() exposes conversion nanoseconds, source object count, emitted node count, opaque node count, and unreachable object count. Those metrics let us measure the conversion phase separately from native compile/cache and volume evaluation.
 
-The current OPAQUE sentinel retains up to two child dependency edges, but it does not yet serialize arbitrary child arity, runtime operands, branch guards, random state, or side-effect metadata. Its children are evaluated as ordinary preceding IR nodes, while the opaque operation itself deliberately emits NaN. The next semantic-capture iteration must add those as explicit compact descriptors; do not interpret a NaN placeholder as a successful translation.
+The fixed-size C++ OPAQUE node keeps at most two hot dependency slots, while the Java IR diagnostic sidecar and persistent Java cache retain the full child-index list for arbitrary arity. Runtime operands, branch guards, random state, and side-effect metadata are still not represented. Known child nodes remain in the experimental plan and execute; the opaque operation itself deliberately emits NaN. Do not interpret a NaN placeholder as a successful translation.
 
 The FFM bridge also reuses a geometrically grown, per-worldgen-thread shared-arena node buffer for graph compilation. Repeated compilation no longer allocates and closes a fresh confined arena for every graph; scratch is leased during the synchronous native copy and released afterward, then closed with the runtime. This removes one allocation/arena lifecycle per compile, but the current path still encodes each node and the native side still hashes and validates the full payload on each compile request. Those costs remain measurable optimization targets.
 
@@ -242,3 +242,55 @@ IR v3 keeps the v2 float32 evaluation rules and extends the Java diagnostic
 sidecar to retain every dependency index for n-ary OPAQUE nodes. The C++ hot
 node record remains unchanged; the native plan version field is now 3 so old
 IR-v2 plans cannot be mistaken for current plans.
+
+
+### Exact Minecraft 26.3 worldgen lifecycle findings
+
+The exact Mojang 26.3 server artifact and NeoForge-patched artifact were decompiled and
+compared. The relevant method bodies show these lifecycle boundaries:
+
+- `RandomState` is constructed with the world seed and `NoiseRouter`. Its constructor
+  stores the router and builds a `DensityFunctionCompiler` whose compile context resolves
+  noise samplers and random sources through this seed-bound `RandomState`. This is a
+  candidate world-scoped prewarm point after construction and before the first chunk, but
+  compiled sampler closures may still contain seed-specific resources. Cache graph
+  topology separately from the per-world noise/random parameter block.
+- `NoiseChunk` is created per chunk. Its constructor acquires a density buffer pool and
+  builds a `SamplerContext` with the chunk's `Beardifier` and, when blending is active,
+  `Blender` context fields. It then calls `RandomState.samplersWithContext(...)` with
+  caching enabled. These fields are chunk-specific external inputs, not static graph
+  constants.
+- `NoiseBasedChunkGenerator.doFill` obtains the bound sampler for
+  `NoiseRouter.finalDensity()` and calls `DensitySampler.Bound.sampleVolume(volume)`.
+  The bound sampler delegates to its compiled sampler with the current
+  `SamplerContext` and writes into a pooled `DensityBuffer`. This is the natural
+  batch boundary for a native volume evaluation, rather than per-node FFM calls.
+- `DensityVolume.indexUnchecked(x,y,z)` is
+  `y + (x + z * sizeX) * sizeY`. The native output order z, then x, then y matches
+  this layout, including non-unit positive axis steps.
+- `CachingDensitySampler` delegates to `SamplerContext.sampleVolumeCached`, which
+  may compute a cached subvolume once and copy it into later output buffers.
+  `ContextBoundSampler` resolves its concrete sampler from the current context.
+  A root-level native replacement that skips these wrappers would change cache
+  population and chunk-context behavior. Preserve these operations explicitly in the IR,
+  or limit native execution to proven pure, context-independent subgraphs until then.
+
+The practical integration sequence is therefore: prepare the seed-independent router
+topology from the world-scoped `RandomState` after its constructor has completed; bind
+seed-derived noise/random parameters once for that world; bind `Beardifier` and
+`Blender` values when each `NoiseChunk` context is created; then execute only a
+semantically complete, cache-safe subset at the `Bound.sampleVolume` batch boundary.
+The lifecycle hook and these adapters are not yet wired into Minecraft.
+
+### Native density graph tiled execution
+
+The C++ compiler now lowers the immutable node array into three compact lists:
+static constant/OPAQUE values, coordinate bindings, and topologically ordered
+ADD/MUL instructions. Evaluation processes bounded node-major tiles of up to 32
+samples, with a scratch cap of 1 MiB. Constants are initialized once per tile,
+coordinates are generated as contiguous arrays, and each arithmetic instruction
+runs across the tile before the next instruction. This exposes contiguous loops
+to compiler auto-vectorization while preserving instruction order and float32
+rounding between dependent nodes. A large-volume parity test checks the
+z/x/y ordering and tile tail. This is a SIMD-friendly execution layout, not yet
+a measured Minecraft chunk speedup; benchmark results must be recorded separately.
