@@ -100,12 +100,18 @@ public final class CompiledSamplerGraphDiagnostics {
                         "Native sampler parity was requested but no native runtime could be loaded");
                 return;
             }
+            long captureStarted = System.nanoTime();
             CompiledSamplerGraphTrace.CapturedGraph captured =
                     CompiledSamplerGraphTrace.captureDetailed(
                             bound.sampler(), DensitySampler.class::isInstance, 65_536);
+            long captureNanos = System.nanoTime() - captureStarted;
+            long graphLowerStarted = System.nanoTime();
             CompiledSamplerGraphIr.Graph graph = CompiledSamplerGraphIr.lower(captured.snapshot());
+            long graphLowerNanos = System.nanoTime() - graphLowerStarted;
             String semanticFingerprint = CompiledSamplerGraphIr.semanticFingerprint(graph);
+            long islandPlanStarted = System.nanoTime();
             CompiledSamplerArithmeticIslands.Plan plan = CompiledSamplerArithmeticIslands.plan(graph);
+            long islandPlanNanos = System.nanoTime() - islandPlanStarted;
             java.util.Map<Integer, CompiledSamplerGraphIr.Node> nodesById = new java.util.HashMap<>();
             for (CompiledSamplerGraphIr.Node node : graph.nodes()) nodesById.put(node.id(), node);
             java.util.List<CompiledSamplerArithmeticIslands.Island> candidates = plan.islands().stream()
@@ -155,9 +161,13 @@ public final class CompiledSamplerGraphDiagnostics {
             long outputFloats = 0L;
             int testedIslands = lowerable.size();
             try {
+                long batchLowerStarted = System.nanoTime();
                 CompiledSamplerArithmeticLowering.LoweredIsland batch =
                         CompiledSamplerArithmeticLowering.lowerAll(graph, lowerable, fingerprint);
+                long batchLowerNanos = System.nanoTime() - batchLowerStarted;
+                long nativeCompileStarted = System.nanoTime();
                 try (NativeRuntime.NativeDensityGraph executable = runtime.compileDensityGraph(batch.graph())) {
+                    long nativeCompileNanos = System.nanoTime() - nativeCompileStarted;
                     CompiledSamplerNativeParity.Report report = CompiledSamplerNativeParity.verify(
                             executable, captured, batch, bound, volume, sharedInputs, 0L,
                             volume.sizeX(), volume.sizeY(), volume.sizeZ(),
@@ -167,10 +177,16 @@ public final class CompiledSamplerGraphDiagnostics {
                     mismatches = report.mismatches();
                     outputFloats = Math.multiplyExact((long) report.outputCount(), report.samplesPerOutput());
                     JPEOptimizer.LOGGER.info(
-                            "JPE_NATIVE_SAMPLER_PARITY_BATCH exact={} islands={} outputs={} samplesPerOutput={} compared={} mismatches={} graphNodes={} externalInputs={} graphFingerprint={}",
+                            "JPE_NATIVE_SAMPLER_PARITY_BATCH exact={} islands={} outputs={} samplesPerOutput={} compared={} mismatches={} graphNodes={} externalInputs={} captureMs={} graphLowerMs={} islandPlanMs={} batchLowerMs={} nativeCompileMs={} externalInputStageMs={} nativeEvaluateMs={} javaReferenceMs={} compareMs={} graphFingerprint={}",
                             report.exact(), testedIslands, report.outputCount(), report.samplesPerOutput(),
                             report.comparedValues(), report.mismatches(), batch.graph().nodes().size(),
-                            batch.inputSourceNodeIds().size(), semanticFingerprint);
+                            batch.inputSourceNodeIds().size(), captureNanos / 1_000_000.0,
+                            graphLowerNanos / 1_000_000.0, islandPlanNanos / 1_000_000.0,
+                            batchLowerNanos / 1_000_000.0, nativeCompileNanos / 1_000_000.0,
+                            report.externalInputNanos() / 1_000_000.0,
+                            report.nativeEvaluateNanos() / 1_000_000.0,
+                            report.javaReferenceNanos() / 1_000_000.0,
+                            report.compareNanos() / 1_000_000.0, semanticFingerprint);
                 }
             } catch (RuntimeException | LinkageError batchFailure) {
                 LOGGER.log(System.Logger.Level.WARNING,
