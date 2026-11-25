@@ -476,7 +476,7 @@ public final class GameTests {
 
             BlendingData fixedData = createSyntheticBlendingData(3, 5.0F);
             Long2ObjectOpenHashMap<BlendingData> fixedMap = new Long2ObjectOpenHashMap<>();
-            fixedMap.put(ChunkPos.asLong(0, 0), fixedData);
+            fixedMap.put(ChunkPos.pack(0, 0), fixedData);
             Blender fixedBlender = createSyntheticBlender(fixedMap, new Long2ObjectOpenHashMap<>());
             verifyBlenderCase(runtime, fixedBlender,
                     new DensityVolume(1, 1, 1, 0, -32, 0, 1, 1, 1),
@@ -492,7 +492,7 @@ public final class GameTests {
 
             BlendingData boundaryData = createSyntheticBlendingData(11, 12.5F);
             Long2ObjectOpenHashMap<BlendingData> boundaryMap = new Long2ObjectOpenHashMap<>();
-            boundaryMap.put(ChunkPos.asLong(-1, -1), boundaryData);
+            boundaryMap.put(ChunkPos.pack(-1, -1), boundaryData);
             Blender boundaryBlender = createSyntheticBlender(boundaryMap, new Long2ObjectOpenHashMap<>());
             verifyBlenderCase(runtime, boundaryBlender,
                     new DensityVolume(1, 1, 1, 0, -32, 0, 1, 1, 1),
