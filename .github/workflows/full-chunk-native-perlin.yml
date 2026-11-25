@@ -81,7 +81,7 @@ jobs:
 
           # The synchronous stack entry must execute on Minecraft's worldgen worker,
           # without queue submission, polling, or a second native worker pool.
-          run_worldgen native_sync "-Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativePerlinProfile=true -Djpe.nativeLibraryPath=${NATIVE_LIBRARY}"
+          run_worldgen native_sync "-Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeLibraryPath=${NATIVE_LIBRARY}"
 
           grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin-sync.*completedChunks=340.*failedChunks=0.*nativeCalls=[1-9][0-9]*.*nativeCompleted=[1-9][0-9]*.*nativeFallbacks=0.*nativeSyncCalls=[1-9][0-9]*' build/full-chunk-benchmark/native_sync.log
 
