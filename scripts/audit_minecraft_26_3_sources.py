@@ -474,6 +474,7 @@ def source_inspection(vanilla_root: Path, patched_root: Path) -> list[str]:
 def bytecode_inspection(vanilla_jar: Path, patched_jar: Path) -> list[str]:
     """Disassemble exact critical classes from both official and NeoForge-patched jars."""
     classes = [
+        "net.minecraft.util.Mth",
         "net.minecraft.world.level.levelgen.NoiseChunk",
         "net.minecraft.world.level.levelgen.RandomState",
         "net.minecraft.world.level.levelgen.RandomState$2",
