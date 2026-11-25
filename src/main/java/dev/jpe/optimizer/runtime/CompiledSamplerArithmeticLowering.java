@@ -140,6 +140,21 @@ public final class CompiledSamplerArithmeticLowering {
                 case SUB -> lowered.add(DensityGraphIr.Node.subtract(
                         resolveChild(node.children().get(0), members, nativeIndex, inputSlot),
                         resolveChild(node.children().get(1), members, nativeIndex, inputSlot)));
+                case CONST_ADD_RIGHT -> {
+                    int input = resolveOnlyChild(node, members, nativeIndex, inputSlot);
+                    int constant = appendConstant(lowered, node, "right");
+                    lowered.add(DensityGraphIr.Node.add(input, constant));
+                }
+                case CONST_SUB_LEFT -> {
+                    int input = resolveOnlyChild(node, members, nativeIndex, inputSlot);
+                    int constant = appendConstant(lowered, node, "left");
+                    lowered.add(DensityGraphIr.Node.subtract(constant, input));
+                }
+                case CONST_MUL_RIGHT -> {
+                    int input = resolveOnlyChild(node, members, nativeIndex, inputSlot);
+                    int constant = appendConstant(lowered, node, "right");
+                    lowered.add(DensityGraphIr.Node.multiply(input, constant));
+                }
                 default -> throw new IllegalArgumentException("Unsupported sampler operation " + node.op());
             }
             nativeIndex.put(sourceId, lowered.size() - 1);
@@ -173,6 +188,32 @@ public final class CompiledSamplerArithmeticLowering {
         return slot;
     }
 
+    private static int resolveOnlyChild(CompiledSamplerGraphIr.Node node, Set<Integer> members,
+                                        Map<Integer, Integer> nativeIndex,
+                                        Map<Integer, Integer> inputSlot) {
+        if (node.children().size() != 1) {
+            throw new IllegalArgumentException("Constant-specialized sampler must have exactly one sampler child");
+        }
+        return resolveChild(node.children().get(0), members, nativeIndex, inputSlot);
+    }
+
+    private static int appendConstant(List<DensityGraphIr.Node> lowered,
+                                      CompiledSamplerGraphIr.Node node, String component) {
+        String raw = node.scalarValues().get(component);
+        if (raw == null) {
+            throw new IllegalArgumentException("Constant-specialized sampler " + node.id()
+                    + " has no " + component + " float component");
+        }
+        final float value;
+        try {
+            value = Float.parseFloat(raw);
+        } catch (NumberFormatException failure) {
+            throw new IllegalArgumentException("Invalid float32 constant on sampler " + node.id(), failure);
+        }
+        lowered.add(DensityGraphIr.Node.constant(value));
+        return lowered.size() - 1;
+    }
+
     private static double readFloatConstant(CompiledSamplerGraphIr.Node node) {
         String raw = node.scalarValues().get("value");
         if (raw == null) {
@@ -188,6 +229,9 @@ public final class CompiledSamplerArithmeticLowering {
     private static boolean eligible(CompiledSamplerGraphIr.Op op) {
         return op == CompiledSamplerGraphIr.Op.CONSTANT
                 || op == CompiledSamplerGraphIr.Op.ADD
-                || op == CompiledSamplerGraphIr.Op.SUB;
+                || op == CompiledSamplerGraphIr.Op.SUB
+                || op == CompiledSamplerGraphIr.Op.CONST_ADD_RIGHT
+                || op == CompiledSamplerGraphIr.Op.CONST_SUB_LEFT
+                || op == CompiledSamplerGraphIr.Op.CONST_MUL_RIGHT;
     }
 }
