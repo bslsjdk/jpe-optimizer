@@ -245,40 +245,25 @@ int32_t perlin_add_volume_impl(
         }
     }
 
-    // Cross-floor SIMD needs four XY permutation values per Y lane. Those
-    // values are independent of Z, so prepare them once per X/Y only for
-    // eight-lane blocks that actually cross a Y lattice floor. This avoids
-    // repeating 32 byte-permutation lookups for every Z slice.
+    // Cross-floor SIMD needs four XY permutation values per Y lane. These
+    // values are independent of Z, so prepare them once per X/Y and reuse
+    // across all Z slices instead of repeating four lookups per lane per slice.
     thread_local std::vector<XyPermutationCache> cross_floor_xy_cache;
-    thread_local std::vector<uint8_t> cross_floor_xy_valid;
     if constexpr (CacheY && UseAvx2) {
         const size_t cross_count = static_cast<size_t>(size_x) * size_y;
         if (cross_floor_xy_cache.size() < cross_count) cross_floor_xy_cache.resize(cross_count);
-        if (cross_floor_xy_valid.size() < cross_count) cross_floor_xy_valid.resize(cross_count);
-        std::fill(cross_floor_xy_valid.begin(), cross_floor_xy_valid.begin() + cross_count, 0);
         for (uint32_t ix = 0; ix < size_x; ++ix) {
             const int32_t x0 = x_lattice0[ix];
             const int32_t x1 = x_lattice1[ix];
             const size_t row = static_cast<size_t>(ix) * size_y;
-            for (uint32_t block = 0; block + 8 <= size_y; block += 8) {
-                bool same_floor = true;
-                for (uint32_t lane = 1; lane < 8; ++lane) {
-                    if (y_floors[block + lane] != y_floors[block]) {
-                        same_floor = false;
-                        break;
-                    }
-                }
-                if (same_floor) continue;
-                for (uint32_t lane = 0; lane < 8; ++lane) {
-                    const int32_t floor_y = y_floors[block + lane];
-                    cross_floor_xy_cache[row + block + lane] = XyPermutationCache{
-                        static_cast<uint8_t>(permute_sum(permutation, x0, floor_y)),
-                        static_cast<uint8_t>(permute_sum(permutation, x0, floor_y, 1)),
-                        static_cast<uint8_t>(permute_sum(permutation, x1, floor_y)),
-                        static_cast<uint8_t>(permute_sum(permutation, x1, floor_y, 1))
-                    };
-                    cross_floor_xy_valid[row + block + lane] = 1;
-                }
+            for (uint32_t iy = 0; iy < size_y; ++iy) {
+                const int32_t floor_y = y_floors[iy];
+                cross_floor_xy_cache[row + iy] = XyPermutationCache{
+                    static_cast<uint8_t>(permute_sum(permutation, x0, floor_y)),
+                    static_cast<uint8_t>(permute_sum(permutation, x0, floor_y, 1)),
+                    static_cast<uint8_t>(permute_sum(permutation, x1, floor_y)),
+                    static_cast<uint8_t>(permute_sum(permutation, x1, floor_y, 1))
+                };
             }
         }
     }
