@@ -1290,9 +1290,9 @@ mod tests {
     fn perlin_avx2_minecraft_profile_workload_microbenchmark() {
         use std::time::Instant;
 
-        // Exercise both the common 5x49x5 volume and the smaller 2x49x2
-        // shape observed in the fixed-seed Minecraft profile. These remain
-        // kernel microbenchmarks, not end-to-end worldgen claims.
+        // Exercise the common and narrow Y-column shapes observed in the fixed-seed
+        // Minecraft profile. These remain kernel microbenchmarks, not end-to-end
+        // worldgen claims.
         const SY: usize = 49;
         const REPEATS: usize = 64;
         const ROUNDS: usize = 21;
@@ -1302,12 +1302,16 @@ mod tests {
         for (shape, sx, sz) in [
             ("5x49x5", 5_usize, 5_usize),
             ("2x49x2", 2_usize, 2_usize),
+            ("2x49x1", 2_usize, 1_usize),
+            ("1x49x2", 1_usize, 2_usize),
+            ("1x49x1", 1_usize, 1_usize),
         ] {
             let len = sx * SY * sz;
 
             // Every case stays within the current |stepY * yScale| <= 1/16
-            // dispatch gate. Offsets and coordinate ranges deliberately cross
-            // lattice floors so the independent-lane branch is exercised.
+            // dispatch gate, including the real stepY=8 workload. Offsets and
+            // coordinate ranges deliberately cross lattice floors so the
+            // independent-lane branch is exercised.
             for (case, step_y, y_scale) in [
                 ("step1-1-64", 1_i32, 1.0 / 64.0),
                 ("step1-1-32", 1_i32, 1.0 / 32.0),
@@ -1315,6 +1319,10 @@ mod tests {
                 ("step4-1-256", 4_i32, 1.0 / 256.0),
                 ("step4-1-128", 4_i32, 1.0 / 128.0),
                 ("step4-1-64", 4_i32, 1.0 / 64.0),
+                // Match the dominant real-worldgen vertical step (8 blocks).
+                ("step8-1-512", 8_i32, 1.0 / 512.0),
+                ("step8-1-256", 8_i32, 1.0 / 256.0),
+                ("step8-1-128", 8_i32, 1.0 / 128.0),
             ] {
                 let mut dispatched = vec![0.125_f32; len];
                 let mut scalar = dispatched.clone();
