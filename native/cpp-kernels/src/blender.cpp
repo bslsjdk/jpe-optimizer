@@ -137,7 +137,8 @@ void append_points(const JpeBlendingDataView* views, uint32_t count,
 float blend_one(int32_t block_x, int32_t block_y, int32_t block_z, float noise,
                 const std::unordered_map<uint64_t, const JpeBlendingDataView*>& height_index,
                 const std::unordered_map<Coord, std::vector<uint32_t>, CoordHash>& spatial,
-                const std::vector<DensityPoint>& points) {
+                const std::vector<DensityPoint>& points,
+                std::vector<uint32_t>& candidates) {
     const int32_t cell_x = floor_div4(block_x);
     const int32_t cell_y = java_div8(block_y);
     const int32_t cell_z = floor_div4(block_z);
@@ -147,8 +148,7 @@ float blend_one(int32_t block_x, int32_t block_y, int32_t block_z, float noise,
     // Vanilla iterateDensities(cellY - 1, cellY + 1) uses an exclusive upper bound.
     // The native spatial index gathers only possible radius-2 candidates, then sorts
     // their original forEach/column/Y ordinal to preserve Java's double accumulation order.
-    std::vector<uint32_t> candidates;
-    candidates.reserve(96);
+    candidates.clear();
     for (int32_t y = cell_y - 1; y < cell_y + 1; ++y) {
         for (int32_t dx = -2; dx <= 2; ++dx) {
             for (int32_t dz = -2; dz <= 2; ++dz) {
@@ -233,6 +233,9 @@ extern "C" int32_t jpe_cpp_blend_density_volume(
         std::unordered_map<Coord, std::vector<uint32_t>, CoordHash> spatial;
         spatial.reserve(points.size() * 2U + 1U);
         for (uint32_t i = 0; i < points.size(); ++i) spatial[points[i].coord].push_back(i);
+        // Reuse candidate scratch across every voxel; no per-sample heap allocation.
+        std::vector<uint32_t> candidates;
+        candidates.reserve(96);
 
         // Match DensityVolume.indexUnchecked: ((z * sizeX + x) * sizeY + y).
         // All coordinate arithmetic is performed here, with Java int wrap semantics.
@@ -244,7 +247,7 @@ extern "C" int32_t jpe_cpp_blend_density_volume(
                 for (uint32_t y = 0; y < size_y; ++y, ++index) {
                     const int32_t block_y = wrapped_coordinate(min_y, y, step_y);
                     outputs[index] = blend_one(block_x, block_y, block_z, noise_values[index],
-                                                height_index, spatial, points);
+                                                height_index, spatial, points, candidates);
                 }
             }
         }
