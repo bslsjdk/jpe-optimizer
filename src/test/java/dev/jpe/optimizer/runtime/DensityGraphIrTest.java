@@ -32,7 +32,17 @@ class DensityGraphIrTest {
         ), 2, 0x5ABL);
 
         assertEquals(DensityGraphIr.SUB, graph.nodes().get(2).opcode());
-        assertEquals(5, DensityGraphIr.VERSION);
+        assertEquals(6, DensityGraphIr.VERSION);
+    }
+
+    @Test
+    void acceptsFloat32DivisionOpcode() {
+        DensityGraphIr graph = new DensityGraphIr(List.of(
+                DensityGraphIr.Node.constant(8.0), DensityGraphIr.Node.constant(2.0),
+                DensityGraphIr.Node.divide(0, 1)
+        ), 2, 0xD1L);
+        assertEquals(DensityGraphIr.DIV, graph.nodes().get(2).opcode());
+        assertEquals(6, DensityGraphIr.VERSION);
     }
 
     @Test

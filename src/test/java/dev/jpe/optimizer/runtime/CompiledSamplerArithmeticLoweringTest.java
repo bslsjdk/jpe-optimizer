@@ -60,6 +60,24 @@ class CompiledSamplerArithmeticLoweringTest {
     }
 
     @Test
+    void lowersConstantLeftDivisionWithoutReversingOperands() {
+        CompiledSamplerGraphIr.Graph graph = new CompiledSamplerGraphIr.Graph(List.of(
+                node(0, CompiledSamplerGraphIr.Op.CONST_DIV_LEFT, List.of(1), Map.of("left", "12.0")),
+                node(1, CompiledSamplerGraphIr.Op.OPAQUE, List.of(), Map.of())
+        ), 0, 0);
+        CompiledSamplerArithmeticIslands.Island island =
+                CompiledSamplerArithmeticIslands.plan(graph).islands().get(0);
+        CompiledSamplerArithmeticLowering.LoweredIsland lowered =
+                CompiledSamplerArithmeticLowering.lower(graph, island, 0xD1);
+        assertEquals(List.of(1), lowered.inputSourceNodeIds());
+        assertEquals(DensityGraphIr.INPUT, lowered.graph().nodes().get(0).opcode());
+        assertEquals(DensityGraphIr.CONST, lowered.graph().nodes().get(1).opcode());
+        assertEquals(DensityGraphIr.DIV, lowered.graph().nodes().get(2).opcode());
+        assertEquals(1, lowered.graph().nodes().get(2).inputA());
+        assertEquals(0, lowered.graph().nodes().get(2).inputB());
+    }
+
+    @Test
     void lowersAllOutputsOfOneSharedArithmeticIsland() {
         CompiledSamplerGraphIr.Graph graph = new CompiledSamplerGraphIr.Graph(List.of(
                 node(0, CompiledSamplerGraphIr.Op.ADD, List.of(1, 2), Map.of()),

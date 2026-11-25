@@ -155,6 +155,11 @@ public final class CompiledSamplerArithmeticLowering {
                     int constant = appendConstant(lowered, node, "right");
                     lowered.add(DensityGraphIr.Node.multiply(input, constant));
                 }
+                case CONST_DIV_LEFT -> {
+                    int input = resolveOnlyChild(node, members, nativeIndex, inputSlot);
+                    int constant = appendConstant(lowered, node, "left");
+                    lowered.add(DensityGraphIr.Node.divide(constant, input));
+                }
                 default -> throw new IllegalArgumentException("Unsupported sampler operation " + node.op());
             }
             nativeIndex.put(sourceId, lowered.size() - 1);
@@ -232,6 +237,7 @@ public final class CompiledSamplerArithmeticLowering {
                 || op == CompiledSamplerGraphIr.Op.SUB
                 || op == CompiledSamplerGraphIr.Op.CONST_ADD_RIGHT
                 || op == CompiledSamplerGraphIr.Op.CONST_SUB_LEFT
-                || op == CompiledSamplerGraphIr.Op.CONST_MUL_RIGHT;
+                || op == CompiledSamplerGraphIr.Op.CONST_MUL_RIGHT
+                || op == CompiledSamplerGraphIr.Op.CONST_DIV_LEFT;
     }
 }

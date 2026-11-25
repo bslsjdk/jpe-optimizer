@@ -1,4 +1,4 @@
-# Native density graph IR v4
+# Native density graph IR v6
 
 Status: design contract only. No Minecraft density graph is executed by this IR yet. The native backend must remain opt-in until the exact-output and real-worldgen gates below pass.
 
@@ -407,3 +407,10 @@ Incomplete captures with dropped nodes and graphs with missing/duplicate node re
 The final-density fill boundary now has a separate shadow-only parity hook. Set both a valid jpe.nativeLibraryPath and -Djpe.verifyCompiledSamplerParity=true to enable it. The hook loads the existing shared Native runtime without enabling the Perlin interception switch, captures the real bound sampler graph once, chooses the largest nontrivial eligible arithmetic island, lowers and compiles it, resolves its external inputs using the current DensitySampler.Bound context and DensityVolume, and compares every output float bit-for-bit with the original Java sampler.
 
 Only one island is attempted per JVM to cap diagnostic overhead. A missing library, unsupported graph, oversized staging request, Native error, or parity mismatch is logged and does not affect block placement; the original Java density sampler remains authoritative. The hook is disabled by default and does not change the normal jpe.nativePerlinEnabled setting. This is the first live execution path for the arithmetic-island primitive, but it is a diagnostic comparison only, not a production Native worldgen replacement.
+
+
+### Float32 division and multi-island parity (IR v6)
+
+The compiled sampler `ConstDivSampler` is classified as `CONST_DIV_LEFT` and may join pure arithmetic islands. Its constant numerator is emitted before the external sampler denominator, and the native `DIV` opcode performs IEEE-754 float32 division in that exact operand order. Unlike ordinary `DivSampler`, this constant-specialized node has no left-zero short-circuit. Native tests cover finite and negative results, division by positive zero, and `0/0` NaN.
+
+The real-worldgen shadow verifier now visits every lowerable non-constant arithmetic island, not only the largest island. A single per-volume boundary-input resolver is shared across those islands so an identical external sampler is sampled only once. Aggregate input and output staging remains capped at 64 MiB. Each island is compared bit-for-bit against its original Java sampler; failures are isolated and never affect authoritative Java block placement.

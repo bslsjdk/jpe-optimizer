@@ -28,6 +28,21 @@ public final class CompiledSamplerNativeParity {
                                 int sizeX, int sizeY, int sizeZ,
                                 int minX, int minY, int minZ,
                                 int stepX, int stepY, int stepZ) {
+        return verify(executable, captured, island, bound, volume,
+                new CompiledSamplerExternalInputs(bound, volume), 0L,
+                sizeX, sizeY, sizeZ, minX, minY, minZ, stepX, stepY, stepZ);
+    }
+
+    /** Reuses boundary samples across multiple islands belonging to one live volume. */
+    public static Report verify(NativeRuntime.NativeDensityGraph executable,
+                                CompiledSamplerGraphTrace.CapturedGraph captured,
+                                CompiledSamplerArithmeticLowering.LoweredIsland island,
+                                DensitySampler.Bound bound, DensityVolume volume,
+                                CompiledSamplerExternalInputs externalInputs,
+                                long priorOutputFloats,
+                                int sizeX, int sizeY, int sizeZ,
+                                int minX, int minY, int minZ,
+                                int stepX, int stepY, int stepZ) {
         Objects.requireNonNull(executable, "executable");
         Objects.requireNonNull(captured, "captured");
         Objects.requireNonNull(island, "island");
@@ -41,11 +56,16 @@ public final class CompiledSamplerNativeParity {
             throw new IllegalArgumentException("Parity staging exceeds the 64 MiB input/output budget");
         }
 
-        CompiledSamplerExternalInputs externalInputs = new CompiledSamplerExternalInputs(bound, volume);
+        Objects.requireNonNull(externalInputs, "externalInputs");
+        float[][] inputs = externalInputs.resolve(captured, island);
+        long outputStaging = Math.addExact(priorOutputFloats, outputFloats);
+        if (Math.addExact(externalInputs.stagedFloatCount(), outputStaging) > 16_777_216L) {
+            throw new IllegalArgumentException("Combined multi-island parity staging exceeds the 64 MiB budget");
+        }
         float[][] actual = new float[island.outputSourceNodeIds().size()][];
         for (int i = 0; i < actual.length; ++i) actual[i] = new float[sampleCount];
-        externalInputs.evaluate(executable, captured, island,
-                sizeX, sizeY, sizeZ, minX, minY, minZ, stepX, stepY, stepZ, actual);
+        island.evaluate(executable, sizeX, sizeY, sizeZ,
+                minX, minY, minZ, stepX, stepY, stepZ, inputs, actual);
 
         long compared = 0;
         long mismatches = 0;

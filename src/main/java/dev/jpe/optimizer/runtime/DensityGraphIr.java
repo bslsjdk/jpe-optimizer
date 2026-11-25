@@ -5,11 +5,11 @@ import java.util.Objects;
 
 /** Compact, topologically ordered density graph transport model. */
 public final class DensityGraphIr {
-    public static final int VERSION = 5;
+    public static final int VERSION = 6;
     public static final int MAX_NODES = 65_536;
     public static final int NO_INPUT = -1;
 
-    public static final int CONST = 1, X = 2, Y = 3, Z = 4, ADD = 5, MUL = 6, OPAQUE = 7, SUB = 8, INPUT = 9;
+    public static final int CONST = 1, X = 2, Y = 3, Z = 4, ADD = 5, MUL = 6, OPAQUE = 7, SUB = 8, INPUT = 9, DIV = 10;
 
     public record Node(int opcode, int inputA, int inputB, double immediate) {
         public static Node constant(double value) { return new Node(CONST, NO_INPUT, NO_INPUT, value); }
@@ -19,6 +19,7 @@ public final class DensityGraphIr {
         public static Node add(int left, int right) { return new Node(ADD, left, right, 0.0); }
         public static Node multiply(int left, int right) { return new Node(MUL, left, right, 0.0); }
         public static Node subtract(int left, int right) { return new Node(SUB, left, right, 0.0); }
+        public static Node divide(int numerator, int denominator) { return new Node(DIV, numerator, denominator, 0.0); }
         /** Reads one external float32 volume, indexed by the non-negative input slot. */
         public static Node input(int inputIndex) {
             if (inputIndex < 0 || inputIndex > 255) throw new IllegalArgumentException("Input index must be in [0, 255]");
@@ -115,7 +116,7 @@ public final class DensityGraphIr {
                         throw new IllegalArgumentException("Opaque node " + i + " has invalid child references");
                     }
                 }
-                case ADD, MUL, SUB -> {
+                case ADD, MUL, SUB, DIV -> {
                     if (node.inputA() < 0 || node.inputA() >= i
                             || node.inputB() < 0 || node.inputB() >= i) {
                         throw new IllegalArgumentException("Binary node " + i

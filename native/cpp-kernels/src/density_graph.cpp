@@ -122,6 +122,7 @@ void build_execution_plan(CompiledGraph& graph) {
             case JPE_DENSITY_ADD:
             case JPE_DENSITY_MUL:
             case JPE_DENSITY_SUB:
+            case JPE_DENSITY_DIV:
                 graph.arithmetic.push_back({node.opcode, node.input_a, node.input_b, i});
                 break;
             default:
@@ -231,7 +232,7 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
     const JpeDensityNode* nodes, uint32_t node_count, uint32_t root_node,
     uint32_t ir_version, uint64_t configuration_fingerprint
 ) try {
-    if (ir_version != 5 || !valid_graph(nodes, node_count, root_node)) return 0;
+    if (ir_version != 6 || !valid_graph(nodes, node_count, root_node)) return 0;
     const uint64_t fingerprint = hash_graph(nodes, node_count, root_node, ir_version, configuration_fingerprint);
     std::lock_guard<std::mutex> lock(g_mutex);
     const auto range = g_cache.equal_range(fingerprint);
@@ -481,9 +482,13 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
                 for (uint32_t sample = 0; sample < count; ++sample) {
                     destination[sample] = left[sample] * right[sample];
                 }
-            } else {
+            } else if (instruction.opcode == JPE_DENSITY_SUB) {
                 for (uint32_t sample = 0; sample < count; ++sample) {
                     destination[sample] = left[sample] - right[sample];
+                }
+            } else {
+                for (uint32_t sample = 0; sample < count; ++sample) {
+                    destination[sample] = left[sample] / right[sample];
                 }
             }
         }
@@ -573,6 +578,9 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_scalar_reference(
                             break;
                         case JPE_DENSITY_MUL:
                             values[n] = values[node.input_a] * values[node.input_b];
+                            break;
+                        case JPE_DENSITY_DIV:
+                            values[n] = values[node.input_a] / values[node.input_b];
                             break;
                         default: return 1;
                     }

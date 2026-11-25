@@ -111,6 +111,7 @@ public final class CompiledSamplerArithmeticIslands {
                 || op == CompiledSamplerGraphIr.Op.SUB
                 || op == CompiledSamplerGraphIr.Op.CONST_ADD_RIGHT
                 || op == CompiledSamplerGraphIr.Op.CONST_SUB_LEFT
-                || op == CompiledSamplerGraphIr.Op.CONST_MUL_RIGHT;
+                || op == CompiledSamplerGraphIr.Op.CONST_MUL_RIGHT
+                || op == CompiledSamplerGraphIr.Op.CONST_DIV_LEFT;
     }
 }

@@ -108,59 +108,66 @@ public final class CompiledSamplerGraphDiagnostics {
             CompiledSamplerArithmeticIslands.Plan plan = CompiledSamplerArithmeticIslands.plan(graph);
             java.util.Map<Integer, CompiledSamplerGraphIr.Node> nodesById = new java.util.HashMap<>();
             for (CompiledSamplerGraphIr.Node node : graph.nodes()) nodesById.put(node.id(), node);
-            CompiledSamplerArithmeticIslands.Island selected = plan.islands().stream()
+            java.util.List<CompiledSamplerArithmeticIslands.Island> candidates = plan.islands().stream()
                     .filter(island -> !island.outputNodeIds().isEmpty())
-                    .filter(island -> island.nodeIds().stream().anyMatch(id -> {
-                        CompiledSamplerGraphIr.Op op = nodesById.get(id).op();
-                        return op != CompiledSamplerGraphIr.Op.CONSTANT;
-                    }))
-                    .max(java.util.Comparator.comparingInt(island -> island.nodeIds().size()))
-                    .orElse(null);
+                    .filter(island -> island.nodeIds().stream().anyMatch(id ->
+                            nodesById.get(id).op() != CompiledSamplerGraphIr.Op.CONSTANT))
+                    .toList();
             EnumMap<CompiledSamplerGraphIr.Op, Integer> parityOpCounts =
                     new EnumMap<>(CompiledSamplerGraphIr.Op.class);
             for (CompiledSamplerGraphIr.Node node : graph.nodes()) {
                 parityOpCounts.merge(node.op(), 1, Integer::sum);
             }
             LOGGER.log(System.Logger.Level.INFO,
-                    "Native sampler parity graph: nodes={0}, ops={1}, islands={2}, eligibleNodes={3}, boundaryNodes={4}, selectedIsland={5}",
+                    "Native sampler parity graph: nodes={0}, ops={1}, islands={2}, eligibleNodes={3}, boundaryNodes={4}, candidateIslands={5}",
                     graph.nodes().size(), parityOpCounts, plan.islands().size(),
-                    plan.eligibleNodeCount(), plan.boundaryNodeCount(),
-                    selected == null ? "none" : selected.id());
-            if (selected != null) {
-                java.util.ArrayList<String> selectedOps = new java.util.ArrayList<>();
-                for (int id : selected.nodeIds()) {
-                    CompiledSamplerGraphIr.Node node = nodesById.get(id);
-                    selectedOps.add(node.op() + ":" + node.sourceClass());
-                }
-                LOGGER.log(System.Logger.Level.INFO,
-                        "Native sampler parity island[{0}]: nodes={1}, inputs={2}, outputs={3}, operations={4}",
-                        selected.id(), selected.nodeIds().size(), selected.externalInputs().size(),
-                        selected.outputNodeIds().size(), selectedOps);
-            }
-            if (selected == null) {
+                    plan.eligibleNodeCount(), plan.boundaryNodeCount(), candidates.size());
+            if (candidates.isEmpty()) {
                 LOGGER.log(System.Logger.Level.WARNING,
-                        "Native sampler parity found no eligible arithmetic island; nodes={0}, boundaries={1}",
+                        "Native sampler parity found no eligible arithmetic islands; nodes={0}, boundaries={1}",
                         graph.nodes().size(), plan.boundaryNodeCount());
                 return;
             }
 
             long fingerprint = Long.parseUnsignedLong(semanticFingerprint.substring(0, 16), 16);
-            CompiledSamplerArithmeticLowering.LoweredIsland lowered =
-                    CompiledSamplerArithmeticLowering.lower(graph, selected, fingerprint);
-            try (NativeRuntime.NativeDensityGraph executable = runtime.compileDensityGraph(lowered.graph())) {
-                CompiledSamplerNativeParity.Report report = CompiledSamplerNativeParity.verify(
-                        executable, captured, lowered, bound, volume,
-                        volume.sizeX(), volume.sizeY(), volume.sizeZ(),
-                        volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
-                        volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ());
-                JPEOptimizer.LOGGER.info(
-                        "JPE_NATIVE_SAMPLER_PARITY exact={} outputs={} samplesPerOutput={} compared={} mismatches={} firstOutput={} firstSample={} expectedBits=0x{} actualBits=0x{} islandNodes={} graphFingerprint={}",
-                        report.exact(), report.outputCount(), report.samplesPerOutput(),
-                        report.comparedValues(), report.mismatches(), report.firstOutputIndex(),
-                        report.firstSampleIndex(), Integer.toHexString(report.expectedBits()),
-                        Integer.toHexString(report.actualBits()), selected.nodeIds().size(),
-                        semanticFingerprint);
+            CompiledSamplerExternalInputs sharedInputs = new CompiledSamplerExternalInputs(bound, volume);
+            long priorOutputFloats = 0L;
+            long compared = 0L;
+            long mismatches = 0L;
+            int testedIslands = 0;
+            int failedIslands = 0;
+            for (CompiledSamplerArithmeticIslands.Island candidate : candidates) {
+                try {
+                    CompiledSamplerArithmeticLowering.LoweredIsland lowered =
+                            CompiledSamplerArithmeticLowering.lower(graph, candidate, fingerprint);
+                    try (NativeRuntime.NativeDensityGraph executable = runtime.compileDensityGraph(lowered.graph())) {
+                        CompiledSamplerNativeParity.Report report = CompiledSamplerNativeParity.verify(
+                                executable, captured, lowered, bound, volume, sharedInputs, priorOutputFloats,
+                                volume.sizeX(), volume.sizeY(), volume.sizeZ(),
+                                volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
+                                volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ());
+                        priorOutputFloats = Math.addExact(priorOutputFloats,
+                                Math.multiplyExact((long) report.outputCount(), report.samplesPerOutput()));
+                        compared = Math.addExact(compared, report.comparedValues());
+                        mismatches = Math.addExact(mismatches, report.mismatches());
+                        testedIslands++;
+                        JPEOptimizer.LOGGER.info(
+                                "JPE_NATIVE_SAMPLER_PARITY_ISLAND id={} exact={} outputs={} samplesPerOutput={} compared={} mismatches={} islandNodes={} externalInputs={} graphFingerprint={}",
+                                candidate.id(), report.exact(), report.outputCount(), report.samplesPerOutput(),
+                                report.comparedValues(), report.mismatches(), candidate.nodeIds().size(),
+                                candidate.externalInputs().size(), semanticFingerprint);
+                    }
+                } catch (RuntimeException | LinkageError islandFailure) {
+                    failedIslands++;
+                    LOGGER.log(System.Logger.Level.WARNING,
+                            "Native sampler parity island[{0}] failed in shadow mode; continuing with other islands: {1}",
+                            candidate.id(), islandFailure.toString());
+                }
             }
+            JPEOptimizer.LOGGER.info(
+                    "JPE_NATIVE_SAMPLER_PARITY_SUMMARY testedIslands={} failedIslands={} compared={} mismatches={} sharedBoundarySamplers={} sharedInputFloats={} outputFloats={} graphFingerprint={}",
+                    testedIslands, failedIslands, compared, mismatches, sharedInputs.distinctSamplerCount(),
+                    sharedInputs.stagedFloatCount(), priorOutputFloats, semanticFingerprint);
         } catch (RuntimeException | LinkageError failure) {
             LOGGER.log(System.Logger.Level.WARNING,
                     "Native sampler parity failed in shadow mode; Java worldgen remains authoritative: {0}",
