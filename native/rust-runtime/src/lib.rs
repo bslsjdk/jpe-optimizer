@@ -21,7 +21,6 @@ const QUEUE_CAPACITY: usize = 16;
 const MAX_TRACKED_JOBS: usize = 32;
 
 #[repr(C)]
-#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct JpeDensityNode {
     pub opcode: u32,
