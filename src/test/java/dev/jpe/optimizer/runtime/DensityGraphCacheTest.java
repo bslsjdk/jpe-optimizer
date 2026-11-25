@@ -118,30 +118,34 @@ class DensityGraphCacheTest {
         reorderedValues.put("left", "9.0");
         reorderedValues.put("right", "2.5");
         var first = new CompiledSamplerGraphIr.Graph(java.util.List.of(
-                new CompiledSamplerGraphIr.Node(0, CompiledSamplerGraphIr.Op.CONST_SUB_LEFT,
-                        "sampler.ConstSub", java.util.List.of(1), java.util.List.of(), firstValues, "diagnostic A"),
+                new CompiledSamplerGraphIr.Node(0, CompiledSamplerGraphIr.Op.ADD,
+                        "sampler.Add", java.util.List.of(1, 2), java.util.List.of(), java.util.Map.of(), ""),
                 new CompiledSamplerGraphIr.Node(1, CompiledSamplerGraphIr.Op.OPAQUE,
-                        "sampler.Noise", java.util.List.of(), java.util.List.of(), java.util.Map.of(), "")
+                        "sampler.InputA", java.util.List.of(), java.util.List.of(), firstValues, "diagnostic A"),
+                new CompiledSamplerGraphIr.Node(2, CompiledSamplerGraphIr.Op.OPAQUE,
+                        "sampler.InputB", java.util.List.of(), java.util.List.of(), java.util.Map.of(), "")
         ), 0, 0);
         var sameSemantics = new CompiledSamplerGraphIr.Graph(java.util.List.of(
-                new CompiledSamplerGraphIr.Node(0, CompiledSamplerGraphIr.Op.CONST_SUB_LEFT,
-                        "sampler.ConstSub", java.util.List.of(1), java.util.List.of(), reorderedValues, "diagnostic B"),
+                new CompiledSamplerGraphIr.Node(0, CompiledSamplerGraphIr.Op.ADD,
+                        "sampler.Add", java.util.List.of(1, 2), java.util.List.of(), java.util.Map.of(), ""),
                 new CompiledSamplerGraphIr.Node(1, CompiledSamplerGraphIr.Op.OPAQUE,
-                        "sampler.Noise", java.util.List.of(), java.util.List.of(), java.util.Map.of(), "")
-        ), 0, 0);
-        var reversed = new CompiledSamplerGraphIr.Graph(java.util.List.of(
-                new CompiledSamplerGraphIr.Node(0, CompiledSamplerGraphIr.Op.CONST_SUB_LEFT,
-                        "sampler.ConstSub", java.util.List.of(2), java.util.List.of(), reorderedValues, ""),
-                new CompiledSamplerGraphIr.Node(1, CompiledSamplerGraphIr.Op.OPAQUE,
-                        "sampler.Noise", java.util.List.of(), java.util.List.of(), java.util.Map.of(), ""),
+                        "sampler.InputA", java.util.List.of(), java.util.List.of(), reorderedValues, "diagnostic B"),
                 new CompiledSamplerGraphIr.Node(2, CompiledSamplerGraphIr.Op.OPAQUE,
-                        "sampler.OtherNoise", java.util.List.of(), java.util.List.of(), java.util.Map.of(), "")
+                        "sampler.InputB", java.util.List.of(), java.util.List.of(), java.util.Map.of(), "")
+        ), 0, 0);
+        var reversedOperands = new CompiledSamplerGraphIr.Graph(java.util.List.of(
+                new CompiledSamplerGraphIr.Node(0, CompiledSamplerGraphIr.Op.ADD,
+                        "sampler.Add", java.util.List.of(2, 1), java.util.List.of(), java.util.Map.of(), ""),
+                new CompiledSamplerGraphIr.Node(1, CompiledSamplerGraphIr.Op.OPAQUE,
+                        "sampler.InputA", java.util.List.of(), java.util.List.of(), reorderedValues, ""),
+                new CompiledSamplerGraphIr.Node(2, CompiledSamplerGraphIr.Op.OPAQUE,
+                        "sampler.InputB", java.util.List.of(), java.util.List.of(), java.util.Map.of(), "")
         ), 0, 0);
 
         assertEquals(CompiledSamplerGraphIr.semanticFingerprint(first),
                 CompiledSamplerGraphIr.semanticFingerprint(sameSemantics));
         assertNotEquals(CompiledSamplerGraphIr.semanticFingerprint(first),
-                CompiledSamplerGraphIr.semanticFingerprint(reversed));
+                CompiledSamplerGraphIr.semanticFingerprint(reversedOperands));
     }
 
     @Test
