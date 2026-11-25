@@ -108,7 +108,8 @@ inline void perlin_evaluate_8_avx2(
 __attribute__((target("avx2")))
 inline void perlin_evaluate_8_avx2_independent(
     const float* relative_y, const float* alpha_y, float* output,
-    const float corner_xz[8][8], const float corner_y[8][8],
+    const float unique_corner_xz[8][8], const float unique_corner_y[8][8],
+    const int32_t lane_unique_offsets[8],
     float alpha_x, float alpha_z, float amplitude
 ) noexcept {
     const __m256 ry = _mm256_loadu_ps(relative_y);
@@ -118,10 +119,14 @@ inline void perlin_evaluate_8_avx2_independent(
     const __m256 az = _mm256_set1_ps(alpha_z);
     const __m256 amp = _mm256_set1_ps(amplitude);
     const __m256 ry1 = _mm256_sub_ps(ry, one);
+    const __m256i lane_offsets = _mm256_loadu_si256(
+        reinterpret_cast<const __m256i*>(lane_unique_offsets));
     __m256 values[8];
     for (int i = 0; i < 8; ++i) {
-        const __m256 cx = _mm256_loadu_ps(corner_xz[i]);
-        const __m256 cy = _mm256_loadu_ps(corner_y[i]);
+        const __m256i gather_offsets = _mm256_add_epi32(
+            lane_offsets, _mm256_set1_epi32(i));
+        const __m256 cx = _mm256_i32gather_ps(&unique_corner_xz[0][0], gather_offsets, 4);
+        const __m256 cy = _mm256_i32gather_ps(&unique_corner_y[0][0], gather_offsets, 4);
         const __m256 relative = (i == 2 || i == 3 || i == 6 || i == 7) ? ry1 : ry;
         values[i] = _mm256_add_ps(cx, _mm256_mul_ps(cy, relative));
     }
@@ -328,7 +333,7 @@ int32_t perlin_add_volume_impl(
                             float unique_corner_xz[8][8];
                             float unique_corner_y[8][8];
                             int32_t unique_floors[8];
-                            uint8_t lane_unique_index[8];
+                            int32_t lane_unique_offsets[8];
                             uint32_t unique_count = 0;
                             for (uint32_t lane = 0; lane < 8; ++lane) {
                                 const int32_t lane_floor = y_floors[iy + lane];
@@ -363,21 +368,12 @@ int32_t perlin_add_volume_impl(
                                            unique_corner_xz[unique_count][7], unique_corner_y[unique_count][7]);
                                     ++unique_count;
                                 }
-                                lane_unique_index[lane] = static_cast<uint8_t>(unique_index);
-                            }
-                            float lane_corner_xz[8][8];
-                            float lane_corner_y[8][8];
-                            for (uint32_t corner_index = 0; corner_index < 8; ++corner_index) {
-                                for (uint32_t lane = 0; lane < 8; ++lane) {
-                                    const uint32_t unique_index = lane_unique_index[lane];
-                                    lane_corner_xz[corner_index][lane] = unique_corner_xz[unique_index][corner_index];
-                                    lane_corner_y[corner_index][lane] = unique_corner_y[unique_index][corner_index];
-                                }
+                                lane_unique_offsets[lane] = static_cast<int32_t>(unique_index * 8U);
                             }
                             perlin_evaluate_8_avx2_independent(
                                 y_relative.data() + iy, y_alpha.data() + iy,
-                                output + base + iy, lane_corner_xz, lane_corner_y,
-                                alpha_x, alpha_z, amplitude);
+                                output + base + iy, unique_corner_xz, unique_corner_y,
+                                lane_unique_offsets, alpha_x, alpha_z, amplitude);
                             iy += 8;
                             continue;
                         }
