@@ -53,10 +53,12 @@ public final class DensityGraphCapture {
         unsupported(source, reason, new Object[0]);
     }
 
-    /** Captures up to two child dependencies even when the operation itself is unknown. */
+    /** Captures all child dependencies, including n-ary nodes with unknown semantics. */
     public void unsupported(Object source, String reason, Object... children) {
         Objects.requireNonNull(children, "children");
-        if (children.length > 2) throw new IllegalArgumentException("Opaque IR currently supports at most two child edges");
+        if (children.length > DensityGraphIr.MAX_NODES) {
+            throw new IllegalArgumentException("Opaque dependency list exceeds the IR limit");
+        }
         ArrayList<Object> copied = new ArrayList<>(children.length);
         for (Object child : children) {
             Objects.requireNonNull(child, "opaque child");
@@ -158,8 +160,10 @@ public final class DensityGraphCapture {
             nodes.add(node);
             indices.put(source, index);
             if (value instanceof Unsupported unsupported) {
+                List<Integer> childIndices = unsupported.children().stream()
+                        .map(indices::get).toList();
                 diagnostics.add(new DensityGraphIr.Diagnostic(
-                        index, source.getClass().getName(), unsupported.reason()));
+                        index, source.getClass().getName(), unsupported.reason(), childIndices));
             }
             stack.pop();
         }
