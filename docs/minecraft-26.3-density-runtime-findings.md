@@ -58,6 +58,19 @@ This confirms the split required by the native design:
 
 Do not serialize a context-bound sampler or a particular chunk's coordinates as if they were reusable graph structure.
 
+## Generic child discovery through rewriteChildren
+
+The `DensityFunction` interface exposes `rewriteChildren(DfRewriteRule)`. The audited implementations call the supplied rule on their direct child functions and return the original node when the rule returns those same child objects. For example, `BinaryFunction` passes both `left` and `right`; `NoiseFunction` passes `shiftX`, `shiftY`, and `shiftZ`.
+
+This gives the capture adapter a better discovery mechanism than reflecting over arbitrary fields:
+
+1. Supply an identity rewrite rule that records each child and returns that exact child unchanged.
+2. Traverse the discovered children iteratively with identity-based cycle/shared-node tracking.
+3. Lower known node classes only when their operation and parameters have exact adapters.
+4. Preserve every discovered child of unknown nodes in the experimental OPAQUE diagnostic sidecar.
+
+This is especially useful for modded/custom density nodes: if their `rewriteChildren` implementation correctly reports dependencies, the experiment can still preserve their graph structure even when their evaluation semantics are unknown. A node that hides dependencies or violates this contract remains a known capture limitation and must be diagnosed.
+
 ## Density node layouts verified from bytecode
 
 The audited concrete node records expose these fields:
