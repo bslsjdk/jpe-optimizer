@@ -119,10 +119,10 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                                 // clear the fluid-update flag and return null for positive density.
                                 noiseAquifer.jpe$setShouldScheduleFluidUpdate(false);
                                 state = defaultBlock;
-                                ++aquiferCallsSkipped;
+                                if (profile) ++aquiferCallsSkipped;
                             } else {
                                 state = aquifer.computeSubstance(worldX, blockY, blockZ, density);
-                                ++aquiferCallsExecuted;
+                                if (profile) ++aquiferCallsExecuted;
                             }
                             if (sampleTiming) {
                                 sampledAquiferNanos += System.nanoTime() - aquiferStart;
