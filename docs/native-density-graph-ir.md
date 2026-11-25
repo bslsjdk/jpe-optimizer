@@ -330,3 +330,17 @@ The Java lowering result retains every source output in stable island order and 
 The bridge limits each volume to 1,048,576 samples, each input/output count to 256, and combined external-input plus output staging to 16,777,216 float values (64 MiB). Java validates array lengths and the same combined budget before copying; Rust and C++ validate the ABI arguments again. Output layout is output-major: `outputs[rootIndex * volumeLength + sampleIndex]`. This is still a synchronous FFM staging path, not zero-copy access to Java heap arrays.
 
 This primitive and its tests do not yet prove that Minecraft's live `DensitySampler` graph is executing natively. The sampler boundary providers, cache-cell semantics, context binding, and exact Java-vs-native volume parity still need to be connected and verified before world generation can use this path.
+
+
+## Live sampler boundary resolution
+
+A short-lived `CompiledSamplerGraphTrace.CapturedGraph` now retains the exact source sampler objects alongside the diagnostic node inventory. This is deliberately an ephemeral capture API; callers must not store it in static fields or persistent graph caches because sampler instances can retain world- and chunk-scoped context.
+
+`CompiledSamplerExternalInputs` resolves each lowered island input by source node ID and invokes the original `DensitySampler.sampleVolume(bound.context(), buffer, volume)` API. This is important for two special boundaries:
+
+- `ContextBoundSampler` selects its actual sampler through the supplied `SamplerContext`; the helper does not substitute the fallback sampler or inspect context internals.
+- `CachingDensitySampler` continues through `SamplerContext.sampleVolumeCached`, preserving Minecraft's cache-cell identity and volume lifetime behavior.
+
+The helper samples each distinct external sampler identity at most once for its lifetime, shares the resulting float array among island consumers, and enforces a 64 MiB input staging cap. A new helper must be created for each exact `DensitySampler.Bound` and `DensityVolume` pair. The convenience `evaluate` method then submits those full-volume inputs and all island roots through the multi-output native API.
+
+This is the first real bridge from captured compiled-sampler nodes to live Minecraft-produced input volumes. It is not yet wired into `NoiseBasedChunkGenerator.doFill`; doing so safely still requires a runtime library lifecycle, a nonzero world/settings graph fingerprint, output parity checks against the original Java samplers, and a fail-closed experimental switch before any block placement consumes native results.
