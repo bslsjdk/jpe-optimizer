@@ -78,7 +78,7 @@ The following require dedicated semantic work and must not be approximated as or
 - Y gradients with exact coordinate/endpoint behavior
 - registry-backed or mod-provided custom density functions
 
-Unknown nodes make the graph unsupported as a whole for that execution path unless a future explicit hybrid plan proves that a whole batch can safely cross back to Java. The first implementation should prefer full Java fallback over per-voxel Java callbacks.
+Unknown nodes have two deliberately separate behaviors. STRICT capture rejects them and remains suitable for exact parity work. EXPERIMENTAL capture preserves each unknown node as an explicit OPAQUE node with a Java-side diagnostic sidecar (runtime class and reason). Native accepts that opcode only with its experimental marker, emits quiet NaN for that node, and continues evaluating known ancestors and independent subgraphs. This is not an emulation of the unknown operation: NaN is a visible failure signal, not a guessed result. Experimental output must never be committed to a real chunk.
 
 ## Compilation and cache lifecycle
 
@@ -178,3 +178,12 @@ Observed caller/callee edges are deduplicated by object-identity node IDs, and b
 ### Semantic capture boundary
 
 `RuntimeDensityTrace` is diagnostic evidence only. `DensityGraphCapture` is the separate, explicit lowering API: adapters must register constants, coordinates, and supported binary operations with their actual operands. A missing adapter or any reachable unsupported node rejects the entire graph, allowing the caller to retain the Java implementation. This prevents observed call order from being mistaken for executable semantics.
+
+
+## Experimental native execution and extraction cost
+
+The capture API now has STRICT and EXPERIMENTAL modes. STRICT is the default. EXPERIMENTAL converts missing adapters and explicitly unsupported nodes into OPAQUE nodes; the C++ evaluator propagates NaN through dependent arithmetic while still executing unrelated known nodes. The Java IR retains a diagnostic sidecar with the source class and reason, so the hot native node record stays compact. This is a deliberate failure-injection path, not a production fallback.
+
+Extraction uses identity-based memoization to preserve shared subgraphs, pre-sizes its node/index containers from the captured object count, and performs iterative post-order traversal rather than recursive calls. This avoids repeated collection growth and stack overflow on deeply nested density graphs. DensityGraphCapture.lastStats() exposes conversion nanoseconds, source object count, emitted node count, opaque node count, and unreachable object count. Those metrics let us measure the conversion phase separately from native compile/cache and volume evaluation.
+
+The current OPAQUE sentinel is intentionally a leaf placeholder. It does not yet serialize arbitrary child arity, runtime operands, branch guards, random state, or side-effect metadata. The next semantic-capture iteration must add those as explicit compact descriptors; do not interpret a NaN placeholder as a successful translation.
