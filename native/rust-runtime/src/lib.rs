@@ -143,9 +143,10 @@ pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate_multi_with_inputs(
     let volume = (size_x as u64).checked_mul(size_y as u64)
         .and_then(|v| v.checked_mul(size_z as u64));
     let Some(volume) = volume else { return STATUS_INVALID_ARGUMENT; };
+    let staged_count = input_count as u64 + output_count as u64;
     if volume == 0 || volume > 1_048_576
         || volume.checked_mul(output_count as u64) != Some(output_length)
-        || output_length > 16_777_216 {
+        || volume.checked_mul(staged_count).map_or(true, |n| n > 16_777_216) {
         return STATUS_INVALID_ARGUMENT;
     }
     unsafe {
