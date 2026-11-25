@@ -7,6 +7,16 @@
 #include <limits>
 #include <vector>
 
+static_assert(sizeof(JpePerlinLayer) == 56, "JpePerlinLayer C ABI size mismatch");
+static_assert(alignof(JpePerlinLayer) == 8, "JpePerlinLayer C ABI alignment mismatch");
+static_assert(offsetof(JpePerlinLayer, permutation) == 0, "JpePerlinLayer.permutation offset mismatch");
+static_assert(offsetof(JpePerlinLayer, offset_x) == 8, "JpePerlinLayer.offset_x offset mismatch");
+static_assert(offsetof(JpePerlinLayer, offset_y) == 16, "JpePerlinLayer.offset_y offset mismatch");
+static_assert(offsetof(JpePerlinLayer, offset_z) == 24, "JpePerlinLayer.offset_z offset mismatch");
+static_assert(offsetof(JpePerlinLayer, xz_scale) == 32, "JpePerlinLayer.xz_scale offset mismatch");
+static_assert(offsetof(JpePerlinLayer, y_scale) == 40, "JpePerlinLayer.y_scale offset mismatch");
+static_assert(offsetof(JpePerlinLayer, amplitude) == 48, "JpePerlinLayer.amplitude offset mismatch");
+
 namespace {
 constexpr int kGradientX[16] = {1,-1,1,-1,1,-1,1,-1,0,0,0,0,1,0,-1,0};
 constexpr int kGradientY[16] = {1,1,-1,-1,0,0,0,0,1,-1,1,-1,1,-1,1,-1};
