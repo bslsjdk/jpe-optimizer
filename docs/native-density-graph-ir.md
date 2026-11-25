@@ -1,4 +1,4 @@
-# Native density graph IR v2
+# Native density graph IR v3
 
 Status: design contract only. No Minecraft density graph is executed by this IR yet. The native backend must remain opt-in until the exact-output and real-worldgen gates below pass.
 
@@ -214,7 +214,7 @@ Seed handling must be split from graph identity. Do not put a world seed into th
 ### Minecraft 26.3 floating-point semantics
 
 Minecraft 26.3 evaluates Density Functions and noises using single-precision
-floating-point values, including intermediate operations. Native Density IR v2
+floating-point values, including intermediate operations. Native Density IR v3
 therefore rounds constants, coordinates, and every arithmetic result to IEEE-754
 float32 before downstream nodes consume them. The wire record still carries a
 64-bit immediate field for ABI alignment, but constants are converted to float32
@@ -236,3 +236,9 @@ the two native slots. The persistent Java IR cache format is v2 and stores this
 metadata; the IR version is v3 so old cache entries are invalidated. This
 preserves the complete observed dependency list for later adapter development
 without pretending the native sentinel evaluates the unknown operation.
+
+
+IR v3 keeps the v2 float32 evaluation rules and extends the Java diagnostic
+sidecar to retain every dependency index for n-ary OPAQUE nodes. The C++ hot
+node record remains unchanged; the native plan version field is now 3 so old
+IR-v2 plans cannot be mistaken for current plans.
