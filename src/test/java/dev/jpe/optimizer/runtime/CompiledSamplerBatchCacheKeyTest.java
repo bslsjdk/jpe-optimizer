@@ -82,8 +82,8 @@ class CompiledSamplerBatchCacheKeyTest {
     @Test
     void overlappingIslandsAreRejected() {
         var overlap = List.of(
-                new CompiledSamplerArithmeticIslands.Island(0, List.of(0), List.of(1, 2), List.of(0)),
-                new CompiledSamplerArithmeticIslands.Island(1, List.of(0), List.of(1, 2), List.of(0)));
+                new CompiledSamplerArithmeticIslands.Island(0, List.of(0), List.of(), List.of(0)),
+                new CompiledSamplerArithmeticIslands.Island(1, List.of(0), List.of(), List.of(0)));
         assertThrows(IllegalArgumentException.class,
                 () -> CompiledSamplerBatchCacheKey.create(identity(), graph(), overlap, 12648430L));
     }
