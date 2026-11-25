@@ -154,7 +154,7 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
     const JpeDensityNode* nodes, uint32_t node_count, uint32_t root_node,
     uint32_t ir_version, uint64_t configuration_fingerprint
 ) try {
-    if (ir_version != 1 || !valid_graph(nodes, node_count, root_node)) return 0;
+    if (ir_version != 2 || !valid_graph(nodes, node_count, root_node)) return 0;
     const uint64_t fingerprint = hash_graph(nodes, node_count, root_node, ir_version, configuration_fingerprint);
     std::lock_guard<std::mutex> lock(g_mutex);
     const auto range = g_cache.equal_range(fingerprint);
@@ -280,7 +280,7 @@ extern "C" uint64_t jpe_cpp_density_graph_load_cache(
             || !read_u64(bytes, offset, immediate_bits)) return 0;
         std::memcpy(&node.immediate, &immediate_bits, sizeof(immediate_bits));
     }
-    if (offset != payload_length || ir_version != 1 || !valid_graph(nodes.data(), count, root)) return 0;
+    if (offset != payload_length || ir_version != 2 || !valid_graph(nodes.data(), count, root)) return 0;
     return jpe_cpp_density_graph_compile(nodes.data(), count, root, ir_version, configuration);
 } catch (...) { return 0; }
 
@@ -302,25 +302,25 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate(
         graph = found->second;
     }
 
-    std::vector<double> values(graph->nodes.size());
+    std::vector<float> values(graph->nodes.size());
     uint64_t output_index = 0;
     for (uint32_t z = 0; z < size_z; ++z) {
-        const double world_z = static_cast<double>(wrapped_coordinate(min_z, z, step_z));
+        const float world_z = static_cast<float>(wrapped_coordinate(min_z, z, step_z));
         for (uint32_t x = 0; x < size_x; ++x) {
-            const double world_x = static_cast<double>(wrapped_coordinate(min_x, x, step_x));
+            const float world_x = static_cast<float>(wrapped_coordinate(min_x, x, step_x));
             for (uint32_t y = 0; y < size_y; ++y) {
-                const double world_y = static_cast<double>(wrapped_coordinate(min_y, y, step_y));
+                const float world_y = static_cast<float>(wrapped_coordinate(min_y, y, step_y));
                 for (size_t n = 0; n < graph->nodes.size(); ++n) {
                     const JpeDensityNode& node = graph->nodes[n];
                     switch (node.opcode) {
-                        case JPE_DENSITY_CONST: values[n] = node.immediate; break;
+                        case JPE_DENSITY_CONST: values[n] = static_cast<float>(node.immediate); break;
                         case JPE_DENSITY_X: values[n] = world_x; break;
                         case JPE_DENSITY_Y: values[n] = world_y; break;
                         case JPE_DENSITY_Z: values[n] = world_z; break;
                         case JPE_DENSITY_OPAQUE:
                             // Preserve graph execution around unknown semantics and expose the
                             // unsupported subgraph as NaN instead of inventing a value.
-                            values[n] = std::numeric_limits<double>::quiet_NaN();
+                            values[n] = std::numeric_limits<float>::quiet_NaN();
                             break;
                         case JPE_DENSITY_ADD:
                             values[n] = values[node.input_a] + values[node.input_b];
