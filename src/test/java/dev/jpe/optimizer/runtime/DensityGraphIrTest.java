@@ -42,7 +42,7 @@ class DensityGraphIrTest {
                 DensityGraphIr.Node.divide(0, 1)
         ), 2, 0xD1L);
         assertEquals(DensityGraphIr.DIV, graph.nodes().get(2).opcode());
-        assertEquals(6, DensityGraphIr.VERSION);
+        assertEquals(7, DensityGraphIr.VERSION);
     }
 
     @Test
