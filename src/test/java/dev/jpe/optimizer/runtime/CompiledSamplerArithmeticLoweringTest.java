@@ -117,6 +117,25 @@ class CompiledSamplerArithmeticLoweringTest {
     }
 
     @Test
+    void lowersMinecraftClampWithFloat32Bounds() {
+        CompiledSamplerGraphIr.Graph graph = new CompiledSamplerGraphIr.Graph(List.of(
+                node(0, CompiledSamplerGraphIr.Op.CLAMP, List.of(1),
+                        Map.of("min", "-0.0", "max", "0.75")),
+                node(1, CompiledSamplerGraphIr.Op.OPAQUE, List.of(), Map.of())
+        ), 0, 0);
+        CompiledSamplerArithmeticIslands.Island island =
+                CompiledSamplerArithmeticIslands.plan(graph).islands().get(0);
+        CompiledSamplerArithmeticLowering.LoweredIsland lowered =
+                CompiledSamplerArithmeticLowering.lower(graph, island, 0xC1A4);
+        DensityGraphIr.Node clamp = lowered.graph().nodes().get(lowered.graph().rootNode());
+        assertEquals(DensityGraphIr.CLAMP, clamp.opcode());
+        assertEquals(0, clamp.inputA());
+        assertEquals(DensityGraphIr.NO_INPUT, clamp.inputB());
+        long bits = Double.doubleToRawLongBits(clamp.immediate());
+        assertEquals(0x800000003f400000L, bits);
+    }
+
+    @Test
     void lowersAllOutputsOfOneSharedArithmeticIsland() {
         CompiledSamplerGraphIr.Graph graph = new CompiledSamplerGraphIr.Graph(List.of(
                 node(0, CompiledSamplerGraphIr.Op.ADD, List.of(1, 2), Map.of()),
