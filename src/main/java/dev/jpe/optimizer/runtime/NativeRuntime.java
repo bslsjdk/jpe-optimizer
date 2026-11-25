@@ -41,6 +41,7 @@ public final class NativeRuntime implements AutoCloseable {
     private final int workerCount;
     private final MethodHandle addF32;
     private final MethodHandle perlinAddVolume;
+    private final MethodHandle perlinAddStackHandle;
     private final MethodHandle submitPerlinVolume;
     private final MethodHandle submitPerlinStack;
     private final MethodHandle jobStatus;
@@ -115,13 +116,14 @@ public final class NativeRuntime implements AutoCloseable {
     }
 
     private NativeRuntime(MethodHandle configureWorkers, int workerCount,
-                          MethodHandle add, MethodHandle perlin, MethodHandle submit, MethodHandle submitStack,
+                          MethodHandle add, MethodHandle perlin, MethodHandle perlinStack, MethodHandle submit, MethodHandle submitStack,
                           MethodHandle status, MethodHandle wait,
                           MethodHandle cancel, MethodHandle release) {
         this.configureWorkers = configureWorkers;
         this.workerCount = workerCount;
         this.addF32 = add;
         this.perlinAddVolume = perlin;
+        this.perlinAddStackHandle = perlinStack;
         this.submitPerlinVolume = submit;
         this.submitPerlinStack = submitStack;
         this.jobStatus = status;
@@ -157,6 +159,14 @@ public final class NativeRuntime implements AutoCloseable {
                             ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
                             ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_DOUBLE,
                             ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_FLOAT,
+                            ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT));
+            MethodHandle perlinStack = linker.downcallHandle(
+                    lookup.find("jpe_runtime_perlin_add_stack").orElseThrow(() -> new IllegalStateException("Missing synchronous Perlin stack symbol")),
+                    FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                            ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                            ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
                             ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT));
             MethodHandle submit = linker.downcallHandle(
                     lookup.find("jpe_runtime_submit_perlin_volume").orElseThrow(() -> new IllegalStateException("Missing async Perlin submit symbol")),
@@ -197,7 +207,7 @@ public final class NativeRuntime implements AutoCloseable {
             int requestedWorkers = requestedNativeWorkers();
             int actualWorkers = (int) configureWorkers.invokeExact(requestedWorkers);
             if (actualWorkers < 1) throw new IllegalStateException("Unable to configure native workers: " + actualWorkers);
-            return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, submit, submitStack, status, wait, cancel, release);
+            return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, perlinStack, submit, submitStack, status, wait, cancel, release);
         } catch (Throwable failure) {
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
         }
@@ -273,6 +283,37 @@ public final class NativeRuntime implements AutoCloseable {
             copyPrefix(scratch.output, output, outputLength);
         } catch (Throwable failure) {
             throw rethrow("Native Perlin volume call failed", failure);
+        } finally {
+            if (scratch != null) scratch.release();
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    /** Executes an ordered Perlin stack synchronously on the calling Minecraft worldgen worker. */
+    public void perlinAddStack(List<PerlinLayer> layers,
+                               int sizeX, int sizeY, int sizeZ,
+                               int minX, int minY, int minZ,
+                               int stepX, int stepY, int stepZ,
+                               float[] output, boolean farLands) {
+        lifecycle.readLock().lock();
+        PerlinScratch scratch = null;
+        try {
+            ensureOpen();
+            int outputLength = validatePerlinStackInputs(layers, sizeX, sizeY, sizeZ,
+                    stepX, stepY, stepZ, output);
+            scratch = acquirePerlinScratch();
+            scratch.ensureStackCapacity(layers.size(), outputLength);
+            copyPrefix(output, outputLength, scratch.output);
+            writePerlinLayers(layers, scratch);
+            int status = (int) perlinAddStackHandle.invokeExact(
+                    scratch.layerDescriptors, layers.size(),
+                    sizeX, sizeY, sizeZ,
+                    minX, minY, minZ, stepX, stepY, stepZ,
+                    scratch.output, (long) outputLength, farLands ? 1 : 0);
+            checkStatus(status, "perlin-add-stack");
+            copyPrefix(scratch.output, output, outputLength);
+        } catch (Throwable failure) {
+            throw rethrow("Native Perlin stack call failed", failure);
         } finally {
             if (scratch != null) scratch.release();
             lifecycle.readLock().unlock();
