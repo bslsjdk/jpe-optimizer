@@ -69,6 +69,43 @@ JPE_API int32_t jpe_runtime_job_status(uint64_t job_id);
 JPE_API int32_t jpe_runtime_wait_job(uint64_t job_id, uint64_t timeout_nanos);
 JPE_API int32_t jpe_runtime_cancel_job(uint64_t job_id);
 JPE_API int32_t jpe_runtime_release_job(uint64_t job_id);
+
+/*
+ * Experimental density-graph IR v1. This additive API is not wired into Minecraft yet.
+ * Nodes are topologically ordered; inputs must reference earlier nodes.
+ * Volume output order is ((z * size_x + x) * size_y + y).
+ */
+typedef struct JpeDensityNode {
+    uint32_t opcode;
+    uint32_t input_a;
+    uint32_t input_b;
+    uint32_t reserved;
+    double immediate;
+} JpeDensityNode;
+enum {
+    JPE_DENSITY_CONST = 1,
+    JPE_DENSITY_X = 2,
+    JPE_DENSITY_Y = 3,
+    JPE_DENSITY_Z = 4,
+    JPE_DENSITY_ADD = 5,
+    JPE_DENSITY_MUL = 6
+};
+/* Returns a retained compiled-plan handle, or zero for an invalid graph. */
+JPE_API uint64_t jpe_runtime_density_graph_compile(
+    const JpeDensityNode *nodes, uint32_t node_count, uint32_t root_node,
+    uint64_t configuration_fingerprint
+);
+/* Evaluates the root over a complete volume. Coordinates use min + index * step. */
+JPE_API int32_t jpe_runtime_density_graph_evaluate(
+    uint64_t graph_handle,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    double *output, uint64_t output_length
+);
+/* Releases one retained handle. Active evaluations keep their immutable plan alive. */
+JPE_API int32_t jpe_runtime_density_graph_release(uint64_t graph_handle);
+
 #ifdef __cplusplus
 }
 #endif
