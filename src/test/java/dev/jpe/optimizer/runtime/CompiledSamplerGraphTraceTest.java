@@ -54,6 +54,13 @@ class CompiledSamplerGraphTraceTest {
         assertEquals("7", graph.nodes().get(1).scalarValues().get("id"));
         assertEquals(CompiledSamplerGraphIr.Op.CONTEXT_BOUNDARY, graph.nodes().get(2).op());
         assertEquals(CompiledSamplerGraphIr.Op.OPAQUE, graph.nodes().get(3).op());
+        assertEquals(CompiledSamplerGraphIr.Op.CONST_DIV_LEFT,
+                CompiledSamplerGraphIr.lower(new CompiledSamplerGraphTrace.Snapshot(
+                        java.util.List.of(new CompiledSamplerGraphTrace.NodeInfo(0,
+                                "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$ConstDivSampler",
+                                java.util.List.of(1), java.util.List.of(
+                                        new CompiledSamplerGraphTrace.ComponentValue("left", "float", "0.0")), "")),
+                        0, 0)).nodes().get(0).op());
     }
 
     @Test
