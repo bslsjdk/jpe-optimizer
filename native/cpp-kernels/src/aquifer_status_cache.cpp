@@ -16,7 +16,6 @@ struct Entry {
     int32_t fluid_level = 0;
     uint32_t fluid_type = 0;
     bool occupied = false;
-    bool pending = false;
 };
 
 struct Cache {
@@ -127,49 +126,34 @@ extern "C" int32_t jpe_cpp_aquifer_status_cache_insert_batch(
     if (!cache) return 1;
 
     std::lock_guard<std::mutex> lock(cache->mutex);
-    uint32_t staged = 0;
-    const auto rollback = [&](uint32_t last_processed) {
-        for (uint32_t j = 0; j <= last_processed; ++j) {
-            Entry* entry = find_slot(*cache, keys[j]);
-            if (entry != nullptr && entry->occupied && entry->pending) {
-                *entry = Entry{};
-            }
-        }
-    };
 
-    // Stage only missing keys in the table itself. The per-cache lock prevents
-    // other lookups from observing these pending entries. This avoids heap
-    // allocations while still making a capacity failure all-or-nothing.
+    // Preflight the complete batch before mutation. Sorting a temporary list
+    // deduplicates keys without altering the open-address table, so rejecting
+    // an over-capacity batch cannot leave tombstones or break probe chains.
+    std::vector<uint64_t> missing_keys;
+    missing_keys.reserve(count);
     for (uint32_t i = 0; i < count; ++i) {
         Entry* entry = find_slot(*cache, keys[i]);
-        if (entry == nullptr) {
-            rollback(i == 0 ? 0 : i - 1);
-            return 2;
-        }
-        if (entry->occupied) {
-            // Existing or already-staged key. The first input status wins.
-            continue;
-        }
+        if (entry == nullptr) return 2;
+        if (!entry->occupied) missing_keys.push_back(keys[i]);
+    }
+    std::sort(missing_keys.begin(), missing_keys.end());
+    missing_keys.erase(std::unique(missing_keys.begin(), missing_keys.end()), missing_keys.end());
+    if (missing_keys.size() > static_cast<size_t>(cache->max_entries - cache->size)) {
+        return 2;
+    }
+
+    // The table has at most 50% load and the mutex is still held, so every
+    // destination is guaranteed to exist after the successful capacity check.
+    for (uint32_t i = 0; i < count; ++i) {
+        Entry* entry = find_slot(*cache, keys[i]);
+        if (entry == nullptr) return 2; // Defensive: unreachable under the invariant above.
+        if (entry->occupied) continue;  // First-writer-wins for duplicate/existing keys.
         entry->key = keys[i];
         entry->fluid_level = statuses[i].fluid_level;
         entry->fluid_type = statuses[i].fluid_type;
         entry->occupied = true;
-        entry->pending = true;
-        ++staged;
-        if (staged > cache->max_entries - cache->size) {
-            rollback(i);
-            return 2;
-        }
-    }
-
-    // Commit the staged entries. Duplicate input keys encounter pending=false
-    // after the first occurrence and therefore increment the size only once.
-    for (uint32_t i = 0; i < count; ++i) {
-        Entry* entry = find_slot(*cache, keys[i]);
-        if (entry != nullptr && entry->occupied && entry->pending) {
-            entry->pending = false;
-            ++cache->size;
-        }
+        ++cache->size;
     }
     return 0;
 }
