@@ -46,8 +46,9 @@ Implemented and unit-tested: coordinates, chunk lifecycle, bounded scheduler
 with stale-epoch rejection, scoped parallel map, culled section mesher, AABB /
 frustum culling, renderer trait, headless reference renderer, **three native GPU
 backends (Vulkan, OpenGL, OpenGL ES) with textured, depth-tested, camera-driven
-offscreen rendering and frame readback**, ABI v8 FFI declarations, Java-facing
-C ABI (`src/ffi.rs`), Java 25 FFM binding and harness (`java/`).
+offscreen rendering and frame readback**, camera-derived frustum culling and a
+front-to-back draw-list planner (`src/render/plan.rs`), ABI v8 FFI declarations,
+Java-facing C ABI (`src/ffi.rs`), Java 25 FFM binding and harness (`java/`).
 
 The three backends call the native APIs directly through hand-written bindings —
 no wgpu/gfx-hal/vulkano/glium. Each one creates a real device or context, uploads
@@ -56,17 +57,23 @@ directional shading against a real depth buffer, and reads the frame back; the
 tests assert actual pixel coverage rather than a submitted status. They are
 verified on software Mesa (lavapipe for Vulkan, llvmpipe for GL/GLES), and
 `render::tests::backends_agree_on_pixels_and_orientation` checks that all three
-produce **identical pixels** from the same mesh and camera, right way up. See
-`docs/rust-world-engine-stage2-renderers.md` and
-`docs/rust-world-engine-stage3-textures-and-camera.md` for the design and the
-exact verification commands.
+produce **identical pixels** from the same mesh and camera, right way up.
+`render::plan` culls sections against frustum planes taken from that same camera
+and orders the survivors front to back; `ffi::tests::renderer_over_c_abi_culls_*`
+and the Java harness prove the culling is real by showing that a fully culled
+camera returns a frame with **zero** lit pixels. See
+`docs/rust-world-engine-stage2-renderers.md`,
+`docs/rust-world-engine-stage3-textures-and-camera.md` and
+`docs/rust-world-engine-stage4-visibility.md` for the design and the exact
+verification commands.
 
 Not implemented yet: adopting Minecraft's live window/context (the backends
 render headless or offscreen today; host-context adoption lands with the client
 integration), presentation/swapchain, the real resource-pack/block-colour atlas
-and game light data (the backends build a small test atlas), greedy meshing,
+and game light data (the backends build a small test atlas), feeding the draw list
+from `ChunkStore` / `SchedulerCore` (the planner takes a caller-owned section
+registry; there is no per-frame loop yet), occlusion queries, greedy meshing,
 ambient occlusion, Minecraft integration, shared-memory transport. The C++ terrain
 bridge is gated behind the `cpp-bridge` feature and not yet exercised. See
-`docs/rust-world-engine-stage1.md`,
-`docs/rust-world-engine-stage2-renderers.md` and
-`docs/rust-world-engine-stage3-textures-and-camera.md` for the full audit trail.
+`docs/rust-world-engine-stage1.md` and the stage 2/3/4 renderer docs for the full
+audit trail.

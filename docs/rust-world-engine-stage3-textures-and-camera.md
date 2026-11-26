@@ -191,3 +191,8 @@ JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 java/run_harness.sh
 - `cargo fmt`/`cargo clippy` remain advisory in CI: this sandbox cannot install
   those components from the configured rustup mirror (404), so line lengths are
   not auto-normalised.
+
+## Next step
+
+Done in stage 4 — the camera is now used for visibility as well:
+`docs/rust-world-engine-stage4-visibility.md`.

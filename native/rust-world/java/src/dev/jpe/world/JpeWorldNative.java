@@ -71,6 +71,14 @@ public final class JpeWorldNative implements AutoCloseable {
     public record RendererCaps(int backend, int apiMajor, int apiMinor, int maxTextureSize,
                                boolean supportsCompute) {}
 
+    /** A section the visibility pass may draw; mirrors {@code JpeRenderSection}. */
+    public record RenderSection(long key, long mesh, int originX, int originY, int originZ,
+                                int indexCount) {}
+
+    /** Outcome of a visibility pass; mirrors {@code JpeRenderPlanStats}. */
+    public record PlanStats(int considered, int visible, int culled, long visibleQuads,
+                            long culledQuads) {}
+
     /** A mesh uploaded to the renderer, plus the index count to draw it. */
     public record MeshUpload(long mesh, int indexCount) {}
 
@@ -102,6 +110,7 @@ public final class JpeWorldNative implements AutoCloseable {
     private final MethodHandle hRendererUploadSection;
     private final MethodHandle hRendererDestroyMesh;
     private final MethodHandle hRendererDraw;
+    private final MethodHandle hRendererDrawVisible;
     private final MethodHandle hRendererEndFrame;
     private final MethodHandle hRendererReadPixels;
 
@@ -164,6 +173,8 @@ public final class JpeWorldNative implements AutoCloseable {
                 FunctionDescriptor.of(i32, i64, i64));
         this.hRendererDraw = down(linker, lookup, "jpe_world_renderer_draw",
                 FunctionDescriptor.of(i32, i64, i64, i32, i32));
+        this.hRendererDrawVisible = down(linker, lookup, "jpe_world_renderer_draw_visible",
+                FunctionDescriptor.of(i32, i64, ptr, ptr, ptr, i64, ptr));
         this.hRendererEndFrame = down(linker, lookup, "jpe_world_renderer_end_frame",
                 FunctionDescriptor.of(i32, i64));
         this.hRendererReadPixels = down(linker, lookup, "jpe_world_renderer_read_pixels",
@@ -431,6 +442,30 @@ public final class JpeWorldNative implements AutoCloseable {
         }
     }
 
+    private static MemorySegment floats(Arena a, float[] v) {
+        MemorySegment seg = a.allocate(4L * v.length);
+        for (int i = 0; i < v.length; i++) {
+            seg.setAtIndex(ValueLayout.JAVA_FLOAT, i, v[i]);
+        }
+        return seg;
+    }
+
+    /** Pack records into the 32-byte {@code JpeRenderSection} layout. */
+    private static MemorySegment sections(Arena a, RenderSection[] records) {
+        MemorySegment seg = a.allocate(32L * records.length);
+        for (int i = 0; i < records.length; i++) {
+            RenderSection r = records[i];
+            long base = 32L * i;
+            seg.set(ValueLayout.JAVA_LONG, base, r.key());
+            seg.set(ValueLayout.JAVA_LONG, base + 8, r.mesh());
+            seg.set(ValueLayout.JAVA_INT, base + 16, r.originX());
+            seg.set(ValueLayout.JAVA_INT, base + 20, r.originY());
+            seg.set(ValueLayout.JAVA_INT, base + 24, r.originZ());
+            seg.set(ValueLayout.JAVA_INT, base + 28, r.indexCount());
+        }
+        return seg;
+    }
+
     private static MemorySegment floats3(Arena a, float[] v) {
         MemorySegment seg = a.allocate(16);
         for (int i = 0; i < 3; i++) {
@@ -470,6 +505,50 @@ public final class JpeWorldNative implements AutoCloseable {
 
     public int rendererDraw(long handle, long mesh, int indexCount, int instanceCount) {
         return invokeInt(hRendererDraw, handle, mesh, indexCount, instanceCount);
+    }
+
+    /**
+     * Cull {@code sections} against {@code viewProj} seen from {@code eye} and
+     * queue only the visible batches on the already-begun frame. The same matrix
+     * reaches the GPU, so culling and transforms cannot disagree.
+     *
+     * <p>Throws on any non-zero status; use {@link #rendererTryDrawVisible} when
+     * the status itself is what is being checked.
+     */
+    public PlanStats rendererDrawVisible(long handle, float[] viewProj, float[] eye,
+                                         RenderSection[] sections) {
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment out = a.allocate(32);
+            int status = invokeInt(hRendererDrawVisible, handle, floats(a, viewProj),
+                    floats(a, eye), sections(a, sections), (long) sections.length, out);
+            if (status != RENDER_OK) {
+                throw new IllegalStateException("rendererDrawVisible failed: status " + status);
+            }
+            return new PlanStats(
+                    out.get(ValueLayout.JAVA_INT, 0),
+                    out.get(ValueLayout.JAVA_INT, 4),
+                    out.get(ValueLayout.JAVA_INT, 8),
+                    out.get(ValueLayout.JAVA_LONG, 16),
+                    out.get(ValueLayout.JAVA_LONG, 24));
+        }
+    }
+
+    /**
+     * Same call without reading stats, for contract checks. A {@code null}
+     * {@code viewProj} or {@code eye} passes a null pointer straight through so the
+     * ABI can prove it rejects one; a {@code null} section array is sent as an
+     * empty plan (null pointer, count 0), which is legal.
+     */
+    public int rendererTryDrawVisible(long handle, float[] viewProj, float[] eye,
+                                      RenderSection[] sections) {
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment vp = viewProj == null ? MemorySegment.NULL : floats(a, viewProj);
+            MemorySegment ev = eye == null ? MemorySegment.NULL : floats(a, eye);
+            int count = sections == null ? 0 : sections.length;
+            MemorySegment recs = count == 0 ? MemorySegment.NULL : sections(a, sections);
+            return invokeInt(hRendererDrawVisible, handle, vp, ev, recs, (long) count,
+                    MemorySegment.NULL);
+        }
     }
 
     public int rendererEndFrame(long handle) {

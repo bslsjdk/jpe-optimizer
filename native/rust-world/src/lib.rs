@@ -26,8 +26,13 @@
 //!   vertex attributes, a sampled texture atlas, directional lighting, a real
 //!   depth buffer and a shared orthographic camera (including the Vulkan
 //!   clip-Y convention), with the backends verified to produce identical pixels
+//! - frustum planes extracted from the shared camera plus a camera-driven draw
+//!   list (`render::plan`): section culling, deterministic front-to-back order and
+//!   accounting stats, exposed as `jpe_world_renderer_draw_visible` and verified
+//!   through the Java harness by pixel count (culled sections really are absent)
 //! - renderer handles over the Java C ABI (create/caps/camera/frame/upload/
-//!   draw/readback), thread-affinity enforced, exercised by the Java harness
+//!   draw/draw-visible/readback), thread-affinity enforced, exercised by the
+//!   Java harness
 //! - terrain FFI declarations for the existing ABI v8 (`cpp-bridge` feature)
 //!
 //! **Not implemented yet** (must not be reported as done):
@@ -39,6 +44,9 @@
 //!   wired), biome light / skylight data, fog
 //! - wiring into live Minecraft chunk generation / rendering (the C ABI and
 //!   Java binding exist; no mod code calls them yet)
+//! - feeding the draw list from `ChunkStore` / `SchedulerCore`: the plan takes a
+//!   caller-owned section registry, so nothing turns chunk state transitions into
+//!   records or runs a per-frame loop yet
 //! - greedy meshing, ambient occlusion
 //! - shared-memory / zero-copy transport to C++
 

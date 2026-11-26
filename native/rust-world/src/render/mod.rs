@@ -18,7 +18,7 @@
 //! back and checked, which is how the tests demonstrate real output rather than
 //! trusting a "submitted" status.
 
-use crate::mesh::MeshData;
+use crate::mesh::{Aabb, Frustum, MeshData, Plane};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum Backend {
@@ -158,6 +158,48 @@ pub fn ortho_look_at(
     Some(mat4_mul(&proj, &view))
 }
 
+/// Extract the six inward-facing frustum planes from a view-projection matrix.
+///
+/// Gribb-Hartmann: the planes come from the rows of the combined matrix, so the
+/// caller only has to keep the camera it already gave the renderer. Order is
+/// `left, right, bottom, top, near, far`, and `dot(normal, p) + d >= 0` is
+/// inside — exactly what [`Frustum::intersects`] expects.
+///
+/// The near plane uses row 2 alone because the shared projection maps depth to
+/// `0..=1` rather than `-1..=1`. A degenerate row yields a plane that rejects
+/// everything instead of silently accepting the world.
+///
+/// The Vulkan clip-Y flip does not change culling results: negating the Y row
+/// mirrors the top and bottom planes into each other, so the plane set is the
+/// same and one camera matrix serves visibility on every backend.
+pub fn frustum_from_view_proj(m: &Mat4) -> Frustum {
+    let row = |r: usize| [m[r], m[4 + r], m[8 + r], m[12 + r]];
+    let (r0, r1, r2, r3) = (row(0), row(1), row(2), row(3));
+    let add = |a: &[f32; 4], b: &[f32; 4]| [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]];
+    let sub = |a: &[f32; 4], b: &[f32; 4]| [a[0] - b[0], a[1] - b[1], a[2] - b[2], a[3] - b[3]];
+    let plane = |p: [f32; 4]| -> Plane {
+        let len = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+        if len <= f32::EPSILON {
+            // No usable half-space: treat everything as outside.
+            return Plane { normal: [0.0, 0.0, 0.0], d: f32::MIN };
+        }
+        Plane { normal: [p[0] / len, p[1] / len, p[2] / len], d: p[3] / len }
+    };
+    Frustum::new([
+        plane(add(&r3, &r0)),
+        plane(sub(&r3, &r0)),
+        plane(add(&r3, &r1)),
+        plane(sub(&r3, &r1)),
+        plane(r2),
+        plane(sub(&r3, &r2)),
+    ])
+}
+
+/// Convenience: is the section at `origin` (16x16x16) possibly visible?
+pub fn section_is_visible(frustum: &Frustum, origin: [i32; 3]) -> bool {
+    frustum.intersects(&Aabb::section(origin))
+}
+
 /// One indexed draw over a resident mesh.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct DrawBatch {
@@ -250,6 +292,7 @@ pub mod glcore;
 pub mod gles;
 pub mod gl;
 pub mod headless;
+pub mod plan;
 pub mod vulkan;
 
 /// Try every backend in priority order and return the first that initialises a

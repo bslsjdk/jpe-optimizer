@@ -13,6 +13,7 @@ use crate::chunk::ChunkState;
 use crate::coords::ChunkPos;
 use crate::mesh::{build_section_mesh, ChunkSection, Vertex};
 use crate::render::{Backend, DrawBatch, Mat4, MeshHandle, RenderError, Renderer};
+use crate::render::plan::{plan_draws, SectionRecord};
 use crate::scheduler::{Completion, SchedulerCore};
 use crate::task::{ChunkJob, JobKind, Priority};
 use std::collections::HashMap;
@@ -600,6 +601,35 @@ pub extern "C" fn jpe_world_renderer_destroy(handle: u64) -> i32 {
     0
 }
 
+/// One resident section mesh the visibility pass may draw.
+///
+/// 32 bytes, 8-byte aligned, all fields explicit: `origin` is the block-space
+/// corner of the 16x16x16 section exactly as passed to
+/// `jpe_world_renderer_upload_section`, and `mesh`/`index_count` are what that
+/// call reported.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct JpeRenderSection {
+    pub key: u64,
+    pub mesh: u64,
+    pub origin_x: i32,
+    pub origin_y: i32,
+    pub origin_z: i32,
+    pub index_count: u32,
+}
+
+/// Outcome of a visibility pass. 32 bytes, 8-byte aligned.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct JpeRenderPlanStats {
+    pub considered: u32,
+    pub visible: u32,
+    pub culled: u32,
+    pub reserved: u32,
+    pub visible_quads: u64,
+    pub culled_quads: u64,
+}
+
 /// Fill `out` with the renderer's capabilities.
 /// 0 ok, -1 unknown handle, -2 null pointer, -7 wrong thread.
 #[no_mangle]
@@ -754,6 +784,76 @@ pub extern "C" fn jpe_world_renderer_draw(
             instance_count,
         })
     }))
+}
+
+/// Cull and queue in one call.
+///
+/// Builds the front-to-back draw list of `sections` (`count` records) against
+/// `view_proj` (16 column-major floats) seen from `eye` (3 floats), hands the
+/// same matrix to the backend and queues **only the visible** batches on the
+/// already-begun frame. Because the matrix is set here, the GPU transform and
+/// the culling frustum can never disagree.
+///
+/// `out_stats` may be null; it is written only on success.
+/// 0 ok, -1 unknown renderer, -2 null pointer, -4 non-finite matrix or no frame
+/// begun, -5 API error, -7 wrong thread.
+#[no_mangle]
+pub extern "C" fn jpe_world_renderer_draw_visible(
+    handle: u64,
+    view_proj: *const f32,
+    eye: *const f32,
+    sections: *const JpeRenderSection,
+    count: usize,
+    out_stats: *mut JpeRenderPlanStats,
+) -> i32 {
+    if view_proj.is_null() || eye.is_null() || (sections.is_null() && count != 0) {
+        return -2;
+    }
+    // SAFETY: nulls checked above; the caller provides 16 + 3 readable floats
+    // and `count` readable, 32-byte-aligned records.
+    let (matrix, eye_pos, records) = unsafe {
+        let matrix: Mat4 = std::ptr::read_unaligned(view_proj as *const Mat4);
+        let eye_pos = [eye.read(), eye.add(1).read(), eye.add(2).read()];
+        let input = if count == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(sections, count)
+        };
+        let records = input
+            .iter()
+            .map(|section| SectionRecord {
+                key: section.key,
+                origin: [section.origin_x, section.origin_y, section.origin_z],
+                mesh: MeshHandle(section.mesh),
+                index_count: section.index_count,
+            })
+            .collect::<Vec<_>>();
+        (matrix, eye_pos, records)
+    };
+    let (batches, stats) = plan_draws(&records, &matrix, eye_pos);
+    let result = with_renderer(handle, |r| {
+        r.set_view_proj(matrix)?;
+        for batch in &batches {
+            r.draw(*batch)?;
+        }
+        Ok(())
+    });
+    let code = status(result);
+    if code == 0 && !out_stats.is_null() {
+        // SAFETY: optional out pointer is written only when non-null, and the
+        // caller provides a 32-byte writable block.
+        unsafe {
+            *out_stats = JpeRenderPlanStats {
+                considered: stats.considered,
+                visible: stats.visible,
+                culled: stats.culled,
+                reserved: 0,
+                visible_quads: stats.visible_quads,
+                culled_quads: stats.culled_quads,
+            };
+        }
+    }
+    code
 }
 
 /// Finish the frame (draws the queued batches and captures the frame).
@@ -1089,5 +1189,271 @@ mod tests {
         );
         assert_eq!(jpe_world_renderer_destroy(fresh), 0);
         assert!(ran > 0, "no backend could be exercised");
+    }
+
+    /// The Java binding offsets into these two records directly, so the layout is
+    /// part of the ABI and must not drift silently.
+    #[test]
+    fn renderer_plan_struct_layout_is_stable() {
+        assert_eq!(std::mem::size_of::<JpeRendererCaps>(), 24);
+        assert_eq!(std::mem::size_of::<JpeRenderSection>(), 32);
+        assert_eq!(std::mem::align_of::<JpeRenderSection>(), 8);
+        assert_eq!(std::mem::size_of::<JpeRenderPlanStats>(), 32);
+
+        let section = JpeRenderSection {
+            key: 1,
+            mesh: 2,
+            origin_x: 3,
+            origin_y: 4,
+            origin_z: 5,
+            index_count: 6,
+        };
+        let base = &section as *const _ as usize;
+        assert_eq!(&section.key as *const u64 as usize - base, 0);
+        assert_eq!(&section.mesh as *const u64 as usize - base, 8);
+        assert_eq!(&section.origin_x as *const i32 as usize - base, 16);
+        assert_eq!(&section.origin_y as *const i32 as usize - base, 20);
+        assert_eq!(&section.origin_z as *const i32 as usize - base, 24);
+        assert_eq!(&section.index_count as *const u32 as usize - base, 28);
+
+        let stats = JpeRenderPlanStats::default();
+        let base = &stats as *const _ as usize;
+        assert_eq!(&stats.considered as *const u32 as usize - base, 0);
+        assert_eq!(&stats.visible as *const u32 as usize - base, 4);
+        assert_eq!(&stats.culled as *const u32 as usize - base, 8);
+        assert_eq!(&stats.visible_quads as *const u64 as usize - base, 16);
+        assert_eq!(&stats.culled_quads as *const u64 as usize - base, 24);
+    }
+
+    /// Visibility through the C ABI: off-screen sections must be rejected by the
+    /// plan, and that rejection must be observable in the rendered frame.
+    #[test]
+    fn renderer_over_c_abi_culls_invisible_sections() {
+        let handle = jpe_world_renderer_create(RENDER_BACKEND_AUTO);
+        if handle == 0 {
+            require_or_skip("native render backend required for culling check");
+            eprintln!("no native backend here, skipping culling check");
+            return;
+        }
+
+        // One block near the middle of each section, so what gets drawn really is
+        // inside the AABB the plan culls against.
+        let mut blocks = vec![0u16; 4096];
+        blocks[(8 << 8) | (8 << 4) | 8] = 1;
+        let origins: [[i32; 3]; 6] = [
+            [0, 0, 0],      // in front
+            [0, 0, 32],     // in front, nearer
+            [200, 0, 0],    // far off to +X
+            [-200, 0, 0],   // far off to -X
+            [0, 200, 0],    // far above
+            [0, 0, 200],    // behind the camera
+        ];
+        let mut sections: Vec<JpeRenderSection> = Vec::new();
+        for (key, origin) in origins.iter().enumerate() {
+            let mut mesh = 0u64;
+            let mut index_count = 0u32;
+            assert_eq!(
+                jpe_world_renderer_upload_section(
+                    handle,
+                    blocks.as_ptr(),
+                    origin[0],
+                    origin[1],
+                    origin[2],
+                    &mut mesh,
+                    &mut index_count
+                ),
+                0,
+                "upload section at {origin:?}"
+            );
+            assert_eq!(index_count, 36);
+            sections.push(JpeRenderSection {
+                key: key as u64,
+                mesh,
+                origin_x: origin[0],
+                origin_y: origin[1],
+                origin_z: origin[2],
+                index_count,
+            });
+        }
+
+        let eye = [8.0f32, 8.0, 64.0];
+        let target = [8.0f32, 8.0, 0.0];
+        let up = [0.0f32, 1.0, 0.0];
+        let mut view_proj = [0f32; 16];
+        assert_eq!(
+            jpe_world_camera_ortho(
+                eye.as_ptr(),
+                target.as_ptr(),
+                up.as_ptr(),
+                // Tight window: a single block then covers a visible area of the
+                // 128x128 frame, so coverage proves the batch actually drew.
+                2.0,
+                2.0,
+                0.5,
+                100.0,
+                view_proj.as_mut_ptr()
+            ),
+            0
+        );
+
+        // Contract violations first, before any frame is open.
+        let mut stats = JpeRenderPlanStats::default();
+        assert_eq!(
+            jpe_world_renderer_draw_visible(
+                handle,
+                std::ptr::null(),
+                eye.as_ptr(),
+                sections.as_ptr(),
+                sections.len(),
+                std::ptr::null_mut()
+            ),
+            -2
+        );
+        assert_eq!(
+            jpe_world_renderer_draw_visible(
+                handle,
+                view_proj.as_ptr(),
+                std::ptr::null(),
+                sections.as_ptr(),
+                sections.len(),
+                std::ptr::null_mut()
+            ),
+            -2
+        );
+        assert_eq!(
+            jpe_world_renderer_draw_visible(
+                handle,
+                view_proj.as_ptr(),
+                eye.as_ptr(),
+                std::ptr::null(),
+                sections.len(),
+                std::ptr::null_mut()
+            ),
+            -2
+        );
+        assert_eq!(
+            jpe_world_renderer_draw_visible(
+                0,
+                view_proj.as_ptr(),
+                eye.as_ptr(),
+                sections.as_ptr(),
+                sections.len(),
+                std::ptr::null_mut()
+            ),
+            -1
+        );
+
+        // A non-finite camera is refused *before* anything is queued, so the open
+        // frame stays usable and the readback is still just the clear colour.
+        let mut nan_matrix = view_proj;
+        nan_matrix[5] = f32::NAN;
+        assert_eq!(jpe_world_renderer_begin_frame(handle, 128, 128), 0);
+        assert_eq!(
+            jpe_world_renderer_draw_visible(
+                handle,
+                nan_matrix.as_ptr(),
+                eye.as_ptr(),
+                sections.as_ptr(),
+                sections.len(),
+                std::ptr::null_mut(),
+            ),
+            -4,
+            "non-finite camera must be refused, not drawn"
+        );
+        assert_eq!(jpe_world_renderer_end_frame(handle), 0);
+
+        // The real pass: two of six sections face the camera.
+        assert_eq!(jpe_world_renderer_begin_frame(handle, 128, 128), 0);
+        assert_eq!(
+            jpe_world_renderer_draw_visible(
+                handle,
+                view_proj.as_ptr(),
+                eye.as_ptr(),
+                sections.as_ptr(),
+                sections.len(),
+                &mut stats,
+            ),
+            0
+        );
+        assert_eq!(stats.considered, 6);
+        assert_eq!(stats.visible, 2, "visible stats {stats:?}");
+        assert_eq!(stats.culled, 4);
+        assert_eq!((stats.visible_quads, stats.culled_quads), (12, 24));
+        assert_eq!(jpe_world_renderer_end_frame(handle), 0);
+
+        let mut width = 0u32;
+        let mut height = 0u32;
+        let mut pixels = vec![0u8; 128 * 128 * 4];
+        assert_eq!(
+            jpe_world_renderer_read_pixels(
+                handle,
+                pixels.as_mut_ptr(),
+                pixels.len(),
+                &mut width,
+                &mut height
+            ),
+            0
+        );
+        let background = [pixels[0], pixels[1], pixels[2], pixels[3]];
+        let lit = pixels
+            .chunks_exact(4)
+            .filter(|p| [p[0], p[1], p[2]] != [background[0], background[1], background[2]])
+            .count();
+        assert!(lit > 100, "visible sections should cover pixels, got {lit}");
+
+        // Look the other way: everything is behind the camera, so the plan queues
+        // nothing and the frame must come back completely empty.
+        let away_eye = [8.0f32, 8.0, -600.0];
+        let away_target = [8.0f32, 8.0, -700.0];
+        let mut away_matrix = [0f32; 16];
+        assert_eq!(
+            jpe_world_camera_ortho(
+                away_eye.as_ptr(),
+                away_target.as_ptr(),
+                up.as_ptr(),
+                2.0,
+                2.0,
+                0.5,
+                100.0,
+                away_matrix.as_mut_ptr()
+            ),
+            0
+        );
+        assert_eq!(jpe_world_renderer_begin_frame(handle, 128, 128), 0);
+        assert_eq!(
+            jpe_world_renderer_draw_visible(
+                handle,
+                away_matrix.as_ptr(),
+                away_eye.as_ptr(),
+                sections.as_ptr(),
+                sections.len(),
+                &mut stats,
+            ),
+            0
+        );
+        assert_eq!((stats.considered, stats.visible, stats.culled), (6, 0, 6));
+        assert_eq!(stats.visible_quads, 0);
+        assert_eq!(jpe_world_renderer_end_frame(handle), 0);
+        assert_eq!(
+            jpe_world_renderer_read_pixels(
+                handle,
+                pixels.as_mut_ptr(),
+                pixels.len(),
+                &mut width,
+                &mut height
+            ),
+            0
+        );
+        let leftover = pixels
+            .chunks_exact(4)
+            .filter(|p| [p[0], p[1], p[2]] != [background[0], background[1], background[2]])
+            .count();
+        assert_eq!(leftover, 0, "culling must produce an empty frame, got {leftover}");
+        eprintln!("culling over the C ABI: 2/6 visible -> {lit} lit, 0/6 -> {leftover} lit");
+
+        for section in &sections {
+            assert_eq!(jpe_world_renderer_destroy_mesh(handle, section.mesh), 0);
+        }
+        assert_eq!(jpe_world_renderer_destroy(handle), 0);
     }
 }

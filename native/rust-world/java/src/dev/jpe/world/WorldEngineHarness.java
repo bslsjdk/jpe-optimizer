@@ -38,6 +38,7 @@ public final class WorldEngineHarness {
         meshing(world);
         epochInvalidation(world);
         renderers(world);
+        visibility(world);
 
         System.out.println("[harness] all " + checks + " checks passed");
     }
@@ -288,6 +289,118 @@ public final class WorldEngineHarness {
         eq("renderer destroy unknown handle", JpeWorldNative.RENDER_UNKNOWN_HANDLE,
                 world.rendererDestroy(r));
         eq("unknown backend code is unavailable", 0, world.rendererAvailable(99));
+    }
+
+    /**
+     * Visibility through the C ABI: the plan must reject off-screen sections and
+     * the rejection must show up in the rendered frame, not only in the stats.
+     */
+    private static void visibility(JpeWorldNative world) {
+        long r = world.rendererCreate(JpeWorldNative.BACKEND_AUTO);
+        if (r == 0) {
+            if (System.getenv("JPE_REQUIRE_RENDER_BACKENDS") != null) {
+                throw new AssertionError("check failed: render backend required for visibility");
+            }
+            System.out.println("[harness] no native render backend here, skipping visibility checks");
+            return;
+        }
+
+        // One block near the middle of each section, so whatever is drawn really
+        // sits inside the box the plan culls against.
+        short[] blocks = new short[4096];
+        blocks[(8 << 8) | (8 << 4) | 8] = 1;
+        int[][] origins = {
+            {0, 0, 0},       // in front
+            {0, 0, 32},      // in front, nearer
+            {200, 0, 0},     // far off to +X
+            {-200, 0, 0},    // far off to -X
+            {0, 200, 0},     // far above
+            {0, 0, 200},     // behind the camera
+        };
+        JpeWorldNative.RenderSection[] sections = new JpeWorldNative.RenderSection[origins.length];
+        for (int i = 0; i < origins.length; i++) {
+            JpeWorldNative.MeshUpload up = world.rendererUploadSection(
+                    r, blocks, origins[i][0], origins[i][1], origins[i][2]);
+            sections[i] = new JpeWorldNative.RenderSection(
+                    i, up.mesh(), origins[i][0], origins[i][1], origins[i][2], up.indexCount());
+        }
+
+        float[] eye = {8.0f, 8.0f, 64.0f};
+        float[] up3 = {0.0f, 1.0f, 0.0f};
+        float[] viewProj = world.cameraOrtho(eye, new float[]{8.0f, 8.0f, 0.0f}, up3,
+                2.0f, 2.0f, 0.5f, 100.0f);
+        check("visibility camera built", viewProj != null);
+
+        // Null pointers and an unknown handle must be refused, and a non-finite
+        // matrix must be refused *before* anything is queued.
+        eq("null view matrix rejected", JpeWorldNative.RENDER_INVALID_ARGUMENT,
+                world.rendererTryDrawVisible(r, null, eye, sections));
+        eq("null eye rejected", JpeWorldNative.RENDER_INVALID_ARGUMENT,
+                world.rendererTryDrawVisible(r, viewProj, null, sections));
+        eq("unknown handle rejected", JpeWorldNative.RENDER_UNKNOWN_HANDLE,
+                world.rendererTryDrawVisible(999_999L, viewProj, eye, sections));
+        // A zero-length plan is legal (nothing to queue); a null pointer with a
+        // non-zero count is the case the Rust side rejects, covered by
+        // ffi::tests::renderer_over_c_abi_culls_invisible_sections.
+        eq("empty section list accepted", 0,
+                world.rendererTryDrawVisible(r, viewProj, eye, new JpeWorldNative.RenderSection[0]));
+
+        float[] nanMatrix = viewProj.clone();
+        nanMatrix[5] = Float.NaN;
+        eq("renderer begin frame (contract pass)", 0, world.rendererBeginFrame(r, 128, 128));
+        eq("non-finite camera refused before queueing", JpeWorldNative.RENDER_INVALID_MESH,
+                world.rendererTryDrawVisible(r, nanMatrix, eye, sections));
+        eq("renderer end frame (contract pass)", 0, world.rendererEndFrame(r));
+
+        eq("renderer begin frame (visible pass)", 0, world.rendererBeginFrame(r, 128, 128));
+        JpeWorldNative.PlanStats stats = world.rendererDrawVisible(r, viewProj, eye, sections);
+        eq("sections considered", 6, stats.considered());
+        eq("sections visible", 2, stats.visible());
+        eq("sections culled", 4, stats.culled());
+        eq("visible quads", 12L, stats.visibleQuads());
+        eq("culled quads", 24L, stats.culledQuads());
+        eq("renderer end frame (visible pass)", 0, world.rendererEndFrame(r));
+        byte[] pixels = world.rendererReadPixels(r, 128, 128);
+        int lit = countLit(pixels);
+        check("visible sections covered pixels (" + lit + ")", lit > 100);
+
+        // Look the other way: every section is behind the camera, so nothing is
+        // queued and the frame has to come back completely empty.
+        float[] awayEye = {8.0f, 8.0f, -600.0f};
+        float[] awayMatrix = world.cameraOrtho(awayEye, new float[]{8.0f, 8.0f, -700.0f}, up3,
+                2.0f, 2.0f, 0.5f, 100.0f);
+        check("away camera built", awayMatrix != null);
+        eq("renderer begin frame (culled pass)", 0, world.rendererBeginFrame(r, 128, 128));
+        JpeWorldNative.PlanStats culled = world.rendererDrawVisible(r, awayMatrix, awayEye, sections);
+        eq("culled pass considered", 6, culled.considered());
+        eq("culled pass visible", 0, culled.visible());
+        eq("culled pass culled", 6, culled.culled());
+        eq("culled pass quads", 0L, culled.visibleQuads());
+        eq("renderer end frame (culled pass)", 0, world.rendererEndFrame(r));
+        int leftover = countLit(world.rendererReadPixels(r, 128, 128));
+        eq("fully culled camera produces an empty frame", 0, leftover);
+        System.out.println("[harness] visibility: 2/6 visible -> " + lit
+                + " lit pixels, 0/6 visible -> " + leftover + " lit pixels");
+
+        for (JpeWorldNative.RenderSection section : sections) {
+            eq("renderer destroy mesh", 0, world.rendererDestroyMesh(r, section.mesh()));
+        }
+        eq("renderer destroy (visibility)", 0, world.rendererDestroy(r));
+    }
+
+    /** Non-background pixels of a frame, using the cleared top-left corner. */
+    private static int countLit(byte[] pixels) {
+        int bgR = pixels[0] & 0xff;
+        int bgG = pixels[1] & 0xff;
+        int bgB = pixels[2] & 0xff;
+        int lit = 0;
+        for (int i = 0; i + 3 < pixels.length; i += 4) {
+            if ((pixels[i] & 0xff) != bgR || (pixels[i + 1] & 0xff) != bgG
+                    || (pixels[i + 2] & 0xff) != bgB) {
+                lit++;
+            }
+        }
+        return lit;
     }
 
     private static JpeWorldNative.Job requireJob(JpeWorldNative world, long handle, String label) {
