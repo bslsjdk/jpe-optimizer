@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Mixin(Aquifer.NoiseBasedAquifer.class)
 public abstract class AquiferNoiseBasedMixin {
     private static final AtomicBoolean REPORTED_FAILURE = new AtomicBoolean();
+    private static final AtomicBoolean REPORTED_SUCCESS = new AtomicBoolean();
 
     @Inject(method = "<init>", at = @At("RETURN"))
     private void jpe$populateAquiferLocationCache(CallbackInfo ci) {
@@ -66,9 +67,11 @@ public abstract class AquiferNoiseBasedMixin {
                     aquifer.jpe$getMinGridX(), aquifer.jpe$getMinGridY(), aquifer.jpe$getMinGridZ(),
                     sizeX, sizeZ, generated);
             System.arraycopy(generated, 0, vanillaCache, 0, generated.length);
-            JPEOptimizer.LOGGER.debug(
-                    "Native Aquifer location cache populated: mode={} cells={} elapsedUs={}",
-                    randomMode, generated.length, (System.nanoTime() - started) / 1_000.0);
+            if (REPORTED_SUCCESS.compareAndSet(false, true)) {
+                JPEOptimizer.LOGGER.info(
+                        "JPE_NATIVE_AQUIFER_CACHE_PREFILL mode={} cells={} elapsedUs={}",
+                        randomMode, generated.length, (System.nanoTime() - started) / 1_000.0);
+            }
         } catch (RuntimeException | LinkageError failure) {
             if (REPORTED_FAILURE.compareAndSet(false, true)) {
                 JPEOptimizer.LOGGER.warn(
