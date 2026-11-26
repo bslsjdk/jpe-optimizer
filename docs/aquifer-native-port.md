@@ -108,3 +108,21 @@ Remaining unresolved before the full Aquifer implementation:
 3. Confirm exact Java floating-point behavior of Mth.quantize, Mth.clampedMap, and noise return types from bytecode before claiming full Aquifer parity.
 
 Do not enable this backend in production until synthetic full-volume parity and real generated-chunk block-hash / fluid-update parity pass.
+
+
+## Native nearest-four search slice (implemented, runtime integration pending)
+
+The C++ kernel now exposes a batch API, `jpe_runtime_aquifer_nearest_four`, through the Rust runtime ABI. It accepts parallel block-coordinate arrays and emits four center coordinates plus four Java-int-compatible squared distances per sample. Random mode is explicit: 0 selects XOROSHIRO and 1 selects Legacy.
+
+Implementation details:
+- The candidate anchor uses wrapped Java int arithmetic for `x-5`, `y+1`, and `z-5`, followed by floor division / arithmetic grid conversion.
+- The 12 candidates retain the audited nested order: X 0..1, Y -1..1, Z 0..1.
+- Cell-center offsets reuse the already-audited XOROSHIRO or Legacy offset kernels.
+- A per-call hash cache stores each grid cell's center once, so overlapping sample neighborhoods do not regenerate the same center.
+- Squared-distance subtraction, multiplication, and addition preserve Java int32 wrap semantics.
+- Equal distances insert the later candidate before earlier candidates, matching the audited vanilla insertion behavior.
+- Results are sample-major, with four consecutive neighbor entries per input sample. The maximum batch is 1,048,576 samples.
+
+A Rust unit test independently enumerates the 12 candidates and compares the four returned centers and distances for both RNG modes, including negative coordinates and signed-int extremes.
+
+This is a native algorithm slice, not yet a Minecraft execution path. Java FFM binding, batch capture from the Aquifer call path, FluidStatus caching, pressure, surface/fluid sampling, block-state mapping, and real generated-chunk parity remain outstanding. Do not enable it in production until those layers and full-volume parity are complete.
