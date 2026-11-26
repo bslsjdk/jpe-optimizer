@@ -21,6 +21,7 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.world.level.block.Rotation;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.levelgen.XoroshiroRandomSource;
+import net.minecraft.world.level.levelgen.LegacyRandomSource;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
 import net.minecraft.world.level.levelgen.blending.Blender;
@@ -38,6 +39,7 @@ import dev.jpe.optimizer.mixin.DensityBufferAccessor;
 import dev.jpe.optimizer.mixin.BlendingDataAccessor;
 import dev.jpe.optimizer.mixin.GradientNoiseAccessor;
 import dev.jpe.optimizer.mixin.XoroshiroPositionalRandomFactoryAccessor;
+import dev.jpe.optimizer.mixin.LegacyPositionalRandomFactoryAccessor;
 import dev.jpe.optimizer.runtime.NativeRuntime;
 import dev.jpe.optimizer.runtime.DensityGraphIr;
 import dev.jpe.optimizer.runtime.NativePerlinNoiseBackend;
@@ -75,8 +77,8 @@ public final class GameTests {
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> BLENDER_NATIVE_PARITY =
             TEST_FUNCTIONS.register("blender_native_parity", () -> GameTests::blenderNativeParity);
 
-    public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> AQUIFER_XOROSHIRO_NATIVE_PARITY =
-            TEST_FUNCTIONS.register("aquifer_xoroshiro_native_parity", () -> GameTests::aquiferXoroshiroNativeParity);
+    public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> AQUIFER_RANDOM_NATIVE_PARITY =
+            TEST_FUNCTIONS.register("aquifer_xoroshiro_native_parity", () -> GameTests::aquiferRandomNativeParity);
 
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> PALETTE_HASH_CONFIGURATION =
             TEST_FUNCTIONS.register("palette_hash_configuration", () -> GameTests::paletteHashConfiguration);
@@ -129,7 +131,7 @@ public final class GameTests {
                 new FunctionGameTestInstance(BLENDER_NATIVE_PARITY.getKey(), data)
         );
         event.registerTest(
-                Identifier.parse("jpe_optimizer:aquifer_xoroshiro_native_parity"),
+                Identifier.parse("jpe_optimizer:aquifer_random_native_parity"),
                 new FunctionGameTestInstance(AQUIFER_XOROSHIRO_NATIVE_PARITY.getKey(), data)
         );
         event.registerTest(
@@ -357,8 +359,8 @@ public final class GameTests {
         };
 
         try (NativeRuntime runtime = NativeRuntime.load(java.nio.file.Path.of(library))) {
-            if (!runtime.supportsAquiferXoroshiroOffsets()) {
-                throw new AssertionError("Native library does not export Aquifer XOROSHIRO support");
+            if (!runtime.supportsAquiferXoroshiroOffsets() || !runtime.supportsAquiferLegacyOffsets()) {
+                throw new AssertionError("Native library does not export both Aquifer RNG algorithms");
             }
             int comparisons = 0;
             for (long[] sourceSeed : sourceSeeds) {
@@ -386,6 +388,33 @@ public final class GameTests {
                 }
             }
             JPEOptimizer.LOGGER.info("JPE_AQUIFER_XOROSHIRO_PARITY comparisons={} bitExact=true", comparisons);
+
+            long[] legacySourceSeeds = {0x0123456789abcdefL, 0L, 987654321L, 0x9e3779b97f4a7c15L};
+            int legacyComparisons = 0;
+            for (long sourceSeed : legacySourceSeeds) {
+                var factory = new LegacyRandomSource(sourceSeed).forkPositional();
+                var accessor = (LegacyPositionalRandomFactoryAccessor) (Object) factory;
+                long factorySeed = accessor.jpe$seed();
+
+                for (int[] cell : cells) {
+                    RandomSource vanilla = factory.at(cell[0], cell[1], cell[2]);
+                    int[] expected = {
+                            vanilla.nextInt(10),
+                            vanilla.nextInt(9),
+                            vanilla.nextInt(10)
+                    };
+                    int[] actual = runtime.aquiferLegacyOffsets(
+                            factorySeed, cell[0], cell[1], cell[2]);
+                    if (!java.util.Arrays.equals(expected, actual)) {
+                        throw new AssertionError("Legacy Aquifer RNG mismatch at cell=("
+                                + cell[0] + "," + cell[1] + "," + cell[2] + ")"
+                                + " expected=" + java.util.Arrays.toString(expected)
+                                + " actual=" + java.util.Arrays.toString(actual));
+                    }
+                    legacyComparisons++;
+                }
+            }
+            JPEOptimizer.LOGGER.info("JPE_AQUIFER_LEGACY_PARITY comparisons={} bitExact=true", legacyComparisons);
         } catch (Exception failure) {
             throw new AssertionError("Native Aquifer XOROSHIRO parity failed", failure);
         }
