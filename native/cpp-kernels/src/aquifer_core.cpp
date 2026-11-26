@@ -108,6 +108,29 @@ extern "C" JPE_API int32_t jpe_runtime_aquifer_compute_substance_core(
 }
 
 
+extern "C" JPE_API int32_t jpe_runtime_aquifer_compute_substance_batch(
+    const JpeAquiferCoreInput* inputs, uint32_t count,
+    JpeAquiferCoreOutput* outputs
+) {
+    constexpr uint32_t max_batch = 1024U * 1024U;
+    if (inputs == nullptr || outputs == nullptr || count == 0 || count > max_batch) return 1;
+
+    // Validate the complete input range before writing anything. This makes a
+    // rejected batch transactional from the caller's perspective.
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto& in = inputs[i];
+        if (in.air_type == in.water_type || in.air_type == in.lava_type
+            || in.water_type == in.lava_type
+            || in.distance_sqr[0] < 0 || in.distance_sqr[1] < 0
+            || in.distance_sqr[2] < 0 || in.distance_sqr[3] < 0) return 1;
+    }
+
+    for (uint32_t i = 0; i < count; ++i) {
+        if (jpe_runtime_aquifer_compute_substance_core(&inputs[i], &outputs[i]) != 0) return 1;
+    }
+    return 0;
+}
+
 extern "C" JPE_API int32_t jpe_runtime_aquifer_find_nearest_four(
     int32_t block_x, int32_t block_y, int32_t block_z,
     const JpeAquiferCellLocation* candidates, uint32_t candidate_count,
