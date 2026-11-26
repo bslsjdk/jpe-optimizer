@@ -87,6 +87,7 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle aquiferXoroshiroOffsets;
     private final MethodHandle aquiferLegacyOffsets;
     private final MethodHandle aquiferNearestFour;
+    private final MethodHandle aquiferGridCenters;
     private final ConcurrentHashMap<Long, NativeJob> jobs = new ConcurrentHashMap<>();
     private final java.util.Set<NativeDensityGraph> densityGraphs = ConcurrentHashMap.newKeySet();
     private final ReentrantReadWriteLock lifecycle = new ReentrantReadWriteLock();
@@ -342,7 +343,8 @@ public final class NativeRuntime implements AutoCloseable {
     private static final class AquiferScratch implements AutoCloseable {
         private final Arena arena = Arena.ofShared();
         private MemorySegment inputX, inputY, inputZ, outputX, outputY, outputZ, distances;
-        private int inputCapacity, outputCapacity;
+        private MemorySegment packedLocations;
+        private int inputCapacity, outputCapacity, packedCapacity;
         private final AtomicBoolean leased = new AtomicBoolean();
 
         private boolean tryAcquire() { return leased.compareAndSet(false, true); }
@@ -371,6 +373,16 @@ public final class NativeRuntime implements AutoCloseable {
                 outputCapacity = next;
             }
             return new MemorySegment[] {inputX, inputY, inputZ, outputX, outputY, outputZ, distances};
+        }
+        private MemorySegment ensurePackedCapacity(int required) {
+            if (packedCapacity < required) {
+                int next = Math.max(256, packedCapacity);
+                while (next < required) next = Math.min(1_048_576, Math.multiplyExact(next, 2));
+                packedLocations = arena.allocate(Math.multiplyExact((long) next, ValueLayout.JAVA_LONG.byteSize()),
+                        ValueLayout.JAVA_LONG.byteAlignment());
+                packedCapacity = next;
+            }
+            return packedLocations;
         }
         @Override public void close() {
             if (leased.get()) throw new IllegalStateException("Cannot close a leased Aquifer scratch arena");
@@ -480,7 +492,8 @@ public final class NativeRuntime implements AutoCloseable {
                           MethodHandle saveDensityGraphCache, MethodHandle blendDensityVolume,
                           MethodHandle aquiferXoroshiroOffsets,
                           MethodHandle aquiferLegacyOffsets,
-                          MethodHandle aquiferNearestFour) {
+                          MethodHandle aquiferNearestFour,
+                          MethodHandle aquiferGridCenters) {
         this.configureWorkers = configureWorkers;
         this.workerCount = workerCount;
         this.addF32 = add;
@@ -503,6 +516,7 @@ public final class NativeRuntime implements AutoCloseable {
         this.aquiferXoroshiroOffsets = aquiferXoroshiroOffsets;
         this.aquiferLegacyOffsets = aquiferLegacyOffsets;
         this.aquiferNearestFour = aquiferNearestFour;
+        this.aquiferGridCenters = aquiferGridCenters;
     }
 
     public static NativeRuntime load(Path libraryPath) throws IOException {
@@ -632,6 +646,15 @@ public final class NativeRuntime implements AutoCloseable {
                                     ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)))
                     .orElse(null);
 
+            MethodHandle aquiferGridCenters = lookup.find("jpe_runtime_aquifer_grid_centers")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.ADDRESS)))
+                    .orElse(null);
+
             MethodHandle aquiferNearestFour = lookup.find("jpe_runtime_aquifer_nearest_four")
                     .map(symbol -> linker.downcallHandle(symbol,
                             FunctionDescriptor.of(ValueLayout.JAVA_INT,
@@ -651,7 +674,7 @@ public final class NativeRuntime implements AutoCloseable {
             return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, perlinStack, submit, submitStack, status, wait, cancel, release,
                     compileDensityGraph, evaluateDensityGraph, evaluateDensityGraphWithInputs, evaluateDensityGraphMultiWithInputs, releaseDensityGraph,
                     loadDensityGraphCache, saveDensityGraphCache, blendDensityVolume,
-                    aquiferXoroshiroOffsets, aquiferLegacyOffsets, aquiferNearestFour);
+                    aquiferXoroshiroOffsets, aquiferLegacyOffsets, aquiferNearestFour, aquiferGridCenters);
         } catch (Throwable failure) {
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
         }
@@ -856,6 +879,46 @@ public final class NativeRuntime implements AutoCloseable {
             lifecycle.readLock().unlock();
         }
         return new AquiferNearestFour(centerX, centerY, centerZ, distances);
+    }
+
+
+    public boolean supportsAquiferGridCenters() { return aquiferGridCenters != null; }
+
+    /**
+     * Precomputes every entry in vanilla's flat aquiferLocationCache. The output
+     * uses BlockPos.asLong packing and vanilla's x-fast, then z, then y index order.
+     */
+    public void aquiferGridCenters(int randomMode, long seedLo, long seedHi,
+                                   int minGridX, int minGridY, int minGridZ,
+                                   int gridSizeX, int gridSizeZ, long[] output) {
+        if (aquiferGridCenters == null) {
+            throw new UnsupportedOperationException("Native runtime does not export Aquifer grid-center support");
+        }
+        Objects.requireNonNull(output, "output");
+        if ((randomMode != 0 && randomMode != 1) || gridSizeX <= 0 || gridSizeZ <= 0
+                || output.length == 0 || output.length > 1_048_576
+                || (long) gridSizeX * gridSizeZ > output.length
+                || output.length % ((long) gridSizeX * gridSizeZ) != 0) {
+            throw new IllegalArgumentException("Invalid Aquifer grid dimensions or output length");
+        }
+        lifecycle.readLock().lock();
+        AquiferScratch scratch = null;
+        try {
+            ensureOpen();
+            scratch = acquireAquiferScratch();
+            MemorySegment packed = scratch.ensurePackedCapacity(output.length);
+            try {
+                int status = (int) aquiferGridCenters.invokeExact(randomMode, seedLo, seedHi,
+                        minGridX, minGridY, minGridZ, gridSizeX, gridSizeZ, output.length, packed);
+                checkStatus(status, "aquifer-grid-centers");
+                MemorySegment.copy(packed, ValueLayout.JAVA_LONG, 0, output, 0, output.length);
+            } catch (Throwable failure) {
+                throw rethrow("Unable to precompute Native Aquifer grid centers", failure);
+            }
+        } finally {
+            if (scratch != null) scratch.release();
+            lifecycle.readLock().unlock();
+        }
     }
 
     public boolean supportsBlenderDensityVolume() { return blendDensityVolume != null; }
