@@ -33,6 +33,10 @@ public final class CompiledSamplerGraphIr {
         CONST_MIN_RIGHT,
         CONST_MAX_RIGHT,
         CLAMP,
+        NEGATE,
+        ABS,
+        SQUARE,
+        CUBE,
         CACHE_BOUNDARY,
         CONTEXT_BOUNDARY,
         OPAQUE
@@ -83,6 +87,10 @@ public final class CompiledSamplerGraphIr {
                         "Preserve operand order and Java float32 arithmetic; no generic zero shortcut";
                 case CONSTANT -> "Exact float32 constant sampler; value remains a float scalar";
                 case CLAMP -> "Minecraft Mth.clamp: value < min ? min : Math.min(value, max), preserving Java NaN and signed-zero semantics";
+                case NEGATE -> "Unary float32 sign inversion; preserve NaN payload and signed-zero behavior";
+                case ABS -> "Java Math.abs(float); clear sign bit while preserving NaN payload";
+                case SQUARE -> "Float32 input multiplied by itself exactly once";
+                case CUBE -> "Float32 left-associated input * input * input";
                 case CACHE_BOUNDARY -> "Do not inline across Minecraft cache identity or volume lifetime";
                 case CONTEXT_BOUNDARY -> "Resolve through SamplerContext; fallback is not an unconditional child";
                 case OPAQUE -> source.limitation().isEmpty()
@@ -193,6 +201,10 @@ public final class CompiledSamplerGraphIr {
             case "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$ConstMaxSampler" ->
                     Op.CONST_MAX_RIGHT;
             case "net.minecraft.world.level.levelgen.densityfunction.op.ClampFunction$Sampler" -> Op.CLAMP;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$NegateSampler" -> Op.NEGATE;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$AbsSampler" -> Op.ABS;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$SquareSampler" -> Op.SQUARE;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$CubeSampler" -> Op.CUBE;
             case "net.minecraft.world.level.levelgen.densityfunction.CachingDensitySampler" ->
                     Op.CACHE_BOUNDARY;
             case "net.minecraft.world.level.levelgen.densityfunction.ContextBoundSampler" ->
