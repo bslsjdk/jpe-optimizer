@@ -35,6 +35,9 @@ public interface AquiferNoiseBasedAccessor {
     @Accessor("gridSizeZ")
     int jpe$getGridSizeZ();
 
+    @Accessor("skipSamplingAboveY")
+    int jpe$getSkipSamplingAboveY();
+
     @Accessor("positionalRandomFactory")
     PositionalRandomFactory jpe$getPositionalRandomFactory();
 }
