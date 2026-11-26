@@ -556,7 +556,7 @@ public final class NativeRuntime implements AutoCloseable {
                                     ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
                                     ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)))
                     .orElse(null);
-            MethodHandle aquiferXoroshiroOffsets = lookup.find("jpe_cpp_aquifer_xoroshiro_offsets")
+            MethodHandle aquiferXoroshiroOffsets = lookup.find("jpe_runtime_aquifer_xoroshiro_offsets")
                     .map(symbol -> linker.downcallHandle(symbol,
                             FunctionDescriptor.of(ValueLayout.JAVA_INT,
                                     ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG,
