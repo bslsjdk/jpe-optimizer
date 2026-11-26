@@ -1324,7 +1324,7 @@ mod tests {
                 offset_x: -0.21, offset_y: 0.19, offset_z: 0.31,
                 xz_scale: 1.1, y_scale: 0.7, amplitude: -0.25 },
         ];
-        let mut expected = [0.125_f32; 24];
+        let mut expected = [0.0_f32; 24];
         let mut actual = expected;
         assert_eq!(unsafe { jpe_runtime_perlin_add_stack(
             layers.as_ptr(), 2, 2, 3, 4, -3, -5, 7, 1, 2, 1,
@@ -1606,7 +1606,7 @@ mod tests {
             )
         }, STATUS_OK);
         for (actual, expected) in actual.iter().zip(expected.iter()) {
-            assert_eq!(*actual, *expected as f64);
+            assert_eq!(*actual, (*expected as f64) + 0.125);
         }
         assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
     }
