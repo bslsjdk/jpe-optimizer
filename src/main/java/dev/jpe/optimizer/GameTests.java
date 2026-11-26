@@ -132,7 +132,8 @@ public final class GameTests {
         }
         try (NativeRuntime runtime = NativeRuntime.load(java.nio.file.Path.of(library))) {
             if (!runtime.supportsDensityGraphPoints()) {
-                throw new AssertionError("Native arbitrary-point density graph ABI is unavailable");
+                throw new AssertionError("Native arbitrary-point density graph ABI is unavailable: "
+                        + runtime.densityGraphPointsDiagnostic());
             }
             List<NativeRuntime.DensityNode> nodes = List.of(
                     NativeRuntime.DensityNode.x(),
