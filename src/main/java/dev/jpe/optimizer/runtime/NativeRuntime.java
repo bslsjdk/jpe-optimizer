@@ -55,6 +55,7 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle densityGraphEvaluate;
     private final MethodHandle densityGraphEvaluateF32;
     private final MethodHandle densityGraphRelease;
+    private final MethodHandle aquiferGridCenters;
     private final ConcurrentHashMap<Long, java.util.concurrent.atomic.AtomicInteger> densityGraphHandles = new ConcurrentHashMap<>();
     private final java.util.Set<Long> preparedStackHandles = ConcurrentHashMap.newKeySet();
     private final MethodHandle jobStatus;
@@ -141,7 +142,8 @@ public final class NativeRuntime implements AutoCloseable {
                           MethodHandle cancel, MethodHandle release,
                           MethodHandle preparePreparedStack, MethodHandle evaluatePreparedStack,
                           MethodHandle releasePreparedStack,
-                          MethodHandle graphCompile, MethodHandle graphEvaluate, MethodHandle graphEvaluateF32, MethodHandle graphRelease) {
+                          MethodHandle graphCompile, MethodHandle graphEvaluate, MethodHandle graphEvaluateF32, MethodHandle graphRelease,
+                          MethodHandle aquiferGridCenters) {
         this.configureWorkers = configureWorkers;
         this.workerCount = workerCount;
         this.addF32 = add;
@@ -156,6 +158,7 @@ public final class NativeRuntime implements AutoCloseable {
         this.densityGraphEvaluate = graphEvaluate;
         this.densityGraphEvaluateF32 = graphEvaluateF32;
         this.densityGraphRelease = graphRelease;
+        this.aquiferGridCenters = aquiferGridCenters;
         this.jobStatus = status;
         this.waitJob = wait;
         this.cancelJob = cancel;
@@ -268,6 +271,14 @@ public final class NativeRuntime implements AutoCloseable {
                     .map(symbol -> linker.downcallHandle(symbol,
                             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG)))
                     .orElse(null);
+            MethodHandle aquiferGridCenters = lookup.find("jpe_runtime_aquifer_grid_centers")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.ADDRESS)))
+                    .orElse(null);
             if (graphCompile == null || graphEvaluate == null || graphRelease == null) {
                 graphCompile = null;
                 graphEvaluate = null;
@@ -295,7 +306,7 @@ public final class NativeRuntime implements AutoCloseable {
             if (actualWorkers < 1) throw new IllegalStateException("Unable to configure native workers: " + actualWorkers);
             return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, perlinStack, submit, submitStack, status, wait, cancel, release,
                     preparePreparedStack, evaluatePreparedStack, releasePreparedStack,
-                    graphCompile, graphEvaluate, graphEvaluateF32, graphRelease);
+                    graphCompile, graphEvaluate, graphEvaluateF32, graphRelease, aquiferGridCenters);
         } catch (Throwable failure) {
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
         }
@@ -303,6 +314,52 @@ public final class NativeRuntime implements AutoCloseable {
 
     /** Number of native workers selected during runtime initialization. */
     public int workerCount() { return workerCount; }
+
+    /** True when the loaded native runtime exposes the experimental Aquifer cache prefill kernel. */
+    public boolean supportsAquiferGridCenters() {
+        return aquiferGridCenters != null;
+    }
+
+    /**
+     * Builds the complete packed Aquifer location cache in native code, then commits it
+     * to the caller's existing Java cache only after the native call succeeds.
+     */
+    public void aquiferGridCenters(int randomMode, long seedLo, long seedHi,
+                                   int minGridX, int minGridY, int minGridZ,
+                                   int gridSizeX, int gridSizeZ, long[] packedLocations) {
+        lifecycle.readLock().lock();
+        try {
+            ensureOpen();
+            Objects.requireNonNull(packedLocations, "packedLocations");
+            if (!supportsAquiferGridCenters()) {
+                throw new IllegalStateException("Native Aquifer grid-center API is unavailable");
+            }
+            if (randomMode < 0 || randomMode > 1 || gridSizeX <= 0 || gridSizeZ <= 0
+                    || packedLocations.length == 0 || packedLocations.length > 1_048_576) {
+                throw new IllegalArgumentException("Invalid Aquifer grid-cache dimensions or random mode");
+            }
+            long layerSize = Math.multiplyExact((long) gridSizeX, gridSizeZ);
+            if (layerSize > packedLocations.length || packedLocations.length % layerSize != 0) {
+                throw new IllegalArgumentException("Aquifer grid-cache length is not an integral number of layers");
+            }
+            try (Arena arena = Arena.ofConfined()) {
+                long bytes = Math.multiplyExact((long) packedLocations.length, ValueLayout.JAVA_LONG.byteSize());
+                MemorySegment nativeLocations = arena.allocate(bytes, ValueLayout.JAVA_LONG.byteAlignment());
+                int status = (int) aquiferGridCenters.invokeExact(
+                        randomMode, seedLo, seedHi,
+                        minGridX, minGridY, minGridZ,
+                        gridSizeX, gridSizeZ, packedLocations.length,
+                        nativeLocations);
+                checkStatus(status, "aquifer-grid-centers");
+                MemorySegment.copy(nativeLocations, ValueLayout.JAVA_LONG, 0L,
+                        packedLocations, 0, packedLocations.length);
+            } catch (Throwable failure) {
+                throw rethrow("Native Aquifer grid-center prefill failed", failure);
+            }
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+    }
 
     private static int requestedNativeWorkers() {
         int available = Math.max(1, Runtime.getRuntime().availableProcessors());
