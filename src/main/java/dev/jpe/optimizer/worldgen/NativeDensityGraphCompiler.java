@@ -725,6 +725,18 @@ public final class NativeDensityGraphCompiler {
                         float maximum = ((Number) component(function, "max")).floatValue();
                         result = append(NativeRuntime.DensityNode.clamp(input, minimum, maximum));
                     }
+                    case "SliceFunction" -> {
+                        String axisName = component(function, "axis").toString();
+                        int axis = switch (axisName) {
+                            case "X" -> 0;
+                            case "Y" -> 1;
+                            case "Z" -> 2;
+                            default -> throw new UnsupportedOperationException("Unknown slice axis " + axisName);
+                        };
+                        int coordinate = ((Number) component(function, "coordinate")).intValue();
+                        int input = lower((DensityFunction) component(function, "input"));
+                        result = append(NativeRuntime.DensityNode.slice(input, axis, coordinate));
+                    }
                     case "NoiseFunction" -> {
                         Noise noise;
                         synchronized (LOCK) {
