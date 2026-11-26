@@ -1955,6 +1955,17 @@ public final class NativeRuntime implements AutoCloseable {
             throw new IllegalStateException("Cannot unload native library while " + jobs.size()
                     + " jobs are still owned; cancel, await completion, and release each job first");
         }
+        if (aquiferContextDestroy != null) {
+            for (Long handle : aquiferContextHandles) {
+                try {
+                    int status = (int) aquiferContextDestroy.invokeExact(handle.longValue());
+                    if (status != 0) throw new IllegalStateException("Aquifer context destroy status=" + status);
+                } catch (Throwable failure) {
+                    throw rethrow("Unable to destroy Aquifer context during runtime close", failure);
+                }
+            }
+            aquiferContextHandles.clear();
+        }
         closed = true;
         if (densityGraphRelease != null) {
             for (var entry : densityGraphHandles.entrySet()) {
