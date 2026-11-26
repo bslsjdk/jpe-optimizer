@@ -29,7 +29,7 @@ constexpr uint32_t kSub = 8, kDiv = 9, kMin = 10, kMax = 11;
 constexpr uint32_t kAbs = 12, kNegate = 13, kSquare = 14, kCube = 15;
 constexpr uint32_t kSqrt = 16, kHalfNegative = 17, kQuarterNegative = 18;
 constexpr uint32_t kReciprocal = 19, kSign = 20, kPow = 21, kClamp = 22;
-constexpr uint32_t kSqueeze = 23, kLerp = 24, kGradient = 25, kInterpolated = 26;
+constexpr uint32_t kSqueeze = 23, kLerp = 24, kGradient = 25, kInterpolated = 26, kRangeChoice = 27;
 
 struct CompiledGraph {
     uint64_t fingerprint = 0;
@@ -167,6 +167,11 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                     || node.reserved > static_cast<uint32_t>(INT32_MAX)
                     || node.immediate != 0.0 || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
                 break;
+            case kRangeChoice:
+                if (node.input_a >= i || node.input_b >= i || node.reserved >= i
+                    || !std::isfinite(node.immediate) || !std::isfinite(node.auxiliary)
+                    || node.immediate >= node.auxiliary || node.tertiary != 0.0) return false;
+                break;
             case kPerlinStack: {
                 const double handle = node.immediate;
                 const double xz_scale = node.auxiliary;
@@ -252,7 +257,7 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
             } else if ((node.opcode >= kAbs && node.opcode <= kSign)
                 || node.opcode == kClamp || node.opcode == kSqueeze || node.opcode == kInterpolated) {
                 ++consumers[node.input_a];
-            } else if (node.opcode == kLerp) {
+            } else if (node.opcode == kLerp || node.opcode == kRangeChoice) {
                 ++consumers[node.input_a]; ++consumers[node.input_b]; ++consumers[node.reserved];
             }
         }
@@ -276,7 +281,7 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
             } else if ((node.opcode >= kAbs && node.opcode <= kSign)
                 || node.opcode == kClamp || node.opcode == kSqueeze || node.opcode == kInterpolated) {
                 release_input(node.input_a);
-            } else if (node.opcode == kLerp) {
+            } else if (node.opcode == kLerp || node.opcode == kRangeChoice) {
                 release_input(node.input_a);
                 release_input(node.input_b);
                 release_input(node.reserved);
@@ -461,6 +466,18 @@ int32_t evaluate_density_graph_impl(
                                 values[out++] = from_value + scaled;
                             }
                         }
+                    }
+                    break;
+                }
+                case kRangeChoice: {
+                    const auto& input = slots[graph->node_slots[node.input_a]];
+                    const auto& when_in_range = slots[graph->node_slots[node.input_b]];
+                    const auto& when_out_of_range = slots[graph->node_slots[node.reserved]];
+                    const Scalar minimum = static_cast<Scalar>(node.immediate);
+                    const Scalar maximum = static_cast<Scalar>(node.auxiliary);
+                    for (size_t j = 0; j < volume; ++j) {
+                        values[j] = input[j] >= minimum && input[j] < maximum
+                            ? when_in_range[j] : when_out_of_range[j];
                     }
                     break;
                 }
