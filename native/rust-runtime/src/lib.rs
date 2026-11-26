@@ -340,7 +340,7 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_status_cache_insert_batch(
 }
 
 
-/// Inserts world-context statuses with bounded FIFO eviction. This is intentionally
+/// Inserts world-context statuses with bounded round-robin replacement. This is intentionally
 /// separate from the transactional cache API, whose capacity-rejection semantics remain stable.
 #[no_mangle]
 pub unsafe extern "C" fn jpe_runtime_aquifer_status_cache_insert_batch_evict(
