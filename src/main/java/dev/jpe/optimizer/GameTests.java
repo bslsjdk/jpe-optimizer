@@ -186,15 +186,21 @@ public final class GameTests {
                 globalBelowTypes, air, water, lava, false);
 
         if (normal.hasBlockState()[0] || normal.shouldScheduleFluidUpdate()[0]) {
-            throw new AssertionError("Aquifer batch positive-density decision mismatch");
+            throw new AssertionError("Aquifer batch positive-density decision mismatch: hasBlockState="
+                    + normal.hasBlockState()[0] + ", blockStateType=" + normal.blockStateTypes()[0]
+                    + ", shouldSchedule=" + normal.shouldScheduleFluidUpdate()[0]);
         }
         if (!normal.hasBlockState()[1] || normal.blockStateTypes()[1] != water
                 || normal.shouldScheduleFluidUpdate()[1]) {
-            throw new AssertionError("Aquifer batch equal-water decision mismatch");
+            throw new AssertionError("Aquifer batch equal-water decision mismatch: hasBlockState="
+                    + normal.hasBlockState()[1] + ", blockStateType=" + normal.blockStateTypes()[1]
+                    + ", shouldSchedule=" + normal.shouldScheduleFluidUpdate()[1]);
         }
         if (!normal.hasBlockState()[2] || normal.blockStateTypes()[2] != water
                 || !normal.shouldScheduleFluidUpdate()[2]) {
-            throw new AssertionError("Aquifer batch global lava-adjacency decision mismatch");
+            throw new AssertionError("Aquifer batch global lava-adjacency decision mismatch: hasBlockState="
+                    + normal.hasBlockState()[2] + ", blockStateType=" + normal.blockStateTypes()[2]
+                    + ", shouldSchedule=" + normal.shouldScheduleFluidUpdate()[2]);
         }
 
         NativeRuntime.AquiferSubstanceBatch debug = runtime.aquiferSubstanceBatch(
@@ -204,7 +210,9 @@ public final class GameTests {
                 air, water, lava, true);
         if (!debug.hasBlockState()[0] || debug.blockStateTypes()[0] != air
                 || !debug.shouldScheduleFluidUpdate()[0]) {
-            throw new AssertionError("Aquifer batch debug-fluid suppression mismatch");
+            throw new AssertionError("Aquifer batch debug-fluid suppression mismatch: hasBlockState="
+                    + debug.hasBlockState()[0] + ", blockStateType=" + debug.blockStateTypes()[0]
+                    + ", shouldSchedule=" + debug.shouldScheduleFluidUpdate()[0]);
         }
         JPEOptimizer.LOGGER.info(
                 "JPE_AQUIFER_SUBSTANCE_BATCH normalSamples=3 debugSamples=1 batchDowncalls=2 expectedDecisions=true");
