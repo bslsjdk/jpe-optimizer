@@ -145,3 +145,24 @@ This is still a diagnostic API, not a production hook. It does not yet replace o
 Minecraft's cache during world generation. No chunk-generation speedup is claimed until
 the exact real constructor dimensions are exercised and end-to-end chunk timings show a
 repeatable benefit. Keep the feature opt-in and disabled by default.
+
+## Experimental constructor hook
+
+An opt-in Mixin now runs after construction of the exact vanilla
+`Aquifer.NoiseBasedAquifer` class. With
+`-Djpe.nativeAquiferGridCentersEnabled=true`, it recognizes only the audited
+XOROSHIRO and Legacy positional factory implementations, checks that the entire
+vanilla location cache is still at its `Long.MAX_VALUE` sentinel, computes a
+separate packed output array through one Native call, and copies it into the
+existing cache only after the call succeeds.
+
+All later Aquifer behavior remains vanilla: nearest-four candidate selection,
+fluid status caching, pressure, scheduling flags, and final block-state decisions.
+Unknown positional factory implementations, invalid dimensions, unavailable native
+runtime, or a pre-populated cache cause a no-op. Failures leave the vanilla cache
+untouched. The property is disabled by default.
+
+This constructor hook is a parity/performance experiment, not yet a supported
+production default. Before enabling it broadly, validate both random modes against
+real constructor-created caches under the target Minecraft/NeoForge runtime and
+measure complete chunk/world generation with the option on and off.
