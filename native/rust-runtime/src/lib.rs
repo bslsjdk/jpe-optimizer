@@ -2548,6 +2548,124 @@ mod tests {
     }
 
     #[test]
+    fn blender_density_volume_ordered_bucket_merge_matches_vanilla_full_chunk_reference() {
+        // Nine neighboring legacy chunks, all 16 density columns populated.
+        // The 5 x 49 x 5 volume mirrors the full Minecraft density lattice shape.
+        let mut backing: Vec<Vec<f32>> = Vec::new();
+        for view in 0..9 {
+            for column in 0..16 {
+                let values = (0..16).map(|y| {
+                    let raw = ((view * 37 + column * 19 + y * 11) % 97) as f32;
+                    (raw - 31.0) * 0.137_f32
+                }).collect();
+                backing.push(values);
+            }
+        }
+        let views: Vec<JpeBlendingDataView> = (0..9).map(|view| {
+            let density_columns = std::array::from_fn(|column| {
+                backing[view * 16 + column].as_ptr()
+            });
+            JpeBlendingDataView {
+                chunk_x: (view % 3) as i32 - 1,
+                chunk_z: (view / 3) as i32 - 1,
+                min_section_y: -4,
+                section_count: 8,
+                density_columns,
+            }
+        }).collect();
+
+        const SIZE_X: usize = 5;
+        const SIZE_Y: usize = 49;
+        const SIZE_Z: usize = 5;
+        let count = SIZE_X * SIZE_Y * SIZE_Z;
+        let noise: Vec<f32> = (0..count).map(|i| {
+            ((i * 29 % 211) as f32 - 103.0) * 0.03125_f32
+        }).collect();
+        let mut actual = vec![0.0_f32; count];
+        assert_eq!(unsafe {
+            jpe_runtime_blend_density_volume(
+                std::ptr::null(), 0, views.as_ptr(), views.len() as u32,
+                SIZE_X as u32, SIZE_Y as u32, SIZE_Z as u32,
+                -8, -64, -8, 4, 8, 4,
+                noise.as_ptr(), actual.as_mut_ptr(), count as u64,
+            )
+        }, STATUS_OK);
+
+        let column_x = |column: usize| -> i32 {
+            if column < 7 {
+                (3 - column as i32).max(0)
+            } else {
+                4 - (4 - (column as i32 - 7)).max(0)
+            }
+        };
+        let column_z = |column: usize| -> i32 {
+            if column < 7 {
+                (column as i32 - 3).max(0)
+            } else {
+                4 - ((column as i32 - 7) - 4).max(0)
+            }
+        };
+        let mut expected = vec![0.0_f32; count];
+        for z in 0..SIZE_Z {
+            for x in 0..SIZE_X {
+                for y in 0..SIZE_Y {
+                    let index = (z * SIZE_X + x) * SIZE_Y + y;
+                    let block_x = -8 + x as i32 * 4;
+                    let block_y = -64 + y as i32 * 8;
+                    let block_z = -8 + z as i32 * 4;
+                    let cell_x = block_x.div_euclid(4);
+                    let cell_y = block_y / 8; // Java integer division truncates toward zero.
+                    let cell_z = block_z.div_euclid(4);
+                    let mut total_weight = 0.0_f64;
+                    let mut weighted_density = 0.0_f64;
+                    let mut closest = f64::INFINITY;
+
+                    // Vanilla order: fastutil map iteration, column order, then ascending Y.
+                    for (view_index, view) in views.iter().enumerate() {
+                        let origin_x = view.chunk_x * 4;
+                        let origin_z = view.chunk_z * 4;
+                        for column in 0..16 {
+                            let point_x = origin_x + column_x(column);
+                            let point_z = origin_z + column_z(column);
+                            for point_y_index in 0..16 {
+                                let point_y = -7 + point_y_index as i32;
+                                if point_y < cell_y - 1 || point_y >= cell_y + 1 {
+                                    continue;
+                                }
+                                let dx = (cell_x - point_x) as f32;
+                                let dy = ((cell_y - point_y) * 2) as f32;
+                                let dz = (cell_z - point_z) as f32;
+                                let squared = (dx * dx + dy * dy) + dz * dz;
+                                let distance = (squared as f64).sqrt() as f32 as f64;
+                                if distance > 2.0 { continue; }
+                                closest = closest.min(distance);
+                                let weight = 1.0 / (distance * distance * distance * distance);
+                                let density = backing[view_index * 16 + column][point_y_index] * 0.1_f32;
+                                weighted_density += density as f64 * weight;
+                                total_weight += weight;
+                            }
+                        }
+                    }
+                    if closest.is_infinite() {
+                        expected[index] = noise[index];
+                    } else {
+                        let average = weighted_density / total_weight;
+                        let alpha = (closest / 3.0).clamp(0.0, 1.0);
+                        expected[index] = (average + alpha * (noise[index] as f64 - average)) as f32;
+                    }
+                }
+            }
+        }
+
+        for index in 0..count {
+            assert_eq!(
+                actual[index].to_bits(), expected[index].to_bits(),
+                "full-chunk Blender parity mismatch at z/x/y flattened index {index}"
+            );
+        }
+    }
+
+    #[test]
     fn blender_density_volume_handles_negative_coordinates_and_boundary_fallback() {
         let mut column = vec![0.0_f32; 16];
         column[3] = 12.5;
