@@ -471,9 +471,13 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
     thread_local std::vector<float> tile_scratch;
     tile_scratch.resize(node_count * tile_capacity);
     std::vector<float>& tile_values = tile_scratch;
-    std::array<float, kMaxTileSamples> x_values{};
-    std::array<float, kMaxTileSamples> y_values{};
-    std::array<float, kMaxTileSamples> z_values{};
+    // Coordinate lanes must follow the selected tile capacity too. A fixed-size
+    // stack array silently overflows when the benchmark override exceeds 768.
+    thread_local std::vector<float> coordinate_scratch;
+    coordinate_scratch.resize(static_cast<size_t>(tile_capacity) * 3);
+    float* x_values = coordinate_scratch.data();
+    float* y_values = x_values + tile_capacity;
+    float* z_values = y_values + tile_capacity;
     const uint64_t plane_size = static_cast<uint64_t>(size_x) * size_y;
 
     // Static leaves do not change between tiles, so initialize their lanes once
@@ -517,8 +521,8 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
 
         for (const CoordinateBinding& binding : graph->coordinates) {
             float* destination = tile_values.data() + static_cast<size_t>(binding.node) * tile_capacity;
-            const float* source = binding.axis == 0 ? x_values.data()
-                : binding.axis == 1 ? y_values.data() : z_values.data();
+            const float* source = binding.axis == 0 ? x_values
+                : binding.axis == 1 ? y_values : z_values;
             std::copy_n(source, count, destination);
         }
 
