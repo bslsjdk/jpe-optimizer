@@ -1214,7 +1214,10 @@ mod tests {
                     }, STATUS_OK);
                 }
                 measurements[index].push(start.elapsed().as_secs_f64() * 1000.0 / 24.0);
-                assert_eq!(tile_output, scalar, "tile limit {tile_limit} changed graph output");
+                assert!(
+                    tile_output.iter().zip(&scalar).all(|(actual, expected)| actual.to_bits() == expected.to_bits()),
+                    "tile limit {tile_limit} changed graph output bits"
+                );
             }
         }
         unsafe { jpe_cpp_density_graph_set_test_tile_limit(0); }
