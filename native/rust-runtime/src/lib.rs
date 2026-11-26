@@ -2311,7 +2311,7 @@ mod tests {
         let axis_values = [
             [-1.0_f32, -0.75_f32, 0.0_f32],
             [-1.0_f32, -0.5_f32, 0.0_f32],
-            [-1.0_f32, -0.25_f32, 1.0_f32],
+            [-1.0_f32, -0.25_f32, 0.75_f32],
         ];
         for axis in 0..3_u32 {
             let nodes = [JpeDensityNode {
