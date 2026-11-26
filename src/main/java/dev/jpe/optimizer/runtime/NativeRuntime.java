@@ -695,6 +695,19 @@ public final class NativeRuntime implements AutoCloseable {
         public static DensityNode quarterNegative(int input) { return new DensityNode(18, input, -1, 0, 0.0, 0.0, 0.0); }
         public static DensityNode reciprocal(int input) { return new DensityNode(19, input, -1, 0, 0.0, 0.0, 0.0); }
         public static DensityNode sign(int input) { return new DensityNode(20, input, -1, 0, 0.0, 0.0, 0.0); }
+        public static DensityNode squeeze(int input) { return new DensityNode(23, input, -1, 0, 0.0, 0.0, 0.0); }
+        public static DensityNode lerp(int alpha, int first, int second) {
+            return new DensityNode(24, alpha, first, second, 0.0, 0.0, 0.0);
+        }
+        public static DensityNode gradient(int axis, int fromCoordinate, int toCoordinate,
+                                            float fromValue, float toValue) {
+            if (axis < 0 || axis > 2 || fromCoordinate == toCoordinate
+                    || !Float.isFinite(fromValue) || !Float.isFinite(toValue)) {
+                throw new IllegalArgumentException("Invalid clamped density gradient");
+            }
+            return new DensityNode(25, axis, 0, Float.floatToRawIntBits(fromValue),
+                    fromCoordinate, toCoordinate, toValue);
+        }
         public static DensityNode pow(int a, int b) { return new DensityNode(21, a, b, 0, 0.0, 0.0, 0.0); }
         public static DensityNode clamp(int input, float minimum, float maximum) {
             if (!Float.isFinite(minimum) || !Float.isFinite(maximum) || minimum > maximum) {
