@@ -439,7 +439,7 @@ public final class GameTests {
                     xorAccessor.jpe$seedLo(), xorAccessor.jpe$seedHi());
             assertAquiferGridCenterBatch(runtime, legacyFactory, 1,
                     legacyAccessor.jpe$seed(), 0L);
-            JPEOptimizer.LOGGER.info("JPE_AQUIFER_GRID_CENTER_BATCH modes=2 cells=225 packedBlockPos=true exact=true");
+            JPEOptimizer.LOGGER.info("JPE_AQUIFER_GRID_CENTER_BATCH modes=2 cells=825 packedBlockPos=true exact=true");
         } catch (Exception failure) {
             throw new AssertionError("Native Aquifer XOROSHIRO parity failed", failure);
         }
@@ -452,7 +452,7 @@ public final class GameTests {
             NativeRuntime runtime, PositionalRandomFactory factory,
             int randomMode, long seedLo, long seedHi) {
         int minX = -7, minY = -11, minZ = 13;
-        int sizeX = 5, sizeZ = 5, sizeY = 9;
+        int sizeX = 5, sizeZ = 5, sizeY = 33;
         long[] actual = new long[sizeX * sizeY * sizeZ];
         runtime.aquiferGridCenters(randomMode, seedLo, seedHi,
                 minX, minY, minZ, sizeX, sizeZ, actual);
@@ -477,6 +477,48 @@ public final class GameTests {
                 }
             }
         }
+        // Full 5x33x5 cache-shaped comparison. Include all FFM copying and
+        // native execution; do not time an isolated C++ loop and call it a win.
+        long[] nativeNanos = new long[101];
+        long[] vanillaNanos = new long[101];
+        long[] vanillaOutput = new long[actual.length];
+        for (int round = 0; round < 111; ++round) {
+            long started = System.nanoTime();
+            runtime.aquiferGridCenters(randomMode, seedLo, seedHi,
+                    minX, minY, minZ, sizeX, sizeZ, actual);
+            long nativeElapsed = System.nanoTime() - started;
+            started = System.nanoTime();
+            int out = 0;
+            for (int gyIndex = 0; gyIndex < sizeY; ++gyIndex) {
+                int gy = minY + gyIndex;
+                for (int gzIndex = 0; gzIndex < sizeZ; ++gzIndex) {
+                    int gz = minZ + gzIndex;
+                    for (int gxIndex = 0; gxIndex < sizeX; ++gxIndex) {
+                        int gx = minX + gxIndex;
+                        RandomSource random = factory.at(gx, gy, gz);
+                        vanillaOutput[out++] = BlockPos.asLong(
+                                gx * 16 + random.nextInt(10),
+                                gy * 12 + random.nextInt(9),
+                                gz * 16 + random.nextInt(10));
+                    }
+                }
+            }
+            long vanillaElapsed = System.nanoTime() - started;
+            if (round >= 10) {
+                nativeNanos[round - 10] = nativeElapsed;
+                vanillaNanos[round - 10] = vanillaElapsed;
+            }
+            if (!java.util.Arrays.equals(actual, vanillaOutput)) {
+                throw new AssertionError("Aquifer grid-center parity changed during timed round " + round);
+            }
+        }
+        java.util.Arrays.sort(nativeNanos);
+        java.util.Arrays.sort(vanillaNanos);
+        JPEOptimizer.LOGGER.info(
+                "JPE_AQUIFER_GRID_CENTER_BENCH mode={} cells={} rounds=101 nativeMedianUs={} vanillaMedianUs={} " +
+                        "nativeIncludesFfmCopy=true exact=true",
+                randomMode, actual.length,
+                nativeNanos[50] / 1_000.0, vanillaNanos[50] / 1_000.0);
     }
 
     /** Independently checks the Java FFM batch ABI against Minecraft's positional factories. */
