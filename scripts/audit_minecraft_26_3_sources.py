@@ -275,9 +275,13 @@ def resolved_bytecode_references(jar: Path, class_name: str) -> dict[str, set[st
         # instructions are prefixed with an offset such as '42:'; their
         # constant-pool comments can themselves contain descriptors ending in
         # ';', so they must never be mistaken for a new declaration.
-        is_instruction = re.match(r"^\\d+:", stripped) is not None
-        if not is_instruction and "(" in stripped and stripped.endswith(";") \\
-                and not stripped.startswith(("descriptor:", "Signature:")):
+        is_instruction = re.match(r"^\d+:", stripped) is not None
+        if (
+            not is_instruction
+            and "(" in stripped
+            and stripped.endswith(";")
+            and not stripped.startswith(("descriptor:", "Signature:"))
+        ):
             current_method = stripped
             in_code = False
             continue
