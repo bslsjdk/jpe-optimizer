@@ -97,7 +97,12 @@ public final class NativeDensityGraphCompiler {
     public static ScopedDensityBuffer trySampleVolume(
             DensityFunction root, NoiseChunk noiseChunk, DensityVolume volume
     ) {
-        NativeRuntime runtime = NativePerlinNoiseBackend.runtimeForDensityGraph();
+        NativeRuntime runtime;
+        try {
+            runtime = NativePerlinNoiseBackend.runtimeForDensityGraph();
+        } catch (RuntimeException | LinkageError unavailable) {
+            return null;
+        }
         if (runtime == null) return null;
 
         NoiseChunkAccessor noiseChunkAccess = (NoiseChunkAccessor) (Object) noiseChunk;
@@ -109,7 +114,12 @@ public final class NativeDensityGraphCompiler {
         // Non-empty legacy chunks must use vanilla's context-bound blend sampler.
         if (!noiseChunkAccess.jpe$getBlender().isEmpty()) return null;
         boolean beardifierEmpty = noiseChunkAccess.jpe$getBeardifier() == Beardifier.EMPTY;
-        long handle = graphHandle(root, randomState, context, true, beardifierEmpty, runtime);
+        long handle;
+        try {
+            handle = graphHandle(root, randomState, context, true, beardifierEmpty, runtime);
+        } catch (RuntimeException | LinkageError unavailable) {
+            return null;
+        }
         if (handle == 0L) return null;
 
         DensityBufferPool pool = noiseChunkAccess.jpe$getBufferPool();
@@ -159,7 +169,7 @@ public final class NativeDensityGraphCompiler {
             int rootIndex;
             try {
                 rootIndex = builder.lower(root);
-            } catch (RuntimeException unsupported) {
+            } catch (RuntimeException | LinkageError unsupported) {
                 stateGraphs.disabled.add(root);
                 return 0L;
             }
@@ -177,7 +187,7 @@ public final class NativeDensityGraphCompiler {
                 }
                 stateGraphs.handles.put(root, new GraphHandle(runtime, handle));
                 return handle;
-            } catch (RuntimeException rejected) {
+            } catch (RuntimeException | LinkageError rejected) {
                 stateGraphs.disabled.add(root);
                 return 0L;
             }
