@@ -88,6 +88,7 @@ public final class NativeBlenderDensityBackend {
     public static String metrics() {
         return "attempts=" + ATTEMPTS.sum() + " completed=" + COMPLETED.sum()
                 + " fallbacks=" + FALLBACKS.sum() + " paritySamples=" + PARITY_SAMPLES.sum()
-                + " parityMismatches=" + PARITY_MISMATCHES.sum();
+                + " parityMismatches=" + PARITY_MISMATCHES.sum()
+                + " blenderStages={" + NativeRuntime.blenderDensityMetrics() + "}";
     }
 }
