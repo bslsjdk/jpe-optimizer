@@ -483,7 +483,18 @@ JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
     uint32_t density_count,
     JpeAquiferCoreOutput* outputs
 );
-JPE_API uint64_t jpe_cpp_aquifer_status_cache_create(uint32_t maximum_entries);
+
+JPE_API int32_t jpe_cpp_aquifer_context_compute_density_and_substance_volume_f32(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    uint64_t final_density_graph_handle,
+    int32_t skip_sampling_above_y,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    JpeAquiferCoreOutput* outputs
+);JPE_API uint64_t jpe_cpp_aquifer_status_cache_create(uint32_t maximum_entries);
 JPE_API int32_t jpe_cpp_aquifer_status_cache_destroy(uint64_t handle);
 JPE_API int32_t jpe_cpp_aquifer_status_cache_lookup_batch(
     uint64_t handle, const uint64_t* keys, uint32_t count,
