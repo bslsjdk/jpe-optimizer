@@ -708,6 +708,14 @@ public final class NativeRuntime implements AutoCloseable {
             return new DensityNode(27, input, whenInRange, whenOutOfRange,
                     minimumInclusive, maximumExclusive, 0.0);
         }
+        public static DensityNode rangeChoiceBelow(int input, float maximumExclusive,
+                                                       int whenBelow, int whenAtOrAbove) {
+            if (!Float.isFinite(maximumExclusive)) {
+                throw new IllegalArgumentException("Invalid interval-select threshold");
+            }
+            return new DensityNode(27, input, whenBelow, whenAtOrAbove,
+                    Double.NEGATIVE_INFINITY, maximumExclusive, 0.0);
+        }
         public static DensityNode interpolated(int input, int cellSizeXz, int cellSizeY) {
             if (input < 0 || cellSizeXz <= 0 || cellSizeY <= 0) {
                 throw new IllegalArgumentException("Invalid interpolated density node");
