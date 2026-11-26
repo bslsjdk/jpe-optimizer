@@ -57,6 +57,10 @@ const DENSITY_DIV: u32 = 10;
 const DENSITY_CLAMP: u32 = 11;
 const DENSITY_MIN: u32 = 12;
 const DENSITY_MAX: u32 = 13;
+const DENSITY_NEGATE: u32 = 14;
+const DENSITY_ABS: u32 = 15;
+const DENSITY_SQUARE: u32 = 16;
+const DENSITY_CUBE: u32 = 17;
 #[cfg(test)]
 static CACHE_TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -1610,6 +1614,44 @@ mod tests {
         assert_eq!(output[3].to_bits(), 0.5_f32.to_bits());
         assert_eq!(output[4].to_bits(), 1.0_f32.to_bits());
         assert!(output[5].is_nan());
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
+    }
+
+    #[test]
+    fn density_graph_executes_unary_float32_ops_with_signed_zero_semantics() {
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_INPUT, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_NEGATE, input_a: 0,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_ABS, input_a: 0,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_SQUARE, input_a: 0,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_CUBE, input_a: 0,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+        ];
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 8, 0xA85)
+        };
+        assert_ne!(handle, 0);
+        let inputs = [-0.0_f32, -2.0, 3.0, f32::NAN];
+        let roots = [1_u32, 2, 3, 4];
+        let mut outputs = [0.0_f32; 16];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_multi_with_inputs(
+                handle, 4, 1, 1, 0, 0, 0, 1, 1, 1,
+                inputs.as_ptr(), 1, roots.as_ptr(), roots.len() as u32,
+                outputs.as_mut_ptr(), outputs.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(&outputs[0..4], &[0.0, 2.0, -3.0, f32::NAN]);
+        assert_eq!(&outputs[4..8], &[0.0, 2.0, 3.0, f32::NAN]);
+        assert_eq!(&outputs[8..12], &[0.0, 4.0, 9.0, f32::NAN]);
+        assert_eq!(outputs[12].to_bits(), (-0.0_f32).to_bits());
+        assert_eq!(outputs[13], -8.0);
+        assert_eq!(outputs[14], 27.0);
+        assert!(outputs[15].is_nan());
         assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
     }
 
