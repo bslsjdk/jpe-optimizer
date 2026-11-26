@@ -9,6 +9,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <vector>
+#include <type_traits>
 
 extern "C" uint64_t jpe_cpp_perlin_stack_retain(uint64_t) noexcept;
 extern "C" int32_t jpe_cpp_perlin_stack_release(uint64_t) noexcept;
@@ -20,11 +21,14 @@ extern "C" int32_t jpe_cpp_perlin_stack_evaluate(
 extern "C" int32_t jpe_cpp_perlin_stack_sample_warped(
     uint64_t, int32_t, int32_t, int32_t, double, double, double,
     double, double, float*) noexcept;
-extern "C" int32_t jpe_cpp_perlin_stack_sample_warped_batch(
+extern "C" int32_t jpe_cpp_perlin_stack_sample_warped_batch_f32(
     uint64_t, uint32_t, uint32_t, uint32_t,
     int32_t, int32_t, int32_t, int32_t, int32_t, int32_t,
-    const double*, const double*, const double*, double, double,
-    float*, uint64_t) noexcept;
+    const float*, const float*, const float*, double, double, float*, uint64_t) noexcept;
+extern "C" int32_t jpe_cpp_perlin_stack_sample_warped_batch_f64(
+    uint64_t, uint32_t, uint32_t, uint32_t,
+    int32_t, int32_t, int32_t, int32_t, int32_t, int32_t,
+    const double*, const double*, const double*, double, double, float*, uint64_t) noexcept;
 
 static_assert(sizeof(JpeDensityNode) == 40, "JpeDensityNode ABI layout mismatch");
 
@@ -757,22 +761,24 @@ int32_t evaluate_density_graph_impl(
                     const auto& shift_x = slots[graph->node_slots[node.input_a]];
                     const auto& shift_y = slots[graph->node_slots[node.input_b]];
                     const auto& shift_z = slots[graph->node_slots[node.reserved]];
-                    // Convert shifts once, then resolve the immutable prepared-stack
-                    // handle once for the whole volume instead of taking its global
-                    // registry mutex for every voxel.
-                    std::vector<double> shift_x_values(volume);
-                    std::vector<double> shift_y_values(volume);
-                    std::vector<double> shift_z_values(volume);
-                    for (size_t j = 0; j < volume; ++j) {
-                        shift_x_values[j] = static_cast<double>(shift_x[j]);
-                        shift_y_values[j] = static_cast<double>(shift_y[j]);
-                        shift_z_values[j] = static_cast<double>(shift_z[j]);
-                    }
-                    const int32_t status = jpe_cpp_perlin_stack_sample_warped_batch(
-                        graph->prepared_handles[i], size_x, size_y, size_z,
-                        min_x, min_y, min_z, step_x, step_y, step_z,
-                        shift_x_values.data(), shift_y_values.data(), shift_z_values.data(),
-                        node.auxiliary, node.tertiary, perlin_scratch.data(), output_length);
+                    // Pass the live DAG slots directly. The batch sampler widens
+                    // F32 shifts at use time, avoiding three temporary heap buffers
+                    // and a full-volume conversion/copy before Perlin evaluation.
+                    const int32_t status = [&]() noexcept {
+                        if constexpr (std::is_same_v<Scalar, float>) {
+                            return jpe_cpp_perlin_stack_sample_warped_batch_f32(
+                                graph->prepared_handles[i], size_x, size_y, size_z,
+                                min_x, min_y, min_z, step_x, step_y, step_z,
+                                shift_x.data(), shift_y.data(), shift_z.data(),
+                                node.auxiliary, node.tertiary, perlin_scratch.data(), output_length);
+                        } else {
+                            return jpe_cpp_perlin_stack_sample_warped_batch_f64(
+                                graph->prepared_handles[i], size_x, size_y, size_z,
+                                min_x, min_y, min_z, step_x, step_y, step_z,
+                                shift_x.data(), shift_y.data(), shift_z.data(),
+                                node.auxiliary, node.tertiary, perlin_scratch.data(), output_length);
+                        }
+                    }();
                     if (status != 0) return status;
                     for (size_t j = 0; j < volume; ++j) {
                         values[j] = static_cast<Scalar>(perlin_scratch[j]);
