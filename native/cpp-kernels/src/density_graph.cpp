@@ -268,8 +268,10 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
             } else if ((node.opcode >= kAbs && node.opcode <= kSign)
                 || node.opcode == kClamp || node.opcode == kSqueeze || node.opcode == kInterpolated || node.opcode == kLog) {
                 ++consumers[node.input_a];
-            } else if (node.opcode == kLerp || node.opcode == kRangeChoice || node.opcode == kRound) {
+            } else if (node.opcode == kLerp || node.opcode == kRangeChoice) {
                 ++consumers[node.input_a]; ++consumers[node.input_b]; ++consumers[node.reserved];
+            } else if (node.opcode == kRound) {
+                ++consumers[node.input_a]; ++consumers[node.input_b];
             }
         }
         graph->node_slots.resize(node_count, kNoInput);
@@ -290,12 +292,15 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
                 || node.opcode == kMax || node.opcode == kPow) {
                 release_input(node.input_a); release_input(node.input_b);
             } else if ((node.opcode >= kAbs && node.opcode <= kSign)
-                || node.opcode == kClamp || node.opcode == kSqueeze || node.opcode == kInterpolated) {
+                || node.opcode == kClamp || node.opcode == kSqueeze || node.opcode == kInterpolated || node.opcode == kLog) {
                 release_input(node.input_a);
-            } else if (node.opcode == kLerp || node.opcode == kRangeChoice || node.opcode == kRound) {
+            } else if (node.opcode == kLerp || node.opcode == kRangeChoice) {
                 release_input(node.input_a);
                 release_input(node.input_b);
                 release_input(node.reserved);
+            } else if (node.opcode == kRound) {
+                release_input(node.input_a);
+                release_input(node.input_b);
             }
             if (i != root_node && consumers[i] == 0) free_slots.push_back(slot);
         }
@@ -484,7 +489,8 @@ int32_t evaluate_density_graph_impl(
                     const auto& input = slots[graph->node_slots[node.input_a]];
                     const auto& multiple = slots[graph->node_slots[node.input_b]];
                     for (size_t j = 0; j < volume; ++j) {
-                        const double ratio = static_cast<double>(input[j]) / static_cast<double>(multiple[j]);
+                        const Scalar ratio_value = input[j] / multiple[j];
+                        const double ratio = static_cast<double>(ratio_value);
                         double rounded;
                         switch (node.reserved) {
                             case 0: rounded = std::floor(ratio); break;
