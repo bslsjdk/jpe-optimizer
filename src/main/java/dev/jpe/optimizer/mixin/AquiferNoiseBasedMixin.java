@@ -59,13 +59,11 @@ public abstract class AquiferNoiseBasedMixin {
         if (sizeX <= 0 || sizeZ <= 0 || (long) sizeX * sizeZ > cache.length
                 || cache.length % ((long) sizeX * sizeZ) != 0) return;
 
-        long[] generated = new long[cache.length];
         long started = System.nanoTime();
         try {
             runtime.aquiferGridCenters(randomMode, seedLo, seedHi,
                     aquifer.jpe$getMinGridX(), aquifer.jpe$getMinGridY(), aquifer.jpe$getMinGridZ(),
-                    sizeX, sizeZ, generated);
-            System.arraycopy(generated, 0, cache, 0, cache.length);
+                    sizeX, sizeZ, cache);
             JPEOptimizer.LOGGER.debug(
                     "Native Aquifer grid cache populated: mode={} cells={} elapsedUs={}",
                     randomMode, cache.length, (System.nanoTime() - started) / 1_000.0);
