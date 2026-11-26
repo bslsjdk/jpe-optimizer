@@ -98,3 +98,11 @@ Do not report a graph-interpreter microbenchmark as a Minecraft chunk speedup.
 The acceptance benchmark must use the fixed seed and saved Java baseline,
 measure full chunk throughput and latency, and include density-stage time,
 allocation, GC, native calls, fallback counts, and the exact commit SHA.
+
+## Production invariant: no Java-sampled density boundaries
+
+The current `CompiledSamplerExternalInputs` implementation is diagnostic-only. It invokes `DensitySampler.sampleVolume` on Java for opaque boundaries and stages one float volume per distinct sampler. This is useful for shadow parity and timing decomposition, but it is explicitly not an acceptable production execution design. The observed external-input preparation time is evidence that the current island architecture is still delegating terrain work to Java, not a cost to optimize away with faster copies.
+
+The next production compiler must lower the full final-density dependency graph into a closed native plan. It must include the sampler semantics, octave/permutation data or immutable native handles, cache/interpolation behavior, shifted-noise dependencies, and the exact float/double operation order. Chunk-local context must be represented as a small typed runtime binding block, not as precomputed Java density arrays. The native evaluator must produce the complete density volume in one batch and must be the sole producer of density values used by the terrain fill path.
+
+A graph with an unsupported node is not partially native: the prepared plan must be marked unsupported and the whole generator must remain on the explicit vanilla compatibility path until an adapter exists. Never mix Java-sampled opaque density volumes into a claimed native authoritative run. Once complete final-density parity is established, switch the production fill path to the C++ output and retain the Java sampler only as an opt-in shadow oracle.
