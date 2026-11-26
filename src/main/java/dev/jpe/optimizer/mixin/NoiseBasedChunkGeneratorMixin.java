@@ -65,8 +65,12 @@ public abstract class NoiseBasedChunkGeneratorMixin {
         // Opt-in preflight: compile all six resolved Aquifer sampler graphs into
         // immutable C++ plans. This does not replace computeSubstance yet; it proves
         // the real world settings can be lowered before the full-volume takeover.
-        if (Boolean.getBoolean("jpe.nativeAquiferSamplerPlansEnabled")) {
-            boolean strictAquiferPlans = Boolean.getBoolean("jpe.nativeAquiferSamplerPlansStrict");
+        NativeDensityGraphCompiler.AquiferSamplerPlans aquiferSamplerPlans = null;
+        boolean prepareNativeAquifer = Boolean.getBoolean("jpe.nativeAquiferSamplerPlansEnabled")
+                || Boolean.getBoolean("jpe.nativeAquiferFluidStatusEnabled");
+        if (prepareNativeAquifer) {
+            boolean strictAquiferPlans = Boolean.getBoolean("jpe.nativeAquiferSamplerPlansStrict")
+                    || Boolean.getBoolean("jpe.nativeAquiferFluidStatusStrict");
             if (noiseAquifer == null) {
                 if (strictAquiferPlans) {
                     throw new IllegalStateException(
@@ -80,13 +84,20 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                                 "Strict native Aquifer sampler preparation requires Aquifer.Config");
                     }
                 } else {
-                    NativeDensityGraphCompiler.AquiferSamplerPlans plans =
+                    aquiferSamplerPlans =
                             NativeDensityGraphCompiler.prepareAquiferSamplerPlans(aquiferConfig.get(), noiseChunk);
-                    if (plans == null && strictAquiferPlans) {
+                    if (aquiferSamplerPlans == null && strictAquiferPlans) {
                         throw new IllegalStateException(
                                 "Strict native Aquifer sampler preparation rejected one or more density graphs");
                     }
                 }
+            }
+        }
+        if (Boolean.getBoolean("jpe.nativeAquiferFluidStatusEnabled") && noiseAquifer != null) {
+            int prefilled = dev.jpe.optimizer.worldgen.NativeAquiferFluidStatusPrefill.prefill(
+                    noiseAquifer, noiseChunk, chunk, generatorSettings, aquiferSamplerPlans);
+            if (prefilled < 0 && Boolean.getBoolean("jpe.nativeAquiferFluidStatusStrict")) {
+                throw new IllegalStateException("Strict native Aquifer FluidStatus prefill was not completed");
             }
         }
 
