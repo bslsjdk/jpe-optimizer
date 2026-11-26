@@ -219,3 +219,38 @@ extern "C" int32_t jpe_cpp_aquifer_nearest_four(
     }
     return 0;
 } catch(...) { return 3; }
+
+extern "C" int32_t jpe_cpp_aquifer_grid_centers(
+    uint32_t random_mode, uint64_t seed_lo, uint64_t seed_hi,
+    int32_t min_grid_x, int32_t min_grid_y, int32_t min_grid_z,
+    uint32_t grid_size_x, uint32_t grid_size_z,
+    uint32_t cell_count, uint64_t* packed_locations) {
+    constexpr uint32_t kMaxCells = 1U * 1024U * 1024U;
+    if (random_mode > 1U || grid_size_x == 0U || grid_size_z == 0U
+        || cell_count == 0U || cell_count > kMaxCells || packed_locations == nullptr) return 1;
+    const uint64_t layer_size = static_cast<uint64_t>(grid_size_x) * grid_size_z;
+    if (layer_size == 0U || layer_size > cell_count || (cell_count % layer_size) != 0U) return 1;
+
+    for (uint32_t i = 0; i < cell_count; ++i) {
+        const uint32_t x_index = i % grid_size_x;
+        const uint32_t z_index = static_cast<uint32_t>((i / grid_size_x) % grid_size_z);
+        const uint32_t y_index = static_cast<uint32_t>(i / layer_size);
+        const int32_t gx = add_i32(min_grid_x, static_cast<int32_t>(x_index));
+        const int32_t gy = add_i32(min_grid_y, static_cast<int32_t>(y_index));
+        const int32_t gz = add_i32(min_grid_z, static_cast<int32_t>(z_index));
+        int32_t rx = 0, ry = 0, rz = 0;
+        const int32_t status = random_mode == 0U
+            ? jpe_cpp_aquifer_xoroshiro_offsets(seed_lo, seed_hi, gx, gy, gz, &rx, &ry, &rz)
+            : jpe_cpp_aquifer_legacy_offsets(seed_lo, gx, gy, gz, &rx, &ry, &rz);
+        if (status != 0) return 2;
+        const int32_t x = add_i32(mul_i32(gx, 16), rx);
+        const int32_t y = add_i32(mul_i32(gy, 12), ry);
+        const int32_t z = add_i32(mul_i32(gz, 16), rz);
+        const uint64_t packed =
+            ((static_cast<uint64_t>(static_cast<uint32_t>(x)) & 0x3ffffffULL) << 38U)
+            | ((static_cast<uint64_t>(static_cast<uint32_t>(z)) & 0x3ffffffULL) << 12U)
+            | (static_cast<uint64_t>(static_cast<uint32_t>(y)) & 0xfffULL);
+        packed_locations[i] = packed;
+    }
+    return 0;
+}
