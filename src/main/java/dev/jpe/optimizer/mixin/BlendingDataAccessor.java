@@ -10,6 +10,12 @@ public interface BlendingDataAccessor {
     @Accessor("densities")
     float[][] jpe$densities();
 
+    @Accessor("hasCalculatedData")
+    boolean jpe$hasCalculatedData();
+
+    @Accessor("hasCalculatedData")
+    void jpe$setHasCalculatedData(boolean calculated);
+
     @Accessor("areaWithOldGeneration")
     LevelHeightAccessor jpe$areaWithOldGeneration();
 }
