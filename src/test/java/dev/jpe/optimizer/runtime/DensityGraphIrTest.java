@@ -32,7 +32,7 @@ class DensityGraphIrTest {
         ), 2, 0x5ABL);
 
         assertEquals(DensityGraphIr.SUB, graph.nodes().get(2).opcode());
-        assertEquals(9, DensityGraphIr.VERSION);
+        assertEquals(10, DensityGraphIr.VERSION);
     }
 
     @Test
@@ -42,7 +42,7 @@ class DensityGraphIrTest {
                 DensityGraphIr.Node.divide(0, 1)
         ), 2, 0xD1L);
         assertEquals(DensityGraphIr.DIV, graph.nodes().get(2).opcode());
-        assertEquals(9, DensityGraphIr.VERSION);
+        assertEquals(10, DensityGraphIr.VERSION);
     }
 
     @Test
@@ -80,7 +80,7 @@ class DensityGraphIrTest {
         ), 3, 0xA11L);
         assertEquals(DensityGraphIr.MIN, graph.nodes().get(2).opcode());
         assertEquals(DensityGraphIr.MAX, graph.nodes().get(3).opcode());
-        assertEquals(9, DensityGraphIr.VERSION);
+        assertEquals(10, DensityGraphIr.VERSION);
     }
 
     @Test
@@ -91,7 +91,7 @@ class DensityGraphIrTest {
                 DensityGraphIr.Node.add(0, 1)
         ), 2, 0x1A9L);
         assertEquals(DensityGraphIr.INPUT, graph.nodes().get(0).opcode());
-        assertEquals(9, DensityGraphIr.VERSION);
+        assertEquals(10, DensityGraphIr.VERSION);
     }
 
     @Test
