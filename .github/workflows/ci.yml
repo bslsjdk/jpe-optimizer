@@ -102,7 +102,9 @@ jobs:
             grep -E 'JPE_NATIVE_BLENDER_PARITY samples=[1-9][0-9]* exact=true mismatches=0' build/gametest/logs/latest.log
             grep -E 'JPE_NATIVE_BLENDER_STAGES .*timedCalls=[1-9][0-9]*' build/gametest/logs/latest.log
             grep -F 'JPE_NATIVE_BLENDER_BACKEND_SUMMARY attempts=8 completed=8 fallbacks=0 paritySamples=' build/gametest/logs/latest.log
-            grep -F 'JPE_AQUIFER_XOROSHIRO_PARITY comparisons=24 bitExact=true' build/gametest/logs/latest.log
+            grep -F 'JPE_AQUIFER_XOROSHIRO_PARITY comparisons=36 bitExact=true' build/gametest/logs/latest.log
+            grep -F 'JPE_AQUIFER_LEGACY_PARITY comparisons=36 bitExact=true' build/gametest/logs/latest.log
+            grep -F 'All 10 required tests passed' build/gametest/logs/latest.log
           fi
           exit "$test_status"
 
