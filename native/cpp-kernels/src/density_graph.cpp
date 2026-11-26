@@ -29,6 +29,7 @@ constexpr uint32_t kSub = 8, kDiv = 9, kMin = 10, kMax = 11;
 constexpr uint32_t kAbs = 12, kNegate = 13, kSquare = 14, kCube = 15;
 constexpr uint32_t kSqrt = 16, kHalfNegative = 17, kQuarterNegative = 18;
 constexpr uint32_t kReciprocal = 19, kSign = 20, kPow = 21, kClamp = 22;
+constexpr uint32_t kSqueeze = 23, kLerp = 24, kGradient = 25;
 
 struct CompiledGraph {
     uint64_t fingerprint = 0;
@@ -139,6 +140,27 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                     || decode_float(node.input_b) > decode_float(node.reserved)
                     || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
                 break;
+            case kSqueeze:
+                if (node.input_a >= i || node.input_b != kNoInput || node.reserved != 0
+                    || node.immediate != 0.0 || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
+                break;
+            case kLerp:
+                if (node.input_a >= i || node.input_b >= i || node.reserved >= i
+                    || node.immediate != 0.0 || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
+                break;
+            case kGradient:
+                if (node.input_a > 2 || node.input_b != 0
+                    || !std::isfinite(decode_float(node.reserved))
+                    || !std::isfinite(node.immediate) || !std::isfinite(node.auxiliary)
+                    || !std::isfinite(node.tertiary)
+                    || std::floor(node.immediate) != node.immediate
+                    || std::floor(node.auxiliary) != node.auxiliary
+                    || node.immediate < static_cast<double>(std::numeric_limits<int32_t>::min())
+                    || node.immediate > static_cast<double>(std::numeric_limits<int32_t>::max())
+                    || node.auxiliary < static_cast<double>(std::numeric_limits<int32_t>::min())
+                    || node.auxiliary > static_cast<double>(std::numeric_limits<int32_t>::max())
+                    || node.immediate == node.auxiliary) return false;
+                break;
             case kPerlinStack: {
                 const double handle = node.immediate;
                 const double xz_scale = node.auxiliary;
@@ -221,8 +243,11 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
                 || node.opcode == kSub || node.opcode == kDiv || node.opcode == kMin
                 || node.opcode == kMax || node.opcode == kPow) {
                 ++consumers[node.input_a]; ++consumers[node.input_b];
-            } else if ((node.opcode >= kAbs && node.opcode <= kSign) || node.opcode == kClamp) {
+            } else if ((node.opcode >= kAbs && node.opcode <= kSign)
+                || node.opcode == kClamp || node.opcode == kSqueeze) {
                 ++consumers[node.input_a];
+            } else if (node.opcode == kLerp) {
+                ++consumers[node.input_a]; ++consumers[node.input_b]; ++consumers[node.reserved];
             }
         }
         graph->node_slots.resize(node_count, kNoInput);
@@ -379,6 +404,56 @@ int32_t evaluate_density_graph(
                     const Scalar hi = static_cast<Scalar>(decode_float(node.reserved));
                     for (size_t j = 0; j < volume; ++j) {
                         values[j] = std::min(std::max(a[j], lo), hi);
+                    }
+                    break;
+                }
+                case kSqueeze: {
+                    const auto& a = slots[graph->node_slots[node.input_a]];
+                    for (size_t j = 0; j < volume; ++j) {
+                        const Scalar v = a[j];
+                        const Scalar half = v * Scalar(0.5);
+                        const Scalar square = v * v;
+                        const Scalar cube = square * v;
+                        const Scalar cubic = cube / Scalar(24.0);
+                        const Scalar squeezed = half - cubic;
+                        values[j] = std::min(std::max(squeezed, Scalar(-1)), Scalar(1));
+                    }
+                    break;
+                }
+                case kLerp: {
+                    const auto& alpha = slots[graph->node_slots[node.input_a]];
+                    const auto& first = slots[graph->node_slots[node.input_b]];
+                    const auto& second = slots[graph->node_slots[node.reserved]];
+                    for (size_t j = 0; j < volume; ++j) {
+                        const Scalar delta = second[j] - first[j];
+                        volatile Scalar scaled = alpha[j] * delta;
+                        values[j] = first[j] + scaled;
+                    }
+                    break;
+                }
+                case kGradient: {
+                    const int32_t from_coordinate = static_cast<int32_t>(node.immediate);
+                    const int32_t to_coordinate = static_cast<int32_t>(node.auxiliary);
+                    const Scalar from_value = static_cast<Scalar>(decode_float(node.reserved));
+                    const Scalar to_value = static_cast<Scalar>(node.tertiary);
+                    const Scalar inverse_range = Scalar(1) / static_cast<Scalar>(to_coordinate - from_coordinate);
+                    size_t out = 0;
+                    for (uint32_t z = 0; z < size_z; ++z) {
+                        const int32_t wz = wrapped_coordinate(min_z, z, step_z);
+                        for (uint32_t x = 0; x < size_x; ++x) {
+                            const int32_t wx = wrapped_coordinate(min_x, x, step_x);
+                            for (uint32_t y = 0; y < size_y; ++y) {
+                                const int32_t wy = wrapped_coordinate(min_y, y, step_y);
+                                const int32_t coordinate = node.input_a == 0 ? wx
+                                    : node.input_a == 1 ? wy : wz;
+                                const Scalar normalized = static_cast<Scalar>(coordinate - from_coordinate)
+                                    * inverse_range;
+                                const Scalar t = std::min(std::max(normalized, Scalar(0)), Scalar(1));
+                                const Scalar delta = to_value - from_value;
+                                volatile Scalar scaled = delta * t;
+                                values[out++] = from_value + scaled;
+                            }
+                        }
                     }
                     break;
                 }
