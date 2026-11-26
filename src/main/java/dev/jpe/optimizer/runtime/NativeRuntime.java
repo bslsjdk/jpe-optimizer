@@ -56,6 +56,7 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle densityGraphEvaluateF32;
     private final MethodHandle densityGraphRelease;
     private final MethodHandle aquiferGridCenters;
+    private final MethodHandle aquiferNearestFour;
     private final ConcurrentHashMap<Long, java.util.concurrent.atomic.AtomicInteger> densityGraphHandles = new ConcurrentHashMap<>();
     private final java.util.Set<Long> preparedStackHandles = ConcurrentHashMap.newKeySet();
     private final MethodHandle jobStatus;
@@ -70,6 +71,13 @@ public final class NativeRuntime implements AutoCloseable {
     private final ThreadLocal<PerlinScratch> perlinScratch = ThreadLocal.withInitial(() -> {
         PerlinScratch scratch = new PerlinScratch();
         perlinScratchArenas.add(scratch);
+        return scratch;
+    });
+    // Per-worldgen-worker FFM storage for Aquifer batch inputs and outputs.
+    private final ConcurrentLinkedQueue<AquiferScratch> aquiferScratchArenas = new ConcurrentLinkedQueue<>();
+    private final ThreadLocal<AquiferScratch> aquiferScratch = ThreadLocal.withInitial(() -> {
+        AquiferScratch scratch = new AquiferScratch();
+        aquiferScratchArenas.add(scratch);
         return scratch;
     });
     private volatile boolean closed;
@@ -136,6 +144,58 @@ public final class NativeRuntime implements AutoCloseable {
         return scratch;
     }
 
+    private static final class AquiferScratch implements AutoCloseable {
+        private final Arena arena = Arena.ofShared();
+        private MemorySegment inputX, inputY, inputZ, outputX, outputY, outputZ, distances;
+        private int inputCapacity, outputCapacity;
+        private final AtomicBoolean leased = new AtomicBoolean();
+
+        private boolean tryAcquire() { return leased.compareAndSet(false, true); }
+        private void release() {
+            if (!leased.compareAndSet(true, false)) {
+                throw new IllegalStateException("Aquifer scratch lease was not active");
+            }
+        }
+        private MemorySegment[] ensureCapacity(int inputs) {
+            if (inputCapacity < inputs) {
+                int next = Math.max(256, inputCapacity);
+                while (next < inputs) next = Math.min(1_048_576, Math.multiplyExact(next, 2));
+                long bytes = Math.multiplyExact((long) next, ValueLayout.JAVA_INT.byteSize());
+                inputX = arena.allocate(bytes, ValueLayout.JAVA_INT.byteAlignment());
+                inputY = arena.allocate(bytes, ValueLayout.JAVA_INT.byteAlignment());
+                inputZ = arena.allocate(bytes, ValueLayout.JAVA_INT.byteAlignment());
+                inputCapacity = next;
+            }
+            int requiredOutputs = Math.multiplyExact(inputs, 4);
+            if (outputCapacity < requiredOutputs) {
+                int next = Math.max(1024, outputCapacity);
+                while (next < requiredOutputs) next = Math.multiplyExact(next, 2);
+                long bytes = Math.multiplyExact((long) next, ValueLayout.JAVA_INT.byteSize());
+                outputX = arena.allocate(bytes, ValueLayout.JAVA_INT.byteAlignment());
+                outputY = arena.allocate(bytes, ValueLayout.JAVA_INT.byteAlignment());
+                outputZ = arena.allocate(bytes, ValueLayout.JAVA_INT.byteAlignment());
+                distances = arena.allocate(bytes, ValueLayout.JAVA_INT.byteAlignment());
+                outputCapacity = next;
+            }
+            return new MemorySegment[] {inputX, inputY, inputZ, outputX, outputY, outputZ, distances};
+        }
+        @Override
+        public void close() {
+            if (leased.get()) throw new IllegalStateException("Cannot close a leased Aquifer scratch arena");
+            arena.close();
+        }
+    }
+
+    private AquiferScratch acquireAquiferScratch() {
+        AquiferScratch scratch = aquiferScratch.get();
+        if (scratch.tryAcquire()) return scratch;
+        scratch = new AquiferScratch();
+        aquiferScratch.set(scratch);
+        aquiferScratchArenas.add(scratch);
+        if (!scratch.tryAcquire()) throw new IllegalStateException("Unable to acquire Aquifer scratch arena");
+        return scratch;
+    }
+
     private NativeRuntime(MethodHandle configureWorkers, int workerCount,
                           MethodHandle add, MethodHandle perlin, MethodHandle perlinStack, MethodHandle submit, MethodHandle submitStack,
                           MethodHandle status, MethodHandle wait,
@@ -143,7 +203,7 @@ public final class NativeRuntime implements AutoCloseable {
                           MethodHandle preparePreparedStack, MethodHandle evaluatePreparedStack,
                           MethodHandle releasePreparedStack,
                           MethodHandle graphCompile, MethodHandle graphEvaluate, MethodHandle graphEvaluateF32, MethodHandle graphRelease,
-                          MethodHandle aquiferGridCenters) {
+                          MethodHandle aquiferGridCenters, MethodHandle aquiferNearestFour) {
         this.configureWorkers = configureWorkers;
         this.workerCount = workerCount;
         this.addF32 = add;
@@ -159,6 +219,7 @@ public final class NativeRuntime implements AutoCloseable {
         this.densityGraphEvaluateF32 = graphEvaluateF32;
         this.densityGraphRelease = graphRelease;
         this.aquiferGridCenters = aquiferGridCenters;
+        this.aquiferNearestFour = aquiferNearestFour;
         this.jobStatus = status;
         this.waitJob = wait;
         this.cancelJob = cancel;
@@ -279,6 +340,15 @@ public final class NativeRuntime implements AutoCloseable {
                                     ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
                                     ValueLayout.ADDRESS)))
                     .orElse(null);
+            MethodHandle aquiferNearestFour = lookup.find("jpe_runtime_aquifer_nearest_four")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                                    ValueLayout.JAVA_INT,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS)))
+                    .orElse(null);
             if (graphCompile == null || graphEvaluate == null || graphRelease == null) {
                 graphCompile = null;
                 graphEvaluate = null;
@@ -306,7 +376,7 @@ public final class NativeRuntime implements AutoCloseable {
             if (actualWorkers < 1) throw new IllegalStateException("Unable to configure native workers: " + actualWorkers);
             return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, perlinStack, submit, submitStack, status, wait, cancel, release,
                     preparePreparedStack, evaluatePreparedStack, releasePreparedStack,
-                    graphCompile, graphEvaluate, graphEvaluateF32, graphRelease, aquiferGridCenters);
+                    graphCompile, graphEvaluate, graphEvaluateF32, graphRelease, aquiferGridCenters, aquiferNearestFour);
         } catch (Throwable failure) {
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
         }
@@ -359,6 +429,72 @@ public final class NativeRuntime implements AutoCloseable {
         } finally {
             lifecycle.readLock().unlock();
         }
+    }
+
+    public record AquiferNearestFour(
+            int[] centerX, int[] centerY, int[] centerZ, int[] squaredDistances) {}
+
+    /** True when the loaded native runtime exposes the whole-batch nearest-four kernel. */
+    public boolean supportsAquiferNearestFour() {
+        return aquiferNearestFour != null;
+    }
+
+    private static int validateAquiferNearestFour(int randomMode, int[] blockX, int[] blockY, int[] blockZ) {
+        Objects.requireNonNull(blockX, "blockX");
+        Objects.requireNonNull(blockY, "blockY");
+        Objects.requireNonNull(blockZ, "blockZ");
+        if (randomMode != 0 && randomMode != 1) {
+            throw new IllegalArgumentException("Aquifer random mode must be 0 (XOROSHIRO) or 1 (LEGACY)");
+        }
+        if (blockX.length == 0 || blockY.length != blockX.length || blockZ.length != blockX.length
+                || blockX.length > 1_048_576) {
+            throw new IllegalArgumentException("Aquifer coordinate arrays must have equal lengths in [1, 1048576]");
+        }
+        return blockX.length;
+    }
+
+    /**
+     * Executes the exact 12-cell Aquifer nearest-four search for a whole coordinate
+     * batch in one FFM call. Returned arrays are sample-major, four neighbors per voxel.
+     */
+    public AquiferNearestFour aquiferNearestFour(int randomMode, long seedLo, long seedHi,
+                                                  int[] blockX, int[] blockY, int[] blockZ) {
+        if (!supportsAquiferNearestFour()) {
+            throw new UnsupportedOperationException("Native runtime does not export Aquifer nearest-four support");
+        }
+        int count = validateAquiferNearestFour(randomMode, blockX, blockY, blockZ);
+        int outputLength = Math.multiplyExact(count, 4);
+        int[] centerX = new int[outputLength];
+        int[] centerY = new int[outputLength];
+        int[] centerZ = new int[outputLength];
+        int[] distances = new int[outputLength];
+        lifecycle.readLock().lock();
+        AquiferScratch scratch = null;
+        try {
+            ensureOpen();
+            scratch = acquireAquiferScratch();
+            MemorySegment[] buffers = scratch.ensureCapacity(count);
+            MemorySegment inputX = buffers[0], inputY = buffers[1], inputZ = buffers[2];
+            MemorySegment outputX = buffers[3], outputY = buffers[4], outputZ = buffers[5], outputDistances = buffers[6];
+            MemorySegment.copy(blockX, 0, inputX, ValueLayout.JAVA_INT, 0, count);
+            MemorySegment.copy(blockY, 0, inputY, ValueLayout.JAVA_INT, 0, count);
+            MemorySegment.copy(blockZ, 0, inputZ, ValueLayout.JAVA_INT, 0, count);
+            try {
+                int status = (int) aquiferNearestFour.invokeExact(randomMode, seedLo, seedHi,
+                        inputX, inputY, inputZ, count, outputX, outputY, outputZ, outputDistances);
+                checkStatus(status, "aquifer-nearest-four");
+                MemorySegment.copy(outputX, ValueLayout.JAVA_INT, 0, centerX, 0, outputLength);
+                MemorySegment.copy(outputY, ValueLayout.JAVA_INT, 0, centerY, 0, outputLength);
+                MemorySegment.copy(outputZ, ValueLayout.JAVA_INT, 0, centerZ, 0, outputLength);
+                MemorySegment.copy(outputDistances, ValueLayout.JAVA_INT, 0, distances, 0, outputLength);
+            } catch (Throwable failure) {
+                throw rethrow("Unable to evaluate Native Aquifer nearest-four batch", failure);
+            }
+        } finally {
+            if (scratch != null) scratch.release();
+            lifecycle.readLock().unlock();
+        }
+        return new AquiferNearestFour(centerX, centerY, centerZ, distances);
     }
 
     private static int requestedNativeWorkers() {
@@ -1123,6 +1259,10 @@ public final class NativeRuntime implements AutoCloseable {
         PerlinScratch scratch;
         while ((scratch = perlinScratchArenas.poll()) != null) {
             scratch.close();
+        }
+        AquiferScratch aquifer;
+        while ((aquifer = aquiferScratchArenas.poll()) != null) {
+            aquifer.close();
         }
         // The global FFM arena intentionally keeps the Rust library loaded until JVM exit.
     
