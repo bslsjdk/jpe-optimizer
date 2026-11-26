@@ -1,0 +1,40 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "dev.jpe.optimizer.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "mixins": [
+    "NoiseBasedChunkGeneratorMixin",
+    "AquiferNoiseBasedAccessor",
+    "AquiferNoiseBasedMixin",
+    "XoroshiroPositionalRandomFactoryAccessor",
+    "LegacyPositionalRandomFactoryAccessor",
+    "BiomeManagerZoomMixin",
+    "MultiNoiseBiomeSourceInvoker",
+    "ClimateRTreeTargetArrayMixin",
+    "DensityBufferAccessor",
+    "DensityBufferMetricsMixin",
+    "DensityBufferPoolMetricsMixin",
+    "NoiseChunkAccessor",
+    "BlenderAccessor",
+    "BlendingDataAccessor",
+    "BlendDensityFunctionSamplerMixin",
+    "MaterialRuleContextBufferMixin",
+    "MaterialSystemBufferPoolMixin",
+    "GradientNoiseAccessor",
+    "SmearedPerlinNoiseAccessor",
+    "NoiseStackLayerAccessor",
+    "NoiseStackPerlinMixin",
+    "NoiseStackSmearedPerlinMixin",
+    "PerlinNoiseVolumeMixin",
+    "RangeChoiceConstSamplerMixin",
+    "RangeChoiceSamplerMixin",
+    "BinaryFunctionMinMaxMixin",
+    "StructurePiecesBuilderMixin",
+    "BoundingBoxMixin",
+    "PaletteStrategyMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

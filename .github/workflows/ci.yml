@@ -1,0 +1,307 @@
+name: JPE Optimizer CI
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: [main, "work/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect changed areas
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            java:
+              - 'src/main/java/**'
+              - 'src/main/resources/**'
+              - 'src/test/java/**'
+              - 'build.gradle*'
+              - 'settings.gradle*'
+              - 'gradle/**'
+              - 'gradle.properties'
+              - 'scripts/audit_minecraft_26_3_sources.py'
+              - '.github/workflows/ci.yml'
+
+      - name: Set up Java 25
+        if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: gradle
+
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify native Rust and C++ boundary
+        run: |
+          cargo test --manifest-path native/rust-runtime/Cargo.toml
+          cargo build --release --manifest-path native/rust-runtime/Cargo.toml
+
+      - name: Full-chunk Native Blender benchmark
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          cargo test --manifest-path native/rust-runtime/Cargo.toml --features density-graph-benchmark blender_density_volume_full_chunk_microbenchmark -- --nocapture
+
+      - name: Set up Gradle 9.2.1
+        if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.2.1"
+
+      - name: Unit correctness tests
+        if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
+        run: gradle test --no-daemon --stacktrace
+
+      - name: Math microbenchmark
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          mkdir -p build/math-benchmark
+          set -o pipefail
+          gradle benchmark --no-daemon --stacktrace | tee build/math-benchmark/result.txt
+
+      - name: Vector API scalar comparison and standalone JAR
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector
+        run: |
+          mkdir -p build/vector-probe
+          set -o pipefail
+          gradle vectorBenchmark --no-daemon --stacktrace | tee build/vector-probe/result.txt
+
+      - name: GameTest correctness suite
+        if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
+        env:
+          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.perlinVectorEnabled=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=true -Djpe.nativePerlinEnabled=true -Djpe.paletteHashEnabled=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
+        run: |
+          mkdir -p build/gametest
+          set +e
+          gradle runGameTestServer --no-daemon --stacktrace
+          test_status=$?
+          set -e
+          # Preserve the GameTest server log before later benchmark runs recreate run/.
+          if [ -d run/logs ]; then
+            cp -a run/logs build/gametest/
+          fi
+          if [ "$test_status" -eq 0 ]; then
+            grep -E 'JPE_NATIVE_BLENDER_PARITY samples=[1-9][0-9]* exact=true mismatches=0' build/gametest/logs/latest.log
+            grep -E 'JPE_NATIVE_BLENDER_STAGES .*timedCalls=[1-9][0-9]*' build/gametest/logs/latest.log
+            grep -F 'JPE_NATIVE_BLENDER_BACKEND_SUMMARY attempts=8 completed=8 fallbacks=0 paritySamples=' build/gametest/logs/latest.log
+            grep -F 'JPE_AQUIFER_XOROSHIRO_PARITY comparisons=36 bitExact=true' build/gametest/logs/latest.log
+            grep -F 'JPE_AQUIFER_LEGACY_PARITY comparisons=36 bitExact=true' build/gametest/logs/latest.log
+            grep -F 'All 10 required tests passed' build/gametest/logs/latest.log
+          fi
+          exit "$test_status"
+
+      - name: Real overworld Climate R-tree benchmark (six fan-outs, vanilla result parity)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          mkdir -p build/climate-rtree-benchmark
+          rm -rf run
+          mkdir -p run
+          printf '%s\n' 'eula=true' > run/eula.txt
+          cat > run/server.properties <<'PROPERTIES'
+          level-seed=12648430
+          level-type=minecraft:normal
+          generate-structures=true
+          online-mode=false
+          server-ip=127.0.0.1
+          server-port=25566
+          enable-query=false
+          enable-rcon=false
+          spawn-protection=0
+          max-tick-time=-1
+          sync-chunk-writes=false
+          PROPERTIES
+          set -o pipefail
+          env JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector -Djpe.serverWorldgenBenchmark=true -Djpe.climateRTreeBenchmark=true -Djpe.climateRTreeBenchmarkOnly=true -Djpe.climateTargetArrayReuse=true" gradle runServer --no-daemon --stacktrace 2>&1 | tee build/climate-rtree-benchmark/overworld.log
+          grep -F 'JPE_CLIMATE_TARGET_ARRAY_REUSE enabled=true' build/climate-rtree-benchmark/overworld.log
+          grep 'JPE_CLIMATE_RTREE_REAL points=' build/climate-rtree-benchmark/overworld.log
+          test "$(grep -c 'JPE_CLIMATE_RTREE_REAL fanOut=' build/climate-rtree-benchmark/overworld.log)" -eq 6
+
+      - name: Real compiled-sampler Native parity during overworld generation
+        if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          mkdir -p build/sampler-parity
+          rm -rf run
+          mkdir -p run
+          printf '%s\n' 'eula=true' > run/eula.txt
+          cat > run/server.properties <<'PROPERTIES'
+          level-seed=12648430
+          level-type=minecraft:normal
+          generate-structures=true
+          online-mode=false
+          server-ip=127.0.0.1
+          server-port=25566
+          enable-query=false
+          enable-rcon=false
+          spawn-protection=0
+          view-distance=8
+          simulation-distance=6
+          max-tick-time=-1
+          sync-chunk-writes=false
+          PROPERTIES
+          set -o pipefail
+          env JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector -XX:ErrorFile=${{ github.workspace }}/build/sampler-parity/hs_err_pid%p.log -Djpe.forceScalar=true -Djpe.benchmark.ticksPerColumn=22 -Djpe.continuousWorldgenBenchmark=true -Djpe.worldgenMetrics=true -Djpe.verifyCompiledSamplerParity=true -Djpe.nativeBlenderEnabled=true -Djpe.verifyNativeBlenderParity=true -Djpe.nativeBlenderTiming=true -Djpe.nativeAquiferGridCentersEnabled=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so -Djpe.perlinVectorEnabled=false" \
+            gradle runServer --no-daemon --stacktrace 2>&1 | tee build/sampler-parity/overworld.log
+          grep -E 'JPE_NATIVE_SAMPLER_PARITY_BATCH .*exact=true|JPE_NATIVE_SAMPLER_PARITY_ISLAND .*exact=true' build/sampler-parity/overworld.log
+          grep -E 'JPE_NATIVE_SAMPLER_PARITY_SUMMARY testedIslands=[1-9][0-9]* failedIslands=0 compared=[1-9][0-9]* mismatches=0' build/sampler-parity/overworld.log
+          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*completedChunks=340.*failedChunks=0.*doFillCalls=[1-9][0-9]*.*doFillSamples=[1-9][0-9]*' build/sampler-parity/overworld.log
+          grep -E 'JPE_AQUIFER_GRID_PREFILL_METRICS attempts=[1-9][0-9]* successes=[1-9][0-9]* failures=0 cells=[1-9][0-9]* nativeMs=' build/sampler-parity/overworld.log
+
+      - name: Dedicated continuous run-worldgen benchmark (scalar/vector ABBA, four fresh servers)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          mkdir -p build/server-benchmark
+          set -euo pipefail
+
+          run_worldgen() {
+            local label="$1"
+            local kernel_mode="$2"
+            local kernel_option=""
+            local extra_jvm_option="${3:-}"
+            if [[ "$kernel_mode" == "scalar" ]]; then
+              kernel_option="-Djpe.forceScalar=true"
+            fi
+            echo "===== NORMAL WORLDGEN BENCHMARK ${label} ====="
+            # ModDevGradle's runServer uses the project run/ directory as its game directory.
+            # Clear the entire directory so no prior world's far-away benchmark chunks survive.
+            rm -rf run
+            mkdir -p run
+            printf 'eula=true\n' > run/eula.txt
+            cat > run/server.properties <<'PROPERTIES'
+          level-seed=12648430
+          level-type=minecraft:normal
+          generate-structures=true
+          online-mode=false
+          server-ip=127.0.0.1
+          server-port=25566
+          enable-query=false
+          enable-rcon=false
+          spawn-protection=0
+          view-distance=8
+          simulation-distance=6
+          max-tick-time=-1
+          sync-chunk-writes=false
+          PROPERTIES
+            JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector ${kernel_option} ${extra_jvm_option} -Djpe.benchmark.ticksPerColumn=22 -Djpe.continuousWorldgenBenchmark=true -Djpe.worldgenMetrics=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=false -Djpe.perlinVectorEnabled=false" \
+              gradle runServer --no-daemon --stacktrace 2>&1 | tee "build/server-benchmark/${label}.log"
+            grep 'JPE_CONTINUOUS_WORLDGEN_BENCH' "build/server-benchmark/${label}.log"
+            grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*completedChunks=340.*failedChunks=0.*doFillCalls=([3-9][0-9]{2,}|[1-9][0-9]{3,})' \
+              "build/server-benchmark/${label}.log"
+          }
+
+          # ABBA measures the default vector density kernels; experimental Perlin interception stays off.
+          # Its independent bit-parity GameTest above still enables it explicitly.
+          # Structure indexing is disabled because this terrain workload never reaches its build threshold.
+          # Every run gets a fresh normal world with the same seed and Java 25 runtime.
+          run_worldgen scalar_a scalar
+          run_worldgen vector_a vector
+          run_worldgen vector_b vector
+          run_worldgen scalar_b scalar
+
+          # Compare one native worker against automatic multi-core sizing.
+          # Order is 1-worker, auto, auto, 1-worker; scalar runs bracket the group.
+          native_option="-Djpe.nativePerlinEnabled=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so"
+          native_one_option="$native_option -Djpe.nativeWorkers=1"
+          run_worldgen native_scalar_a scalar
+          run_worldgen native_one_a scalar "$native_one_option"
+          run_worldgen native_auto_a scalar "$native_option"
+          run_worldgen native_auto_b scalar "$native_option"
+          run_worldgen native_one_b scalar "$native_one_option"
+          run_worldgen native_scalar_b scalar
+          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin.*nativeWorkers=1.*nativeCompleted=[1-9][0-9]*' build/server-benchmark/native_one_a.log
+          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin.*nativeWorkers=1.*nativeCompleted=[1-9][0-9]*' build/server-benchmark/native_one_b.log
+          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin.*nativeWorkers=[2-9][0-9]*.*nativeCompleted=[1-9][0-9]*' build/server-benchmark/native_auto_a.log
+          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin.*nativeWorkers=[2-9][0-9]*.*nativeCompleted=[1-9][0-9]*' build/server-benchmark/native_auto_b.log
+
+          # Compare synchronous C++ calls on Minecraft's own worldgen workers.
+          # This removes the second native pool and its task-copy/polling overhead.
+          native_sync_option="-Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so"
+          run_worldgen native_sync_scalar_a scalar
+          run_worldgen native_sync_a scalar "$native_sync_option"
+          run_worldgen native_sync_b scalar "$native_sync_option"
+          run_worldgen native_sync_scalar_b scalar
+          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin-sync.*nativeSyncCalls=[1-9][0-9]*' build/server-benchmark/native_sync_a.log
+          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*mode=native-perlin-sync.*nativeSyncCalls=[1-9][0-9]*' build/server-benchmark/native_sync_b.log
+
+          # Isolate the material-rule density-buffer reuse experiment with a fresh-world ABBA.
+          # All four runs use the same vector density kernels; only the scoped buffer lease changes.
+          run_worldgen material_pool_off_a vector "-Djpe.densityBufferMetrics=true"
+          run_worldgen material_pool_on_a vector "-Djpe.densityBufferMetrics=true -Djpe.materialBufferPooling=true"
+          run_worldgen material_pool_on_b vector "-Djpe.densityBufferMetrics=true -Djpe.materialBufferPooling=true"
+          run_worldgen material_pool_off_b vector "-Djpe.densityBufferMetrics=true"
+
+          # Isolate 3-bit and 4-bit palette lookup strategy with a fresh-world ABBA.
+          # Only the palette factory selection changes; world seed, generator and JVM stay fixed.
+          run_worldgen palette_hash_off_a scalar
+          run_worldgen palette_hash_on_a scalar "-Djpe.paletteHashEnabled=true"
+          run_worldgen palette_hash_on_b scalar "-Djpe.paletteHashEnabled=true"
+          run_worldgen palette_hash_off_b scalar
+
+          # Isolate reuse of Climate.TargetPoint's temporary long[7] query vector.
+          # Scalar density kernels are fixed; only the opt-in thread-local scratch buffer changes.
+          run_worldgen target_array_off_a scalar "-Djpe.climateTargetArrayReuse=false"
+          run_worldgen target_array_on_a scalar "-Djpe.climateTargetArrayReuse=true"
+          run_worldgen target_array_on_b scalar "-Djpe.climateTargetArrayReuse=true"
+          run_worldgen target_array_off_b scalar "-Djpe.climateTargetArrayReuse=false"
+          grep -F 'JPE_CLIMATE_TARGET_ARRAY_REUSE enabled=false' build/server-benchmark/target_array_off_a.log
+          grep -F 'JPE_CLIMATE_TARGET_ARRAY_REUSE enabled=true' build/server-benchmark/target_array_on_a.log
+          grep -F 'JPE_CLIMATE_TARGET_ARRAY_REUSE enabled=true' build/server-benchmark/target_array_on_b.log
+          grep -F 'JPE_CLIMATE_TARGET_ARRAY_REUSE enabled=false' build/server-benchmark/target_array_off_b.log
+
+          # Separate diagnostic run: JFR sampling identifies real hot methods without
+          # contaminating the four-run scalar/vector performance comparison.
+          run_worldgen profile vector "-XX:StartFlightRecording=filename=${GITHUB_WORKSPACE}/build/server-benchmark/profile-%p.jfr,settings=profile,dumponexit=true -Djpe.densityBufferMetrics=true"
+          find build/server-benchmark -maxdepth 1 -name 'profile-*.jfr' -print -exec jfr summary {} \; | tee build/server-benchmark/jfr-summary.txt
+
+      - name: Build mod
+        if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
+        run: gradle build --no-daemon --stacktrace
+
+      - name: Cache pinned Vineflower decompiler
+        if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
+        uses: actions/cache@v4
+        with:
+          path: build/source-audit/vineflower-1.12.0.jar
+          key: vineflower-1.12.0-1dfcfe974395734fa467ce620661c7623d05ba83670de0529b1fbd63ff548b9d
+
+      - name: Verify and decompile exact Minecraft 26.3 artifacts
+        if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
+        run: python3 scripts/audit_minecraft_26_3_sources.py
+
+      - name: Upload build, reports, and server benchmark logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jpe-optimizer-ci-${{ github.run_id }}
+          path: |
+            build/libs/
+            build/vector-probe/
+            build/math-benchmark/
+            build/climate-rtree-benchmark/
+            build/sampler-parity/
+            build/server-benchmark/
+            build/gametest/
+            build/reports/tests/
+            build/test-results/
+            build/source-audit/report.txt
+            run/logs/
+            run/hs_err_pid*.log
+          if-no-files-found: warn
+          retention-days: 7

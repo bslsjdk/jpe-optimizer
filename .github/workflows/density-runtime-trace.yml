@@ -1,0 +1,43 @@
+name: Density runtime trace audit
+
+on:
+  push:
+    branches: ["work/native-density-graph-ir"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trace-and-source-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: gradle
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.2.1"
+      - name: Verify native bridge
+        run: |
+          cargo test --manifest-path native/rust-runtime/Cargo.toml
+          cargo build --release --manifest-path native/rust-runtime/Cargo.toml
+      - name: Run focused Java tests
+        run: gradle test --no-daemon --stacktrace
+      - name: Produce exact NeoForge-patched Minecraft artifact
+        run: gradle createMinecraftArtifacts --no-daemon --stacktrace
+      - name: Audit exact Minecraft 26.3 density implementation
+        run: python3 scripts/audit_minecraft_26_3_sources.py
+      - name: Upload source audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: density-runtime-source-audit
+          path: build/source-audit/report.txt
+          if-no-files-found: warn
+          retention-days: 7
