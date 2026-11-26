@@ -8,7 +8,7 @@ description = "JPE native world engine: chunk lifecycle, scheduling and mesh con
 
 [lib]
 name = "jpe_world"
-crate-type = ["rlib"]
+crate-type = ["rlib", "cdylib"]
 
 [features]
 default = []

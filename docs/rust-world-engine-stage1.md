@@ -164,7 +164,8 @@ Measured, not assumed:
 ## 7. First implementation delivered in this commit
 
 `native/rust-world/` — crate `jpe-world-engine` (lib `jpe_world`), **zero
-dependencies**, 39 unit tests passing locally.
+dependencies**, 44 unit tests passing locally, plus a Java 25 FFM bridge harness
+(55 checks) passing against the built `libjpe_world`.
 
 - `coords` — `ChunkPos`/`SectionPos`/`BlockPos` with vanilla `toLong` packing
   (X|Z|Y layout), arithmetic-shift chunk mapping, Y bounds for the default
@@ -184,11 +185,39 @@ dependencies**, 39 unit tests passing locally.
 - `terrain` — FFI declaration of the existing ABI v8 (`cpp-bridge` feature,
   not enabled by default), `JpePerlinLayer` layout guarded by a size/alignment
   test (72/8 bytes), and a deterministic mock for tests.
+- `ffi` — a stable C ABI (`jpe_world_*`) over `SchedulerCore` and the section
+  mesher, with a handle registry, typed status codes and versioned layout.
+
+### Temporary Java integration path (per owner direction)
+
+The owner directed that C++ not be connected yet (it is still in progress) and
+that the engine instead be wired to Java and tested on this branch. So this
+commit adds a **direct Java↔Rust** path, C++-free:
+
+- `src/ffi.rs` — 15 exported `jpe_world_*` symbols (create/destroy, player,
+  terrain/mesh requests, take/complete job, upload, unload, state, stats, reset,
+  mesh-a-section, ABI/max-quads), each with explicit status codes.
+- `java/src/dev/jpe/world/JpeWorldNative.java` — Java 25 FFM binding (Arena,
+  `SymbolLookup.libraryLookup`, `Linker` downcall handles, typed `MethodHandle`s).
+- `java/src/dev/jpe/world/WorldEngineHarness.java` — end-to-end harness:
+  priority ordering (Urgent/Near/Far), lifecycle transitions
+  (queued→generating→ready→meshed→uploaded→unload), stats accounting, single /
+  empty / solid-layer meshing, and epoch invalidation rejecting stale results.
+- `java/run_harness.sh` — builds the cdylib, compiles the harness, runs it under
+  JDK 25 with `--enable-native-access=ALL-UNNAMED`.
+- CI job `java-bridge` in `.github/workflows/rust-world.yml` runs the harness on
+  every push to this branch.
+
+The bridge itself also includes a `jpe_world_mesh_section` downcall that returns
+real interleaved vertex bytes, so the same ABI will carry mesh data to whichever
+GPU backend is added later.
 
 ### Explicit non-claims
 
 - No Vulkan/GL/GLES device is created; no triangle is drawn.
-- No Minecraft/NeoForge integration; no Java code was changed.
+- No Minecraft/NeoForge integration; no Java source in the mod was changed. The
+  bridge was proven with a standalone harness, not a running client.
+- No C++ library is loaded; the terrain bridge is declared but not exercised.
 - No performance numbers are reported; there is no live workload yet.
 
 ## 8. Next steps, in order
@@ -196,9 +225,10 @@ dependencies**, 39 unit tests passing locally.
 1. Confirm PR base branch (§6.1).
 2. Audit Minecraft 26.3's render ownership (window, GL context, render thread)
    and record it here with artifact hashes.
-3. Wire `SchedulerCore` + `TerrainEngine` mock into a Java-facing test harness
-   (GameTest) that proves lifecycle/epoch behaviour with real chunk coordinates.
+3. Replace the standalone harness with a GameTest / client-thread hook that
+   drives the same `jpe_world_*` ABI from inside a dev run, proving lifecycle and
+   epoch behaviour with real chunk coordinates.
 4. Implement the first backend's device probe on a GPU machine (Vulkan first is
    the cleanest to test headless), then the shared mesh upload path.
-5. Only after parity + measurement: connect the density volume from C++ into
-   the Rust chunk pipeline.
+5. Only after parity + measurement: connect the density volume from C++ into the
+   Rust chunk pipeline (feature `cpp-bridge`).

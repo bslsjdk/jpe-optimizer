@@ -60,3 +60,30 @@ jobs:
       - name: Clippy (advisory)
         continue-on-error: true
         run: cargo clippy --all-targets -- -D warnings
+
+  java-bridge:
+    name: Java 25 FFM bridge harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/rust-world
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      # Drives the Rust scheduler/mesher through the C ABI with Java 25 FFM.
+      # No C++ library, no Minecraft, no GPU: the only native dependency is
+      # libjpe_world, which the script builds from source.
+      - name: Build and run harness
+        run: java/run_harness.sh

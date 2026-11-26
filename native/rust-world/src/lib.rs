@@ -33,6 +33,7 @@
 
 pub mod chunk;
 pub mod coords;
+pub mod ffi;
 pub mod mesh;
 pub mod render;
 pub mod scheduler;
