@@ -29,7 +29,7 @@ import net.minecraft.world.level.levelgen.synth.PerlinNoise;
  * Completed jobs must be explicitly released before this runtime can be closed.
  */
 public final class NativeRuntime implements AutoCloseable {
-    public static final int EXPECTED_ABI_VERSION = 6;
+    public static final int EXPECTED_ABI_VERSION = 7;
     private static final long PERLIN_LAYER_SIZE = 56L;
 
     public static final int JOB_COMPLETE = 0;
