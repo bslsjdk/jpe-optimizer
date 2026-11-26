@@ -18,7 +18,7 @@ This is now also used as a density-graph leaf for captured seed-bound `NoiseFunc
 
 ## Implemented native IR prototype
 
-The current branch has an executable C ABI/Rust/C++/Java path for a topologically ordered graph. It supports constants, X/Y/Z coordinates, ADD/MUL/SUB/DIV/MIN/MAX/POW, ABS/NEGATE/SQUARE/CUBE/SQRT/HALF_NEGATIVE/QUARTER_NEGATIVE/RECIPROCAL/SIGN/CLAMP/SQUEEZE/LERP/GRADIENT (clamp, repeat, mirrored repeat)/INTERPOLATED/RANGE_CHOICE/ROUND/LOG, DISTANCE_TO_POINT (all four Minecraft 26.3 metrics), cubic spline trees (constant and multipoint forms), and prepared PERLIN_STACK nodes.
+The current branch has an executable C ABI/Rust/C++/Java path for a topologically ordered graph. It supports constants, X/Y/Z coordinates, ADD/MUL/SUB/DIV/MIN/MAX/POW, ABS/NEGATE/SQUARE/CUBE/SQRT/HALF_NEGATIVE/QUARTER_NEGATIVE/RECIPROCAL/SIGN/CLAMP/SQUEEZE/LERP/GRADIENT (clamp, repeat, mirrored repeat)/INTERPOLATED/RANGE_CHOICE/ROUND (including dynamic per-voxel multiples)/LOG, DISTANCE_TO_POINT (all four Minecraft 26.3 metrics), cubic spline trees (constant and multipoint forms), and prepared PERLIN_STACK nodes.
 
 Execution is node-major over the complete requested volume. The C++ compiler precomputes a liveness-based slot assignment once, so each evaluation allocates only the maximum simultaneously-live volume buffers; dead nodes and nodes after their final consumer reuse slots. Compiled graphs retain prepared Perlin handles independently of their source handles.
 
