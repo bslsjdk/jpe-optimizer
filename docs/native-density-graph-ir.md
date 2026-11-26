@@ -2,6 +2,18 @@
 
 Status: design contract only. No Minecraft density graph is executed by this IR yet. The native backend must remain opt-in until the exact-output and real-worldgen gates below pass.
 
+## Prepared NoiseStack implementation slice
+
+The experimental native branch now has an additive prepared-Perlin-stack primitive:
+
+- `jpe_runtime_prepare_perlin_stack` copies the ordered 256-byte permutation tables, offsets, per-layer XZ/Y frequencies, and base amplitudes into an immutable native handle.
+- `jpe_runtime_evaluate_prepared_perlin_stack` evaluates that handle with only sampler-level XZ/Y scales, amplitude, volume coordinates, and output storage. No per-layer descriptors or permutation arrays need to cross the FFM/Rust/C++ boundary for each volume.
+- The C++ handle owns immutable layer data; evaluation retains shared ownership while running, so a concurrent release cannot invalidate an active call.
+- Each calling thread reuses its descriptor scratch and the existing fused stack kernel remains the arithmetic implementation.
+- A Rust test compares prepared evaluation with the existing direct stack API by exact `f32::to_bits()` equality across multiple sampler scale/amplitude combinations.
+
+This is a native preparation primitive, **not yet a Java runtime integration and not yet a density-graph opcode**. The current `NoiseStackPerlinMixin` still enters Java for each `addToVolume` call, and `NoiseFunction$Sampler.sampleVolume` remains part of the current Java path. Do not count this slice as closed native density execution. Next: bind prepared handles to immutable `NoiseStack` identities during world preparation, add a prepared noise-stack node plus descriptor table to the density IR, then execute the complete final-density graph without Java-sampled opaque inputs.
+
 ## Goal
 
 Move the expensive, pure, volume-oriented part of Minecraft 26.3 terrain density evaluation behind one coarse Java-to-native boundary. Java extracts a stable description of the terrain density graph once per generator configuration. Native code validates, compiles, caches, and evaluates that description for many chunk volumes. Java retains Minecraft object ownership and commits block states.
