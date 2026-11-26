@@ -337,6 +337,11 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
                     graph->needs_y_coordinates = true;
                     graph->needs_z_coordinates = true;
                     break;
+                case kGradient:
+                    if (graph->nodes[i].input_a == 0) graph->needs_x_coordinates = true;
+                    else if (graph->nodes[i].input_a == 1) graph->needs_y_coordinates = true;
+                    else graph->needs_z_coordinates = true;
+                    break;
                 default: break;
             }
         }
@@ -684,36 +689,57 @@ int32_t evaluate_density_graph_impl(
                     };
                     const int32_t min_coordinate = std::min(from_coordinate, to_coordinate);
                     const int32_t max_coordinate = std::max(from_coordinate, to_coordinate);
+                    const auto sample_gradient = [&](int32_t coordinate) -> Scalar {
+                        const int32_t relative = wrapped_subtract(coordinate, from_coordinate);
+                        int32_t sample_offset;
+                        if (node.input_b == 0) {
+                            const int32_t clamped = std::min(
+                                std::max(coordinate, min_coordinate), max_coordinate);
+                            sample_offset = wrapped_subtract(clamped, from_coordinate);
+                        } else if (node.input_b == 1) {
+                            sample_offset = static_cast<int32_t>(
+                                floor_mod(relative, coordinate_range));
+                        } else {
+                            const int64_t tile_index = floor_div(relative, coordinate_range);
+                            const int64_t local_coordinate =
+                                static_cast<int64_t>(relative) - tile_index * coordinate_range;
+                            sample_offset = static_cast<int32_t>(
+                                (tile_index & 1) == 0
+                                    ? local_coordinate
+                                    : static_cast<int64_t>(coordinate_range) - local_coordinate);
+                        }
+                        volatile Scalar scaled =
+                            static_cast<Scalar>(sample_offset) * coordinate_factor;
+                        return from_value + scaled;
+                    };
+
+                    // A gradient reads exactly one coordinate axis. Reuse the
+                    // immutable per-evaluation axis vector and broadcast the
+                    // result along the other two dimensions instead of wrapping
+                    // X/Y/Z again for every voxel.
                     size_t out = 0;
-                    for (uint32_t z = 0; z < size_z; ++z) {
-                        const int32_t wz = wrapped_coordinate(min_z, z, step_z);
-                        for (uint32_t x = 0; x < size_x; ++x) {
-                            const int32_t wx = wrapped_coordinate(min_x, x, step_x);
-                            for (uint32_t y = 0; y < size_y; ++y) {
-                                const int32_t wy = wrapped_coordinate(min_y, y, step_y);
-                                const int32_t coordinate = node.input_a == 0 ? wx
-                                    : node.input_a == 1 ? wy : wz;
-                                const int32_t relative = wrapped_subtract(coordinate, from_coordinate);
-                                int32_t sample_offset;
-                                if (node.input_b == 0) {
-                                    const int32_t clamped = std::min(
-                                        std::max(coordinate, min_coordinate), max_coordinate);
-                                    sample_offset = wrapped_subtract(clamped, from_coordinate);
-                                } else if (node.input_b == 1) {
-                                    sample_offset = static_cast<int32_t>(
-                                        floor_mod(relative, coordinate_range));
-                                } else {
-                                    const int64_t tile_index = floor_div(relative, coordinate_range);
-                                    const int64_t local_coordinate =
-                                        static_cast<int64_t>(relative) - tile_index * coordinate_range;
-                                    sample_offset = static_cast<int32_t>(
-                                        (tile_index & 1) == 0
-                                            ? local_coordinate
-                                            : static_cast<int64_t>(coordinate_range) - local_coordinate);
+                    if (node.input_a == 0) {
+                        for (uint32_t z = 0; z < size_z; ++z) {
+                            for (uint32_t x = 0; x < size_x; ++x) {
+                                const Scalar value = sample_gradient(scratch.x_coordinates[x]);
+                                std::fill_n(values.data() + out, size_y, value);
+                                out += size_y;
+                            }
+                        }
+                    } else if (node.input_a == 1) {
+                        for (uint32_t z = 0; z < size_z; ++z) {
+                            for (uint32_t x = 0; x < size_x; ++x) {
+                                for (uint32_t y = 0; y < size_y; ++y) {
+                                    values[out++] = sample_gradient(scratch.y_coordinates[y]);
                                 }
-                                volatile Scalar scaled =
-                                    static_cast<Scalar>(sample_offset) * coordinate_factor;
-                                values[out++] = from_value + scaled;
+                            }
+                        }
+                    } else {
+                        for (uint32_t z = 0; z < size_z; ++z) {
+                            const Scalar value = sample_gradient(scratch.z_coordinates[z]);
+                            for (uint32_t x = 0; x < size_x; ++x) {
+                                std::fill_n(values.data() + out, size_y, value);
+                                out += size_y;
                             }
                         }
                     }
