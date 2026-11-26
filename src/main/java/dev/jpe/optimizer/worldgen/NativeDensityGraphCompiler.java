@@ -41,7 +41,7 @@ public final class NativeDensityGraphCompiler {
 
     // The compiler context is owned by RandomState and remains stable across chunks.
     // Weak keys prevent a closed world's captured samplers from being retained.
-    private static final Map<DensityFunction.CompileContext, IdentityHashMap<NoiseFunction, Noise>> CAPTURED_NOISE =
+    private static final Map<DensityFunction.CompileContext, Map<NoiseFunction, Noise>> CAPTURED_NOISE =
             new WeakHashMap<>();
 
     private static final ReferenceQueue<RandomState> RANDOM_STATE_QUEUE = new ReferenceQueue<>();
@@ -84,7 +84,7 @@ public final class NativeDensityGraphCompiler {
             NoiseFunction function, DensityFunction.CompileContext context, Noise noise
     ) {
         synchronized (LOCK) {
-            CAPTURED_NOISE.computeIfAbsent(context, ignored -> new IdentityHashMap<>()).put(function, noise);
+            CAPTURED_NOISE.computeIfAbsent(context, ignored -> new HashMap<>()).put(function, noise);
         }
     }
 
@@ -305,7 +305,7 @@ public final class NativeDensityGraphCompiler {
                         }
                         Noise noise;
                         synchronized (LOCK) {
-                            IdentityHashMap<NoiseFunction, Noise> captured = CAPTURED_NOISE.get(context);
+                            Map<NoiseFunction, Noise> captured = CAPTURED_NOISE.get(context);
                             noise = captured == null ? null : captured.get((NoiseFunction) function);
                         }
                         long preparedHandle = NativePerlinNoiseBackend.preparedStackHandleForDensityGraph(noise);
