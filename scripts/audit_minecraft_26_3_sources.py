@@ -121,6 +121,9 @@ def make_subset(source_jar: Path, subset_jar: Path) -> dict[str, str]:
     missing = sorted(expected - hashes.keys())
     if missing:
         raise RuntimeError(f"{source_jar} is missing target classes: {missing}")
+    aquifer_implementation = "net/minecraft/world/level/levelgen/Aquifer$NoiseBasedAquifer.class"
+    if aquifer_implementation not in hashes:
+        raise RuntimeError(f"{source_jar} is missing nested Aquifer.NoiseBasedAquifer")
     return hashes
 
 
@@ -239,6 +242,27 @@ def compare_method_inventories(
                     if methods[expected]["access"] & 0x000A != 0x000A:
                         raise RuntimeError(f"{label} BiomeManager.getFiddledDistance is not private static")
                 lines.append("  verified exact private static target getFiddledDistance(JIIIDDD)D")
+            if class_name == "net/minecraft/world/level/levelgen/Aquifer$NoiseBasedAquifer.class":
+                for label, methods in (("vanilla", old), ("NeoForge-patched", new)):
+                    substance_methods = [
+                        (signature, details) for signature, details in methods.items()
+                        if signature[0] == "computeSubstance"
+                    ]
+                    if not substance_methods:
+                        raise RuntimeError(f"{label} Aquifer.NoiseBasedAquifer is missing computeSubstance")
+                    for (name, descriptor), details in substance_methods:
+                        lines.append(
+                            f"  verified {label} Aquifer method {name}{descriptor}: "
+                            f"Code bytes={details['code_length']} SHA-256={details['code_hash']}"
+                        )
+                # Record every FluidStatus-related method signature in both artifacts.
+                for label, methods in (("vanilla", old), ("NeoForge-patched", new)):
+                    for (name, descriptor), details in sorted(methods.items()):
+                        if "fluidstatus" in name.lower() or "fluid" in name.lower():
+                            lines.append(
+                                f"  {label} Aquifer fluid method {name}{descriptor}: "
+                                f"Code bytes={details['code_length']} SHA-256={details['code_hash']}"
+                            )
             added = sorted(set(new) - set(old))
             removed = sorted(set(old) - set(new))
             common = sorted(set(old) & set(new))
