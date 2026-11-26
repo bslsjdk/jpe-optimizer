@@ -397,15 +397,40 @@ Scalar java_signum_scalar(Scalar value) noexcept {
 }
 
 template <typename Scalar>
+struct DensitySlotView {
+    Scalar* data = nullptr;
+    size_t length = 0;
+
+    Scalar& operator[](size_t index) noexcept { return data[index]; }
+    const Scalar& operator[](size_t index) const noexcept { return data[index]; }
+    Scalar* begin() noexcept { return data; }
+    Scalar* end() noexcept { return data + length; }
+    const Scalar* begin() const noexcept { return data; }
+    const Scalar* end() const noexcept { return data + length; }
+};
+
+template <typename Scalar>
 struct DensityEvaluationScratch {
-    std::vector<std::vector<Scalar>> slots;
+    // All DAG registers live in one contiguous allocation. Per-register vectors
+    // used to cause one heap allocation per slot and fragmented working sets.
+    std::vector<Scalar> slot_storage;
+    std::vector<DensitySlotView<Scalar>> slots;
     std::vector<float> perlin;
     std::vector<Scalar> corner_values;
     std::vector<Scalar> sliced_values;
 
     void prepare(uint32_t slot_count, size_t volume, bool has_perlin) {
-        if (slots.size() < slot_count) slots.resize(slot_count);
-        for (uint32_t i = 0; i < slot_count; ++i) slots[i].resize(volume);
+        if (slot_count != 0 && volume > slot_storage.max_size() / slot_count) {
+            throw std::length_error("density graph scratch size overflow");
+        }
+        slot_storage.resize(static_cast<size_t>(slot_count) * volume);
+        slots.resize(slot_count);
+        for (uint32_t i = 0; i < slot_count; ++i) {
+            slots[i] = DensitySlotView<Scalar>{
+                slot_storage.data() + static_cast<size_t>(i) * volume,
+                volume
+            };
+        }
         if (has_perlin) perlin.resize(volume);
     }
 };
