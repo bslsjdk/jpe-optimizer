@@ -2665,6 +2665,82 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "density-graph-benchmark")]
+    #[test]
+    fn blender_density_volume_full_chunk_microbenchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        // Mirror the correctness fixture: nine neighboring legacy chunks,
+        // all density columns populated, and Minecraft's complete 5x49x5 lattice.
+        const SIZE_X: usize = 5;
+        const SIZE_Y: usize = 49;
+        const SIZE_Z: usize = 5;
+        const REPEATS: usize = 3;
+        const ROUNDS: usize = 21;
+        let mut backing: Vec<Vec<f32>> = Vec::with_capacity(9 * 16);
+        for view in 0..9 {
+            for column in 0..16 {
+                backing.push((0..16).map(|y| {
+                    let raw = ((view * 37 + column * 19 + y * 11) % 97) as f32;
+                    (raw - 31.0) * 0.137_f32
+                }).collect());
+            }
+        }
+        let views: Vec<JpeBlendingDataView> = (0..9).map(|view| {
+            let density_columns = std::array::from_fn(|column| {
+                backing[view * 16 + column].as_ptr()
+            });
+            JpeBlendingDataView {
+                chunk_x: (view % 3) as i32,
+                chunk_z: (view / 3) as i32,
+                min_section_y: -4,
+                section_count: 8,
+                density_columns,
+            }
+        }).collect();
+        let count = SIZE_X * SIZE_Y * SIZE_Z;
+        let noise: Vec<f32> = (0..count).map(|i| {
+            ((i * 29 % 211) as f32 - 103.0) * 0.03125_f32
+        }).collect();
+        let mut output = vec![0.0_f32; count];
+
+        let run = |out: &mut [f32]| {
+            for _ in 0..REPEATS {
+                assert_eq!(unsafe {
+                    jpe_runtime_blend_density_volume(
+                        std::ptr::null(), 0, views.as_ptr(), views.len() as u32,
+                        SIZE_X as u32, SIZE_Y as u32, SIZE_Z as u32,
+                        52, -64, 52, 4, 8, 4,
+                        noise.as_ptr(), out.as_mut_ptr(), count as u64,
+                    )
+                }, STATUS_OK);
+                black_box(out[count / 2]);
+            }
+        };
+
+        // Warm up allocation paths and caches before collecting alternating rounds.
+        for _ in 0..2 {
+            run(&mut output);
+        }
+        let mut samples = Vec::with_capacity(ROUNDS);
+        for _ in 0..ROUNDS {
+            let start = Instant::now();
+            run(&mut output);
+            samples.push(start.elapsed().as_nanos());
+        }
+        samples.sort_unstable();
+        let median = samples[ROUNDS / 2];
+        let p95 = samples[(ROUNDS * 95 / 100).min(ROUNDS - 1)];
+        eprintln!(
+            "JPE_BLENDER_FULL_CHUNK_BENCH dims={}x{}x{} views={} points={} repeats={} rounds={} median_ms={:.3} p95_ms={:.3}",
+            SIZE_X, SIZE_Y, SIZE_Z, views.len(), backing.len() * 16,
+            REPEATS, ROUNDS,
+            median as f64 / 1_000_000.0,
+            p95 as f64 / 1_000_000.0
+        );
+    }
+
     #[test]
     fn blender_density_volume_handles_negative_coordinates_and_boundary_fallback() {
         let mut column = vec![0.0_f32; 16];
