@@ -255,11 +255,17 @@ public final class NativeDensityGraphCompiler {
                 rootIndex = builder.lower(root);
             } catch (RuntimeException | LinkageError unsupported) {
                 stateGraphs.disabled.add(root);
-                JPEOptimizer.LOGGER.info(
+                String reason = describe(unsupported);
+                JPEOptimizer.LOGGER.error(
                         "Native density graph rejected for {}: {}",
-                        root.getClass().getName(),
-                        unsupported.getMessage() == null ? unsupported.getClass().getName() : unsupported.getMessage()
+                        root.getClass().getName(), reason
                 );
+                if (strictMode()) {
+                    throw new IllegalStateException(
+                            "Strict native density graph rejected " + root.getClass().getName() + ": " + reason,
+                            unsupported
+                    );
+                }
                 return 0L;
             }
 
@@ -283,6 +289,10 @@ public final class NativeDensityGraphCompiler {
                 return handle;
             } catch (RuntimeException | LinkageError rejected) {
                 stateGraphs.disabled.add(root);
+                JPEOptimizer.LOGGER.error(
+                        "Native density graph compilation failed for {}: {}",
+                        root.getClass().getName(), describe(rejected)
+                );
                 if (strictMode()) {
                     throw new IllegalStateException(
                             "Native density graph compilation failed for " + root.getClass().getName()
