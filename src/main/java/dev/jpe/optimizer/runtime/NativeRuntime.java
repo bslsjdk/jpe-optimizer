@@ -56,6 +56,7 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle densityGraphEvaluateF32;
     private final MethodHandle densityGraphEvaluatePoints;
     private final MethodHandle densityGraphEvaluatePointsF32;
+    private final MethodHandle densityGraphEvaluateMultiPointsF32;
     private final MethodHandle densityGraphRelease;
     private final MethodHandle aquiferGridCenters;
     private final MethodHandle aquiferNearestFour;
@@ -162,6 +163,8 @@ public final class NativeRuntime implements AutoCloseable {
         private int statusCapacity;
         private MemorySegment pointX, pointY, pointZ, pointOutputF32, pointOutputF64;
         private int pointCapacity;
+        private MemorySegment pointGraphHandles;
+        private int pointGraphHandleCapacity;
         private MemorySegment packedLocations;
         private int packedLocationCapacity;
         private final AtomicBoolean leased = new AtomicBoolean();
@@ -241,6 +244,16 @@ public final class NativeRuntime implements AutoCloseable {
             }
             return new MemorySegment[] {pointX, pointY, pointZ, pointOutputF32, pointOutputF64};
         }
+        private MemorySegment ensurePointGraphHandleCapacity(int count) {
+            if (pointGraphHandleCapacity < count) {
+                int next = Math.max(8, pointGraphHandleCapacity);
+                while (next < count) next = Math.min(64, Math.multiplyExact(next, 2));
+                long bytes = Math.multiplyExact((long) next, ValueLayout.JAVA_LONG.byteSize());
+                pointGraphHandles = arena.allocate(bytes, ValueLayout.JAVA_LONG.byteAlignment());
+                pointGraphHandleCapacity = next;
+            }
+            return pointGraphHandles;
+        }
         private MemorySegment ensurePackedLocationCapacity(int count) {
             if (packedLocationCapacity < count) {
                 int next = Math.max(256, packedLocationCapacity);
@@ -275,7 +288,8 @@ public final class NativeRuntime implements AutoCloseable {
                           MethodHandle preparePreparedStack, MethodHandle evaluatePreparedStack,
                           MethodHandle releasePreparedStack,
                           MethodHandle graphCompile, MethodHandle graphEvaluate, MethodHandle graphEvaluateF32,
-                          MethodHandle graphEvaluatePoints, MethodHandle graphEvaluatePointsF32, MethodHandle graphRelease,
+                          MethodHandle graphEvaluatePoints, MethodHandle graphEvaluatePointsF32,
+                          MethodHandle graphEvaluateMultiPointsF32, MethodHandle graphRelease,
                           MethodHandle aquiferGridCenters, MethodHandle aquiferNearestFour,
                           MethodHandle aquiferSubstanceBatch,
                           MethodHandle aquiferStatusCacheCreate, MethodHandle aquiferStatusCacheDestroy,
@@ -295,6 +309,7 @@ public final class NativeRuntime implements AutoCloseable {
         this.densityGraphEvaluateF32 = graphEvaluateF32;
         this.densityGraphEvaluatePoints = graphEvaluatePoints;
         this.densityGraphEvaluatePointsF32 = graphEvaluatePointsF32;
+        this.densityGraphEvaluateMultiPointsF32 = graphEvaluateMultiPointsF32;
         this.densityGraphRelease = graphRelease;
         this.aquiferGridCenters = aquiferGridCenters;
         this.aquiferNearestFour = aquiferNearestFour;
@@ -425,6 +440,13 @@ public final class NativeRuntime implements AutoCloseable {
                                     ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
                                     ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)))
                     .orElse(null);
+            MethodHandle graphEvaluateMultiPointsF32 = lookup.find("jpe_runtime_density_graph_evaluate_multi_points_f32")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                                    ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)))
+                    .orElse(null);
             MethodHandle graphRelease = lookup.find("jpe_runtime_density_graph_release")
                     .map(symbol -> linker.downcallHandle(symbol,
                             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG)))
@@ -499,7 +521,7 @@ public final class NativeRuntime implements AutoCloseable {
             return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, perlinStack, submit, submitStack, status, wait, cancel, release,
                     preparePreparedStack, evaluatePreparedStack, releasePreparedStack,
                     graphCompile, graphEvaluate, graphEvaluateF32, graphEvaluatePoints, graphEvaluatePointsF32,
-                    graphRelease, aquiferGridCenters, aquiferNearestFour,
+                    graphEvaluateMultiPointsF32, graphRelease, aquiferGridCenters, aquiferNearestFour,
                     aquiferSubstanceBatch, aquiferStatusCacheCreate, aquiferStatusCacheDestroy,
                     aquiferStatusCacheLookup, aquiferStatusCacheInsert);
         } catch (Throwable failure) {
@@ -1367,6 +1389,12 @@ public final class NativeRuntime implements AutoCloseable {
                 && densityGraphEvaluatePointsF32 != null && densityGraphRelease != null;
     }
 
+    /** True when one FFM call can evaluate many immutable sampler graphs over their own point sets. */
+    public boolean supportsDensityGraphMultiPointsF32() {
+        return densityGraphCompile != null && densityGraphEvaluateMultiPointsF32 != null
+                && densityGraphRelease != null;
+    }
+
     /** Identifies each independently resolved symbol in the sparse-point ABI. */
     public String densityGraphPointsDiagnostic() {
         return "compile=" + (densityGraphCompile != null)
@@ -1514,6 +1542,75 @@ public final class NativeRuntime implements AutoCloseable {
             MemorySegment.copy(values, ValueLayout.JAVA_FLOAT, 0, output, 0, count);
         } catch (Throwable failure) {
             throw rethrow("Unable to evaluate native density graph points (f32)", failure);
+        } finally {
+            if (scratch != null) scratch.release();
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    /**
+     * Evaluates several compiled sampler graphs in one native call.
+     * Coordinates and results are sampler-major: [sampler][point]. Each sampler
+     * supplies its own point set, so callers do not need to align unlike noise samplers.
+     */
+    public void evaluateDensityGraphMultiPointsF32(
+            long[] graphHandles, int[][] pointX, int[][] pointY, int[][] pointZ, float[][] output
+    ) {
+        if (!supportsDensityGraphMultiPointsF32()) {
+            throw new IllegalStateException("Native multi-sampler density graph ABI is unavailable");
+        }
+        Objects.requireNonNull(graphHandles, "graphHandles");
+        Objects.requireNonNull(pointX, "pointX");
+        Objects.requireNonNull(pointY, "pointY");
+        Objects.requireNonNull(pointZ, "pointZ");
+        Objects.requireNonNull(output, "output");
+        int graphCount = graphHandles.length;
+        if (graphCount == 0 || graphCount > 64 || pointX.length != graphCount
+                || pointY.length != graphCount || pointZ.length != graphCount
+                || output.length != graphCount) {
+            throw new IllegalArgumentException("Multi-sampler density graph array counts must match and be in [1, 64]");
+        }
+        int pointsPerGraph = Objects.requireNonNull(pointX[0], "pointX[0]").length;
+        if (pointsPerGraph == 0) throw new IllegalArgumentException("Each sampler needs at least one point");
+        long total = Math.multiplyExact((long) graphCount, pointsPerGraph);
+        if (total > 1_048_576L) throw new IllegalArgumentException("Multi-sampler point volume exceeds native limit");
+        for (int graphIndex = 0; graphIndex < graphCount; graphIndex++) {
+            if (graphHandles[graphIndex] == 0L || !densityGraphHandles.containsKey(graphHandles[graphIndex])) {
+                throw new IllegalArgumentException("Unknown native density graph handle at sampler " + graphIndex);
+            }
+            if (Objects.requireNonNull(pointX[graphIndex], "pointX row").length != pointsPerGraph
+                    || Objects.requireNonNull(pointY[graphIndex], "pointY row").length != pointsPerGraph
+                    || Objects.requireNonNull(pointZ[graphIndex], "pointZ row").length != pointsPerGraph
+                    || Objects.requireNonNull(output[graphIndex], "output row").length < pointsPerGraph) {
+                throw new IllegalArgumentException("Multi-sampler coordinate/output rows must have equal point counts");
+            }
+        }
+
+        lifecycle.readLock().lock();
+        AquiferScratch scratch = null;
+        try {
+            ensureOpen();
+            scratch = acquireAquiferScratch();
+            MemorySegment[] buffers = scratch.ensurePointCapacity(Math.toIntExact(total));
+            MemorySegment handleBuffer = scratch.ensurePointGraphHandleCapacity(graphCount);
+            MemorySegment x = buffers[0], y = buffers[1], z = buffers[2], values = buffers[3];
+            MemorySegment.copy(graphHandles, 0, handleBuffer, ValueLayout.JAVA_LONG, 0, graphCount);
+            for (int graphIndex = 0; graphIndex < graphCount; graphIndex++) {
+                long base = (long) graphIndex * pointsPerGraph;
+                MemorySegment.copy(pointX[graphIndex], 0, x, ValueLayout.JAVA_INT, base, pointsPerGraph);
+                MemorySegment.copy(pointY[graphIndex], 0, y, ValueLayout.JAVA_INT, base, pointsPerGraph);
+                MemorySegment.copy(pointZ[graphIndex], 0, z, ValueLayout.JAVA_INT, base, pointsPerGraph);
+            }
+            int status = (int) densityGraphEvaluateMultiPointsF32.invokeExact(
+                    handleBuffer, graphCount, x, y, z, pointsPerGraph, values, total);
+            checkStatus(status, "density-graph-evaluate-multi-points-f32");
+            for (int graphIndex = 0; graphIndex < graphCount; graphIndex++) {
+                long base = (long) graphIndex * pointsPerGraph * ValueLayout.JAVA_FLOAT.byteSize();
+                MemorySegment.copy(values, ValueLayout.JAVA_FLOAT, base,
+                        output[graphIndex], 0, pointsPerGraph);
+            }
+        } catch (Throwable failure) {
+            throw rethrow("Unable to evaluate multiple native density samplers", failure);
         } finally {
             if (scratch != null) scratch.release();
             lifecycle.readLock().unlock();
