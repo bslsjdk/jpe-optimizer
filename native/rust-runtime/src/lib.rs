@@ -1051,7 +1051,7 @@ mod tests {
             let mut tile_512_ms = Vec::with_capacity(21);
             let mut tile_1225_ms = Vec::with_capacity(21);
             let mut tile_output = vec![0.0_f32; output.len()];
-            for round in 0..21 {
+            for round in 0..51 {
                 let order = if round % 2 == 0 { [512_u32, 1225_u32] } else { [1225_u32, 512_u32] };
                 for tile_limit in order {
                     unsafe { jpe_cpp_density_graph_set_test_tile_limit(tile_limit); }
@@ -1096,24 +1096,76 @@ mod tests {
     fn density_graph_representative_164_node_tile_size_abba_benchmark() {
         use std::time::Instant;
 
-        // Match the captured vanilla Overworld graph's 164-node scale.
-        // A linear arithmetic chain deliberately stresses the per-node tile scratch.
+        // Match the captured vanilla Overworld graph's 164-node inventory:
+        // 11 constants, 60 arithmetic instructions, and 93 cache/context/opaque
+        // boundaries represented by opaque nodes. This avoids an unrealistic
+        // 162-ADD chain while retaining the real node-count scratch pressure.
         let mut nodes = Vec::with_capacity(164);
-        nodes.push(JpeDensityNode {
-            opcode: DENSITY_X, input_a: DENSITY_NO_INPUT,
-            input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0,
-        });
-        nodes.push(JpeDensityNode {
-            opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-            input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0,
-        });
-        for index in 2..164 {
+        for index in 0..11 {
             nodes.push(JpeDensityNode {
-                opcode: DENSITY_ADD,
-                input_a: if index == 2 { 0 } else { (index - 1) as u32 },
-                input_b: 1, reserved: 0, immediate: 0.0,
+                opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0,
+                immediate: if index == 0 { 0.0 } else { index as f64 * 0.125 },
             });
         }
+        let mut previous = 0_u32;
+        for index in 0..15 {
+            nodes.push(JpeDensityNode {
+                opcode: DENSITY_ADD, input_a: previous,
+                input_b: (index % 11) as u32, reserved: 0, immediate: 0.0,
+            });
+            previous = (nodes.len() - 1) as u32;
+        }
+        for _ in 0..4 {
+            nodes.push(JpeDensityNode {
+                opcode: DENSITY_MUL, input_a: previous,
+                input_b: 0, reserved: 0, immediate: 0.0,
+            });
+            previous = (nodes.len() - 1) as u32;
+        }
+        for index in 0..5 {
+            nodes.push(JpeDensityNode {
+                opcode: DENSITY_MIN, input_a: previous,
+                input_b: (index % 11) as u32, reserved: 0, immediate: 0.0,
+            });
+            previous = (nodes.len() - 1) as u32;
+        }
+        for index in 0..4 {
+            nodes.push(JpeDensityNode {
+                opcode: DENSITY_MAX, input_a: previous,
+                input_b: (index % 11) as u32, reserved: 0, immediate: 0.0,
+            });
+            previous = (nodes.len() - 1) as u32;
+        }
+        for index in 0..12 {
+            nodes.push(JpeDensityNode {
+                opcode: DENSITY_ADD, input_a: previous,
+                input_b: (index % 11) as u32, reserved: 0, immediate: 0.0,
+            });
+            previous = (nodes.len() - 1) as u32;
+        }
+        for index in 0..15 {
+            nodes.push(JpeDensityNode {
+                opcode: DENSITY_MUL, input_a: previous,
+                input_b: (index % 11) as u32, reserved: 0, immediate: 0.0,
+            });
+            previous = (nodes.len() - 1) as u32;
+        }
+        for _ in 0..5 {
+            nodes.push(JpeDensityNode {
+                opcode: DENSITY_CLAMP, input_a: previous,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0,
+            });
+            previous = (nodes.len() - 1) as u32;
+        }
+        while nodes.len() < 164 {
+            nodes.push(JpeDensityNode {
+                opcode: DENSITY_OPAQUE, input_a: previous,
+                input_b: DENSITY_NO_INPUT, reserved: 1, immediate: f64::NAN,
+            });
+            previous = (nodes.len() - 1) as u32;
+        }
+        assert_eq!(nodes.len(), 164);
         let handle = unsafe {
             jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32,
                 163, 8, 0x1640_1225)
@@ -1137,15 +1189,13 @@ mod tests {
                 -16, -64, 32, 4, 8, 4, scalar.as_mut_ptr(), scalar.len() as u64,
             )
         }, STATUS_OK);
-        assert_eq!(output, scalar);
-        for (index, value) in output.iter().enumerate() {
-            let x = (index / SY) % SX;
-            assert_eq!(*value, (-16 + x as i32 * 4) as f32 + 162.0);
-        }
+        assert_eq!(output.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            scalar.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+        assert!(output.iter().all(|value| value.is_nan()));
 
         let tile_limits = [256_u32, 384, 512, 768, 1024, 1225];
         let mut measurements: [Vec<f64>; 6] =
-            std::array::from_fn(|_| Vec::with_capacity(21));
+            std::array::from_fn(|_| Vec::with_capacity(51));
         let mut tile_output = vec![0.0_f32; output.len()];
         for round in 0..21 {
             // Rotate the order each round to balance thermal / frequency drift.
@@ -1171,11 +1221,11 @@ mod tests {
         let mut report = String::new();
         for (index, tile_limit) in tile_limits.iter().enumerate() {
             measurements[index].sort_by(f64::total_cmp);
-            let median = measurements[index][10];
+            let median = measurements[index][25];
             report.push_str(&format!(" tile{tile_limit}={median:.6}ms"));
         }
         println!(
-            "JPE_DENSITY_GRAPH_TILE_SWEEP dims=5x49x5 nodes=164 samples=1225{report}"
+            "JPE_DENSITY_GRAPH_TILE_SWEEP dims=5x49x5 nodes=164 samples=1225 rounds=51 mix=vanilla-inventory{report}"
         );
         assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
     }
