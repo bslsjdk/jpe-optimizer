@@ -37,6 +37,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
     private static final boolean POSITIVE_DENSITY_AQUIFER_FAST_PATH =
             !Boolean.getBoolean("jpe.disablePositiveDensityAquiferFastPath");
     private static final AtomicBoolean REPORTED_NATIVE_AQUIFER_VOLUME_MISMATCH = new AtomicBoolean();
+    private static final AtomicBoolean REPORTED_NATIVE_AQUIFER_VOLUME_SUCCESS = new AtomicBoolean();
     @Shadow @Final private Holder<NoiseGeneratorSettings> settings;
     @Shadow @Final private static BlockState AIR;
     @Shadow
@@ -175,6 +176,14 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                                 mismatch);
                     }
                 }
+            }
+            if (nativeVolumeAccepted
+                    && REPORTED_NATIVE_AQUIFER_VOLUME_SUCCESS.compareAndSet(false, true)) {
+                boolean verified = Boolean.getBoolean("jpe.nativeAquiferSubstanceVerify")
+                        || nativeAquiferVolumeStrict;
+                JPEOptimizer.LOGGER.info(
+                        "JPE_NATIVE_AQUIFER_SUBSTANCE_VOLUME voxels={} verified={} strict={}",
+                        nativeAquiferResults.size(), verified, nativeAquiferVolumeStrict);
             }
             if (profile) {
                 densityNanos = System.nanoTime() - densityStart;
