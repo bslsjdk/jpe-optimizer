@@ -128,6 +128,33 @@ public final class NativePerlinNoiseBackend {
         return preparedStackHandle(current, stack);
     }
 
+    /**
+     * Copies a seed-bound vanilla Perlin stack into process-independent descriptors.
+     * Returns null for unsupported stack/layer implementations.
+     */
+    public static PortableDensityGraphCache.PerlinStack portableStackDescriptor(Noise noise) {
+        if (!(noise instanceof NoiseStack stack)
+                || !stack.getClass().getName().endsWith("$Perlin")) return null;
+        Object[] sourceLayers = readNoiseStackLayers(stack);
+        if (sourceLayers.length == 0 || sourceLayers.length > 64) return null;
+
+        List<PortableDensityGraphCache.PerlinLayer> layers = new ArrayList<>(sourceLayers.length);
+        for (Object sourceLayer : sourceLayers) {
+            if (!(sourceLayer instanceof NoiseStackLayerAccessor layer)) return null;
+            Noise layerNoise = layer.jpe$noise();
+            if (layerNoise == null || layerNoise.getClass() != PerlinNoise.class
+                    || !(layerNoise instanceof GradientNoiseAccessor noiseAccessor)) return null;
+            byte[] permutation = noiseAccessor.jpe$perms();
+            if (permutation == null || permutation.length != 256) return null;
+            double frequency = layer.jpe$frequency();
+            layers.add(new PortableDensityGraphCache.PerlinLayer(
+                    permutation,
+                    noiseAccessor.jpe$offsetX(), noiseAccessor.jpe$offsetY(), noiseAccessor.jpe$offsetZ(),
+                    frequency, frequency, layer.jpe$amplitude()));
+        }
+        return new PortableDensityGraphCache.PerlinStack(layers);
+    }
+
     public static boolean enabled() {
         String path = System.getProperty("jpe.nativeLibraryPath");
         return Boolean.getBoolean("jpe.nativePerlinEnabled") && path != null && !path.isBlank();
