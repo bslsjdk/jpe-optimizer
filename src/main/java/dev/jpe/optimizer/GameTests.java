@@ -181,16 +181,18 @@ public final class GameTests {
                     NativeRuntime.DensityNode.multiply(0, 1)
             ), 2, 0xA91F_265L);
             long[] samplerHandles = {addGraph, multiplyGraph};
-            int[][] samplerX = {{2, -4}, {7, 8}};
-            int[][] samplerY = {{3, 5}, {6, -3}};
-            int[][] samplerZ = {{0, 0}, {0, 0}};
-            float[][] samplerValues = {new float[2], new float[2]};
+            // Three points per graph deliberately exercises non-16-byte row boundaries.
+            // FFM destination offsets are byte-based and must remain naturally aligned.
+            int[][] samplerX = {{2, -4, 6}, {7, 8, -2}};
+            int[][] samplerY = {{3, 5, -1}, {6, -3, 4}};
+            int[][] samplerZ = {{0, 0, 0}, {0, 0, 0}};
+            float[][] samplerValues = {new float[3], new float[3]};
             runtime.evaluateDensityGraphMultiPointsF32(
                     samplerHandles, samplerX, samplerY, samplerZ, samplerValues);
-            float[] expectedMulti = {5.0F, 1.0F, 42.0F, -24.0F};
+            float[] expectedMulti = {5.0F, 1.0F, 5.0F, 42.0F, -24.0F, -8.0F};
             for (int i = 0; i < expectedMulti.length; i++) {
-                int graphIndex = i / 2;
-                int pointIndex = i % 2;
+                int graphIndex = i / 3;
+                int pointIndex = i % 3;
                 if (Float.floatToRawIntBits(samplerValues[graphIndex][pointIndex])
                         != Float.floatToRawIntBits(expectedMulti[i])) {
                     throw new AssertionError("Native multi-sampler density mismatch at flat index " + i
