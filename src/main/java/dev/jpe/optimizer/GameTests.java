@@ -212,6 +212,41 @@ public final class GameTests {
                 }
             }
 
+            runtime.configureAquiferGlobalFluidPicker(
+                    context, worldFingerprint, 0xA91F_2630_0001L,
+                    63, -2032, 200, false, false);
+            long[] nativeCellKeys = {0L, 0L};
+            int[] nativeCellX = {0, 0};
+            int[] nativeCellY = {0, 0};
+            int[] nativeCellZ = {0, 0};
+            int[] nativeFluidLevels = {-777, -777};
+            int[] nativeFluidTypes = {-777, -777};
+            runtime.computeAquiferFluidStatusPointsBatch(
+                    context, worldFingerprint, 0xA91F_2630_0001L,
+                    nativeCellKeys, nativeCellX, nativeCellY, nativeCellZ,
+                    nativeFluidLevels, nativeFluidTypes);
+            if (!java.util.Arrays.equals(nativeFluidLevels, new int[] {-32512, -32512})
+                    || !java.util.Arrays.equals(nativeFluidTypes, new int[] {200, 200})) {
+                throw new AssertionError("Native sampler-driven FluidStatus mismatch: levels="
+                        + java.util.Arrays.toString(nativeFluidLevels) + " types="
+                        + java.util.Arrays.toString(nativeFluidTypes));
+            }
+
+            int[] unchangedLevels = {12345, 12345};
+            int[] unchangedTypes = {54321, 54321};
+            try {
+                runtime.computeAquiferFluidStatusPointsBatch(
+                        context, wrongWorldFingerprint, 0xA91F_2630_0001L,
+                        nativeCellKeys, nativeCellX, nativeCellY, nativeCellZ,
+                        unchangedLevels, unchangedTypes);
+                throw new AssertionError("Native FluidStatus accepted a stale world fingerprint");
+            } catch (IllegalStateException expected) {
+                if (!java.util.Arrays.equals(unchangedLevels, new int[] {12345, 12345})
+                        || !java.util.Arrays.equals(unchangedTypes, new int[] {54321, 54321})) {
+                    throw new AssertionError("Rejected native FluidStatus request modified output arrays");
+                }
+            }
+
             // One cache miss, duplicate keys in the same batch, and a later
             // conflicting write must all preserve compute-if-absent semantics.
             long[] statusKeys = {0x1122_3344_5566_7788L, 0x1122_3344_5566_7788L};
