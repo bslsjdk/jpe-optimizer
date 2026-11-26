@@ -44,6 +44,7 @@ const DENSITY_MUL: u32 = 6;
 const DENSITY_SUB: u32 = 8;
 const DENSITY_ABS: u32 = 12;
 const DENSITY_CLAMP: u32 = 22;
+const DENSITY_PERLIN_STACK_WARP: u32 = 31;
 
 unsafe extern "C" {
     fn jpe_runtime_density_graph_compile(
@@ -1574,6 +1575,66 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn density_graph_executes_domain_warped_perlin_with_per_voxel_shift_inputs() {
+        let permutation: [u8; 256] = std::array::from_fn(|i| ((i * 41 + 7) & 255) as u8);
+        let layer = JpePerlinLayer {
+            permutation: permutation.as_ptr(),
+            offset_x: 0.13, offset_y: -0.17, offset_z: 0.23,
+            xz_scale: 0.375, y_scale: 0.625, amplitude: 0.75,
+        };
+        let stack = unsafe { jpe_runtime_prepare_perlin_stack(&layer, 1) };
+        assert_ne!(stack, 0);
+
+        let shift_x = 0.125_f32;
+        let shift_y = -0.25_f32;
+        let shift_z = 0.375_f32;
+        let sampler_xz = 0.8_f64;
+        let sampler_y = 1.2_f64;
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: shift_x as f64, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: shift_y as f64, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: shift_z as f64, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_PERLIN_STACK_WARP, input_a: 0,
+                input_b: 1, reserved: 2, immediate: stack as f64,
+                auxiliary: sampler_xz, tertiary: sampler_y },
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 3, 0xD0A1_263)
+        };
+        assert_ne!(graph, 0);
+        assert_eq!(jpe_runtime_release_prepared_perlin_stack(stack), STATUS_OK);
+
+        let direct_layer = JpePerlinLayer {
+            offset_x: layer.offset_x + shift_x as f64 * layer.xz_scale,
+            offset_y: layer.offset_y + shift_y as f64 * layer.y_scale,
+            offset_z: layer.offset_z + shift_z as f64 * layer.xz_scale,
+            xz_scale: sampler_xz * layer.xz_scale,
+            y_scale: sampler_y * layer.y_scale,
+            ..layer
+        };
+        let mut expected = [0.0_f32; 24];
+        assert_eq!(unsafe {
+            jpe_runtime_perlin_add_stack(
+                &direct_layer, 1, 2, 3, 4, -3, -5, 7, 1, 2, 1,
+                expected.as_mut_ptr(), expected.len() as u64, 0,
+            )
+        }, STATUS_OK);
+
+        let mut actual = [0.0_f32; 24];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph, 2, 3, 4, -3, -5, 7, 1, 2, 1,
+                actual.as_mut_ptr(), actual.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
     }
 
     #[test]
