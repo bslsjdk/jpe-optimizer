@@ -11,7 +11,6 @@ import dev.jpe.optimizer.runtime.NativeRuntime;
 import net.minecraft.SharedConstants;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.levelgen.Aquifer;
 import net.minecraft.world.level.dimension.DimensionType;
 import net.minecraft.world.level.levelgen.NoiseChunk;
@@ -24,6 +23,13 @@ import net.minecraft.world.level.levelgen.densityfunction.ScopedDensityBuffer;
 import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.lang.ref.ReferenceQueue;
+import java.lang.ref.WeakReference;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -44,6 +50,131 @@ public final class NativeAquiferFluidStatusPrefill {
     private static final long SEMANTIC_FINGERPRINT = 0x4A50_4541_5155_4632L;
     private static final AtomicBoolean REPORTED_SUCCESS = new AtomicBoolean();
     private static final AtomicBoolean REPORTED_FAILURE = new AtomicBoolean();
+    private static final int STATUS_CACHE_CAPACITY = 65_536;
+    private static final Object CONTEXT_LOCK = new Object();
+    private static final ReferenceQueue<RandomState> RANDOM_STATE_QUEUE = new ReferenceQueue<>();
+    private static final Map<IdentityWeakReference<RandomState>, List<SharedContext>> WORLD_CONTEXTS =
+            new HashMap<>();
+
+    private static final class IdentityWeakReference<T> extends WeakReference<T> {
+        private final int identityHash;
+
+        private IdentityWeakReference(T value, ReferenceQueue<T> queue) {
+            super(value, queue);
+            identityHash = System.identityHashCode(value);
+        }
+
+        @Override
+        public int hashCode() {
+            return identityHash;
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (this == other) return true;
+            if (!(other instanceof IdentityWeakReference<?> reference)) return false;
+            Object left = get();
+            return left != null && left == reference.get();
+        }
+    }
+
+    /** A RandomState-owned native context; no strong reference to RandomState is retained here. */
+    private static final class SharedContext {
+        private final NativeRuntime runtime;
+        private final byte[] fingerprint;
+        private final long[] graphHandles;
+        private final BlockState defaultFluid;
+        private final int seaLevel;
+        private final int randomMode;
+        private final long seedLo;
+        private final long seedHi;
+        private final boolean debugDisableFluidGeneration;
+        private long handle;
+        private int leases;
+        private boolean retired;
+
+        private SharedContext(
+                NativeRuntime runtime, long handle, byte[] fingerprint, long[] graphHandles,
+                BlockState defaultFluid, int seaLevel, int randomMode, long seedLo, long seedHi,
+                boolean debugDisableFluidGeneration
+        ) {
+            this.runtime = runtime;
+            this.handle = handle;
+            this.fingerprint = fingerprint.clone();
+            this.graphHandles = graphHandles.clone();
+            this.defaultFluid = defaultFluid;
+            this.seaLevel = seaLevel;
+            this.randomMode = randomMode;
+            this.seedLo = seedLo;
+            this.seedHi = seedHi;
+            this.debugDisableFluidGeneration = debugDisableFluidGeneration;
+        }
+
+        private boolean matches(
+                NativeRuntime candidateRuntime, byte[] candidateFingerprint, long[] candidateGraphHandles,
+                BlockState candidateDefaultFluid, int candidateSeaLevel, int candidateRandomMode,
+                long candidateSeedLo, long candidateSeedHi, boolean candidateDebugMode
+        ) {
+            return runtime == candidateRuntime
+                    && Arrays.equals(fingerprint, candidateFingerprint)
+                    && Arrays.equals(graphHandles, candidateGraphHandles)
+                    && defaultFluid.equals(candidateDefaultFluid)
+                    && seaLevel == candidateSeaLevel
+                    && randomMode == candidateRandomMode
+                    && seedLo == candidateSeedLo
+                    && seedHi == candidateSeedHi
+                    && debugDisableFluidGeneration == candidateDebugMode
+                    && handle != 0L && !retired;
+        }
+
+        private synchronized void acquire() {
+            if (retired || handle == 0L) {
+                throw new IllegalStateException("Native Aquifer world context is retired");
+            }
+            ++leases;
+        }
+
+        private synchronized long handle() {
+            if (handle == 0L || retired && leases == 0) {
+                throw new IllegalStateException("Native Aquifer world context is unavailable");
+            }
+            return handle;
+        }
+
+        private synchronized void release() {
+            if (leases <= 0) throw new IllegalStateException("Native Aquifer context lease underflow");
+            --leases;
+            if (retired && leases == 0) destroy();
+        }
+
+        private synchronized void retire() {
+            retired = true;
+            if (leases == 0) destroy();
+        }
+
+        private void destroy() {
+            if (handle == 0L) return;
+            long retiredHandle = handle;
+            handle = 0L;
+            try {
+                runtime.destroyAquiferContext(retiredHandle);
+            } catch (RuntimeException | LinkageError failure) {
+                JPEOptimizer.LOGGER.warn(
+                        "Unable to retire native Aquifer world context {}: {}",
+                        retiredHandle, failure.toString());
+            }
+        }
+    }
+
+    private static void drainExpiredWorldContexts() {
+        IdentityWeakReference<RandomState> expired;
+        while ((expired = (IdentityWeakReference<RandomState>) RANDOM_STATE_QUEUE.poll()) != null) {
+            List<SharedContext> contexts = WORLD_CONTEXTS.remove(expired);
+            if (contexts != null) {
+                for (SharedContext context : contexts) context.retire();
+            }
+        }
+    }
 
     private NativeAquiferFluidStatusPrefill() {}
 
@@ -51,7 +182,6 @@ public final class NativeAquiferFluidStatusPrefill {
     public static Prepared open(
             AquiferNoiseBasedAccessor aquifer,
             NoiseChunk noiseChunk,
-            ChunkAccess chunk,
             NoiseGeneratorSettings settings,
             NativeDensityGraphCompiler.AquiferSamplerPlans plans
     ) {
@@ -114,67 +244,85 @@ public final class NativeAquiferFluidStatusPrefill {
                     null);
         }
         int defaultFluidToken = tokenForDefaultFluid(defaultFluid);
-        byte[] fingerprint = makeEphemeralFingerprint(
-                noiseChunk, chunk, aquifer, randomMode, seedLo, seedHi);
+        RandomState randomState = ((NoiseChunkAccessor) (Object) noiseChunk).jpe$getRandomState();
+        long[] graphHandles = plans.copyHandles();
+        boolean debugDisableFluidGeneration = SharedConstants.DEBUG_DISABLE_FLUID_GENERATION;
+        byte[] fingerprint = makeWorldFingerprint(
+                randomState, randomMode, seedLo, seedHi, settings, defaultFluid,
+                debugDisableFluidGeneration, graphHandles);
 
         long started = System.nanoTime();
-        long contextHandle = 0L;
         try {
-            contextHandle = runtime.createAquiferContext(
-                    plans.copyHandles(), fingerprint, SEMANTIC_FINGERPRINT,
-                    seedLo, seedHi, randomMode,
-                    AIR_TOKEN, WATER_TOKEN, LAVA_TOKEN,
-                    Math.max(1, vanillaLocationCache.length));
-            runtime.configureAquiferGlobalFluidPicker(
-                    contextHandle, fingerprint, SEMANTIC_FINGERPRINT,
-                    settings.seaLevel(), DimensionType.MIN_Y,
-                    defaultFluidToken, defaultFluid.isAir(),
-                    SharedConstants.DEBUG_DISABLE_FLUID_GENERATION);
-
-            Prepared prepared = new Prepared(runtime, contextHandle, fingerprint, defaultFluid);
-            contextHandle = 0L; // Ownership transfers to Prepared.
+            Prepared prepared = acquireWorldContext(
+                    randomState, runtime, graphHandles, fingerprint, seedLo, seedHi, randomMode,
+                    defaultFluidToken, defaultFluid, settings.seaLevel(), debugDisableFluidGeneration);
             if (REPORTED_SUCCESS.compareAndSet(false, true)) {
                 JPEOptimizer.LOGGER.info(
-                        "JPE_NATIVE_AQUIFER_CONTEXT_READY statusCacheCapacity={} "
-                                + "statusComputedOnDemand=true fullVolumeOracleRequested={} "
-                                + "randomMode={} elapsedUs={}",
-                        vanillaLocationCache.length, verify, randomMode,
+                        "JPE_NATIVE_AQUIFER_WORLD_CONTEXT_READY statusCacheCapacity={} "
+                                + "contextScope=RandomState reusedAcrossChunks=true "
+                                + "fullVolumeOracleRequested={} randomMode={} elapsedUs={}",
+                        STATUS_CACHE_CAPACITY, verify, randomMode,
                         (System.nanoTime() - started) / 1_000.0);
             }
             return prepared;
         } catch (RuntimeException | LinkageError failure) {
-            return fail(strict, "Native Aquifer context preparation failed", failure);
-        } finally {
-            if (contextHandle != 0L) {
-                try {
-                    runtime.destroyAquiferContext(contextHandle);
-                } catch (RuntimeException | LinkageError failure) {
-                    if (strict) {
-                        throw new IllegalStateException(
-                                "Strict native Aquifer context cleanup failed", failure);
-                    }
-                    if (REPORTED_FAILURE.compareAndSet(false, true)) {
-                        JPEOptimizer.LOGGER.warn("Native Aquifer context cleanup failed: {}", failure.toString());
+            return fail(strict, "Native Aquifer world-context preparation failed", failure);
+        }
+    }
+
+    private static Prepared acquireWorldContext(
+            RandomState randomState, NativeRuntime runtime, long[] graphHandles, byte[] fingerprint,
+            long seedLo, long seedHi, int randomMode, int defaultFluidToken, BlockState defaultFluid,
+            int seaLevel, boolean debugDisableFluidGeneration
+    ) {
+        synchronized (CONTEXT_LOCK) {
+            drainExpiredWorldContexts();
+            IdentityWeakReference<RandomState> lookup = new IdentityWeakReference<>(randomState, null);
+            List<SharedContext> contexts = WORLD_CONTEXTS.get(lookup);
+            if (contexts != null) {
+                for (SharedContext context : contexts) {
+                    if (context.matches(runtime, fingerprint, graphHandles, defaultFluid,
+                            seaLevel, randomMode, seedLo, seedHi, debugDisableFluidGeneration)) {
+                        context.acquire();
+                        return new Prepared(context);
                     }
                 }
+            }
+
+            long contextHandle = 0L;
+            try {
+                contextHandle = runtime.createAquiferContext(
+                        graphHandles, fingerprint, SEMANTIC_FINGERPRINT,
+                        seedLo, seedHi, randomMode,
+                        AIR_TOKEN, WATER_TOKEN, LAVA_TOKEN, STATUS_CACHE_CAPACITY);
+                runtime.configureAquiferGlobalFluidPicker(
+                        contextHandle, fingerprint, SEMANTIC_FINGERPRINT,
+                        seaLevel, DimensionType.MIN_Y,
+                        defaultFluidToken, defaultFluid.isAir(), debugDisableFluidGeneration);
+
+                SharedContext context = new SharedContext(
+                        runtime, contextHandle, fingerprint, graphHandles, defaultFluid,
+                        seaLevel, randomMode, seedLo, seedHi, debugDisableFluidGeneration);
+                if (contexts == null) {
+                    contexts = new ArrayList<>();
+                    WORLD_CONTEXTS.put(new IdentityWeakReference<>(randomState, RANDOM_STATE_QUEUE), contexts);
+                }
+                contexts.add(context);
+                contextHandle = 0L; // Ownership transfers to the weakly keyed world registry.
+                context.acquire();
+                return new Prepared(context);
+            } finally {
+                if (contextHandle != 0L) runtime.destroyAquiferContext(contextHandle);
             }
         }
     }
 
     public static final class Prepared implements AutoCloseable {
-        private final NativeRuntime runtime;
-        private final long contextHandle;
-        private final byte[] fingerprint;
-        private final BlockState defaultFluid;
-        private boolean closed;
+        private final SharedContext context;
+        private final AtomicBoolean closed = new AtomicBoolean();
 
-        private Prepared(
-                NativeRuntime runtime, long contextHandle, byte[] fingerprint, BlockState defaultFluid
-        ) {
-            this.runtime = runtime;
-            this.contextHandle = contextHandle;
-            this.fingerprint = fingerprint.clone();
-            this.defaultFluid = defaultFluid;
+        private Prepared(SharedContext context) {
+            this.context = context;
         }
 
         public NativeRuntime.AquiferSubstanceVolumeResult computeSubstanceVolumeF32(
@@ -183,25 +331,24 @@ public final class NativeAquiferFluidStatusPrefill {
                 ScopedDensityBuffer density
         ) {
             ensureOpen();
-            return runtime.computeAquiferSubstanceVolumeF32(
-                    contextHandle, fingerprint, SEMANTIC_FINGERPRINT,
+            return context.runtime.computeAquiferSubstanceVolumeF32(
+                    context.handle(), context.fingerprint, SEMANTIC_FINGERPRINT,
                     aquifer.jpe$getSkipSamplingAboveY(), volume, density);
         }
 
         public BlockState blockStateForToken(int token) {
             ensureOpen();
-            return stateForToken(token, defaultFluid);
+            return stateForToken(token, context.defaultFluid);
         }
 
         private void ensureOpen() {
-            if (closed) throw new IllegalStateException("Native Aquifer context is closed");
+            if (closed.get()) throw new IllegalStateException("Native Aquifer context lease is closed");
+            context.handle();
         }
 
         @Override
         public void close() {
-            ensureOpen();
-            closed = true;
-            runtime.destroyAquiferContext(contextHandle);
+            if (closed.compareAndSet(false, true)) context.release();
         }
     }
 
@@ -266,33 +413,26 @@ public final class NativeAquiferFluidStatusPrefill {
         throw new IllegalStateException("Native Aquifer returned unknown fluid-state token " + token);
     }
 
-    private static byte[] makeEphemeralFingerprint(
-            NoiseChunk noiseChunk,
-            ChunkAccess chunk,
-            AquiferNoiseBasedAccessor aquifer,
-            int randomMode,
-            long seedLo,
-            long seedHi
+    private static byte[] makeWorldFingerprint(
+            RandomState randomState, int randomMode, long seedLo, long seedHi,
+            NoiseGeneratorSettings settings, BlockState defaultFluid,
+            boolean debugDisableFluidGeneration, long[] graphHandles
     ) {
         try {
-            RandomState randomState = ((NoiseChunkAccessor) (Object) noiseChunk).jpe$getRandomState();
-            DensityVolume volume = noiseChunk.volume();
-            ByteBuffer input = ByteBuffer.allocate(80);
+            ByteBuffer input = ByteBuffer.allocate(112);
             input.putLong(((RandomStateAccessor) (Object) randomState).jpe$getSeed());
             input.putLong(seedLo);
             input.putLong(seedHi);
             input.putInt(randomMode);
-            input.putInt(chunk.getPos().x());
-            input.putInt(chunk.getPos().z());
-            input.putInt(volume.minBlockX());
-            input.putInt(volume.minBlockY());
-            input.putInt(volume.minBlockZ());
-            input.putInt(aquifer.jpe$getMinGridX());
-            input.putInt(aquifer.jpe$getMinGridY());
-            input.putInt(aquifer.jpe$getMinGridZ());
+            input.putInt(settings.seaLevel());
+            input.putInt(DimensionType.MIN_Y);
+            input.putInt(defaultFluid.hashCode());
+            input.putInt(defaultFluid.toString().hashCode());
+            input.putInt(debugDisableFluidGeneration ? 1 : 0);
             input.putLong(SEMANTIC_FINGERPRINT);
+            for (long handle : graphHandles) input.putLong(handle);
             return MessageDigest.getInstance("SHA-256").digest(
-                    java.util.Arrays.copyOf(input.array(), input.position()));
+                    Arrays.copyOf(input.array(), input.position()));
         } catch (NoSuchAlgorithmException impossible) {
             throw new AssertionError("SHA-256 is required by the Java runtime", impossible);
         }
