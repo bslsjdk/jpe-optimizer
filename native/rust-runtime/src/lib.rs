@@ -291,6 +291,10 @@ unsafe extern "C" {
         handle: u64, keys: *const u64,
         statuses: *const JpeAquiferFluidStatus, count: u32,
     ) -> i32;
+    fn jpe_cpp_aquifer_status_cache_insert_batch_evict(
+        handle: u64, keys: *const u64,
+        statuses: *const JpeAquiferFluidStatus, count: u32,
+    ) -> i32;
 }
 
 /// Creates a fixed-capacity, per-Aquifer native FluidStatus cache.
@@ -333,6 +337,21 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_status_cache_insert_batch(
         return STATUS_INVALID_ARGUMENT;
     }
     unsafe { jpe_cpp_aquifer_status_cache_insert_batch(handle, keys, statuses, count) }
+}
+
+
+/// Inserts world-context statuses with bounded FIFO eviction. This is intentionally
+/// separate from the transactional cache API, whose capacity-rejection semantics remain stable.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_status_cache_insert_batch_evict(
+    handle: u64, keys: *const u64,
+    statuses: *const JpeAquiferFluidStatus, count: u32,
+) -> i32 {
+    if handle == 0 || keys.is_null() || statuses.is_null()
+        || count == 0 || count as usize > MAX_VOLUME_ELEMENTS {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe { jpe_cpp_aquifer_status_cache_insert_batch_evict(handle, keys, statuses, count) }
 }
 
 /// Compiles and retains a density graph through the stable Rust cdylib ABI.
@@ -1459,6 +1478,57 @@ mod tests {
         assert_eq!(jpe_runtime_aquifer_status_cache_destroy(handle), STATUS_OK);
         assert_eq!(jpe_runtime_aquifer_status_cache_destroy(handle), STATUS_INVALID_ARGUMENT);
         assert_eq!(jpe_runtime_aquifer_status_cache_create(0), 0);
+    }
+
+
+    #[test]
+    fn aquifer_world_status_cache_evicts_old_entries_without_losing_batch_values() {
+        let handle = jpe_runtime_aquifer_status_cache_create(2);
+        assert_ne!(handle, 0);
+        let keys = [10_u64, 11, 12];
+        let statuses = [
+            JpeAquiferFluidStatus { fluid_level: 10, fluid_type: 1 },
+            JpeAquiferFluidStatus { fluid_level: 11, fluid_type: 2 },
+            JpeAquiferFluidStatus { fluid_level: 12, fluid_type: 3 },
+        ];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_status_cache_insert_batch_evict(
+                handle, keys.as_ptr(), statuses.as_ptr(), 3,
+            )
+        }, STATUS_OK);
+
+        let query_keys = [10_u64, 11, 12];
+        let mut output = [JpeAquiferFluidStatus::default(); 3];
+        let mut found = [0_u8; 3];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_status_cache_lookup_batch(
+                handle, query_keys.as_ptr(), 3, output.as_mut_ptr(), found.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        assert_eq!(found.iter().filter(|&&value| value == 1).count(), 2);
+        assert_eq!(output[2].fluid_level, 12);
+        assert_eq!(output[2].fluid_type, 3);
+
+        // Existing keys remain first-writer-wins while a fresh key enters the bounded cache.
+        let replacement_key = [12_u64];
+        let replacement_status = [JpeAquiferFluidStatus { fluid_level: 999, fluid_type: 9 }];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_status_cache_insert_batch_evict(
+                handle, replacement_key.as_ptr(), replacement_status.as_ptr(), 1,
+            )
+        }, STATUS_OK);
+        let mut retained = [JpeAquiferFluidStatus::default(); 1];
+        let mut retained_found = [0_u8; 1];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_status_cache_lookup_batch(
+                handle, replacement_key.as_ptr(), 1,
+                retained.as_mut_ptr(), retained_found.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        assert_eq!(retained_found, [1]);
+        assert_eq!(retained[0].fluid_level, 12);
+        assert_eq!(retained[0].fluid_type, 3);
+        assert_eq!(jpe_runtime_aquifer_status_cache_destroy(handle), STATUS_OK);
     }
 
     #[test]
