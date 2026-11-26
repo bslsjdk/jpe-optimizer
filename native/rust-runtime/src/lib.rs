@@ -28,6 +28,8 @@ struct JpeDensityNode {
     input_b: u32,
     reserved: u32,
     immediate: f64,
+    auxiliary: f64,
+    tertiary: f64,
 }
 
 const DENSITY_NO_INPUT: u32 = u32::MAX;
@@ -606,15 +608,15 @@ mod tests {
     fn density_graph_compiles_caches_and_evaluates_a_full_volume() {
         let nodes = [
             JpeDensityNode { opcode: DENSITY_X, input_a: DENSITY_NO_INPUT,
-                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: DENSITY_Y, input_a: DENSITY_NO_INPUT,
-                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 2.0 },
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 2.0 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: DENSITY_ADD, input_a: 0,
-                input_b: 2, reserved: 0, immediate: 0.0 },
+                input_b: 2, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: DENSITY_MUL, input_a: 3,
-                input_b: 1, reserved: 0, immediate: 0.0 },
+                input_b: 1, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
         ];
         let first = unsafe {
             jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 0x1234)
@@ -655,9 +657,9 @@ mod tests {
     fn density_graph_rejects_forward_references_and_bad_volumes() {
         let invalid = [
             JpeDensityNode { opcode: DENSITY_ADD, input_a: 1,
-                input_b: 0, reserved: 0, immediate: 0.0 },
+                input_b: 0, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 },
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 , auxiliary: 0.0, tertiary: 0.0},
         ];
         assert_eq!(unsafe {
             jpe_runtime_density_graph_compile(invalid.as_ptr(), 2, 0, 7)
@@ -665,7 +667,7 @@ mod tests {
 
         let valid = [JpeDensityNode { opcode: DENSITY_CONST,
             input_a: DENSITY_NO_INPUT, input_b: DENSITY_NO_INPUT,
-            reserved: 0, immediate: 1.0 }];
+            reserved: 0, immediate: 1.0 , auxiliary: 0.0, tertiary: 0.0}];
         let handle = unsafe {
             jpe_runtime_density_graph_compile(valid.as_ptr(), 1, 0, 7)
         };
@@ -1585,12 +1587,12 @@ mod tests {
 
         let nodes = [
             JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.125 },
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.125 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: 7, input_a: 1.0_f32.to_bits(),
                 input_b: 1.0_f32.to_bits(), reserved: 1.0_f32.to_bits(),
-                immediate: stack as f64 },
+                immediate: stack as f64 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: DENSITY_ADD, input_a: 0, input_b: 1,
-                reserved: 0, immediate: 0.0 },
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
         ];
         let graph = unsafe {
             jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 2, 0xD3517A)
@@ -1625,15 +1627,15 @@ mod tests {
     fn density_graph_f32_preserves_single_precision_intermediate_rounding() {
         let nodes = [
             JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 16_777_216.0 },
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 16_777_216.0 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 },
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: DENSITY_ADD, input_a: 0, input_b: 1,
-                reserved: 0, immediate: 0.0 },
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -16_777_216.0 },
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -16_777_216.0 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: DENSITY_ADD, input_a: 2, input_b: 3,
-                reserved: 0, immediate: 0.0 },
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
         ];
         let graph = unsafe {
             jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 0xF32_263)
@@ -1665,25 +1667,25 @@ mod tests {
         let cases: [([JpeDensityNode; 3], u32, fn(f32) -> bool); 3] = [
             ([
                 JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: f64::NAN },
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: f64::NAN , auxiliary: 0.0, tertiary: 0.0},
                 JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 },
-                JpeDensityNode { opcode: 10, input_a: 0, input_b: 1, reserved: 0, immediate: 0.0 },
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 , auxiliary: 0.0, tertiary: 0.0},
+                JpeDensityNode { opcode: 10, input_a: 0, input_b: 1, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
             ], 2, |v| v.is_nan()),
             ([
                 JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
                 JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -0.0 },
-                JpeDensityNode { opcode: 11, input_a: 0, input_b: 1, reserved: 0, immediate: 0.0 },
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -0.0 , auxiliary: 0.0, tertiary: 0.0},
+                JpeDensityNode { opcode: 11, input_a: 0, input_b: 1, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
             ], 2, |v| v == 0.0 && !v.is_sign_negative()),
             ([
                 JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -0.0 },
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -0.0 , auxiliary: 0.0, tertiary: 0.0},
                 JpeDensityNode { opcode: 20, input_a: 0, input_b: DENSITY_NO_INPUT,
-                    reserved: 0, immediate: 0.0 },
+                    reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
                 JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
             ], 1, |v| v == 0.0 && v.is_sign_negative()),
         ];
         for (nodes, root, check) in cases {
@@ -1710,17 +1712,17 @@ mod tests {
         let nodes = [
             // This value has no consumers and must release its slot immediately.
             JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 999.0 },
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 999.0 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 2.0 },
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 2.0 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -3.0 },
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -3.0 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: DENSITY_SUB, input_a: 1, input_b: 2,
-                reserved: 0, immediate: 0.0 },
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: DENSITY_ABS, input_a: 3,
-                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: DENSITY_CLAMP, input_a: 4,
-                input_b: 0.0_f32.to_bits(), reserved: 4.0_f32.to_bits(), immediate: 0.0 },
+                input_b: 0.0_f32.to_bits(), reserved: 4.0_f32.to_bits(), immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
         ];
         let graph = unsafe {
             jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 5, 0xD3517B)
@@ -1742,25 +1744,25 @@ mod tests {
         let cases: [([JpeDensityNode; 3], u32, fn(f64) -> bool); 3] = [
             ([
                 JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: f64::NAN },
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: f64::NAN , auxiliary: 0.0, tertiary: 0.0},
                 JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 },
-                JpeDensityNode { opcode: 10, input_a: 0, input_b: 1, reserved: 0, immediate: 0.0 },
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 , auxiliary: 0.0, tertiary: 0.0},
+                JpeDensityNode { opcode: 10, input_a: 0, input_b: 1, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
             ], 2, |v| v.is_nan()),
             ([
                 JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
                 JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -0.0 },
-                JpeDensityNode { opcode: 11, input_a: 0, input_b: 1, reserved: 0, immediate: 0.0 },
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -0.0 , auxiliary: 0.0, tertiary: 0.0},
+                JpeDensityNode { opcode: 11, input_a: 0, input_b: 1, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
             ], 2, |v| v == 0.0 && !v.is_sign_negative()),
             ([
                 JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -0.0 },
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -0.0 , auxiliary: 0.0, tertiary: 0.0},
                 JpeDensityNode { opcode: 20, input_a: 0, input_b: DENSITY_NO_INPUT,
-                    reserved: 0, immediate: 0.0 },
+                    reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
                 JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
             ], 1, |v| v == 0.0 && v.is_sign_negative()),
         ];
         for (nodes, root, check) in cases {
