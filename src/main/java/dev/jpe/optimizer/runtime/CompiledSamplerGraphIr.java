@@ -37,6 +37,11 @@ public final class CompiledSamplerGraphIr {
         ABS,
         SQUARE,
         CUBE,
+        SQRT,
+        LOG,
+        RECIPROCAL,
+        SIGN,
+        SQUEEZE,
         CACHE_BOUNDARY,
         CONTEXT_BOUNDARY,
         OPAQUE
@@ -91,6 +96,11 @@ public final class CompiledSamplerGraphIr {
                 case ABS -> "Java Math.abs(float); clear sign bit while preserving NaN payload";
                 case SQUARE -> "Float32 input multiplied by itself exactly once";
                 case CUBE -> "Float32 left-associated input * input * input";
+                case SQRT -> "Minecraft Mth.sqrt(float), computed through double sqrt then narrowed to float";
+                case LOG -> "Java Math.log((double) input) narrowed to float";
+                case RECIPROCAL -> "IEEE-754 float32 1.0f / input";
+                case SIGN -> "Java Math.signum(float), preserving NaN and signed zero";
+                case SQUEEZE -> "Minecraft squeeze: clamp to [-1,1], then x/2 - cube(x)/24 in float32 order";
                 case CACHE_BOUNDARY -> "Do not inline across Minecraft cache identity or volume lifetime";
                 case CONTEXT_BOUNDARY -> "Resolve through SamplerContext; fallback is not an unconditional child";
                 case OPAQUE -> source.limitation().isEmpty()
@@ -205,6 +215,11 @@ public final class CompiledSamplerGraphIr {
             case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$AbsSampler" -> Op.ABS;
             case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$SquareSampler" -> Op.SQUARE;
             case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$CubeSampler" -> Op.CUBE;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$SqrtSampler" -> Op.SQRT;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$LogSampler" -> Op.LOG;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$ReciprocalSampler" -> Op.RECIPROCAL;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$SignSampler" -> Op.SIGN;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$SqueezeSampler" -> Op.SQUEEZE;
             case "net.minecraft.world.level.levelgen.densityfunction.CachingDensitySampler" ->
                     Op.CACHE_BOUNDARY;
             case "net.minecraft.world.level.levelgen.densityfunction.ContextBoundSampler" ->
