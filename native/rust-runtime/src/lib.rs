@@ -128,7 +128,7 @@ unsafe extern "C" {
         point_x: *const i32, point_y: *const i32, point_z: *const i32,
         point_count: u32, output: *mut f32, output_length: u64,
     ) -> i32;
-    fn jpe_runtime_density_graph_release(graph_handle: u64) -> i32;
+    fn jpe_cpp_density_graph_release(graph_handle: u64) -> i32;
     fn jpe_cpp_aquifer_compute_substance_core(
         input: *const JpeAquiferCoreInput,
         output: *mut JpeAquiferCoreOutput,
