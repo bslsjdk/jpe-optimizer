@@ -9,6 +9,19 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class NativeRuntimeValidationTest {
     @Test
+    void densityGraphRoundAndLogDescriptorsEncodeOperationKinds() {
+        NativeRuntime.DensityNode round = NativeRuntime.DensityNode.round(1, 2, 3);
+        assertEquals(28, round.opcode());
+        assertEquals(1, round.inputA());
+        assertEquals(2, round.inputB());
+        assertEquals(3, round.reserved());
+
+        NativeRuntime.DensityNode log = NativeRuntime.DensityNode.log(4);
+        assertEquals(29, log.opcode());
+        assertEquals(4, log.inputA());
+    }
+
+    @Test
     void densityGraphIntervalSelectThresholdHelperUsesNegativeInfinityLowerBound() {
         NativeRuntime.DensityNode node =
                 NativeRuntime.DensityNode.rangeChoiceBelow(0, 1.0F, 2, 3);
