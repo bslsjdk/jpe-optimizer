@@ -1154,9 +1154,15 @@ public final class NativeRuntime implements AutoCloseable {
                 DensityGraphIr.Node node = nodes.get(i);
                 long base = Math.multiplyExact((long) i, DENSITY_NODE_LAYOUT.byteSize());
                 encoded.set(ValueLayout.JAVA_INT, base, node.opcode());
-                encoded.set(ValueLayout.JAVA_INT, base + 4L, node.inputA() < 0 ? 0xffff_ffff : node.inputA());
-                encoded.set(ValueLayout.JAVA_INT, base + 8L, node.inputB() < 0 ? 0xffff_ffff : node.inputB());
-                encoded.set(ValueLayout.JAVA_INT, base + 12L, node.opcode() == DensityGraphIr.OPAQUE ? 1 : 0);
+                boolean gradient = node.opcode() == DensityGraphIr.GRADIENT_CLAMPED_X
+                        || node.opcode() == DensityGraphIr.GRADIENT_CLAMPED_Y
+                        || node.opcode() == DensityGraphIr.GRADIENT_CLAMPED_Z;
+                encoded.set(ValueLayout.JAVA_INT, base + 4L,
+                        gradient ? node.inputA() : node.inputA() < 0 ? 0xffff_ffff : node.inputA());
+                encoded.set(ValueLayout.JAVA_INT, base + 8L,
+                        gradient ? node.inputB() : node.inputB() < 0 ? 0xffff_ffff : node.inputB());
+                encoded.set(ValueLayout.JAVA_INT, base + 12L,
+                        node.opcode() == DensityGraphIr.OPAQUE ? 1 : node.reserved());
                 encoded.set(ValueLayout.JAVA_DOUBLE, base + 16L, node.immediate());
             }
             try {

@@ -207,4 +207,24 @@ class CompiledSamplerGraphTraceTest {
         assertEquals("1.25", clamp.scalarValues().get("max"));
     }
 
+    @Test
+    void classifiesMinecraftClampedGradientSamplerAndPreservesIntegerParameters() {
+        CompiledSamplerGraphTrace.Snapshot snapshot = new CompiledSamplerGraphTrace.Snapshot(
+                java.util.List.of(new CompiledSamplerGraphTrace.NodeInfo(0,
+                        "net.minecraft.world.level.levelgen.densityfunction.generator.GradientFunction$ClampedSampler",
+                        java.util.List.of(), java.util.List.of(
+                                new CompiledSamplerGraphTrace.ComponentValue("axis", "net.minecraft.core.Direction$Axis", "Y"),
+                                new CompiledSamplerGraphTrace.ComponentValue("fromCoordinate", "int", "-64"),
+                                new CompiledSamplerGraphTrace.ComponentValue("minCoordinate", "int", "-64"),
+                                new CompiledSamplerGraphTrace.ComponentValue("maxCoordinate", "int", "320"),
+                                new CompiledSamplerGraphTrace.ComponentValue("fromValue", "float", "-1.0"),
+                                new CompiledSamplerGraphTrace.ComponentValue("coordinateFactor", "float", "0.00390625")), "")),
+                0, 0);
+        CompiledSamplerGraphIr.Node gradient = CompiledSamplerGraphIr.lower(snapshot).nodes().get(0);
+        assertEquals(CompiledSamplerGraphIr.Op.GRADIENT_CLAMPED, gradient.op());
+        assertEquals("Y", gradient.scalarValues().get("axis"));
+        assertEquals("-64", gradient.scalarValues().get("fromCoordinate"));
+        assertEquals("320", gradient.scalarValues().get("maxCoordinate"));
+    }
+
 }

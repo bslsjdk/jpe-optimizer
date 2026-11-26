@@ -187,4 +187,15 @@ class DensityGraphIrTest {
                 DensityGraphIr.Node.constant(1.0)
         ), 1, 7L));
     }
+    @Test
+    void acceptsClampedGradientRawIntegerPayloadWithoutTreatingItAsGraphEdges() {
+        DensityGraphIr.Node gradient = DensityGraphIr.Node.gradientClamped(1,
+                Integer.MIN_VALUE, Integer.MIN_VALUE, Integer.MAX_VALUE, 0.25f, 0.5f);
+        DensityGraphIr graph = new DensityGraphIr(List.of(gradient), 0, 0L);
+        assertEquals(DensityGraphIr.GRADIENT_CLAMPED_Y, graph.nodes().get(0).opcode());
+        assertEquals(Integer.MIN_VALUE, graph.nodes().get(0).inputA());
+        assertEquals(Integer.MIN_VALUE, graph.nodes().get(0).inputB());
+        assertEquals(Integer.MAX_VALUE, graph.nodes().get(0).reserved());
+    }
+
 }

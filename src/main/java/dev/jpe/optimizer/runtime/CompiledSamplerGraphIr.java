@@ -43,6 +43,7 @@ public final class CompiledSamplerGraphIr {
         SIGN,
         SQUEEZE,
         LEAKY_RELU,
+        GRADIENT_CLAMPED,
         CACHE_BOUNDARY,
         CONTEXT_BOUNDARY,
         OPAQUE
@@ -103,6 +104,7 @@ public final class CompiledSamplerGraphIr {
                 case SIGN -> "Java Math.signum(float), preserving NaN and signed zero";
                 case SQUEEZE -> "Minecraft squeeze: clamp to [-1,1], then x/2 - cube(x)/24 in float32 order";
                 case LEAKY_RELU -> "input > 0 ? input : negativeFactor * input, using the captured float32 factor";
+                case GRADIENT_CLAMPED -> "Clamp integer axis coordinate, perform wrapped int subtraction, then float32 multiply and add";
                 case CACHE_BOUNDARY -> "Do not inline across Minecraft cache identity or volume lifetime";
                 case CONTEXT_BOUNDARY -> "Resolve through SamplerContext; fallback is not an unconditional child";
                 case OPAQUE -> source.limitation().isEmpty()
@@ -213,6 +215,7 @@ public final class CompiledSamplerGraphIr {
             case "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$ConstMaxSampler" ->
                     Op.CONST_MAX_RIGHT;
             case "net.minecraft.world.level.levelgen.densityfunction.op.ClampFunction$Sampler" -> Op.CLAMP;
+            case "net.minecraft.world.level.levelgen.densityfunction.generator.GradientFunction$ClampedSampler" -> Op.GRADIENT_CLAMPED;
             case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$NegateSampler" -> Op.NEGATE;
             case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$AbsSampler" -> Op.ABS;
             case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$SquareSampler" -> Op.SQUARE;

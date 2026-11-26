@@ -225,6 +225,18 @@ public final class CompiledSamplerArithmeticLowering {
                     float max = readFloatComponent(node, "max");
                     lowered.add(DensityGraphIr.Node.clamp(input, min, max));
                 }
+                case GRADIENT_CLAMPED -> {
+                    int axis = switch (node.scalarValues().getOrDefault("axis", "")) {
+                        case "X" -> 0;
+                        case "Y" -> 1;
+                        case "Z" -> 2;
+                        default -> throw new IllegalArgumentException("Gradient sampler " + node.id() + " has invalid axis");
+                    };
+                    lowered.add(DensityGraphIr.Node.gradientClamped(axis,
+                            readIntComponent(node, "fromCoordinate"), readIntComponent(node, "minCoordinate"),
+                            readIntComponent(node, "maxCoordinate"), readFloatComponent(node, "fromValue"),
+                            readFloatComponent(node, "coordinateFactor")));
+                }
                 default -> throw new IllegalArgumentException("Unsupported sampler operation " + node.op());
             }
             nativeIndex.put(sourceId, lowered.size() - 1);
@@ -284,6 +296,15 @@ public final class CompiledSamplerArithmeticLowering {
         return lowered.size() - 1;
     }
 
+    private static int readIntComponent(CompiledSamplerGraphIr.Node node, String component) {
+        String raw = node.scalarValues().get(component);
+        if (raw == null) throw new IllegalArgumentException("Sampler " + node.id() + " has no " + component + " integer component");
+        try { return Integer.parseInt(raw); }
+        catch (NumberFormatException failure) {
+            throw new IllegalArgumentException("Invalid int32 " + component + " on sampler " + node.id(), failure);
+        }
+    }
+
     private static float readFloatComponent(CompiledSamplerGraphIr.Node node, String component) {
         String raw = node.scalarValues().get(component);
         if (raw == null) {
@@ -319,6 +340,7 @@ public final class CompiledSamplerArithmeticLowering {
                 || op == CompiledSamplerGraphIr.Op.CONST_MIN_RIGHT
                 || op == CompiledSamplerGraphIr.Op.CONST_MAX_RIGHT
                 || op == CompiledSamplerGraphIr.Op.CLAMP
+                || op == CompiledSamplerGraphIr.Op.GRADIENT_CLAMPED
                 || op == CompiledSamplerGraphIr.Op.NEGATE
                 || op == CompiledSamplerGraphIr.Op.ABS
                 || op == CompiledSamplerGraphIr.Op.SQUARE

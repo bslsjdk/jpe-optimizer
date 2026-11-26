@@ -317,4 +317,21 @@ class CompiledSamplerArithmeticLoweringTest {
         assertEquals(7, lowered.graph().nodes().get(8).inputA());
         assertEquals(3, lowered.graph().nodes().get(8).inputB());
     }
+    @Test
+    void lowersClampedGradientWithIntegerCoordinatesAndFloat32Parameters() {
+        CompiledSamplerGraphIr.Graph graph = new CompiledSamplerGraphIr.Graph(List.of(
+                node(0, CompiledSamplerGraphIr.Op.GRADIENT_CLAMPED, List.of(), Map.of(
+                        "axis", "Y", "fromCoordinate", "-64", "minCoordinate", "-64",
+                        "maxCoordinate", "320", "fromValue", "-1.0", "coordinateFactor", "0.00390625"))
+        ), 0, 0);
+        CompiledSamplerArithmeticIslands.Island island =
+                CompiledSamplerArithmeticIslands.plan(graph).islands().get(0);
+        DensityGraphIr.Node lowered = CompiledSamplerArithmeticLowering.lower(graph, island, 0x6A4D).graph().nodes().get(0);
+        assertEquals(DensityGraphIr.GRADIENT_CLAMPED_Y, lowered.opcode());
+        assertEquals(-64, lowered.inputA());
+        assertEquals(-64, lowered.inputB());
+        assertEquals(320, lowered.reserved());
+        assertEquals(0xBF8000003B800000L, Double.doubleToRawLongBits(lowered.immediate()));
+    }
+
 }

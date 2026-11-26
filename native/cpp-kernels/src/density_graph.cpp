@@ -59,6 +59,22 @@ struct CoordinateBinding {
     uint32_t axis; // 0 = X, 1 = Y, 2 = Z
 };
 
+struct GradientBinding {
+    uint32_t node;
+    uint32_t axis;
+    int32_t from_coordinate;
+    int32_t min_coordinate;
+    int32_t max_coordinate;
+    float from_value;
+    float coordinate_factor;
+};
+
+int32_t signed_i32(uint32_t bits) noexcept {
+    int32_t value = 0;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
 struct ArithmeticInstruction {
     uint32_t opcode;
     uint32_t input_a;
@@ -129,6 +145,7 @@ struct CompiledGraph {
     std::vector<StaticBinding> static_values;
     std::vector<InputBinding> inputs;
     std::vector<CoordinateBinding> coordinates;
+    std::vector<GradientBinding> gradients;
     std::vector<ArithmeticInstruction> arithmetic;
 };
 
@@ -136,10 +153,12 @@ void build_execution_plan(CompiledGraph& graph) {
     graph.static_values.clear();
     graph.inputs.clear();
     graph.coordinates.clear();
+    graph.gradients.clear();
     graph.arithmetic.clear();
     graph.static_values.reserve(graph.nodes.size());
     graph.inputs.reserve(graph.nodes.size());
     graph.coordinates.reserve(graph.nodes.size());
+    graph.gradients.reserve(graph.nodes.size());
     graph.arithmetic.reserve(graph.nodes.size());
 
     for (uint32_t i = 0; i < graph.nodes.size(); ++i) {
@@ -160,6 +179,22 @@ void build_execution_plan(CompiledGraph& graph) {
             case JPE_DENSITY_Z:
                 graph.coordinates.push_back({i, 2});
                 break;
+            case JPE_DENSITY_GRADIENT_CLAMPED_X:
+            case JPE_DENSITY_GRADIENT_CLAMPED_Y:
+            case JPE_DENSITY_GRADIENT_CLAMPED_Z: {
+                uint64_t packed = 0;
+                std::memcpy(&packed, &node.immediate, sizeof(packed));
+                const uint32_t from_bits = static_cast<uint32_t>(packed >> 32);
+                const uint32_t factor_bits = static_cast<uint32_t>(packed);
+                float from_value = 0.0f, factor = 0.0f;
+                std::memcpy(&from_value, &from_bits, sizeof(from_value));
+                std::memcpy(&factor, &factor_bits, sizeof(factor));
+                const uint32_t axis = node.opcode == JPE_DENSITY_GRADIENT_CLAMPED_X ? 0U
+                    : node.opcode == JPE_DENSITY_GRADIENT_CLAMPED_Y ? 1U : 2U;
+                graph.gradients.push_back({i, axis, signed_i32(node.input_a),
+                    signed_i32(node.input_b), signed_i32(node.reserved), from_value, factor});
+                break;
+            }
             case JPE_DENSITY_OPAQUE:
                 graph.static_values.push_back({i, std::numeric_limits<float>::quiet_NaN()});
                 break;
@@ -263,6 +298,11 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
             case JPE_DENSITY_Z:
                 if (node.input_a != kNoInput || node.input_b != kNoInput || node.reserved != 0) return false;
                 break;
+            case JPE_DENSITY_GRADIENT_CLAMPED_X:
+            case JPE_DENSITY_GRADIENT_CLAMPED_Y:
+            case JPE_DENSITY_GRADIENT_CLAMPED_Z:
+                if (signed_i32(node.input_b) > signed_i32(node.reserved)) return false;
+                break;
             case JPE_DENSITY_INPUT:
                 if (node.reserved != 0 || node.input_a != kNoInput || node.input_b != kNoInput
                     || !std::isfinite(node.immediate) || node.immediate < 0.0
@@ -331,7 +371,7 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
     const JpeDensityNode* nodes, uint32_t node_count, uint32_t root_node,
     uint32_t ir_version, uint64_t configuration_fingerprint
 ) try {
-    if (ir_version != 9 || !valid_graph(nodes, node_count, root_node)) return 0;
+    if (ir_version != 10 || !valid_graph(nodes, node_count, root_node)) return 0;
     const uint64_t fingerprint = hash_graph(nodes, node_count, root_node, ir_version, configuration_fingerprint);
     std::lock_guard<std::mutex> lock(g_mutex);
     const auto range = g_cache.equal_range(fingerprint);
@@ -458,7 +498,7 @@ extern "C" uint64_t jpe_cpp_density_graph_load_cache(
             || !read_u64(bytes, offset, immediate_bits)) return 0;
         std::memcpy(&node.immediate, &immediate_bits, sizeof(immediate_bits));
     }
-    if (offset != payload_length || ir_version != 9 || !valid_graph(nodes.data(), count, root)) return 0;
+    if (offset != payload_length || ir_version != 10 || !valid_graph(nodes.data(), count, root)) return 0;
     return jpe_cpp_density_graph_compile(nodes.data(), count, root, ir_version, configuration);
 } catch (...) { return 0; }
 
@@ -532,6 +572,11 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
     float* x_values = coordinate_scratch.data();
     float* y_values = x_values + tile_capacity;
     float* z_values = y_values + tile_capacity;
+    thread_local std::vector<int32_t> integer_coordinate_scratch;
+    integer_coordinate_scratch.resize(static_cast<size_t>(tile_capacity) * 3);
+    int32_t* x_coordinates = integer_coordinate_scratch.data();
+    int32_t* y_coordinates = x_coordinates + tile_capacity;
+    int32_t* z_coordinates = y_coordinates + tile_capacity;
     const uint64_t plane_size = static_cast<uint64_t>(size_x) * size_y;
 
     // Static leaves do not change between tiles, so initialize their lanes once
@@ -555,9 +600,12 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
         uint32_t z_index = z_start;
 
         for (uint32_t sample = 0; sample < count; ++sample) {
-            x_values[sample] = static_cast<float>(wrapped_coordinate(min_x, x_index, step_x));
-            y_values[sample] = static_cast<float>(wrapped_coordinate(min_y, y_index, step_y));
-            z_values[sample] = static_cast<float>(wrapped_coordinate(min_z, z_index, step_z));
+            x_coordinates[sample] = wrapped_coordinate(min_x, x_index, step_x);
+            y_coordinates[sample] = wrapped_coordinate(min_y, y_index, step_y);
+            z_coordinates[sample] = wrapped_coordinate(min_z, z_index, step_z);
+            x_values[sample] = static_cast<float>(x_coordinates[sample]);
+            y_values[sample] = static_cast<float>(y_coordinates[sample]);
+            z_values[sample] = static_cast<float>(z_coordinates[sample]);
             if (++y_index == size_y) {
                 y_index = 0;
                 if (++x_index == size_x) {
@@ -578,6 +626,22 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
             const float* source = binding.axis == 0 ? x_values
                 : binding.axis == 1 ? y_values : z_values;
             std::copy_n(source, count, destination);
+        }
+
+        for (const GradientBinding& binding : graph->gradients) {
+            const int32_t* coordinates = binding.axis == 0 ? x_coordinates
+                : binding.axis == 1 ? y_coordinates : z_coordinates;
+            float* destination = tile_values.data() + static_cast<size_t>(binding.node) * tile_capacity;
+            for (uint32_t sample = 0; sample < count; ++sample) {
+                const int32_t coordinate = coordinates[sample];
+                const int32_t clamped = coordinate < binding.min_coordinate ? binding.min_coordinate
+                    : coordinate > binding.max_coordinate ? binding.max_coordinate : coordinate;
+                const uint32_t delta_bits = static_cast<uint32_t>(clamped)
+                    - static_cast<uint32_t>(binding.from_coordinate);
+                const int32_t delta = signed_i32(delta_bits);
+                volatile float scaled = static_cast<float>(delta) * binding.coordinate_factor;
+                destination[sample] = binding.from_value + scaled;
+            }
         }
 
         for (const ArithmeticInstruction& instruction : graph->arithmetic) {

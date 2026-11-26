@@ -112,7 +112,12 @@ enum {
     JPE_DENSITY_RECIPROCAL = 20,
     JPE_DENSITY_SIGN = 21,
     JPE_DENSITY_SQUEEZE = 22,
-    JPE_DENSITY_LEAKY_RELU = 23
+    JPE_DENSITY_LEAKY_RELU = 23,
+    /* Clamped gradient: axis is opcode; input_a=from, input_b=min, reserved=max,
+     * immediate packs fromValue/factor as raw float32 words. */
+    JPE_DENSITY_GRADIENT_CLAMPED_X = 24,
+    JPE_DENSITY_GRADIENT_CLAMPED_Y = 25,
+    JPE_DENSITY_GRADIENT_CLAMPED_Z = 26
 };
 /* Returns a retained compiled-plan handle, or zero for an invalid graph. */
 JPE_API uint64_t jpe_runtime_density_graph_compile(

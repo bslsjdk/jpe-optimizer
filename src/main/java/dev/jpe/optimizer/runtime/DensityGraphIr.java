@@ -5,13 +5,16 @@ import java.util.Objects;
 
 /** Compact, topologically ordered density graph transport model. */
 public final class DensityGraphIr {
-    public static final int VERSION = 9;
+    public static final int VERSION = 10;
     public static final int MAX_NODES = 65_536;
     public static final int NO_INPUT = -1;
 
-    public static final int CONST = 1, X = 2, Y = 3, Z = 4, ADD = 5, MUL = 6, OPAQUE = 7, SUB = 8, INPUT = 9, DIV = 10, CLAMP = 11, MIN = 12, MAX = 13, NEGATE = 14, ABS = 15, SQUARE = 16, CUBE = 17, SQRT = 18, LOG = 19, RECIPROCAL = 20, SIGN = 21, SQUEEZE = 22, LEAKY_RELU = 23;
+    public static final int CONST = 1, X = 2, Y = 3, Z = 4, ADD = 5, MUL = 6, OPAQUE = 7, SUB = 8, INPUT = 9, DIV = 10, CLAMP = 11, MIN = 12, MAX = 13, NEGATE = 14, ABS = 15, SQUARE = 16, CUBE = 17, SQRT = 18, LOG = 19, RECIPROCAL = 20, SIGN = 21, SQUEEZE = 22, LEAKY_RELU = 23, GRADIENT_CLAMPED_X = 24, GRADIENT_CLAMPED_Y = 25, GRADIENT_CLAMPED_Z = 26;
 
-    public record Node(int opcode, int inputA, int inputB, double immediate) {
+    public record Node(int opcode, int inputA, int inputB, int reserved, double immediate) {
+        public Node(int opcode, int inputA, int inputB, double immediate) {
+            this(opcode, inputA, inputB, 0, immediate);
+        }
         public static Node constant(double value) { return new Node(CONST, NO_INPUT, NO_INPUT, value); }
         public static Node x() { return new Node(X, NO_INPUT, NO_INPUT, 0.0); }
         public static Node y() { return new Node(Y, NO_INPUT, NO_INPUT, 0.0); }
@@ -34,7 +37,20 @@ public final class DensityGraphIr {
         public static Node sign(int input) { return new Node(SIGN, input, NO_INPUT, 0.0); }
         public static Node squeeze(int input) { return new Node(SQUEEZE, input, NO_INPUT, 0.0); }
         public static Node leakyRelu(int input, float negativeFactor) {
-            return new Node(LEAKY_RELU, input, NO_INPUT, negativeFactor);
+            return new Node(LEAKY_RELU, input, NO_INPUT, 0, negativeFactor);
+        }
+        /** Integer-coordinate clamped gradient; raw coordinates occupy the integer ABI fields. */
+        public static Node gradientClamped(int axis, int fromCoordinate, int minCoordinate,
+                                           int maxCoordinate, float fromValue, float coordinateFactor) {
+            int opcode = switch (axis) {
+                case 0 -> GRADIENT_CLAMPED_X;
+                case 1 -> GRADIENT_CLAMPED_Y;
+                case 2 -> GRADIENT_CLAMPED_Z;
+                default -> throw new IllegalArgumentException("Gradient axis must be X=0, Y=1, or Z=2");
+            };
+            long bits = ((long) Float.floatToRawIntBits(fromValue) << 32)
+                    | (Float.floatToRawIntBits(coordinateFactor) & 0xffff_ffffL);
+            return new Node(opcode, fromCoordinate, minCoordinate, maxCoordinate, Double.longBitsToDouble(bits));
         }
         /** Encodes min/max as two raw float32 words in the immediate's 64-bit payload. */
         public static Node clamp(int input, float min, float max) {
@@ -129,6 +145,11 @@ public final class DensityGraphIr {
                             || node.immediate() < 0 || node.immediate() > 255
                             || node.immediate() != Math.rint(node.immediate()))) {
                         throw new IllegalArgumentException("Leaf node " + i + " must not have inputs");
+                    }
+                }
+                case GRADIENT_CLAMPED_X, GRADIENT_CLAMPED_Y, GRADIENT_CLAMPED_Z -> {
+                    if (Integer.compare(node.inputB(), node.reserved()) > 0) {
+                        throw new IllegalArgumentException("Gradient clamp minimum exceeds maximum at node " + i);
                     }
                 }
                 case OPAQUE -> {

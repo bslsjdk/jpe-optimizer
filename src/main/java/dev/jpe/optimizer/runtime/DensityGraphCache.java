@@ -29,7 +29,7 @@ import java.util.function.Supplier;
  */
 public final class DensityGraphCache {
     private static final int MAGIC = 0x4A504544; // JPED
-    private static final int FORMAT_VERSION = 3;
+    private static final int FORMAT_VERSION = 4;
     private static final int DIGEST_BYTES = 32;
     private static final long MAX_CACHE_BYTES = 16L * 1024L * 1024L;
     private static final int MAX_DIAGNOSTIC_TEXT = 8192;
@@ -135,7 +135,7 @@ public final class DensityGraphCache {
 
             ArrayList<DensityGraphIr.Node> nodes = new ArrayList<>(nodeCount);
             for (int i = 0; i < nodeCount; ++i) {
-                nodes.add(new DensityGraphIr.Node(in.readInt(), in.readInt(), in.readInt(), in.readDouble()));
+                nodes.add(new DensityGraphIr.Node(in.readInt(), in.readInt(), in.readInt(), in.readInt(), in.readDouble()));
             }
             ArrayList<DensityGraphIr.Diagnostic> diagnostics = new ArrayList<>(diagnosticCount);
             for (int i = 0; i < diagnosticCount; ++i) {
@@ -195,6 +195,7 @@ public final class DensityGraphCache {
                 out.writeInt(node.opcode());
                 out.writeInt(node.inputA());
                 out.writeInt(node.inputB());
+                out.writeInt(node.reserved());
                 out.writeDouble(node.immediate());
             }
             for (DensityGraphIr.Diagnostic diagnostic : graph.diagnostics()) {
