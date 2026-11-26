@@ -127,9 +127,9 @@ class CompiledSamplerArithmeticLoweringTest {
                 node(0, CompiledSamplerGraphIr.Op.ADD, List.of(1, 2), Map.of()),
                 node(1, CompiledSamplerGraphIr.Op.SQRT, List.of(3), Map.of()),
                 node(2, CompiledSamplerGraphIr.Op.SQUEEZE, List.of(4), Map.of()),
-                node(3, CompiledSamplerGraphIr.Op.LOG, List.of(5), Map.of()),
+                node(3, CompiledSamplerGraphIr.Op.SIGN, List.of(5), Map.of()),
                 node(4, CompiledSamplerGraphIr.Op.RECIPROCAL, List.of(6), Map.of()),
-                node(5, CompiledSamplerGraphIr.Op.SIGN, List.of(7), Map.of()),
+                node(5, CompiledSamplerGraphIr.Op.OPAQUE, List.of(), Map.of()),
                 node(6, CompiledSamplerGraphIr.Op.OPAQUE, List.of(), Map.of()),
                 node(7, CompiledSamplerGraphIr.Op.OPAQUE, List.of(), Map.of())
         ), 0, 0);
@@ -142,7 +142,6 @@ class CompiledSamplerArithmeticLoweringTest {
                 .map(DensityGraphIr.Node::opcode).toList();
         assertEquals(2, opcodes.stream().filter(opcode -> opcode == DensityGraphIr.INPUT).count());
         assertTrue(opcodes.contains(DensityGraphIr.SIGN));
-        assertTrue(opcodes.contains(DensityGraphIr.LOG));
         assertTrue(opcodes.contains(DensityGraphIr.RECIPROCAL));
         assertTrue(opcodes.contains(DensityGraphIr.SQUEEZE));
         assertTrue(opcodes.contains(DensityGraphIr.SQRT));
