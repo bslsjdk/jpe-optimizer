@@ -571,7 +571,8 @@ int32_t evaluate_density_graph_impl(
                 case JPE_DENSITY_Z: {
                     size_t out = 0;
                     for (uint32_t z = 0; z < size_z; ++z) {
-                        const Scalar wz = static_cast<Scalar>(scratch.z_coordinates[z]);
+                        const Scalar wz = node.opcode == JPE_DENSITY_Z
+                        ? static_cast<Scalar>(scratch.z_coordinates[z]) : Scalar(0);
                         for (uint32_t x = 0; x < size_x; ++x) {
                             if (node.opcode == JPE_DENSITY_Y) {
                                 const auto& y = scratch.y_coordinates;
