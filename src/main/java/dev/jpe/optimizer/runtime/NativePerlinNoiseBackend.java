@@ -11,7 +11,11 @@ import net.minecraft.world.level.levelgen.synth.PerlinNoise;
 import net.minecraft.world.level.levelgen.synth.Noise;
 import net.minecraft.world.level.levelgen.synth.NoiseStack;
 import java.lang.reflect.Field;
+import java.lang.ref.ReferenceQueue;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.List;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.atomic.AtomicLong;
@@ -38,6 +42,9 @@ public final class NativePerlinNoiseBackend {
     private static final LongAdder NATIVE_JOB_FAILURES = new LongAdder();
     private static final LongAdder NATIVE_EXCEPTIONS = new LongAdder();
     private static final AtomicLong PROFILE_CALLS = new AtomicLong();
+    private static final Object PREPARED_STACK_LOCK = new Object();
+    private static final ReferenceQueue<NoiseStack> PREPARED_STACK_QUEUE = new ReferenceQueue<>();
+    private static final Map<NoiseStackReference, Long> PREPARED_STACK_HANDLES = new HashMap<>();
     // Tiny density volumes are cheaper to evaluate in vanilla than to cross the FFM boundary.
     // The threshold is read once at class initialization for benchmarkable tuning.
     private static final long MIN_NATIVE_VOLUME_ELEMENTS = Math.max(1L,
@@ -60,6 +67,45 @@ public final class NativePerlinNoiseBackend {
     public static String mode() {
         return Boolean.getBoolean("jpe.nativePerlinSynchronous")
                 ? "native-perlin-sync" : "native-perlin-async";
+    }
+
+    private static final class NoiseStackReference extends WeakReference<NoiseStack> {
+        private final int identityHash;
+        private NoiseStackReference(NoiseStack stack, ReferenceQueue<NoiseStack> queue) {
+            super(stack, queue);
+            identityHash = System.identityHashCode(stack);
+        }
+        @Override public int hashCode() { return identityHash; }
+        @Override public boolean equals(Object other) {
+            if (this == other) return true;
+            if (!(other instanceof NoiseStackReference reference)) return false;
+            NoiseStack left = get();
+            return left != null && left == reference.get();
+        }
+    }
+
+    private static long preparedStackHandle(NativeRuntime nativeRuntime, NoiseStack stack) {
+        synchronized (PREPARED_STACK_LOCK) {
+            NoiseStackReference expired;
+            while ((expired = (NoiseStackReference) PREPARED_STACK_QUEUE.poll()) != null) {
+                Long staleHandle = PREPARED_STACK_HANDLES.remove(expired);
+                if (staleHandle != null) nativeRuntime.releasePreparedPerlinStack(staleHandle);
+            }
+            Long existing = PREPARED_STACK_HANDLES.get(new NoiseStackReference(stack, null));
+            if (existing != null) return existing;
+
+            Object[] layers = readNoiseStackLayers(stack);
+            if (layers.length == 0 || layers.length > 64) return 0L;
+            for (Object sourceLayer : layers) {
+                NoiseStackLayerAccessor layer = (NoiseStackLayerAccessor) sourceLayer;
+                Noise layerNoise = layer.jpe$noise();
+                if (layerNoise == null || layerNoise.getClass() != PerlinNoise.class) return 0L;
+            }
+            long handle = nativeRuntime.preparePerlinStack(layers);
+            if (handle != 0L) PREPARED_STACK_HANDLES.put(
+                    new NoiseStackReference(stack, PREPARED_STACK_QUEUE), handle);
+            return handle;
+        }
     }
 
     private NativePerlinNoiseBackend() {}
@@ -97,17 +143,10 @@ public final class NativePerlinNoiseBackend {
         boolean interrupted = false;
         boolean terminal = false;
         try {
-            Object[] sourceLayers = readNoiseStackLayers(stack);
-            if (sourceLayers.length == 0 || sourceLayers.length > 64) {
-                INVALID_DIMENSIONS.increment();
-                return false;
-            }
-            // Validate the exact layer types without allocating a new List and one
-            // PerlinLayer record per octave on every density-buffer invocation.
-            for (Object sourceLayer : sourceLayers) {
-                NoiseStackLayerAccessor layer = (NoiseStackLayerAccessor) sourceLayer;
-                Noise layerNoise = layer.jpe$noise();
-                if (layerNoise == null || layerNoise.getClass() != PerlinNoise.class) return false;
+            Object[] sourceLayers = null;
+            if (Boolean.getBoolean("jpe.nativePerlinProfile")) {
+                sourceLayers = readNoiseStackLayers(stack);
+                profilePerlinYRuns(sourceLayers, xzScale, yScale, amplitude, volume);
             }
 
             int sizeX = volume.sizeX();
@@ -129,9 +168,6 @@ public final class NativePerlinNoiseBackend {
             // Avoid FFM setup, descriptor writes and native dispatch for tiny volumes.
             // The caller falls through to the exact vanilla NoiseStack implementation.
             if (expectedElements < MIN_NATIVE_VOLUME_ELEMENTS) return false;
-            if (Boolean.getBoolean("jpe.nativePerlinProfile")) {
-                profilePerlinYRuns(sourceLayers, xzScale, yScale, amplitude, volume);
-            }
             List<NativeRuntime.PerlinLayer> layers = null;
             if (!Boolean.getBoolean("jpe.nativePerlinSynchronous")) {
                 layers = toPerlinLayers(sourceLayers, xzScale, yScale, amplitude);
@@ -146,6 +182,35 @@ public final class NativePerlinNoiseBackend {
             if (nativeRuntime == null) {
                 RUNTIME_UNAVAILABLE.increment();
                 return false;
+            }
+            if (nativeRuntime.supportsPreparedPerlinStack()) {
+                long preparedHandle = preparedStackHandle(nativeRuntime, stack);
+                if (preparedHandle == 0L) return false;
+                nativeRuntime.evaluatePreparedPerlinStack(preparedHandle, xzScale, yScale, amplitude,
+                        sizeX, sizeY, sizeZ,
+                        volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
+                        volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ(),
+                        target, SharedConstants.DEBUG_ENABLE_FARLANDS);
+                SYNCHRONOUS_CALLS.increment();
+                LAST_CALL_NATIVE.set(true);
+                success = true;
+                COMPLETED.increment();
+                return true;
+            }
+
+            if (sourceLayers == null) sourceLayers = readNoiseStackLayers(stack);
+            if (sourceLayers.length == 0 || sourceLayers.length > 64) {
+                INVALID_DIMENSIONS.increment();
+                return false;
+            }
+            for (Object sourceLayer : sourceLayers) {
+                NoiseStackLayerAccessor layer = (NoiseStackLayerAccessor) sourceLayer;
+                Noise layerNoise = layer.jpe$noise();
+                if (layerNoise == null || layerNoise.getClass() != PerlinNoise.class) return false;
+            }
+            List<NativeRuntime.PerlinLayer> layers = null;
+            if (!Boolean.getBoolean("jpe.nativePerlinSynchronous")) {
+                layers = toPerlinLayers(sourceLayers, xzScale, yScale, amplitude);
             }
             if (Boolean.getBoolean("jpe.nativePerlinSynchronous")) {
                 nativeRuntime.perlinAddStack(sourceLayers, xzScale, yScale, amplitude,
