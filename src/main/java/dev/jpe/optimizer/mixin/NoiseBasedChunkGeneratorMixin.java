@@ -62,6 +62,34 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                 generatorSettings.noiseRouter().finalDensity();
         DensitySampler.Bound finalDensity = noiseChunk.cachingSamplers().get(finalDensityFunction);
 
+        // Opt-in preflight: compile all six resolved Aquifer sampler graphs into
+        // immutable C++ plans. This does not replace computeSubstance yet; it proves
+        // the real world settings can be lowered before the full-volume takeover.
+        if (Boolean.getBoolean("jpe.nativeAquiferSamplerPlansEnabled")) {
+            boolean strictAquiferPlans = Boolean.getBoolean("jpe.nativeAquiferSamplerPlansStrict");
+            if (noiseAquifer == null) {
+                if (strictAquiferPlans) {
+                    throw new IllegalStateException(
+                            "Strict native Aquifer sampler preparation requires NoiseBasedAquifer");
+                }
+            } else {
+                var aquiferConfig = generatorSettings.aquifers();
+                if (aquiferConfig.isEmpty()) {
+                    if (strictAquiferPlans) {
+                        throw new IllegalStateException(
+                                "Strict native Aquifer sampler preparation requires Aquifer.Config");
+                    }
+                } else {
+                    NativeDensityGraphCompiler.AquiferSamplerPlans plans =
+                            NativeDensityGraphCompiler.prepareAquiferSamplerPlans(aquiferConfig.get(), noiseChunk);
+                    if (plans == null && strictAquiferPlans) {
+                        throw new IllegalStateException(
+                                "Strict native Aquifer sampler preparation rejected one or more density graphs");
+                    }
+                }
+            }
+        }
+
         boolean profile = WorldgenMetrics.enabled();
         if (profile) {
             WorldgenMetrics.beginDoFill();
