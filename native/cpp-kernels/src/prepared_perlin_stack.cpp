@@ -13,11 +13,9 @@ extern "C" int32_t jpe_cpp_perlin_add_stack_fused(
     const JpePerlinLayer*, uint32_t, uint32_t, uint32_t, uint32_t,
     int32_t, int32_t, int32_t, int32_t, int32_t, int32_t,
     float*, uint64_t, uint32_t) noexcept;
-extern "C" int32_t jpe_cpp_perlin_add_volume(
-    const uint8_t*, uint32_t, uint32_t, uint32_t,
-    int32_t, int32_t, int32_t, int32_t, int32_t, int32_t,
-    double, double, double, double, double, float, float*, uint64_t, uint32_t
-) noexcept;
+extern "C" int32_t jpe_cpp_perlin_sample_point(
+    const uint8_t*, int32_t, int32_t, int32_t,
+    double, double, double, double, double, float, float*) noexcept;
 
 namespace {
 constexpr uint32_t kAllowZeroSteps = 1U << 31;
@@ -132,13 +130,12 @@ inline int32_t sample_warped_prepared(
     for (const PreparedLayer& layer : prepared.layers) {
         const double frequency_xz = xz_scale * layer.base_xz_frequency;
         const double frequency_y = y_scale * layer.base_y_frequency;
-        const int32_t status = jpe_cpp_perlin_add_volume(
-            layer.permutation.data(), 1, 1, 1, x, y, z, 1, 1, 1,
+        const int32_t status = jpe_cpp_perlin_sample_point(
+            layer.permutation.data(), x, y, z,
             layer.offset_x + shift_x * layer.base_xz_frequency,
             layer.offset_y + shift_y * layer.base_y_frequency,
             layer.offset_z + shift_z * layer.base_xz_frequency,
-            frequency_xz, frequency_y, layer.base_amplitude,
-            &result, 1, 0);
+            frequency_xz, frequency_y, layer.base_amplitude, &result);
         if (status != 0) return status;
     }
     *output = result;

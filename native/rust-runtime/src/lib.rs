@@ -115,6 +115,13 @@ unsafe extern "C" {
         xz_scale: f64, y_scale: f64, amplitude: f32,
         output: *mut f32, output_length: u64, flags: u32,
     ) -> i32;
+    fn jpe_cpp_perlin_sample_point(
+        permutation: *const u8,
+        x: i32, y: i32, z: i32,
+        offset_x: f64, offset_y: f64, offset_z: f64,
+        xz_scale: f64, y_scale: f64, amplitude: f32,
+        output: *mut f32,
+    ) -> i32;
     fn jpe_cpp_perlin_add_volume_scalar_cached_y(
         permutation: *const u8,
         size_x: u32, size_y: u32, size_z: u32,
@@ -1669,6 +1676,45 @@ mod tests {
         assert_eq!(unsafe { jpe_runtime_density_graph_release(sliced) }, STATUS_OK);
     }
 
+    #[test]
+    fn perlin_point_sampler_matches_single_voxel_volume_bit_for_bit() {
+        let permutation: [u8; 256] = std::array::from_fn(|i| ((i * 73 + 19) & 255) as u8);
+        let cases = [
+            (-33, -17, -9), (-1, 0, 1), (0, 0, 0), (1, 2, 3),
+            (15, 31, 47), (127, -128, 255), (-1024, 2048, -4096),
+            (i32::MIN, i32::MAX, -1), (i32::MAX, i32::MIN, 1),
+        ];
+        let scales = [
+            (0.375_f64, 0.625_f64, 0.13_f64, -0.17_f64, 0.23_f64, 0.75_f32),
+            (1.25_f64, 0.875_f64, -0.19_f64, 0.11_f64, -0.07_f64, -0.25_f32),
+            (0.8_f64, 1.2_f64, 1.0e-7_f64, -1.0e-7_f64, 0.333_f64, 1.0_f32),
+        ];
+        for &(x, y, z) in &cases {
+            for &(xz_scale, y_scale, offset_x, offset_y, offset_z, amplitude) in &scales {
+                let mut point = [0.125_f32];
+                let mut volume = [0.125_f32];
+                assert_eq!(unsafe {
+                    jpe_cpp_perlin_sample_point(
+                        permutation.as_ptr(), x, y, z,
+                        offset_x, offset_y, offset_z, xz_scale, y_scale,
+                        amplitude, point.as_mut_ptr(),
+                    )
+                }, STATUS_OK);
+                assert_eq!(unsafe {
+                    jpe_cpp_perlin_add_volume(
+                        permutation.as_ptr(), 1, 1, 1,
+                        x, y, z, 1, 1, 1,
+                        offset_x, offset_y, offset_z, xz_scale, y_scale,
+                        amplitude, volume.as_mut_ptr(), 1, 0,
+                    )
+                }, STATUS_OK);
+                assert_eq!(point[0].to_bits(), volume[0].to_bits(),
+                    "point/volume mismatch at ({x}, {y}, {z}) with scales ({xz_scale}, {y_scale})");
+            }
+        }
+    }
+
+    #[test]
     #[test]
     fn density_graph_executes_domain_warped_perlin_with_per_voxel_shift_inputs() {
         let permutation_a: [u8; 256] = std::array::from_fn(|i| ((i * 41 + 7) & 255) as u8);
