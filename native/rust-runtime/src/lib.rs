@@ -3718,6 +3718,54 @@ mod tests {
         }, STATUS_INVALID_ARGUMENT);
         assert_eq!(later_output[0], sentinel_status);
 
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_configure_global_fluid_picker(
+                context, info.world_fingerprint.as_ptr(), info.semantic_fingerprint,
+                63, -2032, info.water_type, 0, 0,
+            )
+        }, STATUS_OK);
+        // Context picker configuration is immutable for this world.
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_configure_global_fluid_picker(
+                context, info.world_fingerprint.as_ptr(), info.semantic_fingerprint,
+                64, -2032, info.water_type, 0, 0,
+            )
+        }, STATUS_INVALID_ARGUMENT);
+
+        // The six compiled graphs are now sampled entirely inside C++:
+        // graph 4 (exclusion) is positive, so the status is the vanilla
+        // WAY_BELOW_MIN_Y sentinel while preserving the global water type.
+        let point_keys = [0_u64, 0_u64];
+        let point_x = [0_i32, 0_i32];
+        let point_y = [0_i32, 0_i32];
+        let point_z = [0_i32, 0_i32];
+        let mut point_statuses = [JpeAquiferFluidStatus::default(); 2];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_compute_fluid_status_points_batch(
+                context, info.world_fingerprint.as_ptr(), info.semantic_fingerprint,
+                point_keys.as_ptr(), point_x.as_ptr(), point_y.as_ptr(), point_z.as_ptr(),
+                2, point_statuses.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        let excluded = JpeAquiferFluidStatus {
+            fluid_level: -32512,
+            fluid_type: info.water_type,
+        };
+        assert_eq!(point_statuses, [excluded; 2]);
+
+        // The packed key is verified against (x,y,z) before any caller output is written.
+        let wrong_point_keys = [1_u64, 1_u64];
+        let untouched = [JpeAquiferFluidStatus { fluid_level: 123, fluid_type: 456 }; 2];
+        point_statuses = untouched;
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_compute_fluid_status_points_batch(
+                context, info.world_fingerprint.as_ptr(), info.semantic_fingerprint,
+                wrong_point_keys.as_ptr(), point_x.as_ptr(), point_y.as_ptr(), point_z.as_ptr(),
+                2, point_statuses.as_mut_ptr(),
+            )
+        }, STATUS_INVALID_ARGUMENT);
+        assert_eq!(point_statuses, untouched);
+
         assert_eq!(unsafe { jpe_runtime_aquifer_context_destroy(context) }, STATUS_OK);
         assert_eq!(unsafe { jpe_runtime_aquifer_context_destroy(context) }, STATUS_INVALID_ARGUMENT);
     }
