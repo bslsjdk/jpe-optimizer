@@ -77,7 +77,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
 
         try {
             ScopedDensityBuffer sampledDensity = NativeDensityGraphCompiler.trySampleVolume(
-                    finalDensityFunction, noiseChunk, volume);
+                    finalDensityFunction, finalDensity, noiseChunk, volume);
             if (sampledDensity == null) {
                 sampledDensity = finalDensity.sampleVolume(volume);
             }
