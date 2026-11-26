@@ -84,6 +84,7 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle loadDensityGraphCache;
     private final MethodHandle saveDensityGraphCache;
     private final MethodHandle blendDensityVolume;
+    private final MethodHandle aquiferXoroshiroOffsets;
     private final ConcurrentHashMap<Long, NativeJob> jobs = new ConcurrentHashMap<>();
     private final java.util.Set<NativeDensityGraph> densityGraphs = ConcurrentHashMap.newKeySet();
     private final ReentrantReadWriteLock lifecycle = new ReentrantReadWriteLock();
@@ -419,7 +420,8 @@ public final class NativeRuntime implements AutoCloseable {
                           MethodHandle compileDensityGraph, MethodHandle evaluateDensityGraph,
                           MethodHandle evaluateDensityGraphWithInputs, MethodHandle evaluateDensityGraphMultiWithInputs,
                           MethodHandle releaseDensityGraph, MethodHandle loadDensityGraphCache,
-                          MethodHandle saveDensityGraphCache, MethodHandle blendDensityVolume) {
+                          MethodHandle saveDensityGraphCache, MethodHandle blendDensityVolume,
+                          MethodHandle aquiferXoroshiroOffsets) {
         this.configureWorkers = configureWorkers;
         this.workerCount = workerCount;
         this.addF32 = add;
@@ -439,6 +441,7 @@ public final class NativeRuntime implements AutoCloseable {
         this.loadDensityGraphCache = loadDensityGraphCache;
         this.saveDensityGraphCache = saveDensityGraphCache;
         this.blendDensityVolume = blendDensityVolume;
+        this.aquiferXoroshiroOffsets = aquiferXoroshiroOffsets;
     }
 
     public static NativeRuntime load(Path libraryPath) throws IOException {
@@ -553,6 +556,13 @@ public final class NativeRuntime implements AutoCloseable {
                                     ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
                                     ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)))
                     .orElse(null);
+            MethodHandle aquiferXoroshiroOffsets = lookup.find("jpe_cpp_aquifer_xoroshiro_offsets")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)))
+                    .orElse(null);
 
             int actual = (int) version.invokeExact();
             if (actual != EXPECTED_ABI_VERSION) {
@@ -563,7 +573,7 @@ public final class NativeRuntime implements AutoCloseable {
             if (actualWorkers < 1) throw new IllegalStateException("Unable to configure native workers: " + actualWorkers);
             return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, perlinStack, submit, submitStack, status, wait, cancel, release,
                     compileDensityGraph, evaluateDensityGraph, evaluateDensityGraphWithInputs, evaluateDensityGraphMultiWithInputs, releaseDensityGraph,
-                    loadDensityGraphCache, saveDensityGraphCache, blendDensityVolume);
+                    loadDensityGraphCache, saveDensityGraphCache, blendDensityVolume, aquiferXoroshiroOffsets);
         } catch (Throwable failure) {
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
         }
@@ -661,6 +671,33 @@ public final class NativeRuntime implements AutoCloseable {
      * Java only exposes raw BlendingData arrays and volume metadata; all cell mapping,
      * fixed lookup, spatial indexing, neighbor search, weighting, and interpolation are C++.
      */
+    public boolean supportsAquiferXoroshiroOffsets() { return aquiferXoroshiroOffsets != null; }
+
+    /**
+     * Diagnostic bridge for the audited XOROSHIRO Aquifer cell-center RNG.
+     * Production Aquifer evaluation will call the same C++ kernel internally.
+     */
+    public int[] aquiferXoroshiroOffsets(long seedLo, long seedHi, int gridX, int gridY, int gridZ) {
+        if (aquiferXoroshiroOffsets == null) {
+            throw new UnsupportedOperationException("Native runtime does not export Aquifer XOROSHIRO support");
+        }
+        try (Arena scratch = Arena.ofConfined()) {
+            MemorySegment offsetX = scratch.allocate(ValueLayout.JAVA_INT);
+            MemorySegment offsetY = scratch.allocate(ValueLayout.JAVA_INT);
+            MemorySegment offsetZ = scratch.allocate(ValueLayout.JAVA_INT);
+            int status = (int) aquiferXoroshiroOffsets.invokeExact(
+                    seedLo, seedHi, gridX, gridY, gridZ, offsetX, offsetY, offsetZ);
+            if (status != 0) throw new IllegalStateException("Native Aquifer RNG failed: " + status);
+            return new int[] {
+                    offsetX.get(ValueLayout.JAVA_INT, 0),
+                    offsetY.get(ValueLayout.JAVA_INT, 0),
+                    offsetZ.get(ValueLayout.JAVA_INT, 0)
+            };
+        } catch (Throwable failure) {
+            throw new IllegalStateException("Unable to evaluate Native Aquifer XOROSHIRO offsets", failure);
+        }
+    }
+
     public boolean supportsBlenderDensityVolume() { return blendDensityVolume != null; }
 
     public void blendDensityVolume(Blender blender, DensityVolume volume,
