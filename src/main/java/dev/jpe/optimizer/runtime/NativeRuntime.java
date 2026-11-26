@@ -672,43 +672,44 @@ public final class NativeRuntime implements AutoCloseable {
                               double xzScale, double yScale, float amplitude) {}
 
     /** Density graph opcodes mirror JPE_DENSITY_* in jpe_native_api.h. */
-    public record DensityNode(int opcode, int inputA, int inputB, int reserved, double immediate) {
+    public record DensityNode(int opcode, int inputA, int inputB, int reserved,
+                              double immediate, double auxiliary, double tertiary) {
         public static DensityNode constant(double value) {
-            return new DensityNode(1, -1, -1, 0, value);
+            return new DensityNode(1, -1, -1, 0, value, 0.0, 0.0);
         }
-        public static DensityNode x() { return new DensityNode(2, -1, -1, 0, 0.0); }
-        public static DensityNode y() { return new DensityNode(3, -1, -1, 0, 0.0); }
-        public static DensityNode z() { return new DensityNode(4, -1, -1, 0, 0.0); }
-        public static DensityNode add(int a, int b) { return new DensityNode(5, a, b, 0, 0.0); }
-        public static DensityNode multiply(int a, int b) { return new DensityNode(6, a, b, 0, 0.0); }
-        public static DensityNode subtract(int a, int b) { return new DensityNode(8, a, b, 0, 0.0); }
-        public static DensityNode divide(int a, int b) { return new DensityNode(9, a, b, 0, 0.0); }
-        public static DensityNode min(int a, int b) { return new DensityNode(10, a, b, 0, 0.0); }
-        public static DensityNode max(int a, int b) { return new DensityNode(11, a, b, 0, 0.0); }
-        public static DensityNode abs(int input) { return new DensityNode(12, input, -1, 0, 0.0); }
-        public static DensityNode negate(int input) { return new DensityNode(13, input, -1, 0, 0.0); }
-        public static DensityNode square(int input) { return new DensityNode(14, input, -1, 0, 0.0); }
-        public static DensityNode cube(int input) { return new DensityNode(15, input, -1, 0, 0.0); }
-        public static DensityNode sqrt(int input) { return new DensityNode(16, input, -1, 0, 0.0); }
-        public static DensityNode halfNegative(int input) { return new DensityNode(17, input, -1, 0, 0.0); }
-        public static DensityNode quarterNegative(int input) { return new DensityNode(18, input, -1, 0, 0.0); }
-        public static DensityNode reciprocal(int input) { return new DensityNode(19, input, -1, 0, 0.0); }
-        public static DensityNode sign(int input) { return new DensityNode(20, input, -1, 0, 0.0); }
-        public static DensityNode pow(int a, int b) { return new DensityNode(21, a, b, 0, 0.0); }
+        public static DensityNode x() { return new DensityNode(2, -1, -1, 0, 0.0, 0.0, 0.0); }
+        public static DensityNode y() { return new DensityNode(3, -1, -1, 0, 0.0, 0.0, 0.0); }
+        public static DensityNode z() { return new DensityNode(4, -1, -1, 0, 0.0, 0.0, 0.0); }
+        public static DensityNode add(int a, int b) { return new DensityNode(5, a, b, 0, 0.0, 0.0, 0.0); }
+        public static DensityNode multiply(int a, int b) { return new DensityNode(6, a, b, 0, 0.0, 0.0, 0.0); }
+        public static DensityNode subtract(int a, int b) { return new DensityNode(8, a, b, 0, 0.0, 0.0, 0.0); }
+        public static DensityNode divide(int a, int b) { return new DensityNode(9, a, b, 0, 0.0, 0.0, 0.0); }
+        public static DensityNode min(int a, int b) { return new DensityNode(10, a, b, 0, 0.0, 0.0, 0.0); }
+        public static DensityNode max(int a, int b) { return new DensityNode(11, a, b, 0, 0.0, 0.0, 0.0); }
+        public static DensityNode abs(int input) { return new DensityNode(12, input, -1, 0, 0.0, 0.0, 0.0); }
+        public static DensityNode negate(int input) { return new DensityNode(13, input, -1, 0, 0.0, 0.0, 0.0); }
+        public static DensityNode square(int input) { return new DensityNode(14, input, -1, 0, 0.0, 0.0, 0.0); }
+        public static DensityNode cube(int input) { return new DensityNode(15, input, -1, 0, 0.0, 0.0, 0.0); }
+        public static DensityNode sqrt(int input) { return new DensityNode(16, input, -1, 0, 0.0, 0.0, 0.0); }
+        public static DensityNode halfNegative(int input) { return new DensityNode(17, input, -1, 0, 0.0, 0.0, 0.0); }
+        public static DensityNode quarterNegative(int input) { return new DensityNode(18, input, -1, 0, 0.0, 0.0, 0.0); }
+        public static DensityNode reciprocal(int input) { return new DensityNode(19, input, -1, 0, 0.0, 0.0, 0.0); }
+        public static DensityNode sign(int input) { return new DensityNode(20, input, -1, 0, 0.0, 0.0, 0.0); }
+        public static DensityNode pow(int a, int b) { return new DensityNode(21, a, b, 0, 0.0, 0.0, 0.0); }
         public static DensityNode clamp(int input, float minimum, float maximum) {
             if (!Float.isFinite(minimum) || !Float.isFinite(maximum) || minimum > maximum) {
                 throw new IllegalArgumentException("Invalid density clamp bounds");
             }
             return new DensityNode(22, input, Float.floatToRawIntBits(minimum),
-                    Float.floatToRawIntBits(maximum), 0.0);
+                    Float.floatToRawIntBits(maximum), 0.0, 0.0, 0.0);
         }
-        public static DensityNode perlinStack(long preparedHandle, float xzScale, float yScale, float amplitude) {
-            if (preparedHandle <= 0 || preparedHandle > 9_007_199_254_740_991L) {
-                throw new IllegalArgumentException("Prepared stack handle cannot be represented exactly in density IR");
+        public static DensityNode perlinStack(long preparedHandle, double xzScale, double yScale, float amplitude) {
+            if (preparedHandle <= 0 || preparedHandle > 9_007_199_254_740_991L
+                    || !Double.isFinite(xzScale) || !Double.isFinite(yScale) || !Float.isFinite(amplitude)) {
+                throw new IllegalArgumentException("Invalid prepared Perlin stack parameters");
             }
-            return new DensityNode(7, Float.floatToRawIntBits(xzScale),
-                    Float.floatToRawIntBits(yScale), Float.floatToRawIntBits(amplitude),
-                    (double) preparedHandle);
+            return new DensityNode(7, -1, -1, Float.floatToRawIntBits(amplitude),
+                    (double) preparedHandle, xzScale, yScale);
         }
     }
 
@@ -732,15 +733,17 @@ public final class NativeRuntime implements AutoCloseable {
         try {
             ensureOpen();
             try (Arena arena = Arena.ofConfined()) {
-                MemorySegment encoded = arena.allocate(Math.multiplyExact((long) nodes.size(), 24L), 8);
+                MemorySegment encoded = arena.allocate(Math.multiplyExact((long) nodes.size(), 40L), 8);
                 for (int i = 0; i < nodes.size(); ++i) {
                     DensityNode node = Objects.requireNonNull(nodes.get(i), "node");
-                    long offset = (long) i * 24L;
+                    long offset = (long) i * 40L;
                     encoded.set(ValueLayout.JAVA_INT, offset, node.opcode());
                     encoded.set(ValueLayout.JAVA_INT, offset + 4L, node.inputA());
                     encoded.set(ValueLayout.JAVA_INT, offset + 8L, node.inputB());
                     encoded.set(ValueLayout.JAVA_INT, offset + 12L, node.reserved());
                     encoded.set(ValueLayout.JAVA_DOUBLE, offset + 16L, node.immediate());
+                    encoded.set(ValueLayout.JAVA_DOUBLE, offset + 24L, node.auxiliary());
+                    encoded.set(ValueLayout.JAVA_DOUBLE, offset + 32L, node.tertiary());
                 }
                 long handle = (long) densityGraphCompile.invokeExact(
                         encoded, nodes.size(), rootNode, configurationFingerprint);
