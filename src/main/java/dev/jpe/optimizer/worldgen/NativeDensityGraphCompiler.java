@@ -299,6 +299,15 @@ public final class NativeDensityGraphCompiler {
                         };
                         result = append(node);
                     }
+                    case "RangeChoiceFunction" -> {
+                        int input = lower((DensityFunction) component(function, "input"));
+                        int whenInRange = lower((DensityFunction) component(function, "whenInRange"));
+                        int whenOutOfRange = lower((DensityFunction) component(function, "whenOutOfRange"));
+                        float minimum = ((Number) component(function, "minInclusive")).floatValue();
+                        float maximum = ((Number) component(function, "maxExclusive")).floatValue();
+                        result = append(NativeRuntime.DensityNode.rangeChoice(
+                                input, minimum, maximum, whenInRange, whenOutOfRange));
+                    }
                     case "InterpolatedFunction" -> {
                         int input = lower((DensityFunction) component(function, "input"));
                         int cellSizeXz = ((Number) component(function, "cellSizeXz")).intValue();
