@@ -9,6 +9,7 @@ import dev.jpe.optimizer.runtime.NativePerlinNoiseBackend;
 import dev.jpe.optimizer.runtime.NativeRuntime;
 import it.unimi.dsi.fastutil.floats.FloatList;
 import net.minecraft.core.Holder;
+import net.minecraft.core.Vec3i;
 import net.minecraft.world.level.levelgen.NoiseChunk;
 import net.minecraft.world.level.levelgen.RandomState;
 import net.minecraft.world.level.levelgen.Beardifier;
@@ -40,7 +41,7 @@ import java.util.WeakHashMap;
  * graph, leaving the existing vanilla sampler untouched.
  */
 public final class NativeDensityGraphCompiler {
-    private static final long CONFIGURATION_FINGERPRINT = 0x4A50452603000001L;
+    private static final long CONFIGURATION_FINGERPRINT = 0x4A50452603000002L;
     private static final Object LOCK = new Object();
 
     // The compiler context is owned by RandomState and remains stable across chunks.
@@ -513,6 +514,19 @@ public final class NativeDensityGraphCompiler {
                             result = append(NativeRuntime.DensityNode.rangeChoiceBelow(
                                     input, thresholds.getFloat(i), whenBelow, result));
                         }
+                    }
+                    case "DistanceToPointFunction" -> {
+                        Vec3i point = (Vec3i) component(function, "point");
+                        String metricName = component(function, "metric").toString();
+                        int metric = switch (metricName) {
+                            case "CHEBYSHEV" -> 0;
+                            case "EUCLIDEAN" -> 1;
+                            case "EUCLIDEAN_SQUARED" -> 2;
+                            case "MANHATTAN" -> 3;
+                            default -> throw new UnsupportedOperationException("Unknown distance metric " + metricName);
+                        };
+                        result = append(NativeRuntime.DensityNode.distanceToPoint(
+                                point.getX(), point.getY(), point.getZ(), metric));
                     }
                     case "RangeChoiceFunction" -> {
                         int input = lower((DensityFunction) component(function, "input"));
