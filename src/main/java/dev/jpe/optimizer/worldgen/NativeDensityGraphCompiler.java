@@ -14,6 +14,8 @@ import net.minecraft.world.level.levelgen.NoiseChunk;
 import net.minecraft.world.level.levelgen.RandomState;
 import net.minecraft.world.level.levelgen.Beardifier;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBufferPool;
+import net.minecraft.world.level.levelgen.densityfunction.DensitySamplerSet;
+import net.minecraft.world.level.levelgen.densityfunction.SamplerContext;
 import net.minecraft.world.level.levelgen.densityfunction.DensitySampler;
 import net.minecraft.world.level.levelgen.densityfunction.DensityFunction;
 import net.minecraft.world.level.levelgen.densityfunction.DensityFunctions;
@@ -25,6 +27,7 @@ import net.minecraft.world.level.levelgen.synth.Noise;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.RecordComponent;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.ArrayList;
@@ -57,6 +60,28 @@ public final class NativeDensityGraphCompiler {
                     return new ConcurrentHashMap<>();
                 }
             };
+
+    // RandomState.samplersWithContext captures the per-NoiseChunk SamplerContext
+    // in its DensitySamplerSet implementation. NoiseChunk itself no longer stores
+    // Blender or Beardifier fields in 26.3; those values live in this context map.
+    private static final ClassValue<Field> SAMPLER_CONTEXT_FIELD = new ClassValue<>() {
+        @Override
+        protected Field computeValue(Class<?> type) {
+            for (Class<?> current = type; current != null; current = current.getSuperclass()) {
+                for (Field field : current.getDeclaredFields()) {
+                    if (SamplerContext.class.isAssignableFrom(field.getType())) {
+                        if (!field.trySetAccessible()) {
+                            throw new IllegalStateException(
+                                    "Unable to access captured SamplerContext in " + type.getName());
+                        }
+                        return field;
+                    }
+                }
+            }
+            throw new IllegalStateException(
+                    "No captured SamplerContext field found in " + type.getName());
+        }
+    };
 
     // The compiler context is owned by RandomState and remains stable across chunks.
     // Weak keys prevent a closed world's captured samplers from being retained.
@@ -131,12 +156,20 @@ public final class NativeDensityGraphCompiler {
         DensityFunction.CompileContext context = ((DensityFunctionCompilerAccessor)
                 (Object) ((RandomStateAccessor) (Object) randomState).jpe$getDensityFunctionCompiler())
                 .jpe$getContext();
-        // BlendDensityFunction is a pass-through only for a genuinely empty Blender.
-        // Non-empty legacy chunks must use vanilla's context-bound blend sampler.
-        if (!noiseChunkAccess.jpe$getBlender().isEmpty()) {
+        // In 26.3 NoiseChunk keeps the sampler context inside the DensitySamplerSet;
+        // Blender and Beardifier are context entries, not NoiseChunk fields.
+        final SamplerContext samplerContext;
+        try {
+            samplerContext = capturedSamplerContext(noiseChunk.cachingSamplers());
+        } catch (RuntimeException | LinkageError unavailable) {
+            return fallback("Unable to read NoiseChunk SamplerContext: " + describe(unavailable));
+        }
+        Blender blender = samplerContext.getField(Blender.CONTEXT_KEY);
+        if (blender != null && !blender.isEmpty()) {
             return fallback("Non-empty Blender requires vanilla density evaluation");
         }
-        boolean beardifierEmpty = noiseChunkAccess.jpe$getBeardifier() == Beardifier.EMPTY;
+        Beardifier beardifier = samplerContext.getField(Beardifier.CONTEXT_KEY);
+        boolean beardifierEmpty = beardifier == null || beardifier == Beardifier.EMPTY;
         long handle;
         try {
             handle = graphHandle(root, randomState, context, true, beardifierEmpty, runtime);
@@ -199,6 +232,15 @@ public final class NativeDensityGraphCompiler {
             }
             disableGraph(root, randomState, runtime);
             return null;
+        }
+    }
+
+    private static SamplerContext capturedSamplerContext(DensitySamplerSet samplers) {
+        if (samplers == null) throw new IllegalStateException("NoiseChunk has no DensitySamplerSet");
+        try {
+            return (SamplerContext) SAMPLER_CONTEXT_FIELD.get(samplers.getClass()).get(samplers);
+        } catch (IllegalAccessException failure) {
+            throw new IllegalStateException("Unable to read the 26.3 DensitySamplerSet SamplerContext", failure);
         }
     }
 
