@@ -72,6 +72,27 @@ jobs:
           cargo test --manifest-path native/rust-runtime/Cargo.toml
           cargo build --release --manifest-path native/rust-runtime/Cargo.toml
 
+      - name: Verify native runtime exported C ABI symbols
+        run: |
+          library="native/rust-runtime/target/release/libjpe_runtime.so"
+          test -f "$library"
+          nm -D --defined-only "$library" | awk '{print $3}' | sort > build-native-export-symbols.txt
+          for symbol in \
+            jpe_runtime_density_graph_evaluate_points \
+            jpe_runtime_density_graph_evaluate_points_f32 \
+            jpe_runtime_density_graph_evaluate \
+            jpe_runtime_density_graph_evaluate_f32 \
+            jpe_runtime_aquifer_compute_substance_batch \
+            jpe_runtime_aquifer_grid_centers \
+            jpe_runtime_aquifer_nearest_four; do
+            if ! grep -Fxq "$symbol" build-native-export-symbols.txt; then
+              echo "Missing exported native ABI symbol: $symbol"
+              cat build-native-export-symbols.txt
+              exit 1
+            fi
+          done
+          echo "All required density-graph and Aquifer C ABI symbols are exported."
+
       - name: Set up Gradle 9.2.1
         if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         uses: gradle/actions/setup-gradle@v4
