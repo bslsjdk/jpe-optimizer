@@ -23,6 +23,10 @@ constexpr uint32_t kMaxNodes = 65536;
 constexpr uint64_t kMaxVolumeElements = 1024ULL * 1024ULL;
 constexpr uint32_t kNoInput = UINT32_MAX;
 constexpr uint32_t kPerlinStack = 7;
+constexpr uint32_t kSub = 8, kDiv = 9, kMin = 10, kMax = 11;
+constexpr uint32_t kAbs = 12, kNegate = 13, kSquare = 14, kCube = 15;
+constexpr uint32_t kSqrt = 16, kHalfNegative = 17, kQuarterNegative = 18;
+constexpr uint32_t kReciprocal = 19, kSign = 20, kPow = 21, kClamp = 22;
 
 struct CompiledGraph {
     uint64_t fingerprint = 0;
@@ -85,9 +89,18 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
             case JPE_DENSITY_Z:
                 if (node.reserved != 0 || node.input_a != kNoInput || node.input_b != kNoInput) return false;
                 break;
-            case JPE_DENSITY_ADD:
-            case JPE_DENSITY_MUL:
+            case JPE_DENSITY_ADD: case JPE_DENSITY_MUL:
+            case kSub: case kDiv: case kMin: case kMax: case kPow:
                 if (node.reserved != 0 || node.input_a >= i || node.input_b >= i) return false;
+                break;
+            case kAbs: case kNegate: case kSquare: case kCube: case kSqrt:
+            case kHalfNegative: case kQuarterNegative: case kReciprocal: case kSign:
+                if (node.input_a >= i || node.input_b != kNoInput || node.reserved != 0) return false;
+                break;
+            case kClamp:
+                if (node.input_a >= i || !std::isfinite(decode_float(node.input_b))
+                    || !std::isfinite(decode_float(node.reserved))
+                    || decode_float(node.input_b) > decode_float(node.reserved)) return false;
                 break;
             case kPerlinStack: {
                 const double handle = node.immediate;
@@ -192,9 +205,12 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate(
         const size_t volume = static_cast<size_t>(output_length);
         std::vector<uint32_t> consumers(graph->nodes.size(), 0);
         for (const auto& node : graph->nodes) {
-            if (node.opcode == JPE_DENSITY_ADD || node.opcode == JPE_DENSITY_MUL) {
+            if (node.opcode == JPE_DENSITY_ADD || node.opcode == JPE_DENSITY_MUL
+                || node.opcode == kSub || node.opcode == kDiv || node.opcode == kMin
+                || node.opcode == kMax || node.opcode == kPow) {
+                ++consumers[node.input_a]; ++consumers[node.input_b];
+            } else if ((node.opcode >= kAbs && node.opcode <= kSign) || node.opcode == kClamp) {
                 ++consumers[node.input_a];
-                ++consumers[node.input_b];
             }
         }
 
@@ -240,15 +256,46 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate(
                     }
                     break;
                 }
-                case JPE_DENSITY_ADD:
-                case JPE_DENSITY_MUL: {
+                case JPE_DENSITY_ADD: case JPE_DENSITY_MUL:
+                case kSub: case kDiv: case kMin: case kMax: case kPow: {
                     const auto& a = slots[node_slots[node.input_a]];
                     const auto& b = slots[node_slots[node.input_b]];
-                    if (node.opcode == JPE_DENSITY_ADD) {
-                        for (size_t j = 0; j < volume; ++j) values[j] = a[j] + b[j];
-                    } else {
-                        for (size_t j = 0; j < volume; ++j) values[j] = a[j] * b[j];
+                    for (size_t j = 0; j < volume; ++j) {
+                        switch (node.opcode) {
+                            case JPE_DENSITY_ADD: values[j] = a[j] + b[j]; break;
+                            case JPE_DENSITY_MUL: values[j] = a[j] * b[j]; break;
+                            case kSub: values[j] = a[j] - b[j]; break;
+                            case kDiv: values[j] = a[j] / b[j]; break;
+                            case kMin: values[j] = std::min(a[j], b[j]); break;
+                            case kMax: values[j] = std::max(a[j], b[j]); break;
+                            case kPow: values[j] = std::pow(a[j], b[j]); break;
+                        }
                     }
+                    break;
+                }
+                case kAbs: case kNegate: case kSquare: case kCube: case kSqrt:
+                case kHalfNegative: case kQuarterNegative: case kReciprocal: case kSign: {
+                    const auto& a = slots[node_slots[node.input_a]];
+                    for (size_t j = 0; j < volume; ++j) {
+                        const double v = a[j];
+                        switch (node.opcode) {
+                            case kAbs: values[j] = std::abs(v); break;
+                            case kNegate: values[j] = -v; break;
+                            case kSquare: values[j] = v * v; break;
+                            case kCube: values[j] = v * v * v; break;
+                            case kSqrt: values[j] = std::sqrt(v); break;
+                            case kHalfNegative: values[j] = v < 0.0 ? v * 0.5 : v; break;
+                            case kQuarterNegative: values[j] = v < 0.0 ? v * 0.25 : v; break;
+                            case kReciprocal: values[j] = 1.0 / v; break;
+                            case kSign: values[j] = (v > 0.0) - (v < 0.0); break;
+                        }
+                    }
+                    break;
+                }
+                case kClamp: {
+                    const auto& a = slots[node_slots[node.input_a]];
+                    const double lo = decode_float(node.input_b), hi = decode_float(node.reserved);
+                    for (size_t j = 0; j < volume; ++j) values[j] = std::clamp(a[j], lo, hi);
                     break;
                 }
                 case kPerlinStack: {
@@ -266,14 +313,15 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate(
                     return 1;
             }
 
-            if (node.opcode == JPE_DENSITY_ADD || node.opcode == JPE_DENSITY_MUL) {
-                const uint32_t inputs[2] = {node.input_a, node.input_b};
-                for (uint32_t input : inputs) {
-                    if (input == graph->root) continue;
-                    if (--consumers[input] == 0) {
-                        free_slots.push_back(node_slots[input]);
-                    }
-                }
+            const auto release_input = [&](uint32_t input) {
+                if (input != graph->root && --consumers[input] == 0) free_slots.push_back(node_slots[input]);
+            };
+            if (node.opcode == JPE_DENSITY_ADD || node.opcode == JPE_DENSITY_MUL
+                || node.opcode == kSub || node.opcode == kDiv || node.opcode == kMin
+                || node.opcode == kMax || node.opcode == kPow) {
+                release_input(node.input_a); release_input(node.input_b);
+            } else if ((node.opcode >= kAbs && node.opcode <= kSign) || node.opcode == kClamp) {
+                release_input(node.input_a);
             }
         }
 
