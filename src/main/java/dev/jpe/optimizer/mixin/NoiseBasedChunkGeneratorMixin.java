@@ -131,15 +131,27 @@ public abstract class NoiseBasedChunkGeneratorMixin {
         long aquiferCallsSkipped = 0L;
 
         try {
+            boolean nativeAquiferFusedVerify = Boolean.getBoolean("jpe.nativeAquiferFusedVerify");
+            if (nativeAquiferFusedVerify
+                    && (!Boolean.getBoolean("jpe.nativeDensityGraphVerify")
+                    || !Boolean.getBoolean("jpe.nativeDensityGraphStrict")
+                    || !nativeAquiferVolumeStrict
+                    || nativeAquiferPrepared == null
+                    || !nativeAquiferPrepared.supportsFusedDensityPath())) {
+                throw new IllegalStateException(
+                        "Fused Aquifer verification requires native density/Aquifer strict parity and the fused ABI");
+            }
             boolean nativeAquiferVolumeVerify = Boolean.getBoolean("jpe.nativeAquiferSubstanceVerify")
                     || Boolean.getBoolean("jpe.nativeDensityGraphVerify")
-                    || nativeAquiferVolumeStrict;
+                    || nativeAquiferVolumeStrict
+                    || nativeAquiferFusedVerify;
             NativeRuntime.AquiferSubstanceVolumeResult precomputedNativeVolume = null;
 
             // Normal runtime: evaluate finalDensity and Aquifer in one C++ call.
             // Verification mode deliberately retains the Java density view so the
             // independent vanilla oracle can compare every voxel.
-            if (nativeAquiferPrepared != null && !nativeAquiferVolumeVerify
+            if (nativeAquiferPrepared != null
+                    && (!nativeAquiferVolumeVerify || nativeAquiferFusedVerify)
                     && nativeAquiferPrepared.supportsFusedDensityPath()) {
                 try {
                     long finalDensityGraphHandle =
@@ -163,7 +175,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
             }
 
             ScopedDensityBuffer sampledDensity = null;
-            if (precomputedNativeVolume == null) {
+            if (precomputedNativeVolume == null || nativeAquiferVolumeVerify) {
                 sampledDensity = NativeDensityGraphCompiler.trySampleVolume(
                         finalDensityFunction, finalDensity, noiseChunk, volume);
                 if (sampledDensity == null) {
@@ -195,7 +207,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
             try (NativeRuntime.AquiferSubstanceVolumeResult nativeAquiferResults = computedNativeVolume) {
             boolean nativeVolumeAccepted = nativeAquiferResults != null;
             if (nativeVolumeAccepted && (Boolean.getBoolean("jpe.nativeAquiferSubstanceVerify")
-                    || nativeAquiferVolumeStrict)) {
+                    || nativeAquiferFusedVerify || nativeAquiferVolumeStrict)) {
                 String mismatch = jpe$verifyNativeAquiferVolume(
                         aquifer, nativeAquiferPrepared, nativeAquiferResults, volume, densityBuffer);
                 if (mismatch != null) {
@@ -214,7 +226,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
             if (nativeVolumeAccepted
                     && REPORTED_NATIVE_AQUIFER_VOLUME_SUCCESS.compareAndSet(false, true)) {
                 boolean verified = Boolean.getBoolean("jpe.nativeAquiferSubstanceVerify")
-                        || nativeAquiferVolumeStrict;
+                        || nativeAquiferFusedVerify || nativeAquiferVolumeStrict;
                 JPEOptimizer.LOGGER.info(
                         "JPE_NATIVE_AQUIFER_SUBSTANCE_VOLUME voxels={} verified={} strict={}",
                         nativeAquiferResults.size(), verified, nativeAquiferVolumeStrict);
