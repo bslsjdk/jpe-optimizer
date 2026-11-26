@@ -9,6 +9,18 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class NativeRuntimeValidationTest {
     @Test
+    void densityGraphRangeChoiceEncodesThreeInputsAndFloatBounds() {
+        NativeRuntime.DensityNode node =
+                NativeRuntime.DensityNode.rangeChoice(1, -0.25F, 0.75F, 2, 3);
+        assertEquals(27, node.opcode());
+        assertEquals(1, node.inputA());
+        assertEquals(2, node.inputB());
+        assertEquals(3, node.reserved());
+        assertEquals(-0.25D, node.immediate());
+        assertEquals(0.75D, node.auxiliary());
+    }
+
+    @Test
     void densityGraphLerpSqueezeAndGradientNodesEncodeTheirOperands() {
         NativeRuntime.DensityNode lerp = NativeRuntime.DensityNode.lerp(2, 3, 4);
         assertEquals(24, lerp.opcode());
