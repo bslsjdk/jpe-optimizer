@@ -450,10 +450,10 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
     // Evaluate a bounded tile of samples at once. Node-major storage lets the
     // compiler vectorize each ADD/MUL across contiguous samples while preserving
     // the topological order (and therefore every float32 rounding point).
-    // Full-chunk A/B sweep on a 164-node vanilla-scale graph found 768 samples
-    // fastest among 256/384/512/768/1024/1225. Complex graphs still shrink tiles
-    // automatically under the 1 MiB per-worker node-value budget.
-    constexpr uint32_t kMaxTileSamples = 768;
+    // A 51-round full-chunk sweep using the captured 164-node vanilla operation
+    // inventory found 256 samples fastest among 256/384/512/768/1024/1225.
+    // Complex graphs still shrink tiles automatically under the 1 MiB node budget.
+    constexpr uint32_t kMaxTileSamples = 256;
     constexpr size_t kMaxTileValues = 262144; // <= 1 MiB of float scratch.
     const size_t node_count = graph->nodes.size();
     uint32_t tile_sample_limit = kMaxTileSamples;
