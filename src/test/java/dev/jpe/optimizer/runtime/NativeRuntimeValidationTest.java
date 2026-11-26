@@ -22,6 +22,20 @@ class NativeRuntimeValidationTest {
     }
 
     @Test
+    void distanceToPointDescriptorEncodesCoordinatesAndMetric() {
+        NativeRuntime.DensityNode node = NativeRuntime.DensityNode.distanceToPoint(-12, 64, 37, 2);
+        assertEquals(30, node.opcode());
+        assertEquals(2, node.inputA());
+        assertEquals(-1, node.inputB());
+        assertEquals(0, node.reserved());
+        assertEquals(-12.0D, node.immediate());
+        assertEquals(64.0D, node.auxiliary());
+        assertEquals(37.0D, node.tertiary());
+        assertThrows(IllegalArgumentException.class,
+                () -> NativeRuntime.DensityNode.distanceToPoint(0, 0, 0, 4));
+    }
+
+    @Test
     void densityGraphIntervalSelectThresholdHelperUsesNegativeInfinityLowerBound() {
         NativeRuntime.DensityNode node =
                 NativeRuntime.DensityNode.rangeChoiceBelow(0, 1.0F, 2, 3);
