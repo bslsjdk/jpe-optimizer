@@ -54,6 +54,8 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle densityGraphCompile;
     private final MethodHandle densityGraphEvaluate;
     private final MethodHandle densityGraphEvaluateF32;
+    private final MethodHandle densityGraphEvaluatePoints;
+    private final MethodHandle densityGraphEvaluatePointsF32;
     private final MethodHandle densityGraphRelease;
     private final MethodHandle aquiferGridCenters;
     private final MethodHandle aquiferNearestFour;
@@ -158,6 +160,8 @@ public final class NativeRuntime implements AutoCloseable {
         private int substanceInputCapacity, substanceOutputCapacity;
         private MemorySegment statusKeys, statusValues, statusFound;
         private int statusCapacity;
+        private MemorySegment pointX, pointY, pointZ, pointOutputF32, pointOutputF64;
+        private int pointCapacity;
         private final AtomicBoolean leased = new AtomicBoolean();
 
         private boolean tryAcquire() { return leased.compareAndSet(false, true); }
@@ -219,6 +223,22 @@ public final class NativeRuntime implements AutoCloseable {
             }
             return new MemorySegment[] {statusKeys, statusValues, statusFound};
         }
+        private MemorySegment[] ensurePointCapacity(int count) {
+            if (pointCapacity < count) {
+                int next = Math.max(128, pointCapacity);
+                while (next < count) next = Math.min(1_048_576, Math.multiplyExact(next, 2));
+                long coordinateBytes = Math.multiplyExact((long) next, ValueLayout.JAVA_INT.byteSize());
+                long outputF32Bytes = Math.multiplyExact((long) next, ValueLayout.JAVA_FLOAT.byteSize());
+                long outputF64Bytes = Math.multiplyExact((long) next, ValueLayout.JAVA_DOUBLE.byteSize());
+                pointX = arena.allocate(coordinateBytes, ValueLayout.JAVA_INT.byteAlignment());
+                pointY = arena.allocate(coordinateBytes, ValueLayout.JAVA_INT.byteAlignment());
+                pointZ = arena.allocate(coordinateBytes, ValueLayout.JAVA_INT.byteAlignment());
+                pointOutputF32 = arena.allocate(outputF32Bytes, ValueLayout.JAVA_FLOAT.byteAlignment());
+                pointOutputF64 = arena.allocate(outputF64Bytes, ValueLayout.JAVA_DOUBLE.byteAlignment());
+                pointCapacity = next;
+            }
+            return new MemorySegment[] {pointX, pointY, pointZ, pointOutputF32, pointOutputF64};
+        }
         @Override
         public void close() {
             if (leased.get()) throw new IllegalStateException("Cannot close a leased Aquifer scratch arena");
@@ -242,7 +262,8 @@ public final class NativeRuntime implements AutoCloseable {
                           MethodHandle cancel, MethodHandle release,
                           MethodHandle preparePreparedStack, MethodHandle evaluatePreparedStack,
                           MethodHandle releasePreparedStack,
-                          MethodHandle graphCompile, MethodHandle graphEvaluate, MethodHandle graphEvaluateF32, MethodHandle graphRelease,
+                          MethodHandle graphCompile, MethodHandle graphEvaluate, MethodHandle graphEvaluateF32,
+                          MethodHandle graphEvaluatePoints, MethodHandle graphEvaluatePointsF32, MethodHandle graphRelease,
                           MethodHandle aquiferGridCenters, MethodHandle aquiferNearestFour,
                           MethodHandle aquiferSubstanceBatch,
                           MethodHandle aquiferStatusCacheCreate, MethodHandle aquiferStatusCacheDestroy,
@@ -260,6 +281,8 @@ public final class NativeRuntime implements AutoCloseable {
         this.densityGraphCompile = graphCompile;
         this.densityGraphEvaluate = graphEvaluate;
         this.densityGraphEvaluateF32 = graphEvaluateF32;
+        this.densityGraphEvaluatePoints = graphEvaluatePoints;
+        this.densityGraphEvaluatePointsF32 = graphEvaluatePointsF32;
         this.densityGraphRelease = graphRelease;
         this.aquiferGridCenters = aquiferGridCenters;
         this.aquiferNearestFour = aquiferNearestFour;
@@ -376,6 +399,20 @@ public final class NativeRuntime implements AutoCloseable {
                                     ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
                                     ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)))
                     .orElse(null);
+            MethodHandle graphEvaluatePoints = lookup.find("jpe_runtime_density_graph_evaluate_points")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_LONG,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                                    ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)))
+                    .orElse(null);
+            MethodHandle graphEvaluatePointsF32 = lookup.find("jpe_runtime_density_graph_evaluate_points_f32")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_LONG,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                                    ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)))
+                    .orElse(null);
             MethodHandle graphRelease = lookup.find("jpe_runtime_density_graph_release")
                     .map(symbol -> linker.downcallHandle(symbol,
                             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG)))
@@ -449,7 +486,8 @@ public final class NativeRuntime implements AutoCloseable {
             if (actualWorkers < 1) throw new IllegalStateException("Unable to configure native workers: " + actualWorkers);
             return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, perlinStack, submit, submitStack, status, wait, cancel, release,
                     preparePreparedStack, evaluatePreparedStack, releasePreparedStack,
-                    graphCompile, graphEvaluate, graphEvaluateF32, graphRelease, aquiferGridCenters, aquiferNearestFour,
+                    graphCompile, graphEvaluate, graphEvaluateF32, graphEvaluatePoints, graphEvaluatePointsF32,
+                    graphRelease, aquiferGridCenters, aquiferNearestFour,
                     aquiferSubstanceBatch, aquiferStatusCacheCreate, aquiferStatusCacheDestroy,
                     aquiferStatusCacheLookup, aquiferStatusCacheInsert);
         } catch (Throwable failure) {
@@ -1308,6 +1346,12 @@ public final class NativeRuntime implements AutoCloseable {
         return densityGraphCompile != null && densityGraphEvaluateF32 != null && densityGraphRelease != null;
     }
 
+    /** True when arbitrary-point density graph sampling is available in both precisions. */
+    public boolean supportsDensityGraphPoints() {
+        return densityGraphCompile != null && densityGraphEvaluatePoints != null
+                && densityGraphEvaluatePointsF32 != null && densityGraphRelease != null;
+    }
+
     /** Compiles a topologically ordered native DAG. PERLIN_STACK nodes retain their C++ plans. */
     public long compileDensityGraph(List<DensityNode> nodes, int rootNode, long configurationFingerprint) {
         if (!supportsDensityGraph()) throw new IllegalStateException("Native density graph API is unavailable");
@@ -1373,6 +1417,82 @@ public final class NativeRuntime implements AutoCloseable {
                 throw rethrow("Unable to evaluate native density graph", failure);
             }
         } finally {
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    /** Evaluates sparse/non-grid-aligned coordinates in one native call using double intermediates. */
+    public void evaluateDensityGraphPoints(long handle,
+                                           int[] pointX, int[] pointY, int[] pointZ,
+                                           double[] output) {
+        if (!supportsDensityGraphPoints()) {
+            throw new IllegalStateException("Native arbitrary-point density graph API is unavailable");
+        }
+        Objects.requireNonNull(pointX, "pointX");
+        Objects.requireNonNull(pointY, "pointY");
+        Objects.requireNonNull(pointZ, "pointZ");
+        Objects.requireNonNull(output, "output");
+        int count = pointX.length;
+        if (handle == 0L || count == 0 || count > 1_048_576
+                || pointY.length != count || pointZ.length != count || output.length < count) {
+            throw new IllegalArgumentException("Invalid arbitrary-point density graph arrays");
+        }
+        lifecycle.readLock().lock();
+        AquiferScratch scratch = null;
+        try {
+            ensureOpen();
+            scratch = acquireAquiferScratch();
+            MemorySegment[] buffers = scratch.ensurePointCapacity(count);
+            MemorySegment x = buffers[0], y = buffers[1], z = buffers[2], values = buffers[4];
+            MemorySegment.copy(pointX, 0, x, ValueLayout.JAVA_INT, 0, count);
+            MemorySegment.copy(pointY, 0, y, ValueLayout.JAVA_INT, 0, count);
+            MemorySegment.copy(pointZ, 0, z, ValueLayout.JAVA_INT, 0, count);
+            int status = (int) densityGraphEvaluatePoints.invokeExact(
+                    handle, x, y, z, count, values, (long) count);
+            checkStatus(status, "density-graph-evaluate-points");
+            MemorySegment.copy(values, ValueLayout.JAVA_DOUBLE, 0, output, 0, count);
+        } catch (Throwable failure) {
+            throw rethrow("Unable to evaluate native density graph points", failure);
+        } finally {
+            if (scratch != null) scratch.release();
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    /** Evaluates sparse/non-grid-aligned coordinates in one native call using float intermediates. */
+    public void evaluateDensityGraphPointsF32(long handle,
+                                              int[] pointX, int[] pointY, int[] pointZ,
+                                              float[] output) {
+        if (!supportsDensityGraphPoints()) {
+            throw new IllegalStateException("Native arbitrary-point density graph API is unavailable");
+        }
+        Objects.requireNonNull(pointX, "pointX");
+        Objects.requireNonNull(pointY, "pointY");
+        Objects.requireNonNull(pointZ, "pointZ");
+        Objects.requireNonNull(output, "output");
+        int count = pointX.length;
+        if (handle == 0L || count == 0 || count > 1_048_576
+                || pointY.length != count || pointZ.length != count || output.length < count) {
+            throw new IllegalArgumentException("Invalid arbitrary-point density graph arrays");
+        }
+        lifecycle.readLock().lock();
+        AquiferScratch scratch = null;
+        try {
+            ensureOpen();
+            scratch = acquireAquiferScratch();
+            MemorySegment[] buffers = scratch.ensurePointCapacity(count);
+            MemorySegment x = buffers[0], y = buffers[1], z = buffers[2], values = buffers[3];
+            MemorySegment.copy(pointX, 0, x, ValueLayout.JAVA_INT, 0, count);
+            MemorySegment.copy(pointY, 0, y, ValueLayout.JAVA_INT, 0, count);
+            MemorySegment.copy(pointZ, 0, z, ValueLayout.JAVA_INT, 0, count);
+            int status = (int) densityGraphEvaluatePointsF32.invokeExact(
+                    handle, x, y, z, count, values, (long) count);
+            checkStatus(status, "density-graph-evaluate-points-f32");
+            MemorySegment.copy(values, ValueLayout.JAVA_FLOAT, 0, output, 0, count);
+        } catch (Throwable failure) {
+            throw rethrow("Unable to evaluate native density graph points (f32)", failure);
+        } finally {
+            if (scratch != null) scratch.release();
             lifecycle.readLock().unlock();
         }
     }
