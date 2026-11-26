@@ -1143,12 +1143,15 @@ mod tests {
             assert_eq!(*value, (-16 + x as i32 * 4) as f32 + 162.0);
         }
 
-        let mut tile_512_ms = Vec::with_capacity(21);
-        let mut tile_1225_ms = Vec::with_capacity(21);
+        let tile_limits = [256_u32, 384, 512, 768, 1024, 1225];
+        let mut measurements: [Vec<f64>; 6] =
+            std::array::from_fn(|_| Vec::with_capacity(21));
         let mut tile_output = vec![0.0_f32; output.len()];
         for round in 0..21 {
-            let order = if round % 2 == 0 { [512_u32, 1225_u32] } else { [1225_u32, 512_u32] };
-            for tile_limit in order {
+            // Rotate the order each round to balance thermal / frequency drift.
+            for step in 0..tile_limits.len() {
+                let index = (step + round) % tile_limits.len();
+                let tile_limit = tile_limits[index];
                 unsafe { jpe_cpp_density_graph_set_test_tile_limit(tile_limit); }
                 let start = Instant::now();
                 for _ in 0..24 {
@@ -1160,20 +1163,19 @@ mod tests {
                         )
                     }, STATUS_OK);
                 }
-                let per_call_ms = start.elapsed().as_secs_f64() * 1000.0 / 24.0;
-                if tile_limit == 512 { tile_512_ms.push(per_call_ms); }
-                else { tile_1225_ms.push(per_call_ms); }
+                measurements[index].push(start.elapsed().as_secs_f64() * 1000.0 / 24.0);
                 assert_eq!(tile_output, scalar, "tile limit {tile_limit} changed graph output");
             }
         }
         unsafe { jpe_cpp_density_graph_set_test_tile_limit(0); }
-        tile_512_ms.sort_by(f64::total_cmp);
-        tile_1225_ms.sort_by(f64::total_cmp);
-        let median_512 = tile_512_ms[10];
-        let median_1225 = tile_1225_ms[10];
+        let mut report = String::new();
+        for (index, tile_limit) in tile_limits.iter().enumerate() {
+            measurements[index].sort_by(f64::total_cmp);
+            let median = measurements[index][10];
+            report.push_str(&format!(" tile{tile_limit}={median:.6}ms"));
+        }
         println!(
-            "JPE_DENSITY_GRAPH_TILE_SIZE_ABBA dims=5x49x5 nodes=164 tile512_median_ms={:.6} tile1225_median_ms={:.6} speedup_1225_over_512={:.3}x",
-            median_512, median_1225, median_512 / median_1225
+            "JPE_DENSITY_GRAPH_TILE_SWEEP dims=5x49x5 nodes=164 samples=1225{report}"
         );
         assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
     }
