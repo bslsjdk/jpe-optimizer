@@ -162,6 +162,8 @@ public final class NativeRuntime implements AutoCloseable {
         private int statusCapacity;
         private MemorySegment pointX, pointY, pointZ, pointOutputF32, pointOutputF64;
         private int pointCapacity;
+        private MemorySegment packedLocations;
+        private int packedLocationCapacity;
         private final AtomicBoolean leased = new AtomicBoolean();
 
         private boolean tryAcquire() { return leased.compareAndSet(false, true); }
@@ -238,6 +240,16 @@ public final class NativeRuntime implements AutoCloseable {
                 pointCapacity = next;
             }
             return new MemorySegment[] {pointX, pointY, pointZ, pointOutputF32, pointOutputF64};
+        }
+        private MemorySegment ensurePackedLocationCapacity(int count) {
+            if (packedLocationCapacity < count) {
+                int next = Math.max(256, packedLocationCapacity);
+                while (next < count) next = Math.min(1_048_576, Math.multiplyExact(next, 2));
+                long bytes = Math.multiplyExact((long) next, ValueLayout.JAVA_LONG.byteSize());
+                packedLocations = arena.allocate(bytes, ValueLayout.JAVA_LONG.byteAlignment());
+                packedLocationCapacity = next;
+            }
+            return packedLocations;
         }
         @Override
         public void close() {
@@ -511,6 +523,7 @@ public final class NativeRuntime implements AutoCloseable {
                                    int minGridX, int minGridY, int minGridZ,
                                    int gridSizeX, int gridSizeZ, long[] packedLocations) {
         lifecycle.readLock().lock();
+        AquiferScratch scratch = null;
         try {
             ensureOpen();
             Objects.requireNonNull(packedLocations, "packedLocations");
@@ -525,21 +538,23 @@ public final class NativeRuntime implements AutoCloseable {
             if (layerSize > packedLocations.length || packedLocations.length % layerSize != 0) {
                 throw new IllegalArgumentException("Aquifer grid-cache length is not an integral number of layers");
             }
-            try (Arena arena = Arena.ofConfined()) {
-                long bytes = Math.multiplyExact((long) packedLocations.length, ValueLayout.JAVA_LONG.byteSize());
-                MemorySegment nativeLocations = arena.allocate(bytes, ValueLayout.JAVA_LONG.byteAlignment());
+            scratch = acquireAquiferScratch();
+            MemorySegment nativeLocations = scratch.ensurePackedLocationCapacity(packedLocations.length);
+            try {
                 int status = (int) aquiferGridCenters.invokeExact(
                         randomMode, seedLo, seedHi,
                         minGridX, minGridY, minGridZ,
                         gridSizeX, gridSizeZ, packedLocations.length,
                         nativeLocations);
                 checkStatus(status, "aquifer-grid-centers");
+                // Commit only after the complete native calculation succeeds.
                 MemorySegment.copy(nativeLocations, ValueLayout.JAVA_LONG, 0L,
                         packedLocations, 0, packedLocations.length);
             } catch (Throwable failure) {
                 throw rethrow("Native Aquifer grid-center prefill failed", failure);
             }
         } finally {
+            if (scratch != null) scratch.release();
             lifecycle.readLock().unlock();
         }
     }
