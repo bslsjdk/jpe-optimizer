@@ -1,4 +1,4 @@
-# Native density graph IR v9
+# Native density graph IR v10
 
 Status: experimental shadow execution. Compiled-sampler arithmetic islands are evaluated by Native during real Minecraft world generation and compared bit-for-bit with Java. Native results are not committed to chunks; Java remains authoritative until broader exact-output and end-to-end performance gates pass.
 
@@ -68,7 +68,7 @@ The compiler remains deliberately narrow. The current exact-op allowlist include
 - natural logarithm has a Native candidate kernel, but is deliberately excluded from exact arithmetic-island lowering until Java `Math.log` versus C++ `std::log` bitwise parity is demonstrated
 - noise references only after permutation, octave order, coordinate wrapping, and float/double conversion points have parity tests
 
-These are a proposed allowlist, not a claim that every opcode is already implemented. The current native prototype implements `CONST`, `X`, `Y`, `Z`, `INPUT`, `ADD`, `SUB`, `MUL`, `DIV`, `MIN`, `MAX`, `CLAMP`, `NEGATE`, `ABS`, `SQUARE`, `CUBE`, `SQRT`, `LOG` (candidate only; not eligible for exact islands), `RECIPROCAL`, `SIGN`, `SQUEEZE`, and `LEAKY_RELU` in `native/cpp-kernels/src/density_graph.cpp`. Its C ABI supports versioned compile/cache, full-volume evaluation, and reference-counted release; Java 25 FFM wrappers are present in `NativeRuntime`. Rust unit tests exercise the arithmetic graph, unary float32 operations (including signed zero, NaN, infinities, logarithm, reciprocal, signum, squeeze ordering, and parameterized LeakyReLU), cache reuse, malformed topological references, and invalid volume rejection. Java unit tests exercise IR validation and lowering. The prototype API is callable from Java, but no Minecraft `DensityFunction` extractor or `NoiseRouter` integration exists yet. It is not a terrain speedup.
+These are a proposed allowlist, not a claim that every opcode is already implemented. The current native prototype implements `CONST`, `X`, `Y`, `Z`, `INPUT`, `ADD`, `SUB`, `MUL`, `DIV`, `MIN`, `MAX`, `CLAMP`, `NEGATE`, `ABS`, `SQUARE`, `CUBE`, `SQRT`, `LOG` (candidate only; not eligible for exact islands), `RECIPROCAL`, `SIGN`, `SQUEEZE`, `LEAKY_RELU`, and the three axis-specific `GRADIENT_CLAMPED_X/Y/Z` operations in `native/cpp-kernels/src/density_graph.cpp`. IR v10 adds the clamped-gradient node using the existing 24-byte native node layout: axis is encoded by opcode, the source/min/max coordinates remain raw signed 32-bit values, and the two float32 parameters are packed into the existing 64-bit immediate payload. Native evaluation clamps the integer coordinate, performs Java-compatible wrapped int subtraction, then applies float32 multiplication and addition in Java operation order. Repeat and mirrored-repeat gradient samplers are not covered. The C ABI supports versioned compile/cache, full-volume evaluation, and reference-counted release; Java 25 FFM wrappers are present in `NativeRuntime`. Rust/C++ boundary tests, Java unit tests, GameTests, and a real Overworld compiled-sampler shadow-parity run have passed for this revision. The graph remains experimental: Java still owns the authoritative `finalDensity.sampleVolume(volume)` call, OPAQUE sampler families remain, and Native outputs are not committed to chunks. This is not a complete native terrain engine or a demonstrated whole-world speedup.
 
 The following require dedicated semantic work and must not be approximated as ordinary arithmetic:
 
@@ -77,7 +77,7 @@ The following require dedicated semantic work and must not be approximated as or
 - interpolated and cell-based density functions
 - shifted noise and shared shift buffers
 - blend alpha/offset and beardifier
-- Y gradients with exact coordinate/endpoint behavior
+- Repeat and mirrored-repeat gradient samplers, whose tiling and endpoint semantics still need dedicated exact lowering
 - registry-backed or mod-provided custom density functions
 
 Unknown nodes have two deliberately separate behaviors. STRICT capture rejects them and remains suitable for exact parity work. EXPERIMENTAL capture preserves each unknown node as an explicit OPAQUE node with a Java-side diagnostic sidecar (runtime class and reason). Native accepts that opcode only with its experimental marker, emits quiet NaN for that node, and continues evaluating known ancestors and independent subgraphs. The Java bridge exposes separate compileDensityGraph (strict) and compileDensityGraphExperimental entry points, so an experimental graph cannot accidentally enter the strict path. This is not an emulation of the unknown operation: NaN is a visible failure signal, not a guessed result. Experimental output must never be committed to a real chunk.
@@ -452,3 +452,11 @@ Exactness constraints checked against the decompiled official and NeoForge-patch
 - Distance and weighted accumulation are binary64, while density column scaling and final output remain float32. C++ is built with floating-point contraction disabled.
 
 The opt-in integration flags are -Djpe.nativeBlenderEnabled=true for Native output or -Djpe.verifyNativeBlenderParity=true for shadow comparison. Native output is not enabled by default. The GameTest jpe_optimizer:blender_native_parity compares raw float bits for fixed-density, weighted-neighborhood, negative-boundary, and a 225-sample patterned volume. Passing this fixture establishes those cases only; it does not yet establish whole-world speedup or complete sampler-graph execution. Full DensityFunction/Noise graph execution and block placement remain separate integration work.
+
+## IR v10: clamped gradient samplers
+
+IR v10 adds `GRADIENT_CLAMPED_X` (24), `GRADIENT_CLAMPED_Y` (25), and `GRADIENT_CLAMPED_Z` (26). These represent the exact `GradientFunction$ClampedSampler` implementation only; they do not cover the other gradient tiling variants. The node has no sampler-child edges. Its integer payload stores `fromCoordinate`, `minCoordinate`, and `maxCoordinate` without float conversion, while the high and low 32-bit halves of `immediate` preserve the raw float32 bit patterns for `fromValue` and `coordinateFactor`.
+
+The C++ evaluator selects the runtime block coordinate for the encoded axis, clamps it in integer space, computes the subtraction with Java int32 wraparound, narrows that delta to float32, multiplies by the float32 factor, and adds the float32 base value. Intermediate steps are kept separate to avoid accidental fused multiply-add. The native ABI node size remains 24 bytes because the previously reserved 32-bit field is reused for `maxCoordinate`; the IR version and Java graph-cache format are incremented so older serialized nodes are not misread.
+
+Validation includes focused Rust/C++ cases for ordinary Y gradients, int32 subtraction overflow, and the 16,777,216 float precision boundary, plus Java classification/lowering/payload tests. The current real-Overworld parity workflow also passed with zero reported mismatches for its tested arithmetic-island outputs. That check remains shadow-only and does not establish complete final-density parity or production handoff.
