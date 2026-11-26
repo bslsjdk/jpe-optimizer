@@ -13,7 +13,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* ABI v6. Axis coordinates use min + index * step with Java int wrap semantics. */
+/* ABI v7. Axis coordinates use min + index * step with Java int wrap semantics. */
 JPE_API uint32_t jpe_runtime_abi_version(void);
 /* requested=0 selects all process-visible CPUs; positive values are capped to that count. */
 /* Zero selects available CPUs. Repeating the active count is safe after startup;
@@ -84,7 +84,7 @@ JPE_API int32_t jpe_runtime_cancel_job(uint64_t job_id);
 JPE_API int32_t jpe_runtime_release_job(uint64_t job_id);
 
 /*
- * Experimental density-graph IR v1. This additive API is not wired into Minecraft yet.
+ * Experimental density-graph IR v1. Minecraft integration is opt-in and falls back for unsupported graphs.
  * Nodes are topologically ordered; inputs must reference earlier nodes.
  * Volume output order is ((z * size_x + x) * size_y + y).
  */
@@ -121,7 +121,14 @@ enum {
     JPE_DENSITY_SIGN = 20,
     JPE_DENSITY_POW = 21,
     /* CLAMP: input_a=source; input_b/reserved=f32 minimum/maximum bits. */
-    JPE_DENSITY_CLAMP = 22
+    JPE_DENSITY_CLAMP = 22,
+    JPE_DENSITY_SQUEEZE = 23,
+    JPE_DENSITY_LERP = 24,
+    JPE_DENSITY_GRADIENT = 25,
+    JPE_DENSITY_INTERPOLATED = 26,
+    JPE_DENSITY_RANGE_CHOICE = 27,
+    JPE_DENSITY_ROUND = 28,
+    JPE_DENSITY_LOG = 29
 };
 /* Returns a retained compiled-plan handle, or zero for an invalid graph. */
 JPE_API uint64_t jpe_runtime_density_graph_compile(
