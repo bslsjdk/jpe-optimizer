@@ -1589,7 +1589,7 @@ mod tests {
                 fudge_y_scale: 0.0, flags: 0, reserved: 0,
             });
         for flags in [0_u32, 1_u32] {
-            let mut expected = vec![0.375_f32; 5 * 7 * 4];
+            let mut expected = vec![0.375_f32; 5 * 8 * 4];
             let mut actual = expected.clone();
             for layer in &layers {
                 assert_eq!(unsafe { jpe_cpp_perlin_add_volume_uncached_y(
