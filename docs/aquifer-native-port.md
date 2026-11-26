@@ -96,10 +96,15 @@ The eventual C++ call should process a full density volume and return parallel o
 
 Per-volume caches: cell center locations; FluidStatus (level+state token); quart-quantized surface levels; lazily sampled barrier noise for current block sample.
 
-Unresolved before implementation:
-1. Extract and verify the inherited Legacy nextInt(bound) implementation and add Java golden-vector parity tests for both algorithms. The Legacy factory/LCG, XOROSHIRO seed upgrade, coordinate hash, positional factory chain, Xoroshiro128++ transition, and XOROSHIRO bounded nextInt rejection behavior are now source-audited. Do not substitute a convenient PRNG.
-2. Runtime encoding for arbitrary modded FluidPicker states and NeoForge additions to the Aquifer call path.
-3. DensitySampler binding and noise sampling transfer for all six Aquifer samplers. Do not make Java-computed per-block values the final architecture.
-4. Confirm exact Java floating-point behavior of Mth.quantize, Mth.clampedMap, and noise return types from bytecode before claiming parity.
+Resolved implementation slice (not yet a full Aquifer backend):
+- `native/cpp-kernels/src/aquifer_random.cpp` implements Minecraft positional seed derivation, Xoroshiro128++ bounded draws, and LegacyRandomSource bounded draws, preserving Java overflow and rejection behavior.
+- Native unit tests cover audited golden vectors for both algorithms.
+- GameTest `aquifer_xoroshiro_native_parity` compares Native outputs with the actual 26.3 `XoroshiroRandomSource.forkPositional().at(...)` and `LegacyRandomSource.forkPositional().at(...)`, drawing bounds 10, 9, 10 in vanilla order. The coordinate matrix now includes signed-int extremes. CI/game execution must pass before this is marked runtime-verified.
+- Factory seed state is obtained from the actual Minecraft factory through Mixin accessors. Native does not re-derive the world seed or assume a particular random algorithm.
+
+Remaining unresolved before the full Aquifer implementation:
+1. Runtime encoding for arbitrary modded FluidPicker states and NeoForge additions to the Aquifer call path.
+2. DensitySampler binding and noise sampling transfer for all six Aquifer samplers. Do not make Java-computed per-block values the final architecture.
+3. Confirm exact Java floating-point behavior of Mth.quantize, Mth.clampedMap, and noise return types from bytecode before claiming full Aquifer parity.
 
 Do not enable this backend in production until synthetic full-volume parity and real generated-chunk block-hash / fluid-update parity pass.
