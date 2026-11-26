@@ -104,7 +104,7 @@ enum {
     JPE_DENSITY_Z = 4,
     JPE_DENSITY_ADD = 5,
     JPE_DENSITY_MUL = 6,
-    /* PERLIN_STACK: immediate=prepared handle; input_a/input_b/reserved=f32 bits for xz/y/amplitude. */
+    /* PERLIN_STACK: immediate=prepared handle; auxiliary=xz scale; tertiary=y scale; reserved=f32 amplitude bits. */
     JPE_DENSITY_PERLIN_STACK = 7,
     JPE_DENSITY_SUB = 8,
     JPE_DENSITY_DIV = 9,
