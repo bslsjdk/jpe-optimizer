@@ -30,7 +30,7 @@ constexpr uint32_t kAbs = 12, kNegate = 13, kSquare = 14, kCube = 15;
 constexpr uint32_t kSqrt = 16, kHalfNegative = 17, kQuarterNegative = 18;
 constexpr uint32_t kReciprocal = 19, kSign = 20, kPow = 21, kClamp = 22;
 constexpr uint32_t kSqueeze = 23, kLerp = 24, kGradient = 25, kInterpolated = 26, kRangeChoice = 27;
-constexpr uint32_t kRound = 28, kLog = 29;
+constexpr uint32_t kRound = 28, kLog = 29, kDistanceToPoint = 30;
 
 struct CompiledGraph {
     uint64_t fingerprint = 0;
@@ -182,6 +182,20 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
             case kLog:
                 if (node.input_a >= i || node.input_b != kNoInput || node.reserved != 0
                     || node.immediate != 0.0 || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
+                break;
+            case kDistanceToPoint:
+                if (node.input_a > 3 || node.input_b != kNoInput || node.reserved != 0
+                    || !std::isfinite(node.immediate) || !std::isfinite(node.auxiliary)
+                    || !std::isfinite(node.tertiary)
+                    || std::floor(node.immediate) != node.immediate
+                    || std::floor(node.auxiliary) != node.auxiliary
+                    || std::floor(node.tertiary) != node.tertiary
+                    || node.immediate < static_cast<double>(INT32_MIN)
+                    || node.immediate > static_cast<double>(INT32_MAX)
+                    || node.auxiliary < static_cast<double>(INT32_MIN)
+                    || node.auxiliary > static_cast<double>(INT32_MAX)
+                    || node.tertiary < static_cast<double>(INT32_MIN)
+                    || node.tertiary > static_cast<double>(INT32_MAX)) return false;
                 break;
             case kPerlinStack: {
                 const double handle = node.immediate;
@@ -507,6 +521,32 @@ int32_t evaluate_density_graph_impl(
                     const auto& input = slots[graph->node_slots[node.input_a]];
                     for (size_t j = 0; j < volume; ++j) {
                         values[j] = static_cast<Scalar>(std::log(static_cast<double>(input[j])));
+                    }
+                    break;
+                }
+                case kDistanceToPoint: {
+                    const float point_x = static_cast<float>(node.immediate);
+                    const float point_y = static_cast<float>(node.auxiliary);
+                    const float point_z = static_cast<float>(node.tertiary);
+                    size_t out = 0;
+                    for (uint32_t z = 0; z < size_z; ++z) {
+                        const float dz = static_cast<float>(wrapped_coordinate(min_z, z, step_z)) - point_z;
+                        for (uint32_t x = 0; x < size_x; ++x) {
+                            const float dx = static_cast<float>(wrapped_coordinate(min_x, x, step_x)) - point_x;
+                            for (uint32_t y = 0; y < size_y; ++y) {
+                                const float dy = static_cast<float>(wrapped_coordinate(min_y, y, step_y)) - point_y;
+                                const float ax = std::abs(dx), ay = std::abs(dy), az = std::abs(dz);
+                                float distance;
+                                switch (node.input_a) {
+                                    case 0: distance = std::max(ax, std::max(ay, az)); break; // CHEBYSHEV
+                                    case 1: distance = std::sqrt(dx * dx + dy * dy + dz * dz); break; // EUCLIDEAN
+                                    case 2: distance = dx * dx + dy * dy + dz * dz; break; // EUCLIDEAN_SQUARED
+                                    case 3: distance = (ax + ay) + az; break; // MANHATTAN
+                                    default: return 1;
+                                }
+                                values[out++] = static_cast<Scalar>(distance);
+                            }
+                        }
                     }
                     break;
                 }
