@@ -251,7 +251,7 @@ extern "C" int32_t jpe_cpp_perlin_add_stack(
     float* output, uint64_t output_length, uint32_t flags
 ) noexcept {
     if (!validate_stack(layers, layer_count, size_x, size_y, size_z,
-                        step_x, step_y, step_z, output, output_length)) return 1;
+                        step_x, step_y, step_z, output, output_length, flags)) return 1;
 
     // The fused path is bit-exact, but it regresses the full-chunk benchmark.
     // Keep the per-layer AVX2-dispatched volume kernel as the production path.
