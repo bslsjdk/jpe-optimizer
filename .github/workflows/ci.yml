@@ -147,7 +147,7 @@ jobs:
       - name: Real overworld native density graph parity (full chunk generation)
         if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         env:
-          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphVerify=true -Djpe.nativeDensityGraphStrict=true -Djpe.nativeAquiferGridCentersEnabled=true -Djpe.nativeAquiferGridCentersStrict=true -Djpe.nativeAquiferFluidStatusEnabled=true -Djpe.nativeAquiferFluidStatusStrict=true -Djpe.nativeAquiferFluidStatusVerify=true -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=22 -Djpe.worldgenMetrics=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
+          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphVerify=true -Djpe.nativeDensityGraphStrict=true -Djpe.nativeAquiferGridCentersEnabled=true -Djpe.nativeAquiferGridCentersStrict=true -Djpe.nativeAquiferSubstanceEnabled=true -Djpe.nativeAquiferSubstanceStrict=true -Djpe.nativeAquiferSubstanceVerify=true -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=22 -Djpe.worldgenMetrics=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
         run: |
           mkdir -p build/native-density-worldgen
           rm -rf run
@@ -173,6 +173,9 @@ jobs:
           grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*completedChunks=340.*failedChunks=0.*doFillCalls=([3-9][0-9]{2,}|[1-9][0-9]{3,})' build/native-density-worldgen/overworld.log
           grep -F 'Native density graph compiled for' build/native-density-worldgen/overworld.log
           grep -F 'Native density graph evaluated for' build/native-density-worldgen/overworld.log
+          grep -F 'JPE_NATIVE_AQUIFER_CONTEXT_READY' build/native-density-worldgen/overworld.log
+          grep -F 'JPE_NATIVE_AQUIFER_SUBSTANCE_VOLUME' build/native-density-worldgen/overworld.log
+          ! grep -F 'Native Aquifer full-volume parity mismatch' build/native-density-worldgen/overworld.log
           ! grep -F 'Native density graph evaluation failed' build/native-density-worldgen/overworld.log
           ! grep -F 'Native density graph parity mismatch' build/native-density-worldgen/overworld.log
 
