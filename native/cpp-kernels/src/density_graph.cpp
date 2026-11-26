@@ -82,6 +82,31 @@ float decode_float(uint32_t bits) noexcept {
     return value;
 }
 
+double java_min(double a, double b) noexcept {
+    if (std::isnan(a)) return a;
+    if (std::isnan(b)) return b;
+    if (a == b) {
+        if (a == 0.0) return std::signbit(a) || std::signbit(b) ? -0.0 : 0.0;
+        return a;
+    }
+    return a < b ? a : b;
+}
+
+double java_max(double a, double b) noexcept {
+    if (std::isnan(a)) return a;
+    if (std::isnan(b)) return b;
+    if (a == b) {
+        if (a == 0.0) return std::signbit(a) && std::signbit(b) ? -0.0 : 0.0;
+        return a;
+    }
+    return a > b ? a : b;
+}
+
+double java_signum(double value) noexcept {
+    if (std::isnan(value) || value == 0.0) return value;
+    return std::signbit(value) ? -1.0 : 1.0;
+}
+
 bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noexcept {
     if (nodes == nullptr || count == 0 || count > kMaxNodes || root >= count) return false;
     for (uint32_t i = 0; i < count; ++i) {
@@ -285,8 +310,8 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate(
                             case JPE_DENSITY_MUL: values[j] = a[j] * b[j]; break;
                             case kSub: values[j] = a[j] - b[j]; break;
                             case kDiv: values[j] = a[j] / b[j]; break;
-                            case kMin: values[j] = std::min(a[j], b[j]); break;
-                            case kMax: values[j] = std::max(a[j], b[j]); break;
+                            case kMin: values[j] = java_min(a[j], b[j]); break;
+                            case kMax: values[j] = java_max(a[j], b[j]); break;
                             case kPow: values[j] = std::pow(a[j], b[j]); break;
                         }
                     }
@@ -306,7 +331,7 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate(
                             case kHalfNegative: values[j] = v < 0.0 ? v * 0.5 : v; break;
                             case kQuarterNegative: values[j] = v < 0.0 ? v * 0.25 : v; break;
                             case kReciprocal: values[j] = 1.0 / v; break;
-                            case kSign: values[j] = (v > 0.0) - (v < 0.0); break;
+                            case kSign: values[j] = java_signum(v); break;
                         }
                     }
                     break;
