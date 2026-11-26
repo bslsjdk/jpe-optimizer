@@ -18,7 +18,7 @@ This is now also used as a density-graph leaf for captured seed-bound `NoiseFunc
 
 ## Implemented native IR prototype
 
-The current branch has an executable C ABI/Rust/C++/Java path for a topologically ordered graph. It supports constants, X/Y/Z coordinates, ADD/MUL/SUB/DIV/MIN/MAX/POW, ABS/NEGATE/SQUARE/CUBE/SQRT/HALF_NEGATIVE/QUARTER_NEGATIVE/RECIPROCAL/SIGN/CLAMP/SQUEEZE/LERP/GRADIENT/INTERPOLATED/RANGE_CHOICE/ROUND/LOG, and prepared PERLIN_STACK nodes.
+The current branch has an executable C ABI/Rust/C++/Java path for a topologically ordered graph. It supports constants, X/Y/Z coordinates, ADD/MUL/SUB/DIV/MIN/MAX/POW, ABS/NEGATE/SQUARE/CUBE/SQRT/HALF_NEGATIVE/QUARTER_NEGATIVE/RECIPROCAL/SIGN/CLAMP/SQUEEZE/LERP/GRADIENT/INTERPOLATED/RANGE_CHOICE/ROUND/LOG, DISTANCE_TO_POINT (all four Minecraft 26.3 metrics), cubic spline trees (constant and multipoint forms), and prepared PERLIN_STACK nodes.
 
 Execution is node-major over the complete requested volume. The C++ compiler precomputes a liveness-based slot assignment once, so each evaluation allocates only the maximum simultaneously-live volume buffers; dead nodes and nodes after their final consumer reuse slots. Compiled graphs retain prepared Perlin handles independently of their source handles.
 
@@ -27,7 +27,7 @@ The original graph API returns a double volume and remains available for compati
 
 Java FFM exposes `supportsDensityGraphF32()` and `evaluateDensityGraphF32(...)`; the mixin now calls the evaluator for supported final-density graphs.
 
-The implemented operator list is an execution substrate, not a claim that every 26.3 density function has been lowered. Unsupported nodes still include splines, shifted/domain-warped noise, non-empty legacy blending, non-empty beardifier, unsupported gradient tiling, and mod-defined/context-dependent functions. Cache/reference wrappers are lowered only where removing the cache wrapper preserves the pure function value. Unsupported roots fall back to vanilla.
+The implemented operator list is an execution substrate, not a claim that every 26.3 density function has been lowered. Cubic spline lowering was added experimentally: it handles constant and multipoint trees, nested values, Hermite segments, and linear endpoint extension, but exact float-bit parity has not yet been demonstrated against an in-game 26.3 sampler. DISTANCE_TO_POINT has an explicit opcode and unit coverage for all four metrics; its in-game bit parity is also still to be checked. Unsupported nodes still include shifted/domain-warped noise, non-empty legacy blending, non-empty beardifier, unsupported gradient tiling, and mod-defined/context-dependent functions. Cache/reference wrappers are lowered only where removing the cache wrapper preserves the pure function value. Unsupported roots fall back to vanilla.
 
 ## Goal
 
