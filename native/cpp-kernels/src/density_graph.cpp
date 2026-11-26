@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <stdexcept>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -397,15 +398,42 @@ Scalar java_signum_scalar(Scalar value) noexcept {
 }
 
 template <typename Scalar>
+struct DensitySlotView {
+    Scalar* pointer = nullptr;
+    size_t length = 0;
+
+    Scalar& operator[](size_t index) noexcept { return pointer[index]; }
+    const Scalar& operator[](size_t index) const noexcept { return pointer[index]; }
+    Scalar* data() noexcept { return pointer; }
+    const Scalar* data() const noexcept { return pointer; }
+    Scalar* begin() noexcept { return pointer; }
+    Scalar* end() noexcept { return pointer + length; }
+    const Scalar* begin() const noexcept { return pointer; }
+    const Scalar* end() const noexcept { return pointer + length; }
+};
+
+template <typename Scalar>
 struct DensityEvaluationScratch {
-    std::vector<std::vector<Scalar>> slots;
+    // All DAG registers live in one contiguous allocation. Per-register vectors
+    // used to cause one heap allocation per slot and fragmented working sets.
+    std::vector<Scalar> slot_storage;
+    std::vector<DensitySlotView<Scalar>> slots;
     std::vector<float> perlin;
     std::vector<Scalar> corner_values;
     std::vector<Scalar> sliced_values;
 
     void prepare(uint32_t slot_count, size_t volume, bool has_perlin) {
-        if (slots.size() < slot_count) slots.resize(slot_count);
-        for (uint32_t i = 0; i < slot_count; ++i) slots[i].resize(volume);
+        if (slot_count != 0 && volume > slot_storage.max_size() / slot_count) {
+            throw std::length_error("density graph scratch size overflow");
+        }
+        slot_storage.resize(static_cast<size_t>(slot_count) * volume);
+        slots.resize(slot_count);
+        for (uint32_t i = 0; i < slot_count; ++i) {
+            Scalar* slot_data = slot_storage.empty()
+                    ? nullptr
+                    : slot_storage.data() + static_cast<size_t>(i) * volume;
+            slots[i] = DensitySlotView<Scalar>{slot_data, volume};
+        }
         if (has_perlin) perlin.resize(volume);
     }
 };
