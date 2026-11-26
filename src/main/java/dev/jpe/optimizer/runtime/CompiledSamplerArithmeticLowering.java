@@ -216,6 +216,9 @@ public final class CompiledSamplerArithmeticLowering {
                         resolveOnlyChild(node, members, nativeIndex, inputSlot)));
                 case SQUEEZE -> lowered.add(DensityGraphIr.Node.squeeze(
                         resolveOnlyChild(node, members, nativeIndex, inputSlot)));
+                case LEAKY_RELU -> lowered.add(DensityGraphIr.Node.leakyRelu(
+                        resolveOnlyChild(node, members, nativeIndex, inputSlot),
+                        readFloatComponent(node, "negativeFactor")));
                 case CUBE -> lowered.add(DensityGraphIr.Node.cube(
                         resolveOnlyChild(node, members, nativeIndex, inputSlot)));
                 case CLAMP -> {
@@ -327,6 +330,7 @@ public final class CompiledSamplerArithmeticLowering {
                 || op == CompiledSamplerGraphIr.Op.RECIPROCAL
                 || op == CompiledSamplerGraphIr.Op.SIGN
                 || op == CompiledSamplerGraphIr.Op.SQUEEZE
+                || op == CompiledSamplerGraphIr.Op.LEAKY_RELU
                 || op == CompiledSamplerGraphIr.Op.MIN_RIGHT_BOUND
                 || op == CompiledSamplerGraphIr.Op.MAX_RIGHT_BOUND;
     }
