@@ -670,6 +670,27 @@ public final class NativeRuntime implements AutoCloseable {
         public static DensityNode z() { return new DensityNode(4, -1, -1, 0, 0.0); }
         public static DensityNode add(int a, int b) { return new DensityNode(5, a, b, 0, 0.0); }
         public static DensityNode multiply(int a, int b) { return new DensityNode(6, a, b, 0, 0.0); }
+        public static DensityNode subtract(int a, int b) { return new DensityNode(8, a, b, 0, 0.0); }
+        public static DensityNode divide(int a, int b) { return new DensityNode(9, a, b, 0, 0.0); }
+        public static DensityNode min(int a, int b) { return new DensityNode(10, a, b, 0, 0.0); }
+        public static DensityNode max(int a, int b) { return new DensityNode(11, a, b, 0, 0.0); }
+        public static DensityNode abs(int input) { return new DensityNode(12, input, -1, 0, 0.0); }
+        public static DensityNode negate(int input) { return new DensityNode(13, input, -1, 0, 0.0); }
+        public static DensityNode square(int input) { return new DensityNode(14, input, -1, 0, 0.0); }
+        public static DensityNode cube(int input) { return new DensityNode(15, input, -1, 0, 0.0); }
+        public static DensityNode sqrt(int input) { return new DensityNode(16, input, -1, 0, 0.0); }
+        public static DensityNode halfNegative(int input) { return new DensityNode(17, input, -1, 0, 0.0); }
+        public static DensityNode quarterNegative(int input) { return new DensityNode(18, input, -1, 0, 0.0); }
+        public static DensityNode reciprocal(int input) { return new DensityNode(19, input, -1, 0, 0.0); }
+        public static DensityNode sign(int input) { return new DensityNode(20, input, -1, 0, 0.0); }
+        public static DensityNode pow(int a, int b) { return new DensityNode(21, a, b, 0, 0.0); }
+        public static DensityNode clamp(int input, float minimum, float maximum) {
+            if (!Float.isFinite(minimum) || !Float.isFinite(maximum) || minimum > maximum) {
+                throw new IllegalArgumentException("Invalid density clamp bounds");
+            }
+            return new DensityNode(22, input, Float.floatToRawIntBits(minimum),
+                    Float.floatToRawIntBits(maximum), 0.0);
+        }
         public static DensityNode perlinStack(long preparedHandle, float xzScale, float yScale, float amplitude) {
             if (preparedHandle <= 0 || preparedHandle > 9_007_199_254_740_991L) {
                 throw new IllegalArgumentException("Prepared stack handle cannot be represented exactly in density IR");
