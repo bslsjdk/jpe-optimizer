@@ -133,3 +133,90 @@ extern "C" int32_t jpe_cpp_aquifer_legacy_offsets(
     *offset_z = static_cast<int32_t>(random.next_int_bound(10U));
     return 0;
 }
+
+#include <climits>
+#include <unordered_map>
+
+namespace {
+struct AquiferGridKey {
+    int32_t x, y, z;
+    bool operator==(const AquiferGridKey& o) const noexcept { return x==o.x && y==o.y && z==o.z; }
+};
+struct AquiferGridKeyHash {
+    size_t operator()(const AquiferGridKey& k) const noexcept {
+        uint64_t h=static_cast<uint32_t>(k.x);
+        h=(h^static_cast<uint32_t>(k.y))*0x9e3779b185ebca87ULL;
+        h=(h^static_cast<uint32_t>(k.z))*0xc2b2ae3d27d4eb4fULL;
+        return static_cast<size_t>(h^(h>>32U));
+    }
+};
+struct AquiferCenter { int32_t x,y,z; };
+int32_t wrap_i32(uint32_t bits) noexcept { int32_t v; std::memcpy(&v,&bits,sizeof(v)); return v; }
+int32_t add_i32(int32_t a,int32_t b) noexcept { return wrap_i32(static_cast<uint32_t>(a)+static_cast<uint32_t>(b)); }
+int32_t mul_i32(int32_t a,int32_t b) noexcept { return wrap_i32(static_cast<uint32_t>(a)*static_cast<uint32_t>(b)); }
+int32_t floor_div_i32(int32_t a,int32_t b) noexcept {
+    int32_t q=a/b, r=a%b; if(r!=0 && ((r<0)!=(b<0))) --q; return q;
+}
+int32_t squared_distance_java(const AquiferCenter& c,int32_t x,int32_t y,int32_t z) noexcept {
+    const int32_t dx=add_i32(c.x,wrap_i32(0U-static_cast<uint32_t>(x)));
+    const int32_t dy=add_i32(c.y,wrap_i32(0U-static_cast<uint32_t>(y)));
+    const int32_t dz=add_i32(c.z,wrap_i32(0U-static_cast<uint32_t>(z)));
+    return add_i32(add_i32(mul_i32(dx,dx),mul_i32(dy,dy)),mul_i32(dz,dz));
+}
+}
+
+extern "C" int32_t jpe_cpp_aquifer_nearest_four(
+    uint32_t random_mode,uint64_t seed_lo,uint64_t seed_hi,
+    const int32_t* block_x,const int32_t* block_y,const int32_t* block_z,
+    uint32_t sample_count,int32_t* center_x,int32_t* center_y,int32_t* center_z,
+    int32_t* squared_distances) try {
+    constexpr uint32_t kMaxSamples=1024U*1024U;
+    if(random_mode>1U || sample_count==0U || sample_count>kMaxSamples
+       || !block_x || !block_y || !block_z || !center_x || !center_y || !center_z || !squared_distances) return 1;
+
+    // Adjacent samples share most candidate cells. Cache each exact grid center once per volume.
+    std::unordered_map<AquiferGridKey,AquiferCenter,AquiferGridKeyHash> cache;
+    cache.reserve(static_cast<size_t>(sample_count)/4U+16U);
+    for(uint32_t sample=0;sample<sample_count;++sample) {
+        const int32_t x=block_x[sample], y=block_y[sample], z=block_z[sample];
+        const AquiferGridKey anchor{
+            floor_div_i32(add_i32(x,-5),16),
+            floor_div_i32(add_i32(y,1),12),
+            floor_div_i32(add_i32(z,-5),16)
+        };
+        int32_t best_d[4]={INT32_MAX,INT32_MAX,INT32_MAX,INT32_MAX};
+        AquiferCenter best_c[4]{};
+        // Exact vanilla candidate order: x=0..1, y=-1..1, z=0..1.
+        for(int32_t ox=0;ox<=1;++ox) for(int32_t oy=-1;oy<=1;++oy) for(int32_t oz=0;oz<=1;++oz) {
+            const AquiferGridKey key{add_i32(anchor.x,ox),add_i32(anchor.y,oy),add_i32(anchor.z,oz)};
+            auto it=cache.find(key);
+            if(it==cache.end()) {
+                int32_t rx=0,ry=0,rz=0;
+                const int32_t status=random_mode==0U
+                    ? jpe_cpp_aquifer_xoroshiro_offsets(seed_lo,seed_hi,key.x,key.y,key.z,&rx,&ry,&rz)
+                    : jpe_cpp_aquifer_legacy_offsets(seed_lo,key.x,key.y,key.z,&rx,&ry,&rz);
+                if(status!=0) return 2;
+                const AquiferCenter c{
+                    add_i32(mul_i32(key.x,16),rx),
+                    add_i32(mul_i32(key.y,12),ry),
+                    add_i32(mul_i32(key.z,16),rz)
+                };
+                it=cache.emplace(key,c).first;
+            }
+            const int32_t d=squared_distance_java(it->second,x,y,z);
+            // Vanilla >= insertion: later equal-distance candidates move ahead of earlier ones.
+            uint32_t at=4U;
+            for(uint32_t i=0;i<4U;++i) if(d<=best_d[i]) { at=i; break; }
+            if(at<4U) {
+                for(uint32_t i=3U;i>at;--i) { best_d[i]=best_d[i-1U]; best_c[i]=best_c[i-1U]; }
+                best_d[at]=d; best_c[at]=it->second;
+            }
+        }
+        const size_t base=static_cast<size_t>(sample)*4U;
+        for(uint32_t i=0;i<4U;++i) {
+            center_x[base+i]=best_c[i].x; center_y[base+i]=best_c[i].y;
+            center_z[base+i]=best_c[i].z; squared_distances[base+i]=best_d[i];
+        }
+    }
+    return 0;
+} catch(...) { return 3; }
