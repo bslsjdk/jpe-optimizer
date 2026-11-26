@@ -1806,6 +1806,33 @@ mod tests {
     }
 
     #[test]
+    fn density_graph_distance_to_point_preserves_negative_chunk_coordinates_and_volume_order() {
+        let nodes = [JpeDensityNode {
+            opcode: 30,
+            input_a: 3, // Manhattan
+            input_b: DENSITY_NO_INPUT,
+            reserved: 0,
+            immediate: 0.0,
+            auxiliary: 0.0,
+            tertiary: 0.0,
+        }];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), 1, 0, 0xD157_A11CE)
+        };
+        assert_ne!(graph, 0);
+        let mut output = [f32::NAN; 8];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph, 2, 2, 2, -1, -1, -1, 1, 1, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        // Native density-volume layout is z, then x, then y.
+        assert_eq!(output, [3.0, 2.0, 2.0, 1.0, 2.0, 1.0, 1.0, 0.0]);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
     fn density_graph_f32_executes_multi_threshold_interval_select() {
         let nodes = [
             JpeDensityNode { opcode: 2, input_a: DENSITY_NO_INPUT,
