@@ -70,6 +70,8 @@ public final class GameTests {
             TEST_FUNCTIONS.register("aquifer_random_native_parity", () -> GameTests::aquiferRandomNativeParity);
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> DENSITY_GRAPH_POINT_BATCH =
             TEST_FUNCTIONS.register("density_graph_point_batch", () -> GameTests::densityGraphPointBatch);
+    public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> AQUIFER_CONTEXT_NATIVE_PARITY =
+            TEST_FUNCTIONS.register("aquifer_context_native_parity", () -> GameTests::aquiferContextNativeParity);
 
     public static void registerFunctions(net.neoforged.bus.api.IEventBus modEventBus) {
         TEST_FUNCTIONS.register(modEventBus);
@@ -122,6 +124,71 @@ public final class GameTests {
                 Identifier.parse("jpe_optimizer:density_graph_point_batch"),
                 new FunctionGameTestInstance(DENSITY_GRAPH_POINT_BATCH.getKey(), data)
         );
+        event.registerTest(
+                Identifier.parse("jpe_optimizer:aquifer_context_native_parity"),
+                new FunctionGameTestInstance(AQUIFER_CONTEXT_NATIVE_PARITY.getKey(), data)
+        );
+    }
+
+    /** Verifies the native Aquifer context retains six sampler plans and evaluates them in one FFM call. */
+    private static void aquiferContextNativeParity(GameTestHelper helper) {
+        String library = System.getProperty("jpe.nativeLibraryPath");
+        if (library == null || library.isBlank()) {
+            throw new AssertionError("Aquifer context parity requires jpe.nativeLibraryPath");
+        }
+        try (NativeRuntime runtime = NativeRuntime.load(java.nio.file.Path.of(library))) {
+            if (!runtime.supportsAquiferContext()) {
+                throw new AssertionError("Native Aquifer context ABI is unavailable");
+            }
+            long[] handles = new long[6];
+            for (int sampler = 0; sampler < handles.length; sampler++) {
+                handles[sampler] = runtime.compileDensityGraph(List.of(
+                        NativeRuntime.DensityNode.x(),
+                        NativeRuntime.DensityNode.constant(sampler),
+                        NativeRuntime.DensityNode.add(0, 1)
+                ), 2, 0xA91F_2631_0000L + sampler);
+            }
+
+            byte[] worldFingerprint = new byte[32];
+            java.util.Arrays.fill(worldFingerprint, (byte) 0x5A);
+            long context = runtime.createAquiferContext(
+                    handles, worldFingerprint, 0xA91F_2630_0001L,
+                    0x0123_4567_89ab_cdefL, 0xfedc_ba98_7654_3210L,
+                    0, 100, 200, 300, 256
+            );
+
+            // The context took independent native references, so release the
+            // Java-owned references before exercising the context.
+            for (long handle : handles) runtime.releaseDensityGraph(handle);
+
+            int[][] samplerX = {
+                    {1, 2, 3}, {4, 5, 6}, {7, 8, 9},
+                    {10, 11, 12}, {13, 14, 15}, {16, 17, 18}
+            };
+            int[][] samplerY = new int[6][3];
+            int[][] samplerZ = new int[6][3];
+            float[][] values = new float[6][3];
+            runtime.evaluateAquiferSamplersF32(context, samplerX, samplerY, samplerZ, values);
+
+            for (int sampler = 0; sampler < 6; sampler++) {
+                for (int point = 0; point < 3; point++) {
+                    float expected = samplerX[sampler][point] + sampler;
+                    if (Float.floatToRawIntBits(values[sampler][point])
+                            != Float.floatToRawIntBits(expected)) {
+                        throw new AssertionError("Aquifer sampler context mismatch at sampler="
+                                + sampler + " point=" + point + ": expected=" + expected
+                                + ", actual=" + values[sampler][point]);
+                    }
+                }
+            }
+            runtime.destroyAquiferContext(context);
+            JPEOptimizer.LOGGER.info(
+                    "JPE_AQUIFER_CONTEXT_NATIVE_PARITY samplers=6 pointsPerSampler=3 "
+                            + "retainedHandles=true batchF32Exact=true contextDestroy=true");
+        } catch (Exception failure) {
+            throw new AssertionError("Native Aquifer context parity failed", failure);
+        }
+        helper.succeed();
     }
 
     /** Verifies sparse non-grid-aligned density sampling through one native FFM batch call. */
