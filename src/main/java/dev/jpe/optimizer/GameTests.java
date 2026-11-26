@@ -78,7 +78,7 @@ public final class GameTests {
             TEST_FUNCTIONS.register("blender_native_parity", () -> GameTests::blenderNativeParity);
 
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> AQUIFER_RANDOM_NATIVE_PARITY =
-            TEST_FUNCTIONS.register("aquifer_xoroshiro_native_parity", () -> GameTests::aquiferRandomNativeParity);
+            TEST_FUNCTIONS.register("aquifer_xoroshiro_native_parity", () -> GameTests::aquiferXoroshiroNativeParity);
 
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> PALETTE_HASH_CONFIGURATION =
             TEST_FUNCTIONS.register("palette_hash_configuration", () -> GameTests::paletteHashConfiguration);
@@ -132,7 +132,7 @@ public final class GameTests {
         );
         event.registerTest(
                 Identifier.parse("jpe_optimizer:aquifer_random_native_parity"),
-                new FunctionGameTestInstance(AQUIFER_XOROSHIRO_NATIVE_PARITY.getKey(), data)
+                new FunctionGameTestInstance(AQUIFER_RANDOM_NATIVE_PARITY.getKey(), data)
         );
         event.registerTest(
                 Identifier.parse("jpe_optimizer:palette_hash_configuration"),
