@@ -493,6 +493,12 @@ JPE_API int32_t jpe_cpp_aquifer_status_cache_insert_batch(
     uint64_t handle, const uint64_t* keys,
     const JpeAquiferFluidStatus* statuses, uint32_t count
 );
+/* Internal context cache insertion: round-robin slot replacement keeps the world
+ * cache bounded. The regular API above retains transactional capacity rejection. */
+JPE_API int32_t jpe_cpp_aquifer_status_cache_insert_batch_evict(
+    uint64_t handle, const uint64_t* keys,
+    const JpeAquiferFluidStatus* statuses, uint32_t count
+);
 JPE_API int32_t jpe_cpp_aquifer_compute_substance_batch(
     const JpeAquiferCoreInput *inputs, uint32_t count,
     JpeAquiferCoreOutput *outputs

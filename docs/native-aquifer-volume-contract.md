@@ -50,6 +50,8 @@ The context owns:
 
 Destroy the context only after all chunk tasks using it have completed. Concurrent calls may share immutable plans, but mutable cache/scratch state must be synchronized or worker-local. No process-local handle may be serialized into the persistent cache.
 
+The current implementation now keys this context by weak `RandomState` identity and reuses it across chunk fills. Each fill holds a short-lived lease; the context is destroyed after the owning `RandomState` becomes unreachable and all leases are returned. Its FluidStatus cache is bounded to 65,536 entries with round-robin replacement, and its quart-surface cache is capped at 65,536 entries. This is a runtime-lifetime cache, not the still-planned launcher-time persistent conversion cache. Context creation remains lazy on the first chunk fill for a world.
+
 ## Semantic requirements
 
 The C++ implementation must preserve the exact audited 26.3 order of operations, including:

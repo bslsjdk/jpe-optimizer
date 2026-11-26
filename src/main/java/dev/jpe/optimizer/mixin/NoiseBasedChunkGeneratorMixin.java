@@ -107,7 +107,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
         dev.jpe.optimizer.worldgen.NativeAquiferFluidStatusPrefill.Prepared nativeAquiferPrepared = null;
         if (nativeAquiferVolumeEnabled && noiseAquifer != null) {
             nativeAquiferPrepared = NativeAquiferFluidStatusPrefill.open(
-                    noiseAquifer, noiseChunk, chunk, generatorSettings, aquiferSamplerPlans);
+                    noiseAquifer, noiseChunk, generatorSettings, aquiferSamplerPlans);
             if (nativeAquiferPrepared == null && nativeAquiferVolumeStrict) {
                 throw new IllegalStateException(
                         "Strict native full-volume Aquifer preparation was not completed");

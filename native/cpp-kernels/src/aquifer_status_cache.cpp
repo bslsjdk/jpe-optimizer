@@ -16,6 +16,7 @@ struct Entry {
     int32_t fluid_level = 0;
     uint32_t fluid_type = 0;
     bool occupied = false;
+    bool tombstone = false;
 };
 
 struct Cache {
@@ -25,6 +26,7 @@ struct Cache {
     const uint32_t max_entries;
     std::vector<Entry> slots;
     uint32_t size = 0;
+    size_t eviction_cursor = 0;
     std::mutex mutex;
 
     static size_t table_capacity(uint32_t maximum_entries) {
@@ -57,12 +59,19 @@ std::shared_ptr<Cache> acquire_cache(uint64_t handle) {
 Entry* find_slot(Cache& cache, uint64_t key) noexcept {
     const size_t mask = cache.slots.size() - 1U;
     size_t index = static_cast<size_t>(mix64(key)) & mask;
+    Entry* first_tombstone = nullptr;
     for (size_t probe = 0; probe < cache.slots.size(); ++probe) {
         Entry& entry = cache.slots[index];
-        if (!entry.occupied || entry.key == key) return &entry;
+        if (entry.occupied) {
+            if (entry.key == key) return &entry;
+        } else if (entry.tombstone) {
+            if (first_tombstone == nullptr) first_tombstone = &entry;
+        } else {
+            return first_tombstone != nullptr ? first_tombstone : &entry;
+        }
         index = (index + 1U) & mask;
     }
-    return nullptr;
+    return first_tombstone;
 }
 
 } // namespace
@@ -154,11 +163,60 @@ extern "C" int32_t jpe_cpp_aquifer_status_cache_insert_batch(
         entry->fluid_level = statuses[i].fluid_level;
         entry->fluid_type = statuses[i].fluid_type;
         entry->occupied = true;
+        entry->tombstone = false;
         ++cache->size;
     }
     return 0;
     } catch (...) {
         // No cache mutation occurs before preflight succeeds.
+        return 2;
+    }
+}
+
+extern "C" int32_t jpe_cpp_aquifer_status_cache_insert_batch_evict(
+    uint64_t handle,
+    const uint64_t* keys,
+    const JpeAquiferFluidStatus* statuses,
+    uint32_t count
+) {
+    constexpr uint32_t kMaxBatch = 1024U * 1024U;
+    if (keys == nullptr || statuses == nullptr || count == 0 || count > kMaxBatch) return 1;
+    auto cache = acquire_cache(handle);
+    if (!cache) return 1;
+
+    try {
+        std::lock_guard<std::mutex> lock(cache->mutex);
+        for (uint32_t i = 0; i < count; ++i) {
+            Entry* entry = find_slot(*cache, keys[i]);
+            if (entry == nullptr) return 2;
+            if (entry->occupied) continue;
+
+            if (cache->size >= cache->max_entries) {
+                bool evicted = false;
+                for (size_t probe = 0; probe < cache->slots.size(); ++probe) {
+                    Entry& candidate = cache->slots[cache->eviction_cursor];
+                    cache->eviction_cursor = (cache->eviction_cursor + 1U) & (cache->slots.size() - 1U);
+                    if (!candidate.occupied) continue;
+                    candidate.occupied = false;
+                    candidate.tombstone = true;
+                    --cache->size;
+                    evicted = true;
+                    break;
+                }
+                if (!evicted) return 2;
+                entry = find_slot(*cache, keys[i]);
+                if (entry == nullptr || entry->occupied) return 2;
+            }
+
+            entry->key = keys[i];
+            entry->fluid_level = statuses[i].fluid_level;
+            entry->fluid_type = statuses[i].fluid_type;
+            entry->occupied = true;
+            entry->tombstone = false;
+            ++cache->size;
+        }
+        return 0;
+    } catch (...) {
         return 2;
     }
 }
