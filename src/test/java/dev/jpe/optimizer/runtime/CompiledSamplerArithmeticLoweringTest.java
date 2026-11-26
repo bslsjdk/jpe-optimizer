@@ -152,10 +152,12 @@ class CompiledSamplerArithmeticLoweringTest {
                 CompiledSamplerArithmeticLowering.lower(graph, plan.islands().get(0), 0xA11);
         assertEquals(DensityGraphIr.MAX, lowered.graph().nodes().get(3).opcode());
         assertEquals(DensityGraphIr.MIN, lowered.graph().nodes().get(4).opcode());
-        assertEquals(0, lowered.graph().nodes().get(3).inputA());
-        assertEquals(1, lowered.graph().nodes().get(3).inputB());
+        // External slots are sorted by source trace order: 2 -> 0, 3 -> 1, 4 -> 2.
+        // MAX is emitted first (node 3); MIN then consumes MAX and input slot 0.
+        assertEquals(1, lowered.graph().nodes().get(3).inputA());
+        assertEquals(2, lowered.graph().nodes().get(3).inputB());
         assertEquals(3, lowered.graph().nodes().get(4).inputA());
-        assertEquals(2, lowered.graph().nodes().get(4).inputB());
+        assertEquals(0, lowered.graph().nodes().get(4).inputB());
     }
 
     @Test
