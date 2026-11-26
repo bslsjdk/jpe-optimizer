@@ -1679,14 +1679,16 @@ mod tests {
                 input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
             JpeDensityNode { opcode: DENSITY_SQUEEZE, input_a: 0,
                 input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_LEAKY_RELU, input_a: 0,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.25 },
         ];
         let handle = unsafe {
             jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 5, 9, 0xA86)
         };
         assert_ne!(handle, 0);
         let inputs = [0.25_f32, 4.0, -1.0, 0.0];
-        let roots = [1_u32, 2, 3, 4, 5];
-        let mut outputs = [0.0_f32; 20];
+        let roots = [1_u32, 2, 3, 4, 5, 6];
+        let mut outputs = [0.0_f32; 24];
         assert_eq!(unsafe {
             jpe_runtime_density_graph_evaluate_multi_with_inputs(
                 handle, 4, 1, 1, 0, 0, 0, 1, 1, 1,
@@ -1711,6 +1713,8 @@ mod tests {
         assert_eq!(outputs[17].to_bits(), expected_one.to_bits());
         assert_eq!(outputs[18].to_bits(), (-expected_one).to_bits());
         assert_eq!(outputs[19].to_bits(), 0.0_f32.to_bits());
+        assert_eq!(&outputs[20..23], &[0.25, 4.0, -0.25]);
+        assert_eq!(outputs[23].to_bits(), 0.0_f32.to_bits());
         assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
     }
 
