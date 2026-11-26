@@ -745,6 +745,14 @@ mod tests {
             step_x: i32, step_y: i32, step_z: i32,
             output: *mut f32, output_length: u64,
         ) -> i32;
+        fn jpe_cpp_blend_density_volume_vector_sort_reference(
+            height_data: *const JpeBlendingDataView, height_data_count: u32,
+            density_data: *const JpeBlendingDataView, density_data_count: u32,
+            size_x: u32, size_y: u32, size_z: u32,
+            min_x: i32, min_y: i32, min_z: i32,
+            step_x: i32, step_y: i32, step_z: i32,
+            noise_values: *const f32, outputs: *mut f32, output_count: u64,
+        ) -> i32;
     }
 
     #[test]
@@ -2703,9 +2711,10 @@ mod tests {
         let noise: Vec<f32> = (0..count).map(|i| {
             ((i * 29 % 211) as f32 - 103.0) * 0.03125_f32
         }).collect();
-        let mut output = vec![0.0_f32; count];
+        let mut heap_output = vec![0.0_f32; count];
+        let mut sort_output = vec![0.0_f32; count];
 
-        let run = |out: &mut [f32]| {
+        let run_heap = |out: &mut [f32]| {
             for _ in 0..REPEATS {
                 assert_eq!(unsafe {
                     jpe_runtime_blend_density_volume(
@@ -2718,26 +2727,64 @@ mod tests {
                 black_box(out[count / 2]);
             }
         };
+        let run_vector_sort = |out: &mut [f32]| {
+            for _ in 0..REPEATS {
+                assert_eq!(unsafe {
+                    jpe_cpp_blend_density_volume_vector_sort_reference(
+                        std::ptr::null(), 0, views.as_ptr(), views.len() as u32,
+                        SIZE_X as u32, SIZE_Y as u32, SIZE_Z as u32,
+                        52, -64, 52, 4, 8, 4,
+                        noise.as_ptr(), out.as_mut_ptr(), count as u64,
+                    )
+                }, STATUS_OK);
+                black_box(out[count / 2]);
+            }
+        };
 
-        // Warm up allocation paths and caches before collecting alternating rounds.
+        // Warm both implementations, then alternate order to reduce drift.
         for _ in 0..2 {
-            run(&mut output);
+            run_heap(&mut heap_output);
+            run_vector_sort(&mut sort_output);
         }
-        let mut samples = Vec::with_capacity(ROUNDS);
-        for _ in 0..ROUNDS {
-            let start = Instant::now();
-            run(&mut output);
-            samples.push(start.elapsed().as_nanos());
+        let mut heap_samples = Vec::with_capacity(ROUNDS);
+        let mut sort_samples = Vec::with_capacity(ROUNDS);
+        for round in 0..ROUNDS {
+            if round % 2 == 0 {
+                let start = Instant::now();
+                run_heap(&mut heap_output);
+                heap_samples.push(start.elapsed().as_nanos());
+                let start = Instant::now();
+                run_vector_sort(&mut sort_output);
+                sort_samples.push(start.elapsed().as_nanos());
+            } else {
+                let start = Instant::now();
+                run_vector_sort(&mut sort_output);
+                sort_samples.push(start.elapsed().as_nanos());
+                let start = Instant::now();
+                run_heap(&mut heap_output);
+                heap_samples.push(start.elapsed().as_nanos());
+            }
         }
-        samples.sort_unstable();
-        let median = samples[ROUNDS / 2];
-        let p95 = samples[(ROUNDS * 95 / 100).min(ROUNDS - 1)];
+        assert_eq!(
+            heap_output.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            sort_output.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            "linked-heap and vector-sort Blender outputs must be bit-identical"
+        );
+        heap_samples.sort_unstable();
+        sort_samples.sort_unstable();
+        let heap_median = heap_samples[ROUNDS / 2];
+        let sort_median = sort_samples[ROUNDS / 2];
+        let heap_p95 = heap_samples[(ROUNDS * 95 / 100).min(ROUNDS - 1)];
+        let sort_p95 = sort_samples[(ROUNDS * 95 / 100).min(ROUNDS - 1)];
         eprintln!(
-            "JPE_BLENDER_FULL_CHUNK_BENCH dims={}x{}x{} views={} points={} repeats={} rounds={} median_ms={:.3} p95_ms={:.3}",
+            "JPE_BLENDER_FULL_CHUNK_BENCH dims={}x{}x{} views={} points={} repeats={} rounds={} linked_heap_median_ms={:.3} linked_heap_p95_ms={:.3} vector_sort_median_ms={:.3} vector_sort_p95_ms={:.3} speedup={:.3}x",
             SIZE_X, SIZE_Y, SIZE_Z, views.len(), backing.len() * 48,
             REPEATS, ROUNDS,
-            median as f64 / 1_000_000.0,
-            p95 as f64 / 1_000_000.0
+            heap_median as f64 / 1_000_000.0,
+            heap_p95 as f64 / 1_000_000.0,
+            sort_median as f64 / 1_000_000.0,
+            sort_p95 as f64 / 1_000_000.0,
+            sort_median as f64 / heap_median as f64
         );
     }
 
