@@ -150,10 +150,39 @@ public final class GameTests {
             verifyAquiferNearestFour(runtime, 1,
                     legacyAccessor.jpe$seed(), 0L, legacyFactory, "legacy");
             verifyAquiferSubstanceBatch(runtime);
+            verifyAquiferStatusCache(runtime);
         } catch (Exception failure) {
             throw new AssertionError("Native Aquifer grid-cache parity failed", failure);
         }
         helper.succeed();
+    }
+
+    private static void verifyAquiferStatusCache(NativeRuntime runtime) {
+        if (!runtime.supportsAquiferStatusCache()) {
+            throw new AssertionError("Native Aquifer FluidStatus cache ABI is unavailable");
+        }
+        long handle = runtime.createAquiferStatusCache(8);
+        try {
+            long keyA = BlockPos.asLong(17, -48, -9);
+            long keyB = BlockPos.asLong(-33, 64, 27);
+            long keyMissing = BlockPos.asLong(1000, 0, -1000);
+            runtime.insertAquiferStatuses(
+                    handle,
+                    new long[]{keyA, keyB, keyA},
+                    new int[]{-40, 80, 999},
+                    new int[]{1, 2, 99});
+            NativeRuntime.AquiferStatusBatch result = runtime.lookupAquiferStatuses(
+                    handle, new long[]{keyB, keyA, keyMissing});
+            if (!java.util.Arrays.equals(result.found(), new boolean[]{true, true, false})
+                    || result.fluidLevels()[0] != 80 || result.fluidTypes()[0] != 2
+                    || result.fluidLevels()[1] != -40 || result.fluidTypes()[1] != 1) {
+                throw new AssertionError("Native Aquifer FluidStatus cache lookup/first-writer mismatch");
+            }
+        } finally {
+            runtime.destroyAquiferStatusCache(handle);
+        }
+        JPEOptimizer.LOGGER.info(
+                "JPE_AQUIFER_STATUS_CACHE batchLookup=true firstWriterWins=true missingLookup=true");
     }
 
     private static void verifyAquiferSubstanceBatch(NativeRuntime runtime) {
