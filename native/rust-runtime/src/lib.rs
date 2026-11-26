@@ -901,7 +901,7 @@ mod tests {
                 oz.as_mut_ptr(),od.as_mut_ptr()) },STATUS_OK);
             for s in 0..4 {
                 let ax=xs[s].wrapping_sub(5)>>4;
-                let ay=ys[s].wrapping_add(1).div_euclid(12);
+                let ay=ys[s].wrapping_add(1).div_euclid(12).wrapping_sub(1);
                 let az=zs[s].wrapping_sub(5)>>4;
                 let mut expected:Vec<(i32,i32,i32,i32)>=Vec::new();
                 for dx in 0..=1 { for dy in -1..=1 { for dz in 0..=1 {
