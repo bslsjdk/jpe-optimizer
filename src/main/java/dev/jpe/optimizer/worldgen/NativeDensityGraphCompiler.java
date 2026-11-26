@@ -41,7 +41,7 @@ import java.util.WeakHashMap;
  * graph, leaving the existing vanilla sampler untouched.
  */
 public final class NativeDensityGraphCompiler {
-    private static final long CONFIGURATION_FINGERPRINT = 0x4A50452603000002L;
+    private static final long CONFIGURATION_FINGERPRINT = 0x4A50452603000003L;
     private static final Object LOCK = new Object();
 
     // The compiler context is owned by RandomState and remains stable across chunks.
