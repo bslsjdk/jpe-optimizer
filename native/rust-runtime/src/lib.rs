@@ -2777,7 +2777,7 @@ mod tests {
         let heap_p95 = heap_samples[(ROUNDS * 95 / 100).min(ROUNDS - 1)];
         let sort_p95 = sort_samples[(ROUNDS * 95 / 100).min(ROUNDS - 1)];
         eprintln!(
-            "JPE_BLENDER_FULL_CHUNK_BENCH dims={}x{}x{} views={} points={} repeats={} rounds={} linked_heap_median_ms={:.3} linked_heap_p95_ms={:.3} vector_sort_median_ms={:.3} vector_sort_p95_ms={:.3} speedup={:.3}x",
+            "JPE_BLENDER_FULL_CHUNK_BENCH dims={}x{}x{} views={} points={} repeats={} rounds={} dense_grid_heap_median_ms={:.3} dense_grid_heap_p95_ms={:.3} vector_sort_median_ms={:.3} vector_sort_p95_ms={:.3} speedup={:.3}x",
             SIZE_X, SIZE_Y, SIZE_Z, views.len(), backing.len() * 48,
             REPEATS, ROUNDS,
             heap_median as f64 / 1_000_000.0,
