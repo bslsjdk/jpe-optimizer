@@ -23,11 +23,11 @@ The 26.3 dual-artifact source-audit target list now includes `Aquifer` and its
 `NoiseBasedAquifer` nested implementation, `RandomState`, `NoiseGeneratorSettings`,
 both audited positional RNG implementations, `PositionalRandomFactory`,
 `RandomSource`, and `Mth`. The audit requires the exact nested Aquifer implementation
-in both source JARs, checks that `computeSubstance` exists, and records the bytecode
-length and SHA-256 fingerprints of the Aquifer decision methods in both Mojang's
-vanilla artifact and the NeoForge-patched artifact. That newly expanded audit remains
-subject to the latest CI result; adding classes to the inventory is not itself proof
-that decompilation/parity has passed.
+in both source JARs, checks that `computeSubstance` exists, records Aquifer fluid-related
+method bytecode lengths and SHA-256 fingerprints, and reports the field names,
+descriptors, and access flags from both Mojang's vanilla artifact and the NeoForge-patched
+artifact. That newly expanded audit remains subject to the latest CI result; adding
+classes to the inventory is not itself proof that decompilation/parity has passed.
 
 ## Minecraft integration currently enabled only in CI
 
