@@ -87,6 +87,27 @@ float minecraft_clamp(float value, float minimum, float maximum) noexcept {
 float minecraft_volume_min(float left, float right) noexcept { return right < left ? right : left; }
 float minecraft_volume_max(float left, float right) noexcept { return right > left ? right : left; }
 
+float apply_unary_density(uint32_t opcode, float value) noexcept {
+    switch (opcode) {
+        case JPE_DENSITY_SQRT:
+            return static_cast<float>(std::sqrt(static_cast<double>(value)));
+        case JPE_DENSITY_LOG:
+            return static_cast<float>(std::log(static_cast<double>(value)));
+        case JPE_DENSITY_RECIPROCAL:
+            return 1.0f / value;
+        case JPE_DENSITY_SIGN:
+            if (std::isnan(value) || value == 0.0f) return value;
+            return std::copysign(1.0f, value);
+        case JPE_DENSITY_SQUEEZE: {
+            const float clamped = minecraft_clamp(value, -1.0f, 1.0f);
+            const float cube = (clamped * clamped) * clamped;
+            return (clamped / 2.0f) - (cube / 24.0f);
+        }
+        default:
+            return value;
+    }
+}
+
 struct StaticBinding {
     uint32_t node;
     float value;
@@ -152,6 +173,11 @@ void build_execution_plan(CompiledGraph& graph) {
             case JPE_DENSITY_ABS:
             case JPE_DENSITY_SQUARE:
             case JPE_DENSITY_CUBE:
+            case JPE_DENSITY_SQRT:
+            case JPE_DENSITY_LOG:
+            case JPE_DENSITY_RECIPROCAL:
+            case JPE_DENSITY_SIGN:
+            case JPE_DENSITY_SQUEEZE:
                 graph.arithmetic.push_back({node.opcode, node.input_a, kNoInput, i, 0.0f, 0.0f});
                 break;
             case JPE_DENSITY_CLAMP: {
@@ -255,6 +281,11 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
             case JPE_DENSITY_ABS:
             case JPE_DENSITY_SQUARE:
             case JPE_DENSITY_CUBE:
+            case JPE_DENSITY_SQRT:
+            case JPE_DENSITY_LOG:
+            case JPE_DENSITY_RECIPROCAL:
+            case JPE_DENSITY_SIGN:
+            case JPE_DENSITY_SQUEEZE:
                 if (node.reserved != 0 || node.input_a >= i || node.input_b != kNoInput) return false;
                 break;
             case JPE_DENSITY_CLAMP:
@@ -289,7 +320,7 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
     const JpeDensityNode* nodes, uint32_t node_count, uint32_t root_node,
     uint32_t ir_version, uint64_t configuration_fingerprint
 ) try {
-    if (ir_version != 8 || !valid_graph(nodes, node_count, root_node)) return 0;
+    if (ir_version != 9 || !valid_graph(nodes, node_count, root_node)) return 0;
     const uint64_t fingerprint = hash_graph(nodes, node_count, root_node, ir_version, configuration_fingerprint);
     std::lock_guard<std::mutex> lock(g_mutex);
     const auto range = g_cache.equal_range(fingerprint);
@@ -416,7 +447,7 @@ extern "C" uint64_t jpe_cpp_density_graph_load_cache(
             || !read_u64(bytes, offset, immediate_bits)) return 0;
         std::memcpy(&node.immediate, &immediate_bits, sizeof(immediate_bits));
     }
-    if (offset != payload_length || ir_version != 8 || !valid_graph(nodes.data(), count, root)) return 0;
+    if (offset != payload_length || ir_version != 9 || !valid_graph(nodes.data(), count, root)) return 0;
     return jpe_cpp_density_graph_compile(nodes.data(), count, root, ir_version, configuration);
 } catch (...) { return 0; }
 
@@ -587,6 +618,10 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
                     const float square = left[sample] * left[sample];
                     destination[sample] = square * left[sample];
                 }
+            } else if (instruction.opcode >= JPE_DENSITY_SQRT && instruction.opcode <= JPE_DENSITY_SQUEEZE) {
+                for (uint32_t sample = 0; sample < count; ++sample) {
+                    destination[sample] = apply_unary_density(instruction.opcode, left[sample]);
+                }
             } else {
                 for (uint32_t sample = 0; sample < count; ++sample) {
                     destination[sample] = left[sample] / right[sample];
@@ -703,6 +738,13 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_scalar_reference(
                             values[n] = square * values[node.input_a];
                             break;
                         }
+                        case JPE_DENSITY_SQRT:
+                        case JPE_DENSITY_LOG:
+                        case JPE_DENSITY_RECIPROCAL:
+                        case JPE_DENSITY_SIGN:
+                        case JPE_DENSITY_SQUEEZE:
+                            values[n] = apply_unary_density(node.opcode, values[node.input_a]);
+                            break;
                         case JPE_DENSITY_CLAMP: {
                             uint64_t packed = 0;
                             std::memcpy(&packed, &node.immediate, sizeof(packed));
