@@ -486,7 +486,9 @@ public final class NativeRuntime implements AutoCloseable {
                 MemorySegment nativeDensityViews = encodeRawBlendingData(arena, densityViews);
                 long floatBytes = Math.multiplyExact((long) length, ValueLayout.JAVA_FLOAT.byteSize());
                 MemorySegment nativeNoise = arena.allocate(floatBytes, ValueLayout.JAVA_FLOAT.byteAlignment());
-                MemorySegment nativeOutput = arena.allocate(floatBytes, ValueLayout.JAVA_FLOAT.byteAlignment());
+                boolean inPlace = noiseValues == outputValues;
+                MemorySegment nativeOutput = inPlace ? nativeNoise
+                        : arena.allocate(floatBytes, ValueLayout.JAVA_FLOAT.byteAlignment());
                 MemorySegment.copy(noiseValues, 0, nativeNoise, ValueLayout.JAVA_FLOAT, 0, length);
                 int minX = volume.minBlockX(), minY = volume.minBlockY(), minZ = volume.minBlockZ();
                 int stepX = sizeX > 1 ? volume.blockX(1) - minX : 1;
