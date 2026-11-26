@@ -119,6 +119,13 @@ public final class NativePerlinNoiseBackend {
         return current != null && current.supportsDensityGraphF32() ? current : null;
     }
 
+    /** Runtime access for the experimental Aquifer location-cache prefill. */
+    public static NativeRuntime runtimeForAquifer() {
+        if (!Boolean.getBoolean("jpe.nativeAquiferGridCentersEnabled")) return null;
+        NativeRuntime current = runtime();
+        return current != null && current.supportsAquiferGridCenters() ? current : null;
+    }
+
     /** Converts a captured vanilla NoiseStack.Perlin into an immutable native plan handle. */
     public static long preparedStackHandleForDensityGraph(Noise noise) {
         if (!(noise instanceof NoiseStack stack)
