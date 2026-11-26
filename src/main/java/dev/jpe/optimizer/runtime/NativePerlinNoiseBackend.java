@@ -65,6 +65,8 @@ public final class NativePerlinNoiseBackend {
     }
 
     public static String mode() {
+        NativeRuntime current = runtime;
+        if (current != null && current.supportsPreparedPerlinStack()) return "native-perlin-prepared-stack";
         return Boolean.getBoolean("jpe.nativePerlinSynchronous")
                 ? "native-perlin-sync" : "native-perlin-async";
     }
