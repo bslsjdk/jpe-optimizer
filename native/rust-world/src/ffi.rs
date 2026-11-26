@@ -12,6 +12,7 @@
 use crate::chunk::ChunkState;
 use crate::coords::ChunkPos;
 use crate::mesh::{build_section_mesh, ChunkSection, Vertex};
+use crate::render::{Backend, DrawBatch, MeshHandle, RenderError, Renderer};
 use crate::scheduler::{Completion, SchedulerCore};
 use crate::task::{ChunkJob, JobKind, Priority};
 use std::collections::HashMap;
@@ -395,16 +396,8 @@ pub extern "C" fn jpe_world_mesh_section(
     if section.is_null() || vertex_bytes.is_null() || index_out.is_null() {
         return -1;
     }
-    let mut chunk_section = ChunkSection::new();
-    for y in 0..16usize {
-        for z in 0..16usize {
-            for x in 0..16usize {
-                // SAFETY: caller provides 4096 readable u16 values.
-                let block = unsafe { *section.add((y << 8) | (z << 4) | x) };
-                chunk_section.set(x, y, z, block);
-            }
-        }
-    }
+    // SAFETY: caller provides 4096 readable u16 values (checked non-null).
+    let chunk_section = unsafe { read_section(section) };
     let mesh = build_section_mesh(&chunk_section, [origin_x, origin_y, origin_z]);
 
     let vertex_count = mesh.vertices.len();
@@ -432,6 +425,327 @@ pub extern "C" fn jpe_world_mesh_section(
         }
     }
     vertex_count as i64
+}
+
+
+/// Read 4096 block ids indexed `(y<<8)|(z<<4)|x`.
+///
+/// # Safety
+/// `section` must point to at least 4096 readable `u16` values.
+unsafe fn read_section(section: *const u16) -> ChunkSection {
+    let mut chunk_section = ChunkSection::new();
+    for y in 0..16usize {
+        for z in 0..16usize {
+            for x in 0..16usize {
+                // SAFETY: guaranteed by the caller; index is within 4096.
+                let block = unsafe { *section.add((y << 8) | (z << 4) | x) };
+                chunk_section.set(x, y, z, block);
+            }
+        }
+    }
+    chunk_section
+}
+
+// ---------------------------------------------------------------------------
+// Renderer (native GPU backends)
+// ---------------------------------------------------------------------------
+
+/// Backend selector codes, mirrored in `JpeWorldNative.java`.
+pub const RENDER_BACKEND_AUTO: u32 = 0;
+pub const RENDER_BACKEND_VULKAN: u32 = 1;
+pub const RENDER_BACKEND_GL: u32 = 2;
+pub const RENDER_BACKEND_GLES: u32 = 3;
+
+/// Renderer capabilities, FFM-visible. 24 bytes, all fields 4-byte.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct JpeRendererCaps {
+    pub backend: u32,
+    pub api_major: u32,
+    pub api_minor: u32,
+    pub max_texture_size: u32,
+    pub supports_compute: u32,
+    pub reserved: u32,
+}
+
+fn backend_code(backend: Backend) -> u32 {
+    match backend {
+        Backend::Vulkan => RENDER_BACKEND_VULKAN,
+        Backend::Gl => RENDER_BACKEND_GL,
+        Backend::Gles => RENDER_BACKEND_GLES,
+        Backend::Headless => 0,
+    }
+}
+
+struct RendererEntry {
+    thread: std::thread::ThreadId,
+    renderer: Box<dyn Renderer>,
+}
+
+// SAFETY: a renderer must be driven from the thread that created it (EGL/GL
+// contexts are thread-affine). `with_renderer` compares the caller's thread id
+// and rejects anything else with -7 before touching the backend, and the
+// registry mutex serialises calls, so no renderer is used concurrently or
+// cross-thread. `Send` is required only to store entries in the process-wide
+// registry.
+unsafe impl Send for RendererEntry {}
+
+#[derive(Default)]
+struct RendererRegistry {
+    next: u64,
+    entries: HashMap<u64, RendererEntry>,
+}
+
+fn renderer_registry() -> &'static Mutex<RendererRegistry> {
+    static REG: OnceLock<Mutex<RendererRegistry>> = OnceLock::new();
+    REG.get_or_init(|| Mutex::new(RendererRegistry::default()))
+}
+
+fn renderer_lock() -> MutexGuard<'static, RendererRegistry> {
+    renderer_registry().lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Build a renderer for `backend`, or `None` when that backend cannot run here.
+fn make_renderer(backend: u32) -> Option<Box<dyn Renderer>> {
+    match backend {
+        RENDER_BACKEND_AUTO => crate::render::create_best_headless().ok(),
+        RENDER_BACKEND_VULKAN => crate::render::vulkan::VulkanRenderer::create_headless()
+            .ok()
+            .map(|r| Box::new(r) as Box<dyn Renderer>),
+        RENDER_BACKEND_GL => crate::render::gl::GlRenderer::create_headless()
+            .ok()
+            .map(|r| Box::new(r) as Box<dyn Renderer>),
+        RENDER_BACKEND_GLES => crate::render::gles::GlesRenderer::create_headless()
+            .ok()
+            .map(|r| Box::new(r) as Box<dyn Renderer>),
+        _ => None,
+    }
+}
+
+fn render_error_code(error: RenderError) -> i32 {
+    match error {
+        RenderError::BackendUnavailable(_) => -3,
+        RenderError::InvalidMesh => -4,
+        RenderError::Unsupported(_) => -6,
+        RenderError::DeviceLost | RenderError::OutOfMemory | RenderError::Api(_) => -5,
+    }
+}
+
+/// Drive the renderer behind `handle`.
+///
+/// `Err(-1)` unknown handle, `Err(-7)` called from a thread other than the one
+/// that created it. Backend errors map to -3 (unavailable), -4 (invalid mesh),
+/// -5 (API/device), -6 (unsupported/read before a frame exists).
+fn with_renderer<R>(
+    handle: u64,
+    f: impl FnOnce(&mut dyn Renderer) -> Result<R, RenderError>,
+) -> Result<R, i32> {
+    let mut reg = renderer_lock();
+    let Some(entry) = reg.entries.get_mut(&handle) else {
+        return Err(-1);
+    };
+    if entry.thread != std::thread::current().id() {
+        return Err(-7);
+    }
+    f(entry.renderer.as_mut()).map_err(render_error_code)
+}
+
+fn status<R>(result: Result<R, i32>) -> i32 {
+    match result {
+        Ok(_) => 0,
+        Err(code) => code,
+    }
+}
+
+/// Create a renderer for `backend` (0 = best available).
+///
+/// Returns a non-zero handle, or 0 when that backend cannot run here. The
+/// handle must be used from the creating thread; other threads get -7.
+#[no_mangle]
+pub extern "C" fn jpe_world_renderer_create(backend: u32) -> u64 {
+    let Some(renderer) = make_renderer(backend) else {
+        return 0;
+    };
+    let mut reg = renderer_lock();
+    reg.next = reg.next.wrapping_add(1).max(1);
+    let handle = reg.next;
+    reg.entries.insert(
+        handle,
+        RendererEntry {
+            thread: std::thread::current().id(),
+            renderer,
+        },
+    );
+    handle
+}
+
+/// 1 if `backend` can be created here (it is created and released), else 0.
+#[no_mangle]
+pub extern "C" fn jpe_world_renderer_available(backend: u32) -> i32 {
+    if make_renderer(backend).is_some() { 1 } else { 0 }
+}
+
+/// Destroy a renderer. 0 ok, -1 unknown handle, -7 wrong thread.
+#[no_mangle]
+pub extern "C" fn jpe_world_renderer_destroy(handle: u64) -> i32 {
+    let mut reg = renderer_lock();
+    let owned = match reg.entries.get(&handle) {
+        Some(entry) => entry.thread == std::thread::current().id(),
+        None => return -1,
+    };
+    if !owned {
+        return -7;
+    }
+    reg.entries.remove(&handle);
+    0
+}
+
+/// Fill `out` with the renderer's capabilities.
+/// 0 ok, -1 unknown handle, -2 null pointer, -7 wrong thread.
+#[no_mangle]
+pub extern "C" fn jpe_world_renderer_capabilities(handle: u64, out: *mut JpeRendererCaps) -> i32 {
+    if out.is_null() {
+        return -2;
+    }
+    match with_renderer(handle, |r| Ok(r.capabilities())) {
+        Ok(caps) => {
+            // SAFETY: non-null checked; caller provides a 24-byte writable block.
+            unsafe {
+                *out = JpeRendererCaps {
+                    backend: backend_code(caps.backend),
+                    api_major: caps.api_version.0,
+                    api_minor: caps.api_version.1,
+                    max_texture_size: caps.max_texture_size,
+                    supports_compute: caps.supports_compute as u32,
+                    reserved: 0,
+                };
+            }
+            0
+        }
+        Err(code) => code,
+    }
+}
+
+/// Start a frame targeting `width` x `height` pixels.
+/// 0 ok, -1 unknown, -4 invalid extent, -5 API error, -7 wrong thread.
+#[no_mangle]
+pub extern "C" fn jpe_world_renderer_begin_frame(handle: u64, width: u32, height: u32) -> i32 {
+    status(with_renderer(handle, |r| r.begin_frame([width, height])))
+}
+
+/// Mesh a 16^3 section and upload it to the renderer in one call.
+///
+/// `section` is 4096 block ids indexed `(y<<8)|(z<<4)|x`, exactly as
+/// `jpe_world_mesh_section`. Writes the mesh handle and its index count.
+/// 0 ok, -1 unknown, -2 null pointer, -4 empty/invalid mesh, -5 API error,
+/// -7 wrong thread.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn jpe_world_renderer_upload_section(
+    handle: u64,
+    section: *const u16,
+    origin_x: i32,
+    origin_y: i32,
+    origin_z: i32,
+    out_mesh: *mut u64,
+    out_index_count: *mut u32,
+) -> i32 {
+    if section.is_null() || out_mesh.is_null() {
+        return -2;
+    }
+    // SAFETY: caller provides 4096 readable u16 block ids.
+    let chunk_section = unsafe { read_section(section) };
+    let mesh = build_section_mesh(&chunk_section, [origin_x, origin_y, origin_z]);
+    let index_count = mesh.indices.len() as u32;
+    match with_renderer(handle, |r| r.create_mesh(&mesh)) {
+        Ok(mesh_handle) => {
+            // SAFETY: `out_mesh` non-null checked; `out_index_count` optional.
+            unsafe {
+                *out_mesh = mesh_handle.0;
+                if !out_index_count.is_null() {
+                    *out_index_count = index_count;
+                }
+            }
+            0
+        }
+        Err(code) => code,
+    }
+}
+
+/// Release a mesh uploaded by this renderer.
+/// 0 ok, -1 unknown renderer, -7 wrong thread.
+#[no_mangle]
+pub extern "C" fn jpe_world_renderer_destroy_mesh(handle: u64, mesh: u64) -> i32 {
+    status(with_renderer(handle, |r| {
+        r.destroy_mesh(MeshHandle(mesh));
+        Ok(())
+    }))
+}
+
+/// Queue an indexed draw of `mesh` for the current frame.
+/// 0 ok, -1 unknown renderer, -4 bad mesh or no frame begun, -7 wrong thread.
+#[no_mangle]
+pub extern "C" fn jpe_world_renderer_draw(
+    handle: u64,
+    mesh: u64,
+    index_count: u32,
+    instance_count: u32,
+) -> i32 {
+    status(with_renderer(handle, |r| {
+        r.draw(DrawBatch {
+            mesh: MeshHandle(mesh),
+            index_count,
+            instance_count,
+        })
+    }))
+}
+
+/// Finish the frame (draws the queued batches and captures the frame).
+/// 0 ok, -1 unknown, -4 no frame begun, -5 API error, -7 wrong thread.
+#[no_mangle]
+pub extern "C" fn jpe_world_renderer_end_frame(handle: u64) -> i32 {
+    status(with_renderer(handle, |r| r.end_frame()))
+}
+
+/// Copy the last completed frame into `dst` (tightly packed RGBA8, top-left
+/// origin) and write its size to `out_width`/`out_height`.
+///
+/// With `dst == null` this only reports the size. Returns 0 on success, -1
+/// unknown handle, -2 destination too small, -6 no completed frame, -7 wrong
+/// thread.
+#[no_mangle]
+pub extern "C" fn jpe_world_renderer_read_pixels(
+    handle: u64,
+    dst: *mut u8,
+    dst_len: usize,
+    out_width: *mut u32,
+    out_height: *mut u32,
+) -> i32 {
+    let frame = match with_renderer(handle, |r| r.read_pixels()) {
+        Ok(frame) => frame,
+        Err(code) => return code,
+    };
+    // SAFETY: optional out pointers are written only when non-null.
+    unsafe {
+        if !out_width.is_null() {
+            *out_width = frame.width;
+        }
+        if !out_height.is_null() {
+            *out_height = frame.height;
+        }
+    }
+    if dst.is_null() {
+        return 0;
+    }
+    let required = frame.rgba8.len();
+    if dst_len < required {
+        return -2;
+    }
+    // SAFETY: destination is writable for `required` bytes (checked above).
+    unsafe {
+        std::ptr::copy_nonoverlapping(frame.rgba8.as_ptr(), dst, required);
+    }
+    0
 }
 
 #[cfg(test)]
@@ -544,5 +858,116 @@ mod tests {
             std::ptr::null_mut(),
         );
         assert_eq!(n, -2);
+    }
+
+    fn require_or_skip(msg: &'static str) {
+        if std::env::var_os("JPE_REQUIRE_RENDER_BACKENDS").is_some() {
+            panic!("render backend required but unavailable: {msg}");
+        }
+    }
+
+    /// One frame/upload/draw/readback round trip on a live renderer handle.
+    fn exercise_renderer(handle: u64) {
+        assert_eq!(jpe_world_renderer_begin_frame(handle, 128, 128), 0);
+        assert_eq!(jpe_world_renderer_begin_frame(handle, 0, 128), -4);
+
+        let mut blocks = vec![0u16; 4096];
+        blocks[0] = 1;
+        let mut mesh = 0u64;
+        let mut index_count = 0u32;
+        assert_eq!(
+            jpe_world_renderer_upload_section(
+                handle,
+                blocks.as_ptr(),
+                0,
+                0,
+                0,
+                &mut mesh,
+                &mut index_count
+            ),
+            0
+        );
+        assert_ne!(mesh, 0);
+        assert_eq!(index_count, 36);
+
+        assert_eq!(jpe_world_renderer_draw(handle, mesh, index_count, 1), 0);
+        assert_eq!(jpe_world_renderer_end_frame(handle), 0);
+
+        let mut width = 0u32;
+        let mut height = 0u32;
+        let mut pixels = vec![0u8; 128 * 128 * 4];
+        assert_eq!(
+            jpe_world_renderer_read_pixels(
+                handle,
+                pixels.as_mut_ptr(),
+                pixels.len(),
+                &mut width,
+                &mut height
+            ),
+            0
+        );
+        assert_eq!((width, height), (128, 128));
+
+        // Cleared corner is the dark background, and the shader's colour must
+        // cover a real area (the geometry, wherever the backend maps it).
+        let background = [pixels[0], pixels[1], pixels[2], pixels[3]];
+        assert!(background[0] <= 16 && background[1] <= 16, "background {background:?}");
+        let orange = pixels
+            .chunks_exact(4)
+            .filter(|p| {
+                p[0] >= 250 && p[1].abs_diff(128) <= 4 && p[2].abs_diff(64) <= 4 && p[3] == 255
+            })
+            .count();
+        assert!(orange > 100, "expected shader-coloured coverage, got {orange} pixels");
+
+        // A renderer is thread-affine: another thread is rejected, never served.
+        let other = std::thread::spawn(move || jpe_world_renderer_begin_frame(handle, 16, 16));
+        assert_eq!(other.join().unwrap(), -7);
+
+        assert_eq!(jpe_world_renderer_destroy_mesh(handle, mesh), 0);
+    }
+
+    /// Drive the renderer C ABI on every backend that can run here: selector,
+    /// capabilities, frame, mesh upload, draw and pixel readback.
+    #[test]
+    fn renderer_over_c_abi_draws_and_reads_pixels() {
+        let mut ran = 0u32;
+        for backend in [RENDER_BACKEND_VULKAN, RENDER_BACKEND_GL, RENDER_BACKEND_GLES] {
+            let handle = jpe_world_renderer_create(backend);
+            if handle == 0 {
+                require_or_skip("requested native render backend unavailable");
+                eprintln!("backend code {backend} unavailable here, skipping");
+                continue;
+            }
+
+            let mut caps = JpeRendererCaps::default();
+            assert_eq!(jpe_world_renderer_capabilities(handle, &mut caps), 0);
+            assert_eq!(caps.backend, backend, "selector created the wrong backend");
+            assert!(caps.api_major >= 1);
+            assert!(caps.max_texture_size >= 256);
+
+            exercise_renderer(handle);
+
+            assert_eq!(jpe_world_renderer_destroy(handle), 0);
+            assert_eq!(jpe_world_renderer_destroy(handle), -1);
+            ran += 1;
+        }
+
+        // Reading before any completed frame is an explicit error, not stale data.
+        let fresh = jpe_world_renderer_create(RENDER_BACKEND_AUTO);
+        assert_ne!(fresh, 0);
+        let mut pixel = [0u8; 4];
+        assert_eq!(
+            jpe_world_renderer_read_pixels(
+                fresh,
+                pixel.as_mut_ptr(),
+                pixel.len(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut()
+            ),
+            -6
+        );
+        assert_eq!(jpe_world_renderer_destroy(fresh), 0);
+        assert!(ran > 0, "no backend could be exercised");
     }
 }

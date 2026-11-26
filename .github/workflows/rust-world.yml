@@ -84,15 +84,16 @@ jobs:
 
       # `JPE_REQUIRE_RENDER_BACKENDS=1` makes the backend tests fail (instead of
       # skipping) if a driver is missing, so this job proves Vulkan, GL and GLES
-      # each actually created a device/context and rendered a frame.
-      - name: Renderer tests (must not skip)
+      # each created a device/context, rendered a frame, and can be driven over
+      # the C ABI (the `ffi::tests::renderer_over_c_abi_*` test covers all three).
+      - name: Tests including native backends (must not skip)
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: llvmpipe
           XDG_RUNTIME_DIR: /tmp
           JPE_REQUIRE_RENDER_BACKENDS: "1"
-        run: cargo test render:: -- --test-threads=1
+        run: cargo test -- --test-threads=1
 
   java-bridge:
     name: Java 25 FFM bridge harness
@@ -115,8 +116,21 @@ jobs:
           distribution: temurin
           java-version: "25"
 
-      # Drives the Rust scheduler/mesher through the C ABI with Java 25 FFM.
-      # No C++ library, no Minecraft, no GPU: the only native dependency is
-      # libjpe_world, which the script builds from source.
+      - name: Install Mesa software drivers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            mesa-vulkan-drivers libegl-mesa0 libgl1-mesa-dri libgles2 libgl1 libglvnd0
+
+      # Drives the Rust scheduler, mesher and a native GPU backend through the
+      # C ABI with Java 25 FFM. No C++ library, no Minecraft: the only native
+      # dependency is libjpe_world, which the script builds from source. With
+      # `JPE_REQUIRE_RENDER_BACKENDS=1` the renderer section must not skip.
       - name: Build and run harness
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+          XDG_RUNTIME_DIR: /tmp
+          JPE_REQUIRE_RENDER_BACKENDS: "1"
         run: java/run_harness.sh

@@ -24,14 +24,21 @@ cargo build --features cpp-bridge   # expects jpe_runtime symbols at link time
 The current phase wires Java to the Rust engine directly, with no C++, while the
 C++ side is still in progress. `src/ffi.rs` exports a stable C ABI
 (`jpe_world_*`), and `java/src/dev/jpe/world/` holds the Java 25 FFM binding plus
-an end-to-end harness that exercises scheduling, lifecycle, meshing and epoch
-invalidation through that ABI.
+an end-to-end harness that exercises scheduling, lifecycle, meshing, epoch
+invalidation **and a native GPU backend** (create, capabilities, frame, section
+upload, draw, pixel readback) through that ABI.
 
 ```sh
 # Builds libjpe_world (release), compiles the harness, and runs it.
-# Needs JDK 25+ (FFM). No GPU, no Minecraft, no C++ library.
+# Needs JDK 25+ (FFM). No Minecraft, no C++ library. If a GPU driver exists the
+# renderer section runs for real; otherwise it skips unless
+# JPE_REQUIRE_RENDER_BACKENDS=1 is set.
 java/run_harness.sh
 ```
+
+Renderer handles are thread-affine: a handle must be driven from the thread that
+created it, and any other thread gets status `-7` instead of touching a
+thread-local GL/EGL context.
 
 ## Status
 

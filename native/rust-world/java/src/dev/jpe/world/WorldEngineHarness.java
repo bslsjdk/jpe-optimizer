@@ -27,12 +27,17 @@ public final class WorldEngineHarness {
         Path library = Path.of(args[0]).toAbsolutePath();
         System.out.println("[harness] library = " + library);
 
-        try (JpeWorldNative world = new JpeWorldNative(library)) {
-            abi(world);
-            schedulingAndLifecycle(world);
-            meshing(world);
-            epochInvalidation(world);
-        }
+        // Deliberately not try-with-resources: closing the FFM arena unloads
+        // libjpe_world. Once a GPU backend has initialised a driver, Mesa
+        // keeps process-wide teardown state whose code lives in that module,
+        // so unloading it makes the JVM crash on exit. Production loads the
+        // library once and never unloads it; the harness mirrors that.
+        JpeWorldNative world = new JpeWorldNative(library);
+        abi(world);
+        schedulingAndLifecycle(world);
+        meshing(world);
+        epochInvalidation(world);
+        renderers(world);
 
         System.out.println("[harness] all " + checks + " checks passed");
     }
@@ -164,6 +169,86 @@ public final class WorldEngineHarness {
         eq("stale completion counted", 1L, s.staleDiscarded());
 
         world.destroy(h);
+    }
+
+    /**
+     * Drives a native GPU backend end to end: create, capabilities, frame,
+     * upload a meshed section, draw, read the frame back and check the pixels.
+     *
+     * <p>If no driver is present the section is skipped, unless
+     * {@code JPE_REQUIRE_RENDER_BACKENDS} is set, in which case it fails so CI
+     * cannot silently lose GPU coverage.
+     */
+    private static void renderers(JpeWorldNative world) {
+        long r = world.rendererCreate(JpeWorldNative.BACKEND_AUTO);
+        if (r == 0) {
+            if (System.getenv("JPE_REQUIRE_RENDER_BACKENDS") != null) {
+                throw new AssertionError("check failed: render backend required but none available");
+            }
+            System.out.println("[harness] no native render backend here, skipping renderer checks");
+            return;
+        }
+
+        JpeWorldNative.RendererCaps caps = world.rendererCapabilities(r);
+        System.out.println("[harness] renderer backend=" + caps.backend()
+                + " api=" + caps.apiMajor() + "." + caps.apiMinor()
+                + " maxTex=" + caps.maxTextureSize());
+        check("renderer reports vulkan, gl or gles",
+                caps.backend() >= JpeWorldNative.BACKEND_VULKAN
+                        && caps.backend() <= JpeWorldNative.BACKEND_GLES);
+        check("renderer api major >= 1", caps.apiMajor() >= 1);
+        check("renderer max texture size >= 256", caps.maxTextureSize() >= 256);
+
+        eq("renderer begin frame", 0, world.rendererBeginFrame(r, 128, 128));
+
+        short[] blocks = new short[4096];
+        blocks[0] = 1;
+        JpeWorldNative.MeshUpload mesh = world.rendererUploadSection(r, blocks, 0, 0, 0);
+        check("renderer mesh handle non-zero", mesh.mesh() != 0);
+        eq("renderer index count", 36, mesh.indexCount());
+
+        eq("renderer draw", 0, world.rendererDraw(r, mesh.mesh(), mesh.indexCount(), 1));
+        eq("renderer end frame", 0, world.rendererEndFrame(r));
+
+        byte[] pixels = world.rendererReadPixels(r, 128, 128);
+        eq("renderer frame byte size", 128 * 128 * 4, pixels.length);
+
+        int bgR = pixels[0] & 0xff;
+        int bgG = pixels[1] & 0xff;
+        int bgB = pixels[2] & 0xff;
+        check("cleared corner is the dark blue background",
+                bgR <= 16 && bgG <= 16 && bgB >= 18 && bgB <= 34);
+
+        int orange = 0;
+        for (int i = 0; i < pixels.length; i += 4) {
+            int cr = pixels[i] & 0xff;
+            int cg = pixels[i + 1] & 0xff;
+            int cb = pixels[i + 2] & 0xff;
+            int ca = pixels[i + 3] & 0xff;
+            if (cr >= 250 && Math.abs(cg - 128) <= 4 && Math.abs(cb - 64) <= 4 && ca == 255) {
+                orange++;
+            }
+        }
+        check("shader colour covers pixels (" + orange + ")", orange > 100);
+
+        // A renderer is thread-affine; the wrong thread must be rejected rather
+        // than touching a context it does not own.
+        int[] wrongThread = new int[1];
+        Thread t = new Thread(() -> wrongThread[0] = world.rendererBeginFrame(r, 8, 8));
+        t.start();
+        try {
+            t.join();
+        } catch (InterruptedException e) {
+            throw new AssertionError(e);
+        }
+        eq("renderer call from another thread is rejected",
+                JpeWorldNative.RENDER_WRONG_THREAD, wrongThread[0]);
+
+        eq("renderer destroy mesh", 0, world.rendererDestroyMesh(r, mesh.mesh()));
+        eq("renderer destroy", 0, world.rendererDestroy(r));
+        eq("renderer destroy unknown handle", JpeWorldNative.RENDER_UNKNOWN_HANDLE,
+                world.rendererDestroy(r));
+        eq("unknown backend code is unavailable", 0, world.rendererAvailable(99));
     }
 
     private static JpeWorldNative.Job requireJob(JpeWorldNative world, long handle, String label) {

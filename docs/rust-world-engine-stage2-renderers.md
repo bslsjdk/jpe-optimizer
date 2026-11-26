@@ -66,6 +66,35 @@ a backend cannot "pass" by merely reporting a submitted draw.
 - `gl.rs` and `gles.rs` are distinct renderer types with their own capabilities
   (backend tag, capabilities) so callers and diagnostics cannot confuse them.
 
+## Java / C ABI access
+
+The backends are reachable from Java through the same `jpe_world_*` surface used
+for scheduling and meshing (`src/ffi.rs`, bound in `JpeWorldNative.java`):
+
+| Function | Purpose |
+| --- | --- |
+| `jpe_world_renderer_create(backend)` | 0 = best available, 1 Vulkan, 2 GL, 3 GLES; returns a handle or 0 |
+| `jpe_world_renderer_available(backend)` | probe without keeping anything alive |
+| `jpe_world_renderer_capabilities(handle, out)` | backend code, API version, max texture size, compute |
+| `jpe_world_renderer_begin_frame(handle, w, h)` | start an offscreen frame |
+| `jpe_world_renderer_upload_section(handle, blocks, x, y, z, out_mesh, out_indices)` | mesh a 16³ section and upload it |
+| `jpe_world_renderer_draw(handle, mesh, index_count, instances)` | queue an indexed draw |
+| `jpe_world_renderer_end_frame(handle)` | draw the queued batches and capture the frame |
+| `jpe_world_renderer_read_pixels(handle, dst, len, out_w, out_h)` | RGBA8 readback, top-left origin (null `dst` = size query only) |
+| `jpe_world_renderer_destroy_mesh` / `jpe_world_renderer_destroy` | release GPU resources |
+
+Status codes: 0 ok, -1 unknown handle, -2 bad argument, -3 backend unavailable,
+-4 invalid mesh, -5 API/device error, -6 no completed frame, -7 wrong thread.
+
+Handles are **thread-affine**. GL/EGL contexts are thread-local, so the C ABI
+records the creating thread and rejects any other with -7 before touching the
+backend. This is enforced (and tested) rather than documented and hoped for.
+
+The harness now drives a real backend: it uploads a one-block section, draws,
+reads the frame back and asserts both the clear colour and the shader colour.
+That is 71 checks in total, and the renderer section fails instead of skipping
+when `JPE_REQUIRE_RENDER_BACKENDS=1`.
+
 ## Verification
 
 Software Mesa is enough to exercise all three paths (`lavapipe` for Vulkan,
@@ -78,8 +107,15 @@ gles    renderer: llvmpipe (LLVM 15.0.7, 256 bits) (OpenGL ES 3.2 Mesa 23.2.1)
 ```
 
 Each backend's test renders a single block mesh into a 128×128 offscreen target,
-reads the frame back and asserts the frame is the expected size and that a
-meaningful number of pixels differ from the cleared background (>100).
+reads the frame back and asserts the frame is the expected size, that a
+meaningful number of pixels differ from the cleared background (>100), and that
+the shader colour (1.0, 0.5, 0.25) actually covers geometry.
+
+The C ABI path is tested as well: `ffi::tests::renderer_over_c_abi_*` creates
+each backend through `jpe_world_renderer_create(1|2|3)`, checks the reported
+capabilities, renders and reads a frame, verifies the wrong-thread rejection and
+the read-before-frame error. The whole crate is 52 tests; the Java harness is 71
+checks.
 
 Run locally:
 
@@ -110,7 +146,14 @@ context and produced pixels.
   `libGL.so.1` while glvnd/Mesa still hold process state segfaulted at exit
   during development; leaving one handle per renderer open is harmless and
   avoids unloading a vendor driver out from under the context.
-- EGL contexts are thread-affine; the renderer types are deliberately `!Send`.
+- EGL contexts are thread-affine; the renderer types are deliberately `!Send`,
+  and the C ABI enforces same-thread use.
+- Neither the GL/EGL loader handles nor the Vulkan loader handle are `dlclose`d
+  for the same reason: unloading a driver while its teardown state is live
+  crashes the process. The Java side must also keep `libjpe_world` loaded once a
+  backend has been created — closing the FFM arena unloads the module and the
+  JVM then crashes on exit (reproduced and documented; production loads the
+  library once for the whole game).
 
 ## Explicit non-claims
 
@@ -118,14 +161,17 @@ context and produced pixels.
   offscreen target. Host-context/surface adoption is part of the client
   integration and is not faked here.
 - No swapchain/presentation, textures, lighting, or greedy meshing.
-- No Java-side renderer handles yet; the Java bridge currently exercises the
-  world engine (scheduling/meshing) over the C ABI.
+- Renderer handles are exposed over the C ABI and exercised by the Java
+  harness, but nothing in the NeoForge mod calls them yet: Minecraft's window,
+  context and render thread are not wired, so there is no in-game rendering.
 - No performance claims; there is no live workload.
 
 ## Next steps
 
 1. Add a host-context adoption constructor per backend once Minecraft's render
    ownership (window, GL context, render thread) is audited.
-2. Expose renderer handles over the C ABI for the Java bridge.
+2. Call the renderer ABI from the NeoForge mod on the render thread (the C ABI
+   and Java binding are already there).
 3. Add textures and a real camera/projection to replace the fixed offscreen
-   transform.
+   transform, including the per-backend Y convention (Vulkan framebuffer origin
+   is top-left, GL is bottom-left).

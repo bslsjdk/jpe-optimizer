@@ -43,6 +43,22 @@ public final class JpeWorldNative implements AutoCloseable {
     public static final int COMPLETE_STALE = 1;
     public static final int COMPLETE_MISSING = 2;
 
+    /** Renderer backend selector codes, mirroring {@code src/ffi.rs}. */
+    public static final int BACKEND_AUTO = 0;
+    public static final int BACKEND_VULKAN = 1;
+    public static final int BACKEND_GL = 2;
+    public static final int BACKEND_GLES = 3;
+
+    /** Renderer status codes (negative = failure). */
+    public static final int RENDER_OK = 0;
+    public static final int RENDER_UNKNOWN_HANDLE = -1;
+    public static final int RENDER_INVALID_ARGUMENT = -2;
+    public static final int RENDER_UNAVAILABLE = -3;
+    public static final int RENDER_INVALID_MESH = -4;
+    public static final int RENDER_API_ERROR = -5;
+    public static final int RENDER_NO_FRAME = -6;
+    public static final int RENDER_WRONG_THREAD = -7;
+
     public record Job(long id, int kind, int priority, int chunkX, int chunkZ, long epoch,
                       long distanceSq) {}
 
@@ -50,6 +66,13 @@ public final class JpeWorldNative implements AutoCloseable {
                         long rejectedFull, long evicted, long epochBumps) {}
 
     public record Mesh(int vertexCount, int quadCount, float firstVertexX) {}
+
+    /** Native renderer capabilities. {@code backend} is one of the BACKEND_* codes. */
+    public record RendererCaps(int backend, int apiMajor, int apiMinor, int maxTextureSize,
+                               boolean supportsCompute) {}
+
+    /** A mesh uploaded to the renderer, plus the index count to draw it. */
+    public record MeshUpload(long mesh, int indexCount) {}
 
     private final Arena arena = Arena.ofShared();
 
@@ -68,6 +91,17 @@ public final class JpeWorldNative implements AutoCloseable {
     private final MethodHandle hStats;
     private final MethodHandle hReset;
     private final MethodHandle hMeshSection;
+
+    private final MethodHandle hRendererCreate;
+    private final MethodHandle hRendererAvailable;
+    private final MethodHandle hRendererDestroy;
+    private final MethodHandle hRendererCaps;
+    private final MethodHandle hRendererBeginFrame;
+    private final MethodHandle hRendererUploadSection;
+    private final MethodHandle hRendererDestroyMesh;
+    private final MethodHandle hRendererDraw;
+    private final MethodHandle hRendererEndFrame;
+    private final MethodHandle hRendererReadPixels;
 
     public JpeWorldNative(Path library) {
         SymbolLookup lookup = SymbolLookup.libraryLookup(library, arena);
@@ -106,6 +140,27 @@ public final class JpeWorldNative implements AutoCloseable {
                 FunctionDescriptor.of(i32, i64, ptr));
         this.hMeshSection = down(linker, lookup, "jpe_world_mesh_section",
                 FunctionDescriptor.of(i64, ptr, i32, i32, i32, ptr, i64, ptr, i64, ptr));
+
+        this.hRendererCreate = down(linker, lookup, "jpe_world_renderer_create",
+                FunctionDescriptor.of(i64, i32));
+        this.hRendererAvailable = down(linker, lookup, "jpe_world_renderer_available",
+                FunctionDescriptor.of(i32, i32));
+        this.hRendererDestroy = down(linker, lookup, "jpe_world_renderer_destroy",
+                FunctionDescriptor.of(i32, i64));
+        this.hRendererCaps = down(linker, lookup, "jpe_world_renderer_capabilities",
+                FunctionDescriptor.of(i32, i64, ptr));
+        this.hRendererBeginFrame = down(linker, lookup, "jpe_world_renderer_begin_frame",
+                FunctionDescriptor.of(i32, i64, i32, i32));
+        this.hRendererUploadSection = down(linker, lookup, "jpe_world_renderer_upload_section",
+                FunctionDescriptor.of(i32, i64, ptr, i32, i32, i32, ptr, ptr));
+        this.hRendererDestroyMesh = down(linker, lookup, "jpe_world_renderer_destroy_mesh",
+                FunctionDescriptor.of(i32, i64, i64));
+        this.hRendererDraw = down(linker, lookup, "jpe_world_renderer_draw",
+                FunctionDescriptor.of(i32, i64, i64, i32, i32));
+        this.hRendererEndFrame = down(linker, lookup, "jpe_world_renderer_end_frame",
+                FunctionDescriptor.of(i32, i64));
+        this.hRendererReadPixels = down(linker, lookup, "jpe_world_renderer_read_pixels",
+                FunctionDescriptor.of(i32, i64, ptr, i64, ptr, ptr));
     }
 
     private static MethodHandle down(Linker linker, SymbolLookup lookup, String name,
@@ -266,6 +321,119 @@ public final class JpeWorldNative implements AutoCloseable {
         }
     }
 
+    // ------------------------------------------------------------------
+    // Renderer (native GPU backends)
+    // ------------------------------------------------------------------
+
+    /**
+     * Create a renderer for {@code backend} (use {@link #BACKEND_AUTO} to take
+     * the best available one). Returns 0 when that backend cannot run here.
+     *
+     * <p>A renderer is thread-affine: every later call must come from the
+     * thread that created it (the render thread in production).
+     */
+    public long rendererCreate(int backend) {
+        return invokeLong(hRendererCreate, backend);
+    }
+
+    /** 1 if the backend can be created here, else 0. */
+    public int rendererAvailable(int backend) {
+        return invokeInt(hRendererAvailable, backend);
+    }
+
+    public int rendererDestroy(long handle) {
+        return invokeInt(hRendererDestroy, handle);
+    }
+
+    public RendererCaps rendererCapabilities(long handle) {
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment buf = a.allocate(24);
+            int status = invokeInt(hRendererCaps, handle, buf);
+            if (status != 0) {
+                throw new IllegalStateException("rendererCapabilities failed: status " + status);
+            }
+            return new RendererCaps(
+                    buf.get(ValueLayout.JAVA_INT, 0),
+                    buf.get(ValueLayout.JAVA_INT, 4),
+                    buf.get(ValueLayout.JAVA_INT, 8),
+                    buf.get(ValueLayout.JAVA_INT, 12),
+                    buf.get(ValueLayout.JAVA_INT, 16) != 0);
+        }
+    }
+
+    public int rendererBeginFrame(long handle, int width, int height) {
+        return invokeInt(hRendererBeginFrame, handle, width, height);
+    }
+
+    /**
+     * Mesh a 16^3 section (4096 block ids indexed {@code (y<<8)|(z<<4)|x}) and
+     * upload it to the renderer in one call.
+     */
+    public MeshUpload rendererUploadSection(long handle, short[] blocks,
+                                            int originX, int originY, int originZ) {
+        if (blocks.length != 4096) {
+            throw new IllegalArgumentException("expected 4096 block ids, got " + blocks.length);
+        }
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment section = a.allocate(4096L * 2);
+            for (int i = 0; i < blocks.length; i++) {
+                section.setAtIndex(ValueLayout.JAVA_SHORT, i, blocks[i]);
+            }
+            MemorySegment out = a.allocate(16);
+            int status = invokeInt(hRendererUploadSection, handle, section,
+                    originX, originY, originZ, out.asSlice(0, 8), out.asSlice(8, 4));
+            if (status != 0) {
+                throw new IllegalStateException("rendererUploadSection failed: status " + status);
+            }
+            return new MeshUpload(out.get(ValueLayout.JAVA_LONG, 0),
+                    out.get(ValueLayout.JAVA_INT, 8));
+        }
+    }
+
+    public int rendererDestroyMesh(long handle, long mesh) {
+        return invokeInt(hRendererDestroyMesh, handle, mesh);
+    }
+
+    public int rendererDraw(long handle, long mesh, int indexCount, int instanceCount) {
+        return invokeInt(hRendererDraw, handle, mesh, indexCount, instanceCount);
+    }
+
+    public int rendererEndFrame(long handle) {
+        return invokeInt(hRendererEndFrame, handle);
+    }
+
+    /**
+     * Read the last completed frame back as tightly packed RGBA8 with a
+     * top-left origin.
+     */
+    public byte[] rendererReadPixels(long handle, int width, int height) {
+        int size = Math.multiplyExact(Math.multiplyExact(width, height), 4);
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment dst = a.allocate(size);
+            MemorySegment dims = a.allocate(8);
+            int status = invokeInt(hRendererReadPixels, handle, dst, (long) size,
+                    dims.asSlice(0, 4), dims.asSlice(4, 4));
+            if (status != 0) {
+                throw new IllegalStateException("rendererReadPixels failed: status " + status);
+            }
+            int w = dims.get(ValueLayout.JAVA_INT, 0);
+            int h = dims.get(ValueLayout.JAVA_INT, 4);
+            if (w != width || h != height) {
+                throw new IllegalStateException("frame is " + w + "x" + h
+                        + ", expected " + width + "x" + height);
+            }
+            return dst.toArray(ValueLayout.JAVA_BYTE);
+        }
+    }
+
+    /**
+     * Unload the native module.
+     *
+     * <p>Only safe if no GPU backend has been created through this instance:
+     * after a driver is initialised, Mesa keeps process-wide teardown state and
+     * unloading the module makes the JVM crash on exit. Production keeps the
+     * library loaded for the lifetime of the game.
+     */
     @Override
     public void close() {
         arena.close();

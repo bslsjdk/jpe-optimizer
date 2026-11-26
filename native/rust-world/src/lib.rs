@@ -22,13 +22,16 @@
 //! - renderer interface + headless reference implementation
 //! - native Vulkan, OpenGL and OpenGL ES backends: real device/context, mesh
 //!   upload, draw and pixel readback, verified on software Mesa
+//! - renderer handles over the Java C ABI (create/caps/frame/upload/draw/
+//!   readback), thread-affinity enforced, exercised by the Java harness
 //! - terrain FFI declarations for the existing ABI v8 (`cpp-bridge` feature)
 //!
 //! **Not implemented yet** (must not be reported as done):
 //! - adopting Minecraft's live window/context (backends render offscreen today;
 //!   host-context adoption is part of the client integration)
 //! - presentation / swapchain, textures, lighting
-//! - wiring into live Minecraft chunk generation / rendering
+//! - wiring into live Minecraft chunk generation / rendering (the C ABI and
+//!   Java binding exist; no mod code calls them yet)
 //! - greedy meshing, ambient occlusion, textures
 //! - shared-memory / zero-copy transport to C++
 

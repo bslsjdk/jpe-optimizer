@@ -642,7 +642,6 @@ vk_fns! {
 extern "C" {
     fn dlopen(filename: *const c_char, flag: c_int) -> *mut c_void;
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
-    fn dlclose(handle: *mut c_void) -> c_int;
 }
 
 const RTLD_NOW: c_int = 2;
@@ -729,7 +728,8 @@ struct FrameTarget {
 
 /// A Vulkan renderer owning a device and an offscreen colour target.
 pub struct VulkanRenderer {
-    lib: *mut c_void,
+    // Kept open for the renderer's lifetime; see `Drop`.
+    _lib: *mut c_void,
     fns: VkFns,
     instance: Instance,
     physical_device: PhysicalDevice,
@@ -949,7 +949,7 @@ impl VulkanRenderer {
             VulkanRenderer::create_pipeline(&fns, device, render_pass, pipeline_layout, &mut pipeline, &mut modules)?;
 
             Ok(VulkanRenderer {
-                lib,
+                _lib: lib,
                 fns,
                 instance,
                 physical_device,
@@ -1572,7 +1572,9 @@ impl Drop for VulkanRenderer {
             (self.fns.vkDestroyCommandPool)(self.device, self.command_pool, null());
             (self.fns.vkDestroyDevice)(self.device, null());
             (self.fns.vkDestroyInstance)(self.instance, null());
-            dlclose(self.lib);
+            // The loader handle is intentionally left open: closing it can
+            // unload the ICD while process-wide teardown state still refers to
+            // it, which crashes at exit. One handle per renderer is harmless.
         }
         let _ = self.physical_device;
         let _ = self.queue_family;
