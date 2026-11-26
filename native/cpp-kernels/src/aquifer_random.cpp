@@ -5,7 +5,6 @@
 
 namespace {
 
-constexpr uint64_t kMask = UINT64_MAX;
 constexpr uint64_t kXoroshiroSeedLoFallback = 0x9e3779b97f4a7c15ULL;
 constexpr uint64_t kXoroshiroSeedHiFallback = 0x6a09e667f3bcc909ULL;
 
@@ -75,7 +74,7 @@ private:
 extern "C" int32_t jpe_cpp_aquifer_xoroshiro_offsets(
     uint64_t seed_lo, uint64_t seed_hi,
     int32_t grid_x, int32_t grid_y, int32_t grid_z,
-    int32_t *offset_x, int32_t *offset_y, int32_t *offset_z) noexcept {
+    int32_t *offset_x, int32_t *offset_y, int32_t *offset_z) {
     if (offset_x == nullptr || offset_y == nullptr || offset_z == nullptr) {
         return -1;
     }
