@@ -35,6 +35,10 @@ struct CompiledGraph {
     uint32_t references = 1;
     std::vector<JpeDensityNode> nodes;
     std::vector<uint64_t> prepared_handles;
+    // Immutable liveness plan, computed once at graph compile time.
+    std::vector<uint32_t> node_slots;
+    uint32_t slot_count = 0;
+    bool has_perlin = false;
 
     ~CompiledGraph() {
         for (uint64_t handle : prepared_handles) {
@@ -172,6 +176,42 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
             const uint64_t retained = jpe_cpp_perlin_stack_retain(source_handle);
             if (retained == 0) return 0;
             graph->prepared_handles[i] = retained;
+            graph->has_perlin = true;
+        }
+
+        // Build a deterministic register-allocation schedule once. Evaluation
+        // then needs no per-node liveness scan or free-list manipulation.
+        std::vector<uint32_t> consumers(node_count, 0);
+        for (const auto& node : graph->nodes) {
+            if (node.opcode == JPE_DENSITY_ADD || node.opcode == JPE_DENSITY_MUL
+                || node.opcode == kSub || node.opcode == kDiv || node.opcode == kMin
+                || node.opcode == kMax || node.opcode == kPow) {
+                ++consumers[node.input_a]; ++consumers[node.input_b];
+            } else if ((node.opcode >= kAbs && node.opcode <= kSign) || node.opcode == kClamp) {
+                ++consumers[node.input_a];
+            }
+        }
+        graph->node_slots.resize(node_count, kNoInput);
+        std::vector<uint32_t> free_slots;
+        for (uint32_t i = 0; i < node_count; ++i) {
+            uint32_t slot;
+            if (free_slots.empty()) slot = graph->slot_count++;
+            else { slot = free_slots.back(); free_slots.pop_back(); }
+            graph->node_slots[i] = slot;
+            const auto release_input = [&](uint32_t input) {
+                if (input != root_node && --consumers[input] == 0) {
+                    free_slots.push_back(graph->node_slots[input]);
+                }
+            };
+            const auto& node = graph->nodes[i];
+            if (node.opcode == JPE_DENSITY_ADD || node.opcode == JPE_DENSITY_MUL
+                || node.opcode == kSub || node.opcode == kDiv || node.opcode == kMin
+                || node.opcode == kMax || node.opcode == kPow) {
+                release_input(node.input_a); release_input(node.input_b);
+            } else if ((node.opcode >= kAbs && node.opcode <= kSign) || node.opcode == kClamp) {
+                release_input(node.input_a);
+            }
+            if (i != root_node && consumers[i] == 0) free_slots.push_back(slot);
         }
         uint64_t handle = g_next_handle++;
         if (handle == 0) handle = g_next_handle++;
@@ -203,37 +243,16 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate(
 
     try {
         const size_t volume = static_cast<size_t>(output_length);
-        std::vector<uint32_t> consumers(graph->nodes.size(), 0);
-        for (const auto& node : graph->nodes) {
-            if (node.opcode == JPE_DENSITY_ADD || node.opcode == JPE_DENSITY_MUL
-                || node.opcode == kSub || node.opcode == kDiv || node.opcode == kMin
-                || node.opcode == kMax || node.opcode == kPow) {
-                ++consumers[node.input_a]; ++consumers[node.input_b];
-            } else if ((node.opcode >= kAbs && node.opcode <= kSign) || node.opcode == kClamp) {
-                ++consumers[node.input_a];
-            }
-        }
-
-        // Node-major execution: each DAG node is evaluated once over the entire
-        // chunk volume. Slots are recycled as soon as their final consumer runs.
-        std::vector<std::vector<double>> slots;
-        std::vector<uint32_t> free_slots;
-        std::vector<uint32_t> node_slots(graph->nodes.size(), kNoInput);
-        std::vector<float> perlin_scratch(volume);
+        // Allocate only the maximum number of simultaneously live node buffers.
+        std::vector<std::vector<double>> slots(graph->slot_count);
+        for (auto& slot : slots) slot.resize(volume);
+        std::vector<float> perlin_scratch;
+        if (graph->has_perlin) perlin_scratch.resize(volume);
 
         for (uint32_t i = 0; i < graph->nodes.size(); ++i) {
             const JpeDensityNode& node = graph->nodes[i];
-            uint32_t slot;
-            if (free_slots.empty()) {
-                slot = static_cast<uint32_t>(slots.size());
-                slots.emplace_back();
-            } else {
-                slot = free_slots.back();
-                free_slots.pop_back();
-            }
-            node_slots[i] = slot;
+            const uint32_t slot = graph->node_slots[i];
             auto& values = slots[slot];
-            values.resize(volume);
 
             switch (node.opcode) {
                 case JPE_DENSITY_CONST:
@@ -313,24 +332,9 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate(
                     return 1;
             }
 
-            const auto release_input = [&](uint32_t input) {
-                if (input != graph->root && --consumers[input] == 0) free_slots.push_back(node_slots[input]);
-            };
-            if (node.opcode == JPE_DENSITY_ADD || node.opcode == JPE_DENSITY_MUL
-                || node.opcode == kSub || node.opcode == kDiv || node.opcode == kMin
-                || node.opcode == kMax || node.opcode == kPow) {
-                release_input(node.input_a); release_input(node.input_b);
-            } else if ((node.opcode >= kAbs && node.opcode <= kSign) || node.opcode == kClamp) {
-                release_input(node.input_a);
-            }
-            // Nodes with no consumers are dead as soon as they finish. Recycle
-            // their slot immediately instead of retaining one volume per dead node.
-            if (i != graph->root && consumers[i] == 0) {
-                free_slots.push_back(slot);
-            }
         }
 
-        const auto& root_values = slots[node_slots[graph->root]];
+        const auto& root_values = slots[graph->node_slots[graph->root]];
         std::copy(root_values.begin(), root_values.end(), output);
         return 0;
     } catch (...) {
