@@ -9,6 +9,18 @@ java { toolchain.languageVersion = JavaLanguageVersion.of(25); withSourcesJar() 
 neoForge {
     version = project.neo_version
     runs {
+        client {
+            client()
+            // Attaches the continuous Rust world host to a real client (needs a display).
+            // The library path points at the crate's release build; -Djpe.worldHost=true is
+            // what actually turns the host on (see WorldEngineHost.ENABLE_PROPERTY). Without
+            // a display this run type is unavailable, which is why the verified path in CI is
+            // the bounded gameTestServer rig, not this one.
+            systemProperty 'jpe.worldLibrary',
+                    "${rootDir}/native/rust-world/target/release/libjpe_world.so"
+            systemProperty 'jpe.worldHost', 'true'
+            systemProperty 'jpe.worldRequired', 'false'
+        }
         gameTestServer {
             type = "gameTestServer"
             systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id

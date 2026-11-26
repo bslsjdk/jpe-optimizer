@@ -285,6 +285,43 @@ public final class RustWorldBridge implements AutoCloseable {
         return closed;
     }
 
+    /**
+     * Tear down the pipeline and renderer on their owner thread and stop the engine
+     * thread, but keep the native library mapped for the process lifetime.
+     *
+     * <p>Once a GPU backend has been created, unloading {@code libjpe_world} (which is
+     * what {@link #close()} does via {@link JpeWorldNative#close()}) leaves Mesa/glvnd
+     * teardown state referencing the module and crashes the JVM on exit. A live
+     * Minecraft host therefore uses this instead of {@link #close()} so the library
+     * stays resident and is only released by normal process exit.
+     */
+    public void releaseHandles() {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        try {
+            call(() -> {
+                int pipelineStatus = world.pipelineDestroy(pipelineHandle);
+                int rendererStatus = world.rendererDestroy(rendererHandle);
+                return new int[]{pipelineStatus, rendererStatus};
+            });
+        } catch (RuntimeException failure) {
+            // Teardown must never escape into Minecraft's shutdown path.
+        } finally {
+            engine.shutdown();
+            try {
+                if (!engine.awaitTermination(5, TimeUnit.SECONDS)) {
+                    engine.shutdownNow();
+                }
+            } catch (InterruptedException interrupted) {
+                engine.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+            // Deliberately no world.close(): keep libjpe_world resident.
+        }
+    }
+
     /** Tear the pipeline down on its owner thread, then release the library. */
     @Override
     public void close() {
