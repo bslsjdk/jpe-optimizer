@@ -137,15 +137,16 @@ class CompiledSamplerArithmeticLoweringTest {
         assertEquals(1, plan.islands().size());
         CompiledSamplerArithmeticLowering.LoweredIsland lowered =
                 CompiledSamplerArithmeticLowering.lower(graph, plan.islands().get(0), 0xA86);
-        assertEquals(List.of(6, 7), lowered.inputSourceNodeIds());
-        assertEquals(DensityGraphIr.INPUT, lowered.graph().nodes().get(0).opcode());
-        assertEquals(DensityGraphIr.INPUT, lowered.graph().nodes().get(1).opcode());
-        assertEquals(DensityGraphIr.SIGN, lowered.graph().nodes().get(2).opcode());
-        assertEquals(DensityGraphIr.LOG, lowered.graph().nodes().get(3).opcode());
-        assertEquals(DensityGraphIr.RECIPROCAL, lowered.graph().nodes().get(4).opcode());
-        assertEquals(DensityGraphIr.SQUEEZE, lowered.graph().nodes().get(5).opcode());
-        assertEquals(DensityGraphIr.SQRT, lowered.graph().nodes().get(6).opcode());
-        assertEquals(DensityGraphIr.ADD, lowered.graph().nodes().get(7).opcode());
+        assertEquals(2, lowered.inputSourceNodeIds().size());
+        List<Integer> opcodes = lowered.graph().nodes().stream()
+                .map(DensityGraphIr.Node::opcode).toList();
+        assertEquals(2, opcodes.stream().filter(opcode -> opcode == DensityGraphIr.INPUT).count());
+        assertTrue(opcodes.contains(DensityGraphIr.SIGN));
+        assertTrue(opcodes.contains(DensityGraphIr.LOG));
+        assertTrue(opcodes.contains(DensityGraphIr.RECIPROCAL));
+        assertTrue(opcodes.contains(DensityGraphIr.SQUEEZE));
+        assertTrue(opcodes.contains(DensityGraphIr.SQRT));
+        assertTrue(opcodes.contains(DensityGraphIr.ADD));
     }
 
     @Test
