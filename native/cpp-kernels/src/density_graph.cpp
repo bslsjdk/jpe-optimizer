@@ -163,6 +163,8 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                 break;
             case kInterpolated:
                 if (node.input_a >= i || node.input_b == 0 || node.reserved == 0
+                    || node.input_b > static_cast<uint32_t>(INT32_MAX)
+                    || node.reserved > static_cast<uint32_t>(INT32_MAX)
                     || node.immediate != 0.0 || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
                 break;
             case kPerlinStack: {
@@ -483,9 +485,9 @@ int32_t evaluate_density_graph_impl(
                     const int64_t corner_min_x = floor_div(min_x, cell_xz) * cell_xz;
                     const int64_t corner_min_y = floor_div(min_y, cell_y) * cell_y;
                     const int64_t corner_min_z = floor_div(min_z, cell_xz) * cell_xz;
-                    const int64_t corner_max_x = ceil_div(max_x, cell_xz) * cell_xz;
-                    const int64_t corner_max_y = ceil_div(max_y, cell_y) * cell_y;
-                    const int64_t corner_max_z = ceil_div(max_z, cell_xz) * cell_xz;
+                    const int64_t corner_max_x = (floor_div(max_x, cell_xz) + 1) * cell_xz;
+                    const int64_t corner_max_y = (floor_div(max_y, cell_y) + 1) * cell_y;
+                    const int64_t corner_max_z = (floor_div(max_z, cell_xz) + 1) * cell_xz;
                     if (corner_min_x < INT32_MIN || corner_min_y < INT32_MIN || corner_min_z < INT32_MIN
                         || corner_max_x > INT32_MAX || corner_max_y > INT32_MAX || corner_max_z > INT32_MAX) {
                         return 1;
