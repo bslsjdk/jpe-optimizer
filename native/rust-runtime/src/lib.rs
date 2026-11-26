@@ -1589,8 +1589,9 @@ mod tests {
             JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
                 input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.125 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: 7, input_a: DENSITY_NO_INPUT,
-                input_b: DENSITY_NO_INPUT, reserved: 1.0_f32.to_bits(),
-                immediate: stack as f64 , auxiliary: 1.0, tertiary: 1.0},
+                input_b: DENSITY_NO_INPUT, reserved: 0.875_f32.to_bits(),
+                immediate: stack as f64 , auxiliary: f64::from_bits(0x3fb999999999999b),
+                tertiary: f64::from_bits(0x3fc9999999999999)},
             JpeDensityNode { opcode: DENSITY_ADD, input_a: 0, input_b: 1,
                 reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
         ];
@@ -1609,8 +1610,15 @@ mod tests {
             )
         }, STATUS_OK);
 
+        let sampler_xz = f64::from_bits(0x3fb999999999999b);
+        let sampler_y = f64::from_bits(0x3fc9999999999999);
         let mut expected = [0.0_f32; 24];
-        let direct_layer = JpePerlinLayer { ..layer };
+        let direct_layer = JpePerlinLayer {
+            xz_scale: layer.xz_scale * sampler_xz,
+            y_scale: layer.y_scale * sampler_y,
+            amplitude: layer.amplitude * 0.875,
+            ..layer
+        };
         assert_eq!(unsafe {
             jpe_runtime_perlin_add_stack(
                 &direct_layer, 1, 2, 3, 4, -3, -5, 7, 1, 2, 1,
@@ -1619,6 +1627,17 @@ mod tests {
         }, STATUS_OK);
         for (actual, expected) in actual.iter().zip(expected.iter()) {
             assert_eq!(*actual, (*expected as f64) + 0.125);
+        }
+
+        let mut actual_f32 = [0.0_f32; 24];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph, 2, 3, 4, -3, -5, 7, 1, 2, 1,
+                actual_f32.as_mut_ptr(), actual_f32.len() as u64,
+            )
+        }, STATUS_OK);
+        for (actual, expected) in actual_f32.iter().zip(expected.iter()) {
+            assert_eq!(*actual, *expected + 0.125);
         }
         assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
     }
