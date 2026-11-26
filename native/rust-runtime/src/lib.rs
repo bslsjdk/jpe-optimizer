@@ -43,6 +43,28 @@ pub struct JpeAquiferFluidStatus {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
+pub struct JpeAquiferContextCreateInfo {
+    pub density_graph_handles: [u64; 6],
+    pub world_fingerprint: [u8; 32],
+    pub semantic_fingerprint: u64,
+    pub seed_lo: u64,
+    pub seed_hi: u64,
+    pub random_mode: u32,
+    pub air_type: u32,
+    pub water_type: u32,
+    pub lava_type: u32,
+    pub max_status_cache_entries: u32,
+    pub reserved: u32,
+}
+
+const _: [(); 128] = [(); std::mem::size_of::<JpeAquiferContextCreateInfo>()];
+const _: [(); 48] = [(); std::mem::offset_of!(JpeAquiferContextCreateInfo, world_fingerprint)];
+const _: [(); 80] = [(); std::mem::offset_of!(JpeAquiferContextCreateInfo, semantic_fingerprint)];
+const _: [(); 104] = [(); std::mem::offset_of!(JpeAquiferContextCreateInfo, random_mode)];
+const _: [(); 120] = [(); std::mem::offset_of!(JpeAquiferContextCreateInfo, max_status_cache_entries)];
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
 pub struct JpeAquiferCoreInput {
     pub block_y: i32,
     pub density: f64,
@@ -141,6 +163,13 @@ unsafe extern "C" {
     fn jpe_cpp_aquifer_compute_substance_core(
         input: *const JpeAquiferCoreInput,
         output: *mut JpeAquiferCoreOutput,
+    ) -> i32;
+    fn jpe_cpp_aquifer_context_create(info: *const JpeAquiferContextCreateInfo) -> u64;
+    fn jpe_cpp_aquifer_context_destroy(context_handle: u64) -> i32;
+    fn jpe_cpp_aquifer_context_evaluate_samplers_f32(
+        context_handle: u64,
+        point_x: *const i32, point_y: *const i32, point_z: *const i32,
+        points_per_sampler: u32, output: *mut f32, output_length: u64,
     ) -> i32;
     fn jpe_cpp_aquifer_compute_substance_batch(
         inputs: *const JpeAquiferCoreInput,
@@ -412,6 +441,68 @@ pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate_multi_points_f32(
             graph_handles, graph_count, point_x, point_y, point_z,
             points_per_graph, output, output_length,
         )
+    }
+}
+
+/// Creates a world-scoped Aquifer context and retains its six immutable sampler plans.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_context_create(
+    info: *const JpeAquiferContextCreateInfo,
+) -> u64 {
+    if info.is_null() {
+        return 0;
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        jpe_cpp_aquifer_context_create(info)
+    })) {
+        Ok(handle) => handle,
+        Err(_) => 0,
+    }
+}
+
+/// Destroys a world-scoped Aquifer context after all borrowed volume calls have finished.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_context_destroy(context_handle: u64) -> i32 {
+    if context_handle == 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        jpe_cpp_aquifer_context_destroy(context_handle)
+    })) {
+        Ok(STATUS_OK) => STATUS_OK,
+        Ok(STATUS_INVALID_ARGUMENT) => STATUS_INVALID_ARGUMENT,
+        Ok(_) => STATUS_CPP_FAILURE,
+        Err(_) => STATUS_RUST_PANIC,
+    }
+}
+
+/// Evaluates six sampler graphs using sampler-major independent coordinate arrays.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_context_evaluate_samplers_f32(
+    context_handle: u64,
+    point_x: *const i32, point_y: *const i32, point_z: *const i32,
+    points_per_sampler: u32, output: *mut f32, output_length: u64,
+) -> i32 {
+    if context_handle == 0 || point_x.is_null() || point_y.is_null()
+        || point_z.is_null() || output.is_null() || points_per_sampler == 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    let Some(total) = (points_per_sampler as u64).checked_mul(6) else {
+        return STATUS_INVALID_ARGUMENT;
+    };
+    if total > MAX_VOLUME_ELEMENTS as u64 || output_length != total {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        jpe_cpp_aquifer_context_evaluate_samplers_f32(
+            context_handle, point_x, point_y, point_z,
+            points_per_sampler, output, output_length,
+        )
+    })) {
+        Ok(STATUS_OK) => STATUS_OK,
+        Ok(STATUS_INVALID_ARGUMENT) => STATUS_INVALID_ARGUMENT,
+        Ok(_) => STATUS_CPP_FAILURE,
+        Err(_) => STATUS_RUST_PANIC,
     }
 }
 
