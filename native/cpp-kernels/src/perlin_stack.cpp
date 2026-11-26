@@ -79,8 +79,7 @@ bool validate_stack(
     float* output, uint64_t output_length
 ) noexcept {
     if (layers == nullptr || layer_count == 0 || layer_count > 64 || output == nullptr
-        || size_x == 0 || size_y == 0 || size_z == 0
-        || step_x == 0 || step_y == 0 || step_z == 0) return false;
+        || size_x == 0 || size_y == 0 || size_z == 0) return false;
 
     constexpr uint64_t max_u64 = std::numeric_limits<uint64_t>::max();
     if (static_cast<uint64_t>(size_x) > max_u64 / size_y) return false;
