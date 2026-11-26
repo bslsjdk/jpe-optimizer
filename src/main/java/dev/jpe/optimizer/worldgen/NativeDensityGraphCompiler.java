@@ -296,6 +296,7 @@ public final class NativeDensityGraphCompiler {
                             case "RECIPROCAL" -> NativeRuntime.DensityNode.reciprocal(input);
                             case "SIGN" -> NativeRuntime.DensityNode.sign(input);
                             case "SQUEEZE" -> NativeRuntime.DensityNode.squeeze(input);
+                            case "LOG" -> NativeRuntime.DensityNode.log(input);
                             default -> throw new UnsupportedOperationException("Unsupported unary density op " + operation);
                         };
                         result = append(node);
@@ -361,6 +362,27 @@ public final class NativeDensityGraphCompiler {
                         float toValue = ((Number) component(function, "toValue")).floatValue();
                         result = append(NativeRuntime.DensityNode.gradient(
                                 axis, fromCoordinate, toCoordinate, fromValue, toValue));
+                    }
+                    case "RoundFunction" -> {
+                        String typeName = component(function, "type").toString();
+                        int type = switch (typeName) {
+                            case "FLOOR" -> 0;
+                            case "ROUND" -> 1;
+                            case "CEIL" -> 2;
+                            case "TRUNCATE" -> 3;
+                            default -> throw new UnsupportedOperationException("Unsupported round type " + typeName);
+                        };
+                        DensityFunction multipleFunction = (DensityFunction) component(function, "multiple");
+                        if (!multipleFunction.getClass().getSimpleName().equals("ConstantFunction")) {
+                            throw new UnsupportedOperationException("Dynamic round multiples are not lowered");
+                        }
+                        float multipleValue = ((Number) component(multipleFunction, "value")).floatValue();
+                        if (!Float.isFinite(multipleValue) || multipleValue == 0.0F) {
+                            throw new UnsupportedOperationException("Invalid round multiple");
+                        }
+                        int input = lower((DensityFunction) component(function, "input"));
+                        int multiple = lower(multipleFunction);
+                        result = append(NativeRuntime.DensityNode.round(input, multiple, type));
                     }
                     case "PowFunction" -> {
                         int base = lower((DensityFunction) component(function, "base"));
