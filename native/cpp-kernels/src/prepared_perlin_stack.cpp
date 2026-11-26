@@ -1,6 +1,7 @@
 #include "jpe_native_api.h"
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -12,6 +13,11 @@ extern "C" int32_t jpe_cpp_perlin_add_stack_fused(
     const JpePerlinLayer*, uint32_t, uint32_t, uint32_t, uint32_t,
     int32_t, int32_t, int32_t, int32_t, int32_t, int32_t,
     float*, uint64_t, uint32_t) noexcept;
+extern "C" int32_t jpe_cpp_perlin_add_volume(
+    const uint8_t*, uint32_t, uint32_t, uint32_t,
+    int32_t, int32_t, int32_t, int32_t, int32_t, int32_t,
+    double, double, double, double, double, float, float*, uint64_t, uint32_t
+) noexcept;
 
 namespace {
 struct PreparedLayer {
@@ -111,6 +117,41 @@ extern "C" int32_t jpe_cpp_perlin_stack_evaluate(
     } catch (...) {
         return 3;
     }
+}
+
+/* Correctness-first scalar sampler for domain-warped NoiseFunction nodes.
+ * Shift values are applied before each octave's immutable frequency, matching
+ * the NoiseFunction coordinate transform. This bypasses regular-grid caches
+ * because every voxel may have a different shift. */
+extern "C" int32_t jpe_cpp_perlin_stack_sample_warped(
+    uint64_t handle, int32_t x, int32_t y, int32_t z,
+    double shift_x, double shift_y, double shift_z,
+    double xz_scale, double y_scale, float* output
+) noexcept {
+    if (output == nullptr || !std::isfinite(shift_x) || !std::isfinite(shift_y)
+        || !std::isfinite(shift_z) || !std::isfinite(xz_scale) || !std::isfinite(y_scale)) return 1;
+    std::shared_ptr<const PreparedStack> prepared;
+    {
+        std::lock_guard<std::mutex> lock(g_prepared_mutex);
+        const auto found = g_prepared_stacks.find(handle);
+        if (found == g_prepared_stacks.end()) return 2;
+        prepared = found->second;
+    }
+    float result = 0.0F;
+    for (const PreparedLayer& layer : prepared->layers) {
+        const double frequency_xz = xz_scale * layer.base_xz_frequency;
+        const double frequency_y = y_scale * layer.base_y_frequency;
+        const int32_t status = jpe_cpp_perlin_add_volume(
+            layer.permutation.data(), 1, 1, 1, x, y, z, 1, 1, 1,
+            layer.offset_x + shift_x * layer.base_xz_frequency,
+            layer.offset_y + shift_y * layer.base_y_frequency,
+            layer.offset_z + shift_z * layer.base_xz_frequency,
+            frequency_xz, frequency_y, layer.base_amplitude,
+            &result, 1, 0);
+        if (status != 0) return status;
+    }
+    *output = result;
+    return 0;
 }
 
 extern "C" uint64_t jpe_cpp_perlin_stack_retain(uint64_t handle) noexcept {
