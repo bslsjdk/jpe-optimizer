@@ -1572,6 +1572,7 @@ mod tests {
         };
         let stack = unsafe { jpe_runtime_prepare_perlin_stack(&layer, 1) };
         assert_ne!(stack, 0);
+        eprintln!("DENSITY_GRAPH_TEST stage=prepared");
 
         let nodes = [
             JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
@@ -1586,9 +1587,11 @@ mod tests {
             jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 2, 0xD3517A)
         };
         assert_ne!(graph, 0);
+        eprintln!("DENSITY_GRAPH_TEST stage=compiled handle={}", graph);
 
         // The compiled graph owns a retained native stack reference.
         assert_eq!(jpe_runtime_release_prepared_perlin_stack(stack), STATUS_OK);
+        eprintln!("DENSITY_GRAPH_TEST stage=original-released");
         let mut actual = [0.0_f64; 24];
         assert_eq!(unsafe {
             jpe_runtime_density_graph_evaluate(
@@ -1596,6 +1599,7 @@ mod tests {
                 actual.as_mut_ptr(), actual.len() as u64,
             )
         }, STATUS_OK);
+        eprintln!("DENSITY_GRAPH_TEST stage=evaluated");
 
         let mut expected = [0.125_f32; 24];
         let direct_layer = JpePerlinLayer { ..layer };
@@ -1608,7 +1612,9 @@ mod tests {
         for (actual, expected) in actual.iter().zip(expected.iter()) {
             assert_eq!(*actual, (*expected as f64) + 0.125);
         }
+        eprintln!("DENSITY_GRAPH_TEST stage=before-graph-release");
         assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+        eprintln!("DENSITY_GRAPH_TEST stage=released");
     }
 
     #[test]
