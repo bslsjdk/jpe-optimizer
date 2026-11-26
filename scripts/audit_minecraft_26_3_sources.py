@@ -31,6 +31,14 @@ PATCHED_JAR = Path("build/moddev/artifacts") / f"minecraft-patched-{NEOFORGE_VER
 NESTED_SERVER_JAR = f"META-INF/versions/{VERSION}/server-{VERSION}.jar"
 TARGET_CLASSES = (
     "net/minecraft/world/level/levelgen/NoiseBasedChunkGenerator",
+    "net/minecraft/world/level/levelgen/Aquifer",
+    "net/minecraft/world/level/levelgen/RandomState",
+    "net/minecraft/world/level/levelgen/NoiseGeneratorSettings",
+    "net/minecraft/world/level/levelgen/PositionalRandomFactory",
+    "net/minecraft/world/level/levelgen/LegacyRandomSource",
+    "net/minecraft/world/level/levelgen/XoroshiroRandomSource",
+    "net/minecraft/util/RandomSource",
+    "net/minecraft/util/Mth",
     "net/minecraft/world/level/biome/BiomeManager",
     "net/minecraft/world/level/levelgen/NoiseChunk",
     "net/minecraft/world/level/levelgen/densityfunction/DensitySampler",
