@@ -495,7 +495,6 @@ def source_inspection(vanilla_root: Path, patched_root: Path) -> list[str]:
         "NoiseFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
         "UnaryFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
         "RangeChoiceFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
-        "LerpFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
         "InterpolatedFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
         "IntervalSelectFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
         "PowFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
