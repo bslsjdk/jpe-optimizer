@@ -1647,6 +1647,49 @@ mod tests {
     }
 
     #[test]
+    fn density_graph_matches_java_nan_and_signed_zero_semantics() {
+        let cases: [([JpeDensityNode; 3], u32, fn(f64) -> bool); 3] = [
+            ([
+                JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: f64::NAN },
+                JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 },
+                JpeDensityNode { opcode: 10, input_a: 0, input_b: 1, reserved: 0, immediate: 0.0 },
+            ], 2, |v| v.is_nan()),
+            ([
+                JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+                JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -0.0 },
+                JpeDensityNode { opcode: 11, input_a: 0, input_b: 1, reserved: 0, immediate: 0.0 },
+            ], 2, |v| v == 0.0 && !v.is_sign_negative()),
+            ([
+                JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -0.0 },
+                JpeDensityNode { opcode: 20, input_a: 0, input_b: DENSITY_NO_INPUT,
+                    reserved: 0, immediate: 0.0 },
+                JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            ], 1, |v| v == 0.0 && v.is_sign_negative()),
+        ];
+        for (nodes, root, check) in cases {
+            let graph = unsafe {
+                jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, root, 0xD35180 + root as u64)
+            };
+            assert_ne!(graph, 0);
+            let mut output = [1.0_f64; 1];
+            assert_eq!(unsafe {
+                jpe_runtime_density_graph_evaluate(
+                    graph, 1, 1, 1, 0, 0, 0, 1, 1, 1,
+                    output.as_mut_ptr(), 1,
+                )
+            }, STATUS_OK);
+            assert!(check(output[0]), "unexpected native value: {:?}", output[0]);
+            assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+        }
+    }
+
+    #[test]
     fn prepared_perlin_stack_matches_direct_stack_and_reuses_plan() {
         let permutation_a: [u8; 256] = std::array::from_fn(|i| ((i * 13 + 7) & 255) as u8);
         let permutation_b: [u8; 256] = std::array::from_fn(|i| ((i * 29 + 3) & 255) as u8);
