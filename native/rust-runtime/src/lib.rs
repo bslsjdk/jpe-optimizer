@@ -1075,6 +1075,66 @@ mod tests {
     }
 
     #[test]
+    fn density_graph_min_max_match_minecraft_volume_comparison_semantics() {
+        let nodes_min = [
+            JpeDensityNode { opcode: DENSITY_INPUT, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_INPUT, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 },
+            JpeDensityNode { opcode: DENSITY_MIN, input_a: 0,
+                input_b: 1, reserved: 0, immediate: 0.0 },
+        ];
+        let handle_min = unsafe {
+            jpe_runtime_density_graph_compile(nodes_min.as_ptr(), 3, 2, 8, 0xA110)
+        };
+        assert_ne!(handle_min, 0);
+        let left = [f32::NAN, 1.0, 0.0, -0.0, 2.0];
+        let right = [1.0, f32::NAN, -0.0, 0.0, 1.0];
+        let mut inputs = [0.0_f32; 10];
+        inputs[..5].copy_from_slice(&left);
+        inputs[5..].copy_from_slice(&right);
+        let mut output_min = [0.0_f32; 5];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_with_inputs(
+                handle_min, 5, 1, 1, 0, 0, 0, 1, 1, 1,
+                inputs.as_ptr(), 2, output_min.as_mut_ptr(), output_min.len() as u64,
+            )
+        }, STATUS_OK);
+        assert!(output_min[0].is_nan());
+        assert_eq!(output_min[1].to_bits(), 1.0_f32.to_bits());
+        assert_eq!(output_min[2].to_bits(), 0.0_f32.to_bits());
+        assert_eq!(output_min[3].to_bits(), (-0.0_f32).to_bits());
+        assert_eq!(output_min[4].to_bits(), 1.0_f32.to_bits());
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle_min) }, STATUS_OK);
+
+        let nodes_max = [
+            JpeDensityNode { opcode: DENSITY_INPUT, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_INPUT, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 },
+            JpeDensityNode { opcode: DENSITY_MAX, input_a: 0,
+                input_b: 1, reserved: 0, immediate: 0.0 },
+        ];
+        let handle_max = unsafe {
+            jpe_runtime_density_graph_compile(nodes_max.as_ptr(), 3, 2, 8, 0xA111)
+        };
+        assert_ne!(handle_max, 0);
+        let mut output_max = [0.0_f32; 5];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_with_inputs(
+                handle_max, 5, 1, 1, 0, 0, 0, 1, 1, 1,
+                inputs.as_ptr(), 2, output_max.as_mut_ptr(), output_max.len() as u64,
+            )
+        }, STATUS_OK);
+        assert!(output_max[0].is_nan());
+        assert_eq!(output_max[1].to_bits(), 1.0_f32.to_bits());
+        assert_eq!(output_max[2].to_bits(), 0.0_f32.to_bits());
+        assert_eq!(output_max[3].to_bits(), (-0.0_f32).to_bits());
+        assert_eq!(output_max[4].to_bits(), 2.0_f32.to_bits());
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle_max) }, STATUS_OK);
+    }
+
+    #[test]
     fn density_graph_clamp_matches_minecraft_mth_float_semantics() {
         let packed = 0x0000_0000_3f80_0000_u64;
         let nodes = [
