@@ -100,6 +100,29 @@ class CompiledSamplerGraphTraceTest {
     }
 
     @Test
+    void classifiesExactMinecraftUnaryMathSamplerClasses() {
+        String prefix = "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$";
+        java.util.List<String> classes = java.util.List.of(
+                "SqrtSampler", "LogSampler", "ReciprocalSampler", "SignSampler", "SqueezeSampler");
+        java.util.List<CompiledSamplerGraphIr.Op> expected = java.util.List.of(
+                CompiledSamplerGraphIr.Op.SQRT, CompiledSamplerGraphIr.Op.LOG,
+                CompiledSamplerGraphIr.Op.RECIPROCAL, CompiledSamplerGraphIr.Op.SIGN,
+                CompiledSamplerGraphIr.Op.SQUEEZE);
+        java.util.ArrayList<CompiledSamplerGraphTrace.NodeInfo> nodes = new java.util.ArrayList<>();
+        for (int i = 0; i < classes.size(); i++) {
+            nodes.add(new CompiledSamplerGraphTrace.NodeInfo(i, prefix + classes.get(i),
+                    java.util.List.of(5), java.util.List.of(), ""));
+        }
+        nodes.add(new CompiledSamplerGraphTrace.NodeInfo(5, "custom.Input",
+                java.util.List.of(), java.util.List.of(), "not a record"));
+        CompiledSamplerGraphIr.Graph graph = CompiledSamplerGraphIr.lower(
+                new CompiledSamplerGraphTrace.Snapshot(nodes, 0, 0));
+        for (int i = 0; i < expected.size(); i++) {
+            assertEquals(expected.get(i), graph.nodes().get(i).op());
+        }
+    }
+
+    @Test
     void readsPrivateNestedSamplerRecordAccessors() {
         HiddenSampler root = new HiddenSampler(new LeafSampler(4.0F));
         CompiledSamplerGraphTrace.Snapshot snapshot =
