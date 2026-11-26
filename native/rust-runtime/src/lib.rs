@@ -99,24 +99,25 @@ const DENSITY_PERLIN_STACK_WARP: u32 = 31;
 const DENSITY_SLICE: u32 = 32;
 
 unsafe extern "C" {
-    fn jpe_runtime_density_graph_compile(
+    fn jpe_cpp_density_graph_compile(
         nodes: *const JpeDensityNode, node_count: u32, root_node: u32,
         configuration_fingerprint: u64,
     ) -> u64;
-    fn jpe_runtime_density_graph_evaluate(
+    fn jpe_cpp_density_graph_evaluate(
         graph_handle: u64,
         size_x: u32, size_y: u32, size_z: u32,
         min_x: i32, min_y: i32, min_z: i32,
         step_x: i32, step_y: i32, step_z: i32,
         output: *mut f64, output_length: u64,
     ) -> i32;
-    fn jpe_runtime_density_graph_evaluate_f32(
+    fn jpe_cpp_density_graph_evaluate_f32(
         graph_handle: u64,
         size_x: u32, size_y: u32, size_z: u32,
         min_x: i32, min_y: i32, min_z: i32,
         step_x: i32, step_y: i32, step_z: i32,
         output: *mut f32, output_length: u64,
     ) -> i32;
+    fn jpe_cpp_density_graph_release(graph_handle: u64) -> i32;
     fn jpe_cpp_density_graph_evaluate_points(
         graph_handle: u64,
         point_x: *const i32, point_y: *const i32, point_z: *const i32,
@@ -217,6 +218,93 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_status_cache_insert_batch(
         return STATUS_INVALID_ARGUMENT;
     }
     unsafe { jpe_cpp_aquifer_status_cache_insert_batch(handle, keys, statuses, count) }
+}
+
+/// Compiles and retains a density graph through the stable Rust cdylib ABI.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_compile(
+    nodes: *const JpeDensityNode,
+    node_count: u32,
+    root_node: u32,
+    configuration_fingerprint: u64,
+) -> u64 {
+    if nodes.is_null() || node_count == 0 || node_count > 65_536 || root_node >= node_count {
+        return 0;
+    }
+    unsafe {
+        jpe_cpp_density_graph_compile(nodes, node_count, root_node, configuration_fingerprint)
+    }
+}
+
+/// Evaluates a regular density volume using f64 intermediates.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate(
+    graph_handle: u64,
+    size_x: u32, size_y: u32, size_z: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    step_x: i32, step_y: i32, step_z: i32,
+    output: *mut f64, output_length: u64,
+) -> i32 {
+    if graph_handle == 0 || output.is_null()
+        || size_x == 0 || size_y == 0 || size_z == 0
+        || step_x == 0 || step_y == 0 || step_z == 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    let Some(length) = (size_x as u64)
+        .checked_mul(size_y as u64)
+        .and_then(|xy| xy.checked_mul(size_z as u64)) else {
+            return STATUS_INVALID_ARGUMENT;
+        };
+    if length > MAX_VOLUME_ELEMENTS as u64 || output_length != length {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_density_graph_evaluate(
+            graph_handle, size_x, size_y, size_z,
+            min_x, min_y, min_z, step_x, step_y, step_z,
+            output, output_length,
+        )
+    }
+}
+
+/// Evaluates a regular density volume using IEEE-754 f32 intermediates.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate_f32(
+    graph_handle: u64,
+    size_x: u32, size_y: u32, size_z: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    step_x: i32, step_y: i32, step_z: i32,
+    output: *mut f32, output_length: u64,
+) -> i32 {
+    if graph_handle == 0 || output.is_null()
+        || size_x == 0 || size_y == 0 || size_z == 0
+        || step_x == 0 || step_y == 0 || step_z == 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    let Some(length) = (size_x as u64)
+        .checked_mul(size_y as u64)
+        .and_then(|xy| xy.checked_mul(size_z as u64)) else {
+            return STATUS_INVALID_ARGUMENT;
+        };
+    if length > MAX_VOLUME_ELEMENTS as u64 || output_length != length {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_density_graph_evaluate_f32(
+            graph_handle, size_x, size_y, size_z,
+            min_x, min_y, min_z, step_x, step_y, step_z,
+            output, output_length,
+        )
+    }
+}
+
+/// Releases one retained compiled density graph reference.
+#[no_mangle]
+pub extern "C" fn jpe_runtime_density_graph_release(graph_handle: u64) -> i32 {
+    if graph_handle == 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe { jpe_cpp_density_graph_release(graph_handle) }
 }
 
 /// Evaluates a batch of non-grid-aligned density graph points through the Rust cdylib ABI.
