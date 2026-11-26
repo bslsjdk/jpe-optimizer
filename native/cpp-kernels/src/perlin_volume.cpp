@@ -195,7 +195,7 @@ int32_t perlin_add_volume_impl(
     uint32_t flags
 ) noexcept {
     if (size_x == 0 || size_y == 0 || size_z == 0) return 1;
-    if (permutation == nullptr || output == nullptr || step_x == 0 || step_y == 0 || step_z == 0) return 1;
+    if (permutation == nullptr || output == nullptr) return 1;
 
     const uint64_t max_u64 = std::numeric_limits<uint64_t>::max();
     if (static_cast<uint64_t>(size_x) > max_u64 / size_y) return 1;
