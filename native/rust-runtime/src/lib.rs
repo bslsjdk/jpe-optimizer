@@ -778,6 +778,11 @@ mod tests {
             grid_x: i32, grid_y: i32, grid_z: i32,
             offset_x: *mut i32, offset_y: *mut i32, offset_z: *mut i32,
         ) -> i32;
+        fn jpe_cpp_aquifer_legacy_offsets(
+            factory_seed: u64,
+            grid_x: i32, grid_y: i32, grid_z: i32,
+            offset_x: *mut i32, offset_y: *mut i32, offset_z: *mut i32,
+        ) -> i32;
     }
 
     #[cfg(feature = "density-graph-benchmark")]
@@ -826,6 +831,32 @@ mod tests {
         assert_eq!(unsafe {
             jpe_cpp_aquifer_xoroshiro_offsets(
                 0, 0, 0, 0, 0,
+                std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            )
+        }, -1);
+    }
+
+    #[test]
+    fn aquifer_legacy_offsets_match_audited_reference_vectors() {
+        let cases = [
+            (0x0123_4567_89ab_cdef_u64, 1, 2, 3, [3, 3, 1]),
+            (0_u64, 0, 0, 0, [0, 7, 9]),
+            (987_654_321_u64, -17, -64, 33, [0, 0, 3]),
+            (0x9e37_79b9_7f4a_7c15_u64, -2, -1, -3, [6, 1, 7]),
+        ];
+        for (factory_seed, x, y, z, expected) in cases {
+            let mut actual = [i32::MIN; 3];
+            assert_eq!(unsafe {
+                jpe_cpp_aquifer_legacy_offsets(
+                    factory_seed, x, y, z,
+                    &mut actual[0], &mut actual[1], &mut actual[2],
+                )
+            }, 0);
+            assert_eq!(actual, expected, "factory_seed={factory_seed:#x} cell=({x},{y},{z})");
+        }
+        assert_eq!(unsafe {
+            jpe_cpp_aquifer_legacy_offsets(
+                0, 0, 0, 0,
                 std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
             )
         }, -1);
