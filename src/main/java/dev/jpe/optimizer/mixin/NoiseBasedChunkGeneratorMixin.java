@@ -79,6 +79,11 @@ public abstract class NoiseBasedChunkGeneratorMixin {
             ScopedDensityBuffer sampledDensity = NativeDensityGraphCompiler.trySampleVolume(
                     finalDensityFunction, finalDensity, noiseChunk, volume);
             if (sampledDensity == null) {
+                if (Boolean.getBoolean("jpe.nativeDensityGraphStrict")) {
+                    throw new IllegalStateException(
+                            "Strict native density graph mode blocked vanilla density fallback"
+                    );
+                }
                 sampledDensity = finalDensity.sampleVolume(volume);
             }
             try (ScopedDensityBuffer densityBuffer = sampledDensity) {
