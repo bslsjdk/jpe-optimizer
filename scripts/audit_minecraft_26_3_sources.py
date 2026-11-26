@@ -35,6 +35,13 @@ TARGET_CLASSES = (
     "net/minecraft/world/level/levelgen/carver/CaveWorldCarver",
     "net/minecraft/world/level/levelgen/carver/CanyonWorldCarver",
     "net/minecraft/world/level/chunk/CarverOutput",
+    "net/minecraft/world/level/levelgen/material/MaterialRules",
+    "net/minecraft/world/level/levelgen/material/MaterialSystem",
+    "net/minecraft/world/level/levelgen/material/MaterialRuleContext",
+    "net/minecraft/world/level/levelgen/material/condition/ConditionEvaluator",
+    "net/minecraft/world/level/levelgen/material/condition/MaterialCondition",
+    "net/minecraft/world/level/levelgen/material/rule/RuleEvaluator",
+    "net/minecraft/world/level/levelgen/material/rule/MaterialRule",
     "net/minecraft/world/level/levelgen/densityfunction/DensitySampler",
     "net/minecraft/world/level/levelgen/densityfunction/DensityFunctionCompiler",
     "net/minecraft/world/level/levelgen/densityfunction/SamplerContext",
@@ -53,6 +60,13 @@ EXECUTION_STAGE_PREFIXES = (
     "net/minecraft/world/level/levelgen/carver/CaveWorldCarver",
     "net/minecraft/world/level/levelgen/carver/CanyonWorldCarver",
     "net/minecraft/world/level/chunk/CarverOutput",
+    "net/minecraft/world/level/levelgen/material/MaterialRules",
+    "net/minecraft/world/level/levelgen/material/MaterialSystem",
+    "net/minecraft/world/level/levelgen/material/MaterialRuleContext",
+    "net/minecraft/world/level/levelgen/material/condition/ConditionEvaluator",
+    "net/minecraft/world/level/levelgen/material/condition/MaterialCondition",
+    "net/minecraft/world/level/levelgen/material/rule/RuleEvaluator",
+    "net/minecraft/world/level/levelgen/material/rule/MaterialRule",
 )
 
 
@@ -257,6 +271,18 @@ REFERENCE_METHODS = {
         "carve", "doCarve", "shouldSkip", "updateVerticalRadius",
     },
     "net/minecraft/world/level/chunk/CarverOutput": {"carve", "minY", "maxY"},
+    "net/minecraft/world/level/levelgen/material/MaterialSystem": {
+        "buildSurface", "topMaterial", "getSurfaceDepth", "getSurfaceSecondary",
+        "erodedBadlandsExtension", "frozenOceanExtension", "generateBands",
+        "makeBands", "getBand",
+    },
+    "net/minecraft/world/level/levelgen/material/MaterialRuleContext": {
+        "getNoiseSampler", "createNoiseSampler2d", "createNoiseSampler3d",
+        "getDensitiesInChunk", "getBiome", "resolveAnchorY",
+        "stoneDepthAbove", "stoneDepthBelow", "surfaceDepth", "waterHeight",
+    },
+    "net/minecraft/world/level/levelgen/material/rule/RuleEvaluator": {"tryApply"},
+    "net/minecraft/world/level/levelgen/material/condition/ConditionEvaluator": {"test"},
 }
 
 
