@@ -2566,8 +2566,8 @@ mod tests {
                 backing[view * 16 + column].as_ptr()
             });
             JpeBlendingDataView {
-                chunk_x: (view % 3) as i32 - 1,
-                chunk_z: (view / 3) as i32 - 1,
+                chunk_x: (view % 3) as i32,
+                chunk_z: (view / 3) as i32,
                 min_section_y: -4,
                 section_count: 8,
                 density_columns,
@@ -2586,7 +2586,7 @@ mod tests {
             jpe_runtime_blend_density_volume(
                 std::ptr::null(), 0, views.as_ptr(), views.len() as u32,
                 SIZE_X as u32, SIZE_Y as u32, SIZE_Z as u32,
-                -8, -64, -8, 4, 8, 4,
+                52, -64, 52, 4, 8, 4,
                 noise.as_ptr(), actual.as_mut_ptr(), count as u64,
             )
         }, STATUS_OK);
@@ -2610,9 +2610,9 @@ mod tests {
             for x in 0..SIZE_X {
                 for y in 0..SIZE_Y {
                     let index = (z * SIZE_X + x) * SIZE_Y + y;
-                    let block_x = -8 + x as i32 * 4;
+                    let block_x = 52 + x as i32 * 4;
                     let block_y = -64 + y as i32 * 8;
-                    let block_z = -8 + z as i32 * 4;
+                    let block_z = 52 + z as i32 * 4;
                     let cell_x = block_x.div_euclid(4);
                     let cell_y = block_y / 8; // Java integer division truncates toward zero.
                     let cell_z = block_z.div_euclid(4);
