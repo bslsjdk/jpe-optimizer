@@ -138,6 +138,63 @@ public final class NativeDensityGraphCompiler {
     }
 
     /**
+     * Prepares an immutable native plan for a sampler used by a subsystem such as Aquifer.
+     * The plan is compiled once per RandomState/root identity and remains owned by the
+     * RandomState cache until that state is reclaimed. It deliberately does not evaluate
+     * any samples here, so callers can invoke the C++ arbitrary-point API later without
+     * computing per-point DensityFunction values in Java.
+     *
+     * Returns zero only when the native runtime is unavailable or the graph/context is
+     * unsupported. Strict density-graph mode fails closed instead of silently returning
+     * a Java fallback handle.
+     */
+    public static long prepareDensityGraphHandle(DensityFunction root, NoiseChunk noiseChunk) {
+        if (root == null || noiseChunk == null) {
+            throw new IllegalArgumentException("Density graph root and NoiseChunk are required");
+        }
+
+        final NativeRuntime runtime;
+        try {
+            runtime = NativePerlinNoiseBackend.runtimeForDensityGraph();
+        } catch (RuntimeException | LinkageError unavailable) {
+            if (strictMode()) {
+                throw new IllegalStateException("Strict native sampler preparation: runtime unavailable", unavailable);
+            }
+            return 0L;
+        }
+        if (runtime == null) {
+            if (strictMode()) throw new IllegalStateException("Strict native sampler preparation: runtime unavailable");
+            return 0L;
+        }
+
+        try {
+            NoiseChunkAccessor noiseChunkAccess = (NoiseChunkAccessor) (Object) noiseChunk;
+            RandomState randomState = noiseChunkAccess.jpe$getRandomState();
+            DensityFunction.CompileContext context = ((DensityFunctionCompilerAccessor)
+                    (Object) ((RandomStateAccessor) (Object) randomState).jpe$getDensityFunctionCompiler())
+                    .jpe$getContext();
+            SamplerContext samplerContext = capturedSamplerContext(noiseChunk.cachingSamplers());
+            Blender blender = samplerContext.getField(Blender.CONTEXT_KEY);
+            if (blender != null && !blender.isEmpty()) {
+                throw new UnsupportedOperationException("Non-empty Blender sampler context requires native Blender lowering");
+            }
+            Beardifier beardifier = samplerContext.getField(Beardifier.CONTEXT_KEY);
+            boolean beardifierEmpty = beardifier == null || beardifier == Beardifier.EMPTY;
+            return graphHandle(root, randomState, context, true, beardifierEmpty, runtime);
+        } catch (RuntimeException | LinkageError unavailable) {
+            if (strictMode()) {
+                throw new IllegalStateException(
+                        "Strict native sampler preparation failed for " + root.getClass().getName()
+                                + ": " + describe(unavailable), unavailable);
+            }
+            JPEOptimizer.LOGGER.debug(
+                    "Native sampler plan declined for {}: {}",
+                    root.getClass().getName(), describe(unavailable));
+            return 0L;
+        }
+    }
+
+    /**
      * Returns a pooled density buffer filled by one native DAG evaluation, or
      * null when the graph contains an unsupported node or native execution fails.
      */
