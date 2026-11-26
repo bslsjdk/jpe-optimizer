@@ -121,7 +121,6 @@ public final class CompiledSamplerArithmeticIslands {
                 || op == CompiledSamplerGraphIr.Op.SQUARE
                 || op == CompiledSamplerGraphIr.Op.CUBE
                 || op == CompiledSamplerGraphIr.Op.SQRT
-                || op == CompiledSamplerGraphIr.Op.LOG
                 || op == CompiledSamplerGraphIr.Op.RECIPROCAL
                 || op == CompiledSamplerGraphIr.Op.SIGN
                 || op == CompiledSamplerGraphIr.Op.SQUEEZE
