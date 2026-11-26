@@ -49,6 +49,46 @@ struct AquiferVolumeScratch {
     std::vector<float> barrier_values;
     std::vector<JpeAquiferCoreInput> core_inputs;
     std::vector<JpeAquiferCoreOutput> core_outputs;
+
+    void trim_if_over_budget() noexcept {
+        constexpr size_t kRetainedBudgetBytes = 32U * 1024U * 1024U;
+        const size_t retained =
+            density_values.capacity() * sizeof(float)
+            + staged.capacity() * sizeof(JpeAquiferCoreOutput)
+            + active_indices.capacity() * sizeof(uint32_t)
+            + (active_x.capacity() + active_y.capacity() + active_z.capacity()
+                + center_x.capacity() + center_y.capacity() + center_z.capacity()
+                + distances.capacity()) * sizeof(int32_t)
+            + status_keys.capacity() * sizeof(uint64_t)
+            + closest_statuses.capacity() * sizeof(JpeAquiferFluidStatus)
+            + barrier_values.capacity() * sizeof(float)
+            + core_inputs.capacity() * sizeof(JpeAquiferCoreInput)
+            + core_outputs.capacity() * sizeof(JpeAquiferCoreOutput);
+        if (retained <= kRetainedBudgetBytes) return;
+
+        // A pathological/oversized volume must not pin an unbounded amount of
+        // memory to a long-lived Java worker thread.
+        std::vector<float>().swap(density_values);
+        std::vector<JpeAquiferCoreOutput>().swap(staged);
+        std::vector<uint32_t>().swap(active_indices);
+        std::vector<int32_t>().swap(active_x);
+        std::vector<int32_t>().swap(active_y);
+        std::vector<int32_t>().swap(active_z);
+        std::vector<int32_t>().swap(center_x);
+        std::vector<int32_t>().swap(center_y);
+        std::vector<int32_t>().swap(center_z);
+        std::vector<int32_t>().swap(distances);
+        std::vector<uint64_t>().swap(status_keys);
+        std::vector<JpeAquiferFluidStatus>().swap(closest_statuses);
+        std::vector<float>().swap(barrier_values);
+        std::vector<JpeAquiferCoreInput>().swap(core_inputs);
+        std::vector<JpeAquiferCoreOutput>().swap(core_outputs);
+    }
+};
+
+struct AquiferScratchRetentionGuard {
+    AquiferVolumeScratch& scratch;
+    ~AquiferScratchRetentionGuard() { scratch.trim_if_over_budget(); }
 };
 
 thread_local AquiferVolumeScratch g_aquifer_volume_scratch;
@@ -632,6 +672,7 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
     // Stage every result first. The caller's output array is committed only after
     // nearest-cell selection, FluidStatus lookup, barrier sampling and core math succeed.
     auto& scratch = g_aquifer_volume_scratch;
+    AquiferScratchRetentionGuard scratch_guard{scratch};
     auto& staged = scratch.staged;
     staged.resize(total);
     auto& active_indices = scratch.active_indices;
@@ -800,7 +841,9 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_density_and_substance
 
     // Density stays in native memory: the graph evaluator feeds the Aquifer
     // kernel directly without a Java-owned ScopedDensityBuffer or FFM bulk copy.
-    auto& density_values = g_aquifer_volume_scratch.density_values;
+    auto& scratch = g_aquifer_volume_scratch;
+    AquiferScratchRetentionGuard scratch_guard{scratch};
+    auto& density_values = scratch.density_values;
     density_values.resize(static_cast<size_t>(total));
     const int32_t density_status = jpe_cpp_density_graph_evaluate_f32(
         final_density_graph_handle,
