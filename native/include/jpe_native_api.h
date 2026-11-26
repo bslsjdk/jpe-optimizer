@@ -163,6 +163,18 @@ JPE_API int32_t jpe_runtime_density_graph_evaluate_points_f32(
     const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
     uint32_t point_count, float *output, uint64_t output_length
 );
+/* Evaluate multiple compiled sampler graphs in one call. Arrays use
+ * sampler-major [graph][point] order, including independent coordinates per graph. */
+JPE_API int32_t jpe_runtime_density_graph_evaluate_multi_points(
+    const uint64_t *graph_handles, uint32_t graph_count,
+    const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
+    uint32_t points_per_graph, double *output, uint64_t output_length
+);
+JPE_API int32_t jpe_runtime_density_graph_evaluate_multi_points_f32(
+    const uint64_t *graph_handles, uint32_t graph_count,
+    const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
+    uint32_t points_per_graph, float *output, uint64_t output_length
+);
 /* Internal C++ helpers; Rust publishes the stable jpe_runtime_* exports. */
 JPE_API uint64_t jpe_cpp_density_graph_compile(
     const JpeDensityNode *nodes, uint32_t node_count, uint32_t root_node,
