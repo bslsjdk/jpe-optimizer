@@ -1352,6 +1352,14 @@ public final class NativeRuntime implements AutoCloseable {
                 && densityGraphEvaluatePointsF32 != null && densityGraphRelease != null;
     }
 
+    /** Identifies each independently resolved symbol in the sparse-point ABI. */
+    public String densityGraphPointsDiagnostic() {
+        return "compile=" + (densityGraphCompile != null)
+                + " release=" + (densityGraphRelease != null)
+                + " evaluatePointsF64=" + (densityGraphEvaluatePoints != null)
+                + " evaluatePointsF32=" + (densityGraphEvaluatePointsF32 != null);
+    }
+
     /** Compiles a topologically ordered native DAG. PERLIN_STACK nodes retain their C++ plans. */
     public long compileDensityGraph(List<DensityNode> nodes, int rootNode, long configurationFingerprint) {
         if (!supportsDensityGraph()) throw new IllegalStateException("Native density graph API is unavailable");
