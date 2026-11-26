@@ -2148,7 +2148,7 @@ mod tests {
         let same_status = JpeAquiferFluidStatus { fluid_level: 30, fluid_type: WATER };
         let noisy = JpeAquiferCoreInput {
             block_y: 10,
-            density: -1.0,
+            density: -0.5,
             barrier_noise: 1.0,
             distance_sqr: [0, 1, 4, 9],
             closest: [
