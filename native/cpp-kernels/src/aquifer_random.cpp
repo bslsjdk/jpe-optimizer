@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <cstring>
+#include <climits>
+#include <unordered_map>
 
 namespace {
 
@@ -133,9 +135,6 @@ extern "C" int32_t jpe_cpp_aquifer_legacy_offsets(
     *offset_z = static_cast<int32_t>(random.next_int_bound(10U));
     return 0;
 }
-
-#include <climits>
-#include <unordered_map>
 
 namespace {
 struct AquiferGridKey {
