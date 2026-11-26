@@ -5,6 +5,9 @@
   "compatibilityLevel": "JAVA_25",
   "mixins": [
     "NoiseBasedChunkGeneratorMixin",
+    "NoiseFunctionCaptureMixin",
+    "RandomStateAccessor",
+    "DensityFunctionCompilerAccessor",
     "AquiferNoiseBasedAccessor",
     "BiomeManagerZoomMixin",
     "MultiNoiseBiomeSourceInvoker",
