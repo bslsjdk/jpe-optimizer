@@ -69,9 +69,9 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                 generatorSettings.noiseRouter().finalDensity();
         DensitySampler.Bound finalDensity = noiseChunk.cachingSamplers().get(finalDensityFunction);
 
-        // Opt-in preflight: compile all six resolved Aquifer sampler graphs into
-        // immutable C++ plans. This does not replace computeSubstance yet; it proves
-        // the real world settings can be lowered before the full-volume takeover.
+        // Compile the six resolved Aquifer samplers once into immutable C++ plans.
+        // The native full-volume path owns per-voxel decisions; Java only commits
+        // returned block-state tokens into Minecraft's chunk sections.
         NativeDensityGraphCompiler.AquiferSamplerPlans aquiferSamplerPlans = null;
         boolean nativeAquiferVolumeEnabled = Boolean.getBoolean("jpe.nativeAquiferSubstanceEnabled")
                 || Boolean.getBoolean("jpe.nativeAquiferFluidStatusEnabled");
@@ -131,19 +131,51 @@ public abstract class NoiseBasedChunkGeneratorMixin {
         long aquiferCallsSkipped = 0L;
 
         try {
-            ScopedDensityBuffer sampledDensity = NativeDensityGraphCompiler.trySampleVolume(
-                    finalDensityFunction, finalDensity, noiseChunk, volume);
-            if (sampledDensity == null) {
-                if (Boolean.getBoolean("jpe.nativeDensityGraphStrict")) {
-                    throw new IllegalStateException(
-                            "Strict native density graph mode blocked vanilla density fallback"
-                    );
+            boolean nativeAquiferVolumeVerify = Boolean.getBoolean("jpe.nativeAquiferSubstanceVerify")
+                    || nativeAquiferVolumeStrict;
+            NativeRuntime.AquiferSubstanceVolumeResult precomputedNativeVolume = null;
+
+            // Normal runtime: evaluate finalDensity and Aquifer in one C++ call.
+            // Verification mode deliberately retains the Java density view so the
+            // independent vanilla oracle can compare every voxel.
+            if (nativeAquiferPrepared != null && !nativeAquiferVolumeVerify) {
+                try {
+                    long finalDensityGraphHandle =
+                            NativeDensityGraphCompiler.prepareDensityGraphHandle(finalDensityFunction, noiseChunk);
+                    if (finalDensityGraphHandle == 0L) {
+                        throw new IllegalStateException("Final density graph was not compiled for native execution");
+                    }
+                    precomputedNativeVolume =
+                            nativeAquiferPrepared.computeDensityAndSubstanceVolumeF32(
+                                    noiseAquifer, finalDensityGraphHandle, volume);
+                } catch (RuntimeException | LinkageError failure) {
+                    if (nativeAquiferVolumeStrict) {
+                        throw new IllegalStateException(
+                                "Strict native fused density/Aquifer execution failed; Java fallback is disabled",
+                                failure);
+                    }
+                    JPEOptimizer.LOGGER.warn(
+                            "Native fused density/Aquifer execution failed; trying the verified split path: {}",
+                            failure.toString());
                 }
-                sampledDensity = finalDensity.sampleVolume(volume);
+            }
+
+            ScopedDensityBuffer sampledDensity = null;
+            if (precomputedNativeVolume == null) {
+                sampledDensity = NativeDensityGraphCompiler.trySampleVolume(
+                        finalDensityFunction, finalDensity, noiseChunk, volume);
+                if (sampledDensity == null) {
+                    if (Boolean.getBoolean("jpe.nativeDensityGraphStrict")) {
+                        throw new IllegalStateException(
+                                "Strict native density graph mode blocked vanilla density fallback"
+                        );
+                    }
+                    sampledDensity = finalDensity.sampleVolume(volume);
+                }
             }
             try (ScopedDensityBuffer densityBuffer = sampledDensity) {
-            NativeRuntime.AquiferSubstanceVolumeResult computedNativeVolume = null;
-            if (nativeAquiferPrepared != null) {
+            NativeRuntime.AquiferSubstanceVolumeResult computedNativeVolume = precomputedNativeVolume;
+            if (computedNativeVolume == null && nativeAquiferPrepared != null) {
                 try {
                     computedNativeVolume = nativeAquiferPrepared.computeSubstanceVolumeF32(
                             noiseAquifer, volume, densityBuffer);
@@ -220,7 +252,8 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                         LevelChunkSection section = chunk.getSection(sectionIndex);
                         for (int inSection = 0; inSection < runLength; ++inSection) {
                             int localY = blockY & 15;
-                            float density = densityBuffer.get(densityIndex);
+                            float density = nativeVolumeAccepted && densityBuffer == null
+                                    ? 0.0F : densityBuffer.get(densityIndex);
                             // Sample one voxel in 64. Two clock reads per sampled voxel keep
                             // profiling overhead bounded while separating Aquifer from placement.
                             boolean sampleTiming = profile && (densityIndex & 63) == 0;
