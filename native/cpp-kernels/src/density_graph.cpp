@@ -342,6 +342,11 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
                     else if (graph->nodes[i].input_a == 1) graph->needs_y_coordinates = true;
                     else graph->needs_z_coordinates = true;
                     break;
+                case kInterpolated:
+                    graph->needs_x_coordinates = true;
+                    graph->needs_y_coordinates = true;
+                    graph->needs_z_coordinates = true;
+                    break;
                 default: break;
             }
         }
@@ -485,6 +490,12 @@ struct DensityEvaluationScratch {
     std::vector<int32_t> x_coordinates;
     std::vector<int32_t> y_coordinates;
     std::vector<int32_t> z_coordinates;
+    std::vector<uint64_t> interpolation_x_indices;
+    std::vector<uint64_t> interpolation_y_indices;
+    std::vector<uint64_t> interpolation_z_indices;
+    std::vector<Scalar> interpolation_x_fractions;
+    std::vector<Scalar> interpolation_y_fractions;
+    std::vector<Scalar> interpolation_z_fractions;
 
     void prepare(uint32_t slot_count, size_t volume, bool has_perlin,
                  bool needs_x_coordinates, bool needs_y_coordinates, bool needs_z_coordinates,
@@ -817,9 +828,6 @@ int32_t evaluate_density_graph_impl(
                         if (remainder < 0) --quotient;
                         return quotient;
                     };
-                    const auto ceil_div = [&](int64_t value, int64_t divisor) {
-                        return -floor_div(-value, divisor);
-                    };
                     const int64_t max_x = static_cast<int64_t>(min_x)
                         + static_cast<int64_t>(size_x - 1) * step_x;
                     const int64_t max_y = static_cast<int64_t>(min_y)
@@ -866,22 +874,39 @@ int32_t evaluate_density_graph_impl(
                         volatile Scalar scaled = delta * t;
                         return a + scaled;
                     };
+
+                    // Map each requested coordinate to its lower lattice corner
+                    // and interpolation fraction once per axis, not once per voxel.
+                    // The coordinate vectors retain Java's wrapped int32 semantics.
+                    const auto prepare_axis = [&](const std::vector<int32_t>& coordinates,
+                            int64_t cell_size, int64_t corner_min, Scalar inverse,
+                            std::vector<uint64_t>& indices, std::vector<Scalar>& fractions) {
+                        indices.resize(coordinates.size());
+                        fractions.resize(coordinates.size());
+                        for (size_t axis_index = 0; axis_index < coordinates.size(); ++axis_index) {
+                            const int64_t block = coordinates[axis_index];
+                            const int64_t cell = floor_div(block, cell_size) * cell_size;
+                            indices[axis_index] = static_cast<uint64_t>((cell - corner_min) / cell_size);
+                            fractions[axis_index] = static_cast<Scalar>(block - cell) * inverse;
+                        }
+                    };
+                    prepare_axis(scratch.x_coordinates, cell_xz, corner_min_x, inv_xz,
+                            scratch.interpolation_x_indices, scratch.interpolation_x_fractions);
+                    prepare_axis(scratch.y_coordinates, cell_y, corner_min_y, inv_y,
+                            scratch.interpolation_y_indices, scratch.interpolation_y_fractions);
+                    prepare_axis(scratch.z_coordinates, cell_xz, corner_min_z, inv_xz,
+                            scratch.interpolation_z_indices, scratch.interpolation_z_fractions);
+
                     size_t out = 0;
                     for (uint32_t z = 0; z < size_z; ++z) {
-                        const int64_t block_z = wrapped_coordinate(min_z, z, step_z);
-                        const int64_t cell_z = floor_div(block_z, cell_xz) * cell_xz;
-                        const uint64_t cz = static_cast<uint64_t>((cell_z - corner_min_z) / cell_xz);
-                        const Scalar tz = static_cast<Scalar>(block_z - cell_z) * inv_xz;
+                        const uint64_t cz = scratch.interpolation_z_indices[z];
+                        const Scalar tz = scratch.interpolation_z_fractions[z];
                         for (uint32_t x = 0; x < size_x; ++x) {
-                            const int64_t block_x = wrapped_coordinate(min_x, x, step_x);
-                            const int64_t cell_x = floor_div(block_x, cell_xz) * cell_xz;
-                            const uint64_t cx = static_cast<uint64_t>((cell_x - corner_min_x) / cell_xz);
-                            const Scalar tx = static_cast<Scalar>(block_x - cell_x) * inv_xz;
+                            const uint64_t cx = scratch.interpolation_x_indices[x];
+                            const Scalar tx = scratch.interpolation_x_fractions[x];
                             for (uint32_t y = 0; y < size_y; ++y) {
-                                const int64_t block_y = wrapped_coordinate(min_y, y, step_y);
-                                const int64_t cell_y0 = floor_div(block_y, cell_y) * cell_y;
-                                const uint64_t cy = static_cast<uint64_t>((cell_y0 - corner_min_y) / cell_y);
-                                const Scalar ty = static_cast<Scalar>(block_y - cell_y0) * inv_y;
+                                const uint64_t cy = scratch.interpolation_y_indices[y];
+                                const Scalar ty = scratch.interpolation_y_fractions[y];
 
                                 const Scalar z00 = lerp(corner_at(cx, cy, cz), corner_at(cx, cy, cz + 1), tz);
                                 const Scalar z10 = lerp(corner_at(cx + 1, cy, cz), corner_at(cx + 1, cy, cz + 1), tz);
