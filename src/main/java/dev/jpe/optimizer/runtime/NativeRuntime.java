@@ -601,7 +601,7 @@ public final class NativeRuntime implements AutoCloseable {
                 for (int i = 0; i < 6; i++) {
                     info.set(ValueLayout.JAVA_LONG, (long) i * 8L, graphHandles[i]);
                 }
-                MemorySegment.copy(worldFingerprint, 0, info, ValueLayout.JAVA_BYTE, 48L, 32L);
+                MemorySegment.copy(worldFingerprint, 0, info, ValueLayout.JAVA_BYTE, 48L, 32);
                 info.set(ValueLayout.JAVA_LONG, 80L, semanticFingerprint);
                 info.set(ValueLayout.JAVA_LONG, 88L, seedLo);
                 info.set(ValueLayout.JAVA_LONG, 96L, seedHi);
