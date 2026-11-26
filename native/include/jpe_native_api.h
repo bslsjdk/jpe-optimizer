@@ -131,7 +131,11 @@ enum {
     JPE_DENSITY_ROUND = 28,
     JPE_DENSITY_LOG = 29,
     /* DISTANCE_TO_POINT: input_a=DistanceMetric (0=CHEBYSHEV, 1=EUCLIDEAN, 2=EUCLIDEAN_SQUARED, 3=MANHATTAN); immediate/auxiliary/tertiary=integer point x/y/z. */
-    JPE_DENSITY_DISTANCE_TO_POINT = 30
+    JPE_DENSITY_DISTANCE_TO_POINT = 30,
+    /* PERLIN_STACK_WARP: input_a/input_b/reserved=shift X/Y/Z node indices; amplitude is 1.0. */
+    JPE_DENSITY_PERLIN_STACK_WARP = 31,
+    /* SLICE: input_a=child graph root; input_b=axis (0=X,1=Y,2=Z); immediate=fixed int coordinate. */
+    JPE_DENSITY_SLICE = 32
 };
 /* Returns a retained compiled-plan handle, or zero for an invalid graph. */
 JPE_API uint64_t jpe_runtime_density_graph_compile(
