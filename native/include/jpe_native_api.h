@@ -94,6 +94,8 @@ typedef struct JpeDensityNode {
     uint32_t input_b;
     uint32_t reserved;
     double immediate;
+    double auxiliary;
+    double tertiary;
 } JpeDensityNode;
 enum {
     JPE_DENSITY_CONST = 1,
