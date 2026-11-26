@@ -555,9 +555,9 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
         || density_values == nullptr || outputs == nullptr) return 1;
 
     const uint64_t plane = static_cast<uint64_t>(size_x) * size_y;
+    if (plane == 0 || plane > std::numeric_limits<uint64_t>::max() / size_z) return 1;
     const uint64_t total64 = plane * size_z;
-    if (plane == 0 || total64 == 0 || total64 > kMaxVolumeVoxels
-        || density_count != total64) return 1;
+    if (total64 == 0 || total64 > kMaxVolumeVoxels || density_count != total64) return 1;
     const size_t total = static_cast<size_t>(total64);
     const size_t density_bytes = total * sizeof(*density_values);
     const size_t output_bytes = total * sizeof(*outputs);
