@@ -787,8 +787,7 @@ mod tests {
         }, 0);
         assert_eq!(output, [36.0, 48.0, 39.0, 52.0]);
 
-        // 33 samples cross the 32-sample tile boundary; the final one-sample
-        // tile must preserve the same z/x/y layout and coordinate semantics.
+        // A small volume also checks the same z/x/y layout and coordinate semantics.
         let mut tail_output = [0.0_f32; 33];
         assert_eq!(unsafe {
             jpe_runtime_density_graph_evaluate(
@@ -1049,6 +1048,56 @@ mod tests {
     
         }
 
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
+    }
+
+    #[test]
+    fn density_graph_full_chunk_respects_one_megabyte_scratch_budget() {
+        // 600 nodes force the 1 MiB node-value budget to choose a tile smaller
+        // than the 1,225-sample Minecraft chunk lattice. This exercises several
+        // dynamically sized tiles without changing sample order or float results.
+        let mut nodes = Vec::with_capacity(600);
+        nodes.push(JpeDensityNode {
+            opcode: DENSITY_X, input_a: DENSITY_NO_INPUT,
+            input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0,
+        });
+        nodes.push(JpeDensityNode {
+            opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+            input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0,
+        });
+        for index in 2..600 {
+            nodes.push(JpeDensityNode {
+                opcode: DENSITY_ADD, input_a: (index - 1) as u32,
+                input_b: 1, reserved: 0, immediate: 0.0,
+            });
+        }
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32,
+                (nodes.len() - 1) as u32, 8, 0x1225_0600)
+        };
+        assert_ne!(handle, 0);
+
+        const SX: usize = 5;
+        const SY: usize = 49;
+        const SZ: usize = 5;
+        let mut output = vec![0.0_f32; SX * SY * SZ];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                handle, SX as u32, SY as u32, SZ as u32,
+                -16, -64, 32, 4, 8, 4,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+
+        for z in 0..SZ {
+            for x in 0..SX {
+                for y in 0..SY {
+                    let index = (z * SX + x) * SY + y;
+                    assert_eq!(output[index], (-16 + x as i32 * 4) as f32 + 598.0,
+                        "budget-limited tile mismatch at x={x}, y={y}, z={z}");
+                }
+            }
+        }
         assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
     }
 
