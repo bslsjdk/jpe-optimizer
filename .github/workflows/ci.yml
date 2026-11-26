@@ -101,7 +101,7 @@ jobs:
           if [ "$test_status" -eq 0 ]; then
             grep -E 'JPE_NATIVE_BLENDER_PARITY samples=[1-9][0-9]* exact=true mismatches=0' build/gametest/logs/latest.log
             grep -E 'JPE_NATIVE_BLENDER_STAGES .*timedCalls=[1-9][0-9]*' build/gametest/logs/latest.log
-            grep -F 'JPE_NATIVE_BLENDER_BACKEND_SUMMARY attempts=4 completed=4 fallbacks=0 paritySamples=' build/gametest/logs/latest.log
+            grep -F 'JPE_NATIVE_BLENDER_BACKEND_SUMMARY attempts=8 completed=8 fallbacks=0 paritySamples=' build/gametest/logs/latest.log
           fi
           exit "$test_status"
 
