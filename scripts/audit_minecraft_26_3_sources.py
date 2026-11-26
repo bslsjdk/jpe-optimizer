@@ -31,7 +31,15 @@ PATCHED_JAR = Path("build/moddev/artifacts") / f"minecraft-patched-{NEOFORGE_VER
 NESTED_SERVER_JAR = f"META-INF/versions/{VERSION}/server-{VERSION}.jar"
 TARGET_CLASSES = (
     "net/minecraft/world/level/levelgen/NoiseBasedChunkGenerator",
+    "net/minecraft/world/level/levelgen/ChunkGenerator",
+    "net/minecraft/world/level/levelgen/SurfaceSystem",
+    "net/minecraft/world/level/levelgen/SurfaceRules",
     "net/minecraft/world/level/biome/BiomeManager",
+    "net/minecraft/world/level/biome/BiomeSource",
+    "net/minecraft/world/level/WorldGenRegion",
+    "net/minecraft/world/level/chunk/ChunkAccess",
+    "net/minecraft/world/level/chunk/ProtoChunk",
+    "net/minecraft/world/level/chunk/ChunkGeneratorStructureState",
     "net/minecraft/world/level/levelgen/NoiseChunk",
     "net/minecraft/world/level/levelgen/Aquifer",
     "net/minecraft/world/level/levelgen/RandomState",
@@ -64,6 +72,10 @@ TARGET_CLASSES = (
 TARGET_CLASS_PREFIXES = (
     "net/minecraft/world/level/levelgen/densityfunction/",
     "net/minecraft/world/level/levelgen/blending/",
+    "net/minecraft/world/level/levelgen/carver/",
+    "net/minecraft/world/level/levelgen/feature/",
+    "net/minecraft/world/level/levelgen/placement/",
+    "net/minecraft/world/level/levelgen/structure/",
 )
 
 
@@ -425,7 +437,24 @@ class Example {
 def source_inspection(vanilla_root: Path, patched_root: Path) -> list[str]:
     """Emit selected exact 26.3 method bodies from both vanilla and patched sources."""
     selected = {
+        "ChunkGenerator.java": {"createBiomes", "applyCarvers", "buildSurface", "applyBiomeDecoration", "createStructures", "createReferences"},
         "NoiseBasedChunkGenerator.java": {"buildTerrain", "doFill", "createNoiseChunk"},
+        "BiomeSource.java": {"getNoiseBiome", "possibleBiomes", "findBiomeHorizontal"},
+        "WorldGenRegion.java": {"getBlockState", "setBlock", "getChunk"},
+        "ChunkAccess.java": {"setBlockState", "getOrCreateHeightmapUnprimed", "markPosForPostProcessing", "getOrCreateHeightmap"},
+        "ProtoChunk.java": {"setBlockState", "getOrCreateHeightmapUnprimed"},
+        "ChunkGeneratorStructureState.java": {"createForNormal", "hasStructureChunkInRange", "getPlacements"},
+        "ConfiguredWorldCarver.java": {"carve"},
+        "WorldCarver.java": {"carve", "isStartChunk", "carveBlock"},
+        "SurfaceSystem.java": {"buildSurface", "erodedBadlandsExtension"},
+        "SurfaceRules.java": {"context", "sequence", "state", "block"},
+        "Structure.java": {"findValidGenerationPoint", "generate", "afterPlace"},
+        "StructureStart.java": {"placeInChunk", "generatePieces"},
+        "StructurePlacement.java": {"isStructureChunk", "getPotentialStructureChunk", "getLocatePos"},
+        "Feature.java": {"place"},
+        "ConfiguredFeature.java": {"place"},
+        "PlacedFeature.java": {"place", "placeWithContext"},
+        "PlacementModifier.java": {"getPositions"},
         "NoiseChunk.java": {"NoiseChunk", "cachingSamplers", "volume", "close"},
         "RandomState.java": {"RandomState", "create", "getSampler", "samplersWithContext",
                              "getOrCreateRandomFactory", "lambda$getOrCreateRandomFactory$0",
@@ -507,6 +536,22 @@ def source_inspection(vanilla_root: Path, patched_root: Path) -> list[str]:
 def bytecode_inspection(vanilla_jar: Path, patched_jar: Path) -> list[str]:
     """Disassemble exact critical classes from both official and NeoForge-patched jars."""
     classes = [
+        "net.minecraft.world.level.levelgen.ChunkGenerator",
+        "net.minecraft.world.level.levelgen.SurfaceSystem",
+        "net.minecraft.world.level.levelgen.SurfaceRules",
+        "net.minecraft.world.level.biome.BiomeSource",
+        "net.minecraft.world.level.chunk.ChunkAccess",
+        "net.minecraft.world.level.chunk.ProtoChunk",
+        "net.minecraft.world.level.chunk.ChunkGeneratorStructureState",
+        "net.minecraft.world.level.levelgen.carver.ConfiguredWorldCarver",
+        "net.minecraft.world.level.levelgen.carver.WorldCarver",
+        "net.minecraft.world.level.levelgen.structure.Structure",
+        "net.minecraft.world.level.levelgen.structure.StructureStart",
+        "net.minecraft.world.level.levelgen.structure.placement.StructurePlacement",
+        "net.minecraft.world.level.levelgen.feature.Feature",
+        "net.minecraft.world.level.levelgen.feature.ConfiguredFeature",
+        "net.minecraft.world.level.levelgen.placement.PlacedFeature",
+        "net.minecraft.world.level.levelgen.placement.PlacementModifier",
         "net.minecraft.util.Mth",
         "net.minecraft.world.level.levelgen.NoiseChunk",
         "net.minecraft.world.level.levelgen.Aquifer",
