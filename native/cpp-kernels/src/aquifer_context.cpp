@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -154,10 +155,13 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_destroy(uint64_t context_hand
 
 extern "C" JPE_API int32_t jpe_cpp_aquifer_context_evaluate_samplers_f32(
     uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
     const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
     uint32_t points_per_sampler, float* output, uint64_t output_length
 ) {
-    if (point_x == nullptr || point_y == nullptr || point_z == nullptr || output == nullptr
+    if (expected_world_fingerprint == nullptr || expected_semantic_fingerprint == 0
+        || point_x == nullptr || point_y == nullptr || point_z == nullptr || output == nullptr
         || points_per_sampler == 0) return 1;
     const uint64_t total = static_cast<uint64_t>(points_per_sampler) * kSamplerCount;
     if (total > kMaxVolumeElements || output_length != total) return 1;
@@ -169,6 +173,11 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_evaluate_samplers_f32(
 
     const auto context = acquire_context(context_handle);
     if (!context) return 1;
+    if (context->semantic_fingerprint != expected_semantic_fingerprint
+        || std::memcmp(context->world_fingerprint.data(), expected_world_fingerprint,
+                       context->world_fingerprint.size()) != 0) {
+        return 1;
+    }
     return jpe_cpp_density_graph_evaluate_multi_points_f32(
         context->graph_handles.data(), kSamplerCount,
         point_x, point_y, point_z, points_per_sampler, output, output_length);
