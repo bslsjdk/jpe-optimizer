@@ -20,13 +20,16 @@
 //! - culled section mesher producing the shared 32-byte vertex format
 //! - AABB / frustum section culling
 //! - renderer interface + headless reference implementation
+//! - native Vulkan, OpenGL and OpenGL ES backends: real device/context, mesh
+//!   upload, draw and pixel readback, verified on software Mesa
 //! - terrain FFI declarations for the existing ABI v8 (`cpp-bridge` feature)
 //!
 //! **Not implemented yet** (must not be reported as done):
-//! - Vulkan, OpenGL and OpenGL ES native backends (probes report
-//!   `BackendUnavailable`)
+//! - adopting Minecraft's live window/context (backends render offscreen today;
+//!   host-context adoption is part of the client integration)
+//! - presentation / swapchain, textures, lighting
 //! - wiring into live Minecraft chunk generation / rendering
-//! - greedy meshing, ambient occlusion, lighting, textures
+//! - greedy meshing, ambient occlusion, textures
 //! - shared-memory / zero-copy transport to C++
 
 #![deny(unsafe_op_in_unsafe_fn)]

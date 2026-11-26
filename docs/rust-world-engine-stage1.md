@@ -1,5 +1,9 @@
 # Rust World Engine — Stage 1 investigation and first implementation
 
+> Status note: this document is the Stage 1 audit snapshot and describes the
+> renderer as not implemented. The native Vulkan / OpenGL / OpenGL ES backends
+> were added afterwards; see `rust-world-engine-stage2-renderers.md`.
+
 Branch: `work/rust-world-engine` (based on `origin/work/native-density-graph-ir`).
 Scope of this commit: Stage 1 audit against real sources, plus the first
 verifiable Stage 2 slice (`native/rust-world/`). Nothing here claims that any

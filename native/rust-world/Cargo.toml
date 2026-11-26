@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 license = "MIT"
-description = "JPE native world engine: chunk lifecycle, scheduling and mesh construction. Renderer backends are not implemented yet."
+description = "JPE native world engine: chunk lifecycle, scheduling, mesh construction, and native Vulkan/OpenGL/OpenGL ES render backends."
 
 [lib]
 name = "jpe_world"

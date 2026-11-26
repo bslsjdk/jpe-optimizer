@@ -61,6 +61,39 @@ jobs:
         continue-on-error: true
         run: cargo clippy --all-targets -- -D warnings
 
+  gpu-backends:
+    name: Native render backends on software Mesa
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Mesa software drivers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            mesa-vulkan-drivers libegl-mesa0 libgl1-mesa-dri libgles2 libgl1 libglvnd0
+
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/rust-world
+
+      # `JPE_REQUIRE_RENDER_BACKENDS=1` makes the backend tests fail (instead of
+      # skipping) if a driver is missing, so this job proves Vulkan, GL and GLES
+      # each actually created a device/context and rendered a frame.
+      - name: Renderer tests (must not skip)
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+          XDG_RUNTIME_DIR: /tmp
+          JPE_REQUIRE_RENDER_BACKENDS: "1"
+        run: cargo test render:: -- --test-threads=1
+
   java-bridge:
     name: Java 25 FFM bridge harness
     runs-on: ubuntu-latest

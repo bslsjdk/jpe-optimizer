@@ -37,13 +37,23 @@ java/run_harness.sh
 
 Implemented and unit-tested: coordinates, chunk lifecycle, bounded scheduler
 with stale-epoch rejection, scoped parallel map, culled section mesher, AABB /
-frustum culling, renderer trait, headless reference renderer, ABI v8 FFI
+frustum culling, renderer trait, headless reference renderer, **three native GPU
+backends (Vulkan, OpenGL, OpenGL ES) with offscreen frame readback**, ABI v8 FFI
 declarations, Java-facing C ABI (`src/ffi.rs`), Java 25 FFM binding and harness
 (`java/`).
 
-Not implemented: Vulkan / OpenGL / OpenGL ES backends (probes return
-`BackendUnavailable`), Minecraft integration, greedy meshing, lighting,
-textures, shared-memory transport. The C++ terrain bridge is gated behind the
-`cpp-bridge` feature and not yet exercised. See
-`docs/rust-world-engine-stage1.md` at the repository root for the full Stage 1
-audit.
+The three backends call the native APIs directly through hand-written bindings —
+no wgpu/gfx-hal/vulkano/glium. Each one creates a real device or context,
+uploads a mesh, draws, and reads the frame back; the tests assert actual pixel
+coverage rather than a submitted status. They are verified on software Mesa
+(lavapipe for Vulkan, llvmpipe for GL/GLES). See
+`docs/rust-world-engine-stage2-renderers.md` for the design and the exact
+verification commands.
+
+Not implemented yet: adopting Minecraft's live window/context (the backends
+render headless or offscreen today; host-context adoption lands with the client
+integration), presentation/swapchain, textures, lighting, greedy meshing,
+Minecraft integration, shared-memory transport. The C++ terrain bridge is gated
+behind the `cpp-bridge` feature and not yet exercised. See
+`docs/rust-world-engine-stage1.md` and
+`docs/rust-world-engine-stage2-renderers.md` for the full audit trail.
