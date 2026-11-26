@@ -148,6 +148,12 @@ void build_execution_plan(CompiledGraph& graph) {
             case JPE_DENSITY_MAX:
                 graph.arithmetic.push_back({node.opcode, node.input_a, node.input_b, i, 0.0f, 0.0f});
                 break;
+            case JPE_DENSITY_NEGATE:
+            case JPE_DENSITY_ABS:
+            case JPE_DENSITY_SQUARE:
+            case JPE_DENSITY_CUBE:
+                graph.arithmetic.push_back({node.opcode, node.input_a, kNoInput, i, 0.0f, 0.0f});
+                break;
             case JPE_DENSITY_CLAMP: {
                 uint64_t packed = 0;
                 std::memcpy(&packed, &node.immediate, sizeof(packed));
@@ -244,6 +250,12 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
             case JPE_DENSITY_MIN:
             case JPE_DENSITY_MAX:
                 if (node.reserved != 0 || node.input_a >= i || node.input_b >= i) return false;
+                break;
+            case JPE_DENSITY_NEGATE:
+            case JPE_DENSITY_ABS:
+            case JPE_DENSITY_SQUARE:
+            case JPE_DENSITY_CUBE:
+                if (node.reserved != 0 || node.input_a >= i || node.input_b != kNoInput) return false;
                 break;
             case JPE_DENSITY_CLAMP:
                 if (node.reserved != 0 || node.input_a >= i || node.input_b != kNoInput) return false;
@@ -558,6 +570,23 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
                     destination[sample] = minecraft_clamp(left[sample],
                         instruction.parameter_a, instruction.parameter_b);
                 }
+            } else if (instruction.opcode == JPE_DENSITY_NEGATE) {
+                for (uint32_t sample = 0; sample < count; ++sample) {
+                    destination[sample] = -left[sample];
+                }
+            } else if (instruction.opcode == JPE_DENSITY_ABS) {
+                for (uint32_t sample = 0; sample < count; ++sample) {
+                    destination[sample] = std::fabs(left[sample]);
+                }
+            } else if (instruction.opcode == JPE_DENSITY_SQUARE) {
+                for (uint32_t sample = 0; sample < count; ++sample) {
+                    destination[sample] = left[sample] * left[sample];
+                }
+            } else if (instruction.opcode == JPE_DENSITY_CUBE) {
+                for (uint32_t sample = 0; sample < count; ++sample) {
+                    const float square = left[sample] * left[sample];
+                    destination[sample] = square * left[sample];
+                }
             } else {
                 for (uint32_t sample = 0; sample < count; ++sample) {
                     destination[sample] = left[sample] / right[sample];
@@ -660,6 +689,20 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_scalar_reference(
                         case JPE_DENSITY_MAX:
                             values[n] = minecraft_volume_max(values[node.input_a], values[node.input_b]);
                             break;
+                        case JPE_DENSITY_NEGATE:
+                            values[n] = -values[node.input_a];
+                            break;
+                        case JPE_DENSITY_ABS:
+                            values[n] = std::fabs(values[node.input_a]);
+                            break;
+                        case JPE_DENSITY_SQUARE:
+                            values[n] = values[node.input_a] * values[node.input_a];
+                            break;
+                        case JPE_DENSITY_CUBE: {
+                            const float square = values[node.input_a] * values[node.input_a];
+                            values[n] = square * values[node.input_a];
+                            break;
+                        }
                         case JPE_DENSITY_CLAMP: {
                             uint64_t packed = 0;
                             std::memcpy(&packed, &node.immediate, sizeof(packed));
