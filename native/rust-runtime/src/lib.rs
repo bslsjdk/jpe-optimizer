@@ -871,6 +871,94 @@ mod tests {
     use super::*;
 
     #[test]
+    fn aquifer_status_cache_batches_preserve_first_inserted_status() {
+        let handle = jpe_runtime_aquifer_status_cache_create(8);
+        assert_ne!(handle, 0);
+
+        let keys = [0_u64, 42, u64::MAX, 42];
+        let input = [
+            JpeAquiferFluidStatus { fluid_level: -64, fluid_type: 3 },
+            JpeAquiferFluidStatus { fluid_level: 80, fluid_type: 7 },
+            JpeAquiferFluidStatus { fluid_level: i32::MIN, fluid_type: u32::MAX },
+            // A duplicate must not overwrite the first cached FluidStatus.
+            JpeAquiferFluidStatus { fluid_level: 999, fluid_type: 99 },
+        ];
+
+        let mut before = [JpeAquiferFluidStatus { fluid_level: 123, fluid_type: 456 }; 4];
+        let mut found = [9_u8; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_status_cache_lookup_batch(
+                handle, keys.as_ptr(), keys.len() as u32,
+                before.as_mut_ptr(), found.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        assert_eq!(found, [0, 0, 0, 0]);
+        assert!(before.iter().all(|v| v.fluid_level == 123 && v.fluid_type == 456));
+
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_status_cache_insert_batch(
+                handle, keys.as_ptr(), input.as_ptr(), keys.len() as u32,
+            )
+        }, STATUS_OK);
+
+        let query_keys = [u64::MAX, 42, 0, 777];
+        let mut output = [JpeAquiferFluidStatus::default(); 4];
+        let mut found = [0_u8; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_status_cache_lookup_batch(
+                handle, query_keys.as_ptr(), query_keys.len() as u32,
+                output.as_mut_ptr(), found.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        assert_eq!(found, [1, 1, 1, 0]);
+        assert_eq!(output[0].fluid_level, i32::MIN);
+        assert_eq!(output[0].fluid_type, u32::MAX);
+        assert_eq!(output[1].fluid_level, 80);
+        assert_eq!(output[1].fluid_type, 7);
+        assert_eq!(output[2].fluid_level, -64);
+        assert_eq!(output[2].fluid_type, 3);
+
+        assert_eq!(jpe_runtime_aquifer_status_cache_destroy(handle), STATUS_OK);
+        assert_eq!(jpe_runtime_aquifer_status_cache_destroy(handle), STATUS_INVALID_ARGUMENT);
+        assert_eq!(jpe_runtime_aquifer_status_cache_create(0), 0);
+    }
+
+    #[test]
+    fn aquifer_status_cache_rejects_capacity_overflow_without_overwriting_entries() {
+        let handle = jpe_runtime_aquifer_status_cache_create(2);
+        assert_ne!(handle, 0);
+        let keys = [10_u64, 11];
+        let statuses = [
+            JpeAquiferFluidStatus { fluid_level: 32, fluid_type: 1 },
+            JpeAquiferFluidStatus { fluid_level: 64, fluid_type: 2 },
+        ];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_status_cache_insert_batch(
+                handle, keys.as_ptr(), statuses.as_ptr(), 2,
+            )
+        }, STATUS_OK);
+
+        let overflow_key = [12_u64];
+        let overflow_status = [JpeAquiferFluidStatus { fluid_level: 96, fluid_type: 3 }];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_status_cache_insert_batch(
+                handle, overflow_key.as_ptr(), overflow_status.as_ptr(), 1,
+            )
+        }, STATUS_CPP_FAILURE);
+
+        let query_keys = [10_u64, 11, 12];
+        let mut output = [JpeAquiferFluidStatus::default(); 3];
+        let mut found = [0_u8; 3];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_status_cache_lookup_batch(
+                handle, query_keys.as_ptr(), 3, output.as_mut_ptr(), found.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        assert_eq!(found, [1, 1, 0]);
+        assert_eq!(jpe_runtime_aquifer_status_cache_destroy(handle), STATUS_OK);
+    }
+
+    #[test]
     fn aquifer_xoroshiro_offsets_match_audited_reference_vectors() {
         let cases = [
             (0x0123_4567_89ab_cdef_u64, 0xfedc_ba98_7654_3210_u64, 1, 2, 3, [4, 0, 1]),
