@@ -18,6 +18,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import dev.jpe.optimizer.mixin.GradientNoiseAccessor;
+import dev.jpe.optimizer.mixin.DensityBufferAccessor;
 import dev.jpe.optimizer.mixin.NoiseStackLayerAccessor;
 import net.minecraft.world.level.levelgen.synth.Noise;
 import net.minecraft.world.level.levelgen.synth.PerlinNoise;
@@ -1078,10 +1079,12 @@ public final class NativeRuntime implements AutoCloseable {
             MemorySegment expectedFingerprint = scratch.ensureContextWorldFingerprint();
             MemorySegment.copy(worldFingerprint, 0, expectedFingerprint,
                     ValueLayout.JAVA_BYTE, 0L, worldFingerprint.length);
-            for (int index = 0; index < count; index++) {
-                densityValues.set(ValueLayout.JAVA_FLOAT, (long) index * ValueLayout.JAVA_FLOAT.byteSize(),
-                        density.get(index));
+            float[] densitySamples = ((DensityBufferAccessor) (Object) density).jpe$values();
+            if (densitySamples.length < count) {
+                throw new IllegalArgumentException("Scoped density buffer backing array is smaller than the volume");
             }
+            MemorySegment.copy(densitySamples, 0, densityValues,
+                    ValueLayout.JAVA_FLOAT, 0L, count);
 
             int status = (int) aquiferContextComputeSubstanceVolumeF32.invokeExact(
                     contextHandle, expectedFingerprint, semanticFingerprint,
