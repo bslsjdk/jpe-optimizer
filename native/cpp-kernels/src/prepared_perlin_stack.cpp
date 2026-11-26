@@ -20,6 +20,7 @@ extern "C" int32_t jpe_cpp_perlin_add_volume(
 ) noexcept;
 
 namespace {
+constexpr uint32_t kAllowZeroSteps = 1U << 31;
 struct PreparedLayer {
     std::array<uint8_t, 256> permutation{};
     double offset_x = 0.0;
@@ -38,8 +39,9 @@ std::unordered_map<uint64_t, std::shared_ptr<const PreparedStack>> g_prepared_st
 
 bool valid_prepared_volume(uint32_t sx, uint32_t sy, uint32_t sz,
                            int32_t dx, int32_t dy, int32_t dz,
-                           uint64_t output_length) noexcept {
-    if (sx == 0 || sy == 0 || sz == 0 || dx == 0 || dy == 0 || dz == 0) return false;
+                           uint64_t output_length, uint32_t flags) noexcept {
+    if (sx == 0 || sy == 0 || sz == 0
+        || ((flags & kAllowZeroSteps) == 0 && (dx == 0 || dy == 0 || dz == 0))) return false;
     const uint64_t xy = static_cast<uint64_t>(sx) * sy;
     if (xy > 1'048'576ULL / sz) return false;
     return xy * sz == output_length && output_length <= 1'048'576ULL;
@@ -85,7 +87,7 @@ extern "C" int32_t jpe_cpp_perlin_stack_evaluate(
     float* output, uint64_t output_length, uint32_t flags
 ) noexcept {
     if (output == nullptr || !valid_prepared_volume(size_x, size_y, size_z,
-            step_x, step_y, step_z, output_length)) return 1;
+            step_x, step_y, step_z, output_length, flags)) return 1;
     std::shared_ptr<const PreparedStack> prepared;
     {
         std::lock_guard<std::mutex> lock(g_prepared_mutex);

@@ -43,7 +43,7 @@ import java.util.concurrent.ExecutionException;
  * graph, leaving the existing vanilla sampler untouched.
  */
 public final class NativeDensityGraphCompiler {
-    private static final long CONFIGURATION_FINGERPRINT = 0x4A50452603000004L;
+    private static final long CONFIGURATION_FINGERPRINT = 0x4A50452603000005L;
     private static final Object LOCK = new Object();
 
     // The compiler context is owned by RandomState and remains stable across chunks.
@@ -724,6 +724,18 @@ public final class NativeDensityGraphCompiler {
                         float minimum = ((Number) component(function, "min")).floatValue();
                         float maximum = ((Number) component(function, "max")).floatValue();
                         result = append(NativeRuntime.DensityNode.clamp(input, minimum, maximum));
+                    }
+                    case "SliceFunction" -> {
+                        String axisName = component(function, "axis").toString();
+                        int axis = switch (axisName) {
+                            case "X" -> 0;
+                            case "Y" -> 1;
+                            case "Z" -> 2;
+                            default -> throw new UnsupportedOperationException("Unknown slice axis " + axisName);
+                        };
+                        int coordinate = ((Number) component(function, "coordinate")).intValue();
+                        int input = lower((DensityFunction) component(function, "input"));
+                        result = append(NativeRuntime.DensityNode.slice(input, axis, coordinate));
                     }
                     case "NoiseFunction" -> {
                         Noise noise;

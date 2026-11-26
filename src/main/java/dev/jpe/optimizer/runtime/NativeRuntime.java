@@ -771,6 +771,12 @@ public final class NativeRuntime implements AutoCloseable {
             return new DensityNode(31, shiftX, shiftY, shiftZ,
                     (double) preparedHandle, xzScale, yScale);
         }
+        public static DensityNode slice(int input, int axis, int coordinate) {
+            if (input < 0 || axis < 0 || axis > 2) {
+                throw new IllegalArgumentException("Invalid density slice parameters");
+            }
+            return new DensityNode(32, input, axis, 0, coordinate, 0.0, 0.0);
+        }
     }
 
     public boolean supportsDensityGraph() {
