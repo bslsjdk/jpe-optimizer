@@ -161,6 +161,61 @@ JPE_API int32_t jpe_runtime_density_graph_evaluate_f32(
 /* Releases one retained handle. Active evaluations keep their immutable plan alive. */
 JPE_API int32_t jpe_runtime_density_graph_release(uint64_t graph_handle);
 
+/*
+ * Experimental Aquifer decision core. Fluid types are runtime registry IDs;
+ * air/water/lava IDs are supplied explicitly so the native kernel does not
+ * assume vanilla numeric registry assignments.
+ */
+typedef struct JpeAquiferFluidStatus {
+    int32_t fluid_level;
+    uint32_t fluid_type;
+} JpeAquiferFluidStatus;
+
+typedef struct JpeAquiferCoreInput {
+    int32_t block_y;
+    double density;
+    float barrier_noise;
+    int32_t distance_sqr[4];
+    JpeAquiferFluidStatus closest[4];
+    uint32_t global_fluid_below_type;
+    uint32_t air_type;
+    uint32_t water_type;
+    uint32_t lava_type;
+    uint32_t debug_disable_fluid_generation;
+} JpeAquiferCoreInput;
+
+typedef struct JpeAquiferCoreOutput {
+    uint32_t has_block_state;
+    uint32_t block_state_type;
+    uint32_t should_schedule_fluid_update;
+} JpeAquiferCoreOutput;
+
+/* Returns 0 on success, 1 for invalid input. A false has_block_state means
+ * computeSubstance returns null and density terrain should remain untouched. */
+JPE_API int32_t jpe_runtime_aquifer_compute_substance_core(
+    const JpeAquiferCoreInput *input, JpeAquiferCoreOutput *output
+);
+
+typedef struct JpeAquiferCellLocation {
+    int32_t x;
+    int32_t y;
+    int32_t z;
+} JpeAquiferCellLocation;
+
+typedef struct JpeAquiferNearestFour {
+    uint32_t index[4];
+    int32_t distance_sqr[4];
+};
+
+/* Select the four nearest of the twelve Minecraft 26.3 aquifer neighbor cells.
+ * Equal distances retain Minecraft's insertion behavior (later equal candidates
+ * are inserted before earlier ones). */
+JPE_API int32_t jpe_runtime_aquifer_find_nearest_four(
+    int32_t block_x, int32_t block_y, int32_t block_z,
+    const JpeAquiferCellLocation *candidates, uint32_t candidate_count,
+    JpeAquiferNearestFour *output
+);
+
 #ifdef __cplusplus
 }
 #endif
