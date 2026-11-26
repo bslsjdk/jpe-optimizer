@@ -300,6 +300,10 @@ public final class NativeDensityGraphCompiler {
                     current = stateGraphs;
                     GRAPHS.put(new IdentityWeakReference<>(randomState, RANDOM_STATE_QUEUE), current);
                 }
+                if (current.disabled.contains(root)) {
+                    runtime.releaseDensityGraph(handle);
+                    throw new IllegalStateException("Density graph was disabled while native compilation was in progress");
+                }
                 current.handles.put(root, compiled);
                 current.compiling.remove(root, pending);
             }
