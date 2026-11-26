@@ -1645,9 +1645,12 @@ mod tests {
                 outputs.as_mut_ptr(), outputs.len() as u64,
             )
         }, STATUS_OK);
-        assert_eq!(&outputs[0..4], &[0.0, 2.0, -3.0, f32::NAN]);
-        assert_eq!(&outputs[4..8], &[0.0, 2.0, 3.0, f32::NAN]);
-        assert_eq!(&outputs[8..12], &[0.0, 4.0, 9.0, f32::NAN]);
+        assert_eq!(&outputs[0..3], &[0.0, 2.0, -3.0]);
+        assert!(outputs[3].is_nan());
+        assert_eq!(&outputs[4..7], &[0.0, 2.0, 3.0]);
+        assert!(outputs[7].is_nan());
+        assert_eq!(&outputs[8..11], &[0.0, 4.0, 9.0]);
+        assert!(outputs[11].is_nan());
         assert_eq!(outputs[12].to_bits(), (-0.0_f32).to_bits());
         assert_eq!(outputs[13], -8.0);
         assert_eq!(outputs[14], 27.0);
