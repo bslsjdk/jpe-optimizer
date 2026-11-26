@@ -180,7 +180,7 @@ extern "C" int32_t jpe_cpp_aquifer_nearest_four(
         const int32_t x=block_x[sample], y=block_y[sample], z=block_z[sample];
         const AquiferGridKey anchor{
             floor_div_i32(add_i32(x,-5),16),
-            add_i32(floor_div_i32(add_i32(y,1),12),-1),
+            floor_div_i32(add_i32(y,1),12),
             floor_div_i32(add_i32(z,-5),16)
         };
         int32_t best_d[4]={INT32_MAX,INT32_MAX,INT32_MAX,INT32_MAX};
