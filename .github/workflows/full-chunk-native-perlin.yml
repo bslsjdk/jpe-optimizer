@@ -53,7 +53,7 @@ jobs:
             echo "===== FULL CHUNK WORLDGEN ${label} ====="
             rm -rf run
             mkdir -p run
-            printf 'eula=true\\n' > run/eula.txt
+            printf 'eula=true\n' > run/eula.txt
             cat > run/server.properties <<'PROPERTIES'
           level-seed=12648430
           level-type=minecraft:normal
@@ -69,7 +69,7 @@ jobs:
           max-tick-time=-1
           sync-chunk-writes=false
           PROPERTIES
-            JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector ${options} -Djpe.benchmark.ticksPerColumn=22 -Djpe.continuousWorldgenBenchmark=true -Djpe.worldgenMetrics=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=false -Djpe.perlinVectorEnabled=false" \\
+            JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector ${options} -Djpe.benchmark.ticksPerColumn=22 -Djpe.continuousWorldgenBenchmark=true -Djpe.worldgenMetrics=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=false -Djpe.perlinVectorEnabled=false" \
               gradle runServer --no-daemon --stacktrace 2>&1 | tee "build/full-chunk-benchmark/${label}.log"
             grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*completedChunks=340.*failedChunks=0.*doFillCalls=([3-9][0-9]{2,}|[1-9][0-9]{3,})' "build/full-chunk-benchmark/${label}.log"
           }
