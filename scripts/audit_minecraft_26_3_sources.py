@@ -32,8 +32,9 @@ NESTED_SERVER_JAR = f"META-INF/versions/{VERSION}/server-{VERSION}.jar"
 TARGET_CLASSES = (
     "net/minecraft/world/level/levelgen/NoiseBasedChunkGenerator",
     "net/minecraft/world/level/chunk/ChunkGenerator",
-    "net/minecraft/world/level/levelgen/SurfaceSystem",
-    "net/minecraft/world/level/levelgen/SurfaceRules",
+    "net/minecraft/world/level/levelgen/material/MaterialSystem",
+    "net/minecraft/world/level/levelgen/material/MaterialRuleContext",
+    "net/minecraft/world/level/levelgen/material/MaterialRules",
     "net/minecraft/world/level/biome/BiomeManager",
     "net/minecraft/world/level/biome/BiomeSource",
     "net/minecraft/server/level/WorldGenRegion",
@@ -76,6 +77,7 @@ TARGET_CLASS_PREFIXES = (
     "net/minecraft/world/level/levelgen/feature/",
     "net/minecraft/world/level/levelgen/placement/",
     "net/minecraft/world/level/levelgen/structure/",
+    "net/minecraft/world/level/levelgen/material/",
 )
 
 
@@ -446,8 +448,9 @@ def source_inspection(vanilla_root: Path, patched_root: Path) -> list[str]:
         "ChunkGeneratorStructureState.java": {"createForNormal", "hasStructureChunkInRange", "getPlacements"},
         "ConfiguredWorldCarver.java": {"carve"},
         "WorldCarver.java": {"carve", "isStartChunk", "carveBlock"},
-        "SurfaceSystem.java": {"buildSurface", "erodedBadlandsExtension"},
-        "SurfaceRules.java": {"context", "sequence", "state", "block"},
+        "MaterialSystem.java": {"buildSurface", "getSurfaceDepth", "getSurfaceSecondary", "getBand", "preliminarySurfaceFunction"},
+        "MaterialRuleContext.java": {"updateXZ", "updateY", "getMinSurfaceLevel", "getNoiseSampler", "getDensitiesInChunk", "getBand"},
+        "MaterialRules.java": {"bootstrapRules", "bootstrapConditions", "sequence", "ifTrue", "state"},
         "Structure.java": {"findValidGenerationPoint", "generate", "afterPlace"},
         "StructureStart.java": {"placeInChunk", "generatePieces"},
         "StructurePlacement.java": {"isStructureChunk", "getPotentialStructureChunk", "getLocatePos"},
@@ -544,8 +547,9 @@ def bytecode_inspection(vanilla_jar: Path, patched_jar: Path) -> list[str]:
     """Disassemble exact critical classes from both official and NeoForge-patched jars."""
     classes = [
         "net.minecraft.world.level.chunk.ChunkGenerator",
-        "net.minecraft.world.level.levelgen.SurfaceSystem",
-        "net.minecraft.world.level.levelgen.SurfaceRules",
+        "net.minecraft.world.level.levelgen.material.MaterialSystem",
+        "net.minecraft.world.level.levelgen.material.MaterialRuleContext",
+        "net.minecraft.world.level.levelgen.material.MaterialRules",
         "net.minecraft.world.level.biome.BiomeSource",
         "net.minecraft.world.level.chunk.ChunkAccess",
         "net.minecraft.world.level.chunk.ProtoChunk",
