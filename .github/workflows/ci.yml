@@ -98,6 +98,11 @@ jobs:
           if [ -d run/logs ]; then
             cp -a run/logs build/gametest/
           fi
+          if [ "$test_status" -eq 0 ]; then
+            grep -E 'JPE_NATIVE_BLENDER_PARITY samples=[1-9][0-9]* exact=true mismatches=0' build/gametest/logs/latest.log
+            grep -E 'JPE_NATIVE_BLENDER_STAGES .*timedCalls=[1-9][0-9]*' build/gametest/logs/latest.log
+            grep -F 'JPE_NATIVE_BLENDER_BACKEND_SUMMARY attempts=4 completed=4 fallbacks=0 paritySamples=' build/gametest/logs/latest.log
+          fi
           exit "$test_status"
 
       - name: Real overworld Climate R-tree benchmark (six fan-outs, vanilla result parity)
@@ -153,8 +158,6 @@ jobs:
             gradle runServer --no-daemon --stacktrace 2>&1 | tee build/sampler-parity/overworld.log
           grep -E 'JPE_NATIVE_SAMPLER_PARITY_BATCH .*exact=true|JPE_NATIVE_SAMPLER_PARITY_ISLAND .*exact=true' build/sampler-parity/overworld.log
           grep -E 'JPE_NATIVE_SAMPLER_PARITY_SUMMARY testedIslands=[1-9][0-9]* failedIslands=0 compared=[1-9][0-9]* mismatches=0' build/sampler-parity/overworld.log
-          grep -E 'JPE_NATIVE_BLENDER_PARITY samples=[1-9][0-9]* exact=true mismatches=0' build/sampler-parity/overworld.log
-          grep -E 'JPE_NATIVE_BLENDER_STAGES .*timedCalls=[1-9][0-9]*' build/sampler-parity/overworld.log
           grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*completedChunks=340.*failedChunks=0.*doFillCalls=[1-9][0-9]*.*doFillSamples=[1-9][0-9]*' build/sampler-parity/overworld.log
 
       - name: Dedicated continuous run-worldgen benchmark (scalar/vector ABBA, four fresh servers)
