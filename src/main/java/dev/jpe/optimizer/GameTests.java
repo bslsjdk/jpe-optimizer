@@ -146,9 +146,9 @@ public final class GameTests {
             verifyAquiferGridCache(runtime, 1,
                     legacyAccessor.jpe$seed(), 0L, legacyFactory, "legacy");
             verifyAquiferNearestFour(runtime, 0,
-                    xorAccessor.jpe$seedLo(), xorAccessor.jpe$seedHi(), "xoroshiro");
+                    xorAccessor.jpe$seedLo(), xorAccessor.jpe$seedHi(), xorFactory, "xoroshiro");
             verifyAquiferNearestFour(runtime, 1,
-                    legacyAccessor.jpe$seed(), 0L, "legacy");
+                    legacyAccessor.jpe$seed(), 0L, legacyFactory, "legacy");
         } catch (Exception failure) {
             throw new AssertionError("Native Aquifer grid-cache parity failed", failure);
         }
@@ -156,7 +156,8 @@ public final class GameTests {
     }
 
     private static void verifyAquiferNearestFour(NativeRuntime runtime, int mode,
-                                                     long seedLo, long seedHi, String label) {
+                                                     long seedLo, long seedHi,
+                                                     PositionalRandomFactory factory, String label) {
         if (!runtime.supportsAquiferNearestFour()) {
             throw new AssertionError("Native Aquifer nearest-four API is unavailable");
         }
@@ -166,12 +167,6 @@ public final class GameTests {
         NativeRuntime.AquiferNearestFour actual =
                 runtime.aquiferNearestFour(mode, seedLo, seedHi, blockX, blockY, blockZ);
 
-        PositionalRandomFactory factory;
-        if (mode == 0) {
-            factory = new XoroshiroRandomSource(seedLo, seedHi).forkPositional();
-        } else {
-            factory = new LegacyRandomSource(seedLo).forkPositional();
-        }
         for (int sample = 0; sample < blockX.length; sample++) {
             int anchorX = (blockX[sample] - 5) >> 4;
             int anchorY = Math.floorDiv(blockY[sample] + 1, 12);
