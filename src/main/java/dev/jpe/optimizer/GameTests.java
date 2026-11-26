@@ -39,6 +39,7 @@ import dev.jpe.optimizer.mixin.GradientNoiseAccessor;
 import dev.jpe.optimizer.runtime.NativeRuntime;
 import dev.jpe.optimizer.runtime.DensityGraphIr;
 import dev.jpe.optimizer.runtime.NativePerlinNoiseBackend;
+import dev.jpe.optimizer.runtime.NativeBlenderDensityBackend;
 import dev.jpe.optimizer.vector.DensityVectorRuntime;
 import dev.jpe.optimizer.vector.PerlinNoiseVectorizer;
 
@@ -469,6 +470,14 @@ public final class GameTests {
         if (library == null || library.isBlank()) {
             throw new AssertionError("Set -Djpe.nativeLibraryPath to the freshly built native runtime library");
         }
+        String[] propertyNames = {"jpe.nativeBlenderEnabled", "jpe.verifyNativeBlenderParity", "jpe.nativeBlenderTiming"};
+        String[] previousProperties = new String[propertyNames.length];
+        for (int i = 0; i < propertyNames.length; ++i) {
+            previousProperties[i] = System.getProperty(propertyNames[i]);
+        }
+        System.setProperty("jpe.nativeBlenderEnabled", "true");
+        System.setProperty("jpe.verifyNativeBlenderParity", "true");
+        System.setProperty("jpe.nativeBlenderTiming", "true");
         try (NativeRuntime runtime = NativeRuntime.load(java.nio.file.Path.of(library))) {
             if (!runtime.supportsBlenderDensityVolume()) {
                 throw new AssertionError("Native library does not export Blender density volume support");
@@ -514,6 +523,15 @@ public final class GameTests {
             throw new AssertionError("Unable to create exact Minecraft Blender parity fixtures", failure);
         } catch (Exception failure) {
             throw new AssertionError("Native Blender volume parity failed", failure);
+        } finally {
+            for (int i = 0; i < propertyNames.length; ++i) {
+                if (previousProperties[i] == null) System.clearProperty(propertyNames[i]);
+                else System.setProperty(propertyNames[i], previousProperties[i]);
+            }
+        }
+        if (!NativeBlenderDensityBackend.metrics().contains("completed=4")) {
+            throw new AssertionError("Production Native Blender backend did not complete all synthetic legacy cases: "
+                    + NativeBlenderDensityBackend.metrics());
         }
         helper.succeed();
     }
@@ -586,13 +604,21 @@ public final class GameTests {
             }
         }
         runtime.blendDensityVolume(blender, volume, input, actual);
+        float[] backendInput = input.clone();
+        if (!NativeBlenderDensityBackend.tryBlendForDiagnostics(blender, volume, backendInput)) {
+            throw new AssertionError("Production Native Blender backend declined synthetic case " + label);
+        }
         for (int i = 0; i < expected.length; ++i) {
             if (Float.floatToRawIntBits(expected[i]) != Float.floatToRawIntBits(actual[i])) {
-                throw new AssertionError("Native Blender " + label + " mismatch at " + i
+                throw new AssertionError("Native Blender " + label + " direct runtime mismatch at " + i
                         + ": java=" + expected[i] + ", native=" + actual[i]);
             }
+            if (Float.floatToRawIntBits(expected[i]) != Float.floatToRawIntBits(backendInput[i])) {
+                throw new AssertionError("Native Blender " + label + " production backend mismatch at " + i
+                        + ": java=" + expected[i] + ", backend=" + backendInput[i]);
+            }
         }
-        JPEOptimizer.LOGGER.info("JPE_NATIVE_BLENDER_PARITY case={} samples={} bitExact=true",
+        JPEOptimizer.LOGGER.info("JPE_NATIVE_BLENDER_PARITY case={} samples={} bitExact=true productionBackend=true",
                 label, expected.length);
     }
 
