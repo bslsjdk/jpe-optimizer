@@ -9,7 +9,7 @@ public final class DensityGraphIr {
     public static final int MAX_NODES = 65_536;
     public static final int NO_INPUT = -1;
 
-    public static final int CONST = 1, X = 2, Y = 3, Z = 4, ADD = 5, MUL = 6, OPAQUE = 7, SUB = 8, INPUT = 9, DIV = 10, CLAMP = 11, MIN = 12, MAX = 13;
+    public static final int CONST = 1, X = 2, Y = 3, Z = 4, ADD = 5, MUL = 6, OPAQUE = 7, SUB = 8, INPUT = 9, DIV = 10, CLAMP = 11, MIN = 12, MAX = 13, NEGATE = 14, ABS = 15, SQUARE = 16, CUBE = 17;
 
     public record Node(int opcode, int inputA, int inputB, double immediate) {
         public static Node constant(double value) { return new Node(CONST, NO_INPUT, NO_INPUT, value); }
@@ -24,6 +24,10 @@ public final class DensityGraphIr {
         public static Node min(int left, int right) { return new Node(MIN, left, right, 0.0); }
         /** Vanilla MaxSampler.sampleVolume: choose right only when right > left; ties and NaN keep left. */
         public static Node max(int left, int right) { return new Node(MAX, left, right, 0.0); }
+        public static Node negate(int input) { return new Node(NEGATE, input, NO_INPUT, 0.0); }
+        public static Node abs(int input) { return new Node(ABS, input, NO_INPUT, 0.0); }
+        public static Node square(int input) { return new Node(SQUARE, input, NO_INPUT, 0.0); }
+        public static Node cube(int input) { return new Node(CUBE, input, NO_INPUT, 0.0); }
         /** Encodes min/max as two raw float32 words in the immediate's 64-bit payload. */
         public static Node clamp(int input, float min, float max) {
             long bits = ((long) Float.floatToRawIntBits(min) << 32)
@@ -124,6 +128,11 @@ public final class DensityGraphIr {
                             || node.inputA() != NO_INPUT && (node.inputA() < 0 || node.inputA() >= i)
                             || node.inputB() != NO_INPUT && (node.inputB() < 0 || node.inputB() >= i)) {
                         throw new IllegalArgumentException("Opaque node " + i + " has invalid child references");
+                    }
+                }
+                case NEGATE, ABS, SQUARE, CUBE -> {
+                    if (node.inputA() < 0 || node.inputA() >= i || node.inputB() != NO_INPUT) {
+                        throw new IllegalArgumentException("Unary node " + i + " must reference one earlier node");
                     }
                 }
                 case CLAMP -> {
