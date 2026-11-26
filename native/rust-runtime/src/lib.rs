@@ -54,6 +54,7 @@ unsafe extern "C" {
     fn jpe_runtime_density_graph_release(graph_handle: u64) -> i32;
 }
 
+#[repr(C)]
 pub struct JpePerlinLayer {
     pub permutation: *const u8,
     pub offset_x: f64,
@@ -65,6 +66,15 @@ pub struct JpePerlinLayer {
 }
 
 unsafe extern "C" {
+    fn jpe_cpp_perlin_stack_prepare(layers: *const JpePerlinLayer, layer_count: u32) -> u64;
+    fn jpe_cpp_perlin_stack_evaluate(
+        handle: u64, xz_scale: f64, y_scale: f64, amplitude: f32,
+        size_x: u32, size_y: u32, size_z: u32,
+        min_x: i32, min_y: i32, min_z: i32,
+        step_x: i32, step_y: i32, step_z: i32,
+        output: *mut f32, output_length: u64, flags: u32,
+    ) -> i32;
+    fn jpe_cpp_perlin_stack_release(handle: u64) -> i32;
     fn jpe_cpp_perlin_add_stack_fused(
         layers: *const JpePerlinLayer, layer_count: u32,
         size_x: u32, size_y: u32, size_z: u32,
@@ -126,6 +136,59 @@ unsafe extern "C" {
         xz_scale: f64, y_scale: f64, amplitude: f32,
         output: *mut f32, output_length: u64, flags: u32,
     ) -> i32;
+}
+
+
+/// Copies immutable layer permutations and base octave parameters into a native
+/// prepared plan. The caller may release its source descriptors immediately.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_prepare_perlin_stack(
+    layers: *const JpePerlinLayer, layer_count: u32,
+) -> u64 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if layers.is_null() || layer_count == 0 || layer_count > 64 { return 0; }
+        let descriptors = unsafe { slice::from_raw_parts(layers, layer_count as usize) };
+        if descriptors.iter().any(|layer| layer.permutation.is_null()) { return 0; }
+        unsafe { jpe_cpp_perlin_stack_prepare(layers, layer_count) }
+    })).unwrap_or(0)
+}
+
+/// Evaluates a prepared stack. No layer descriptors or permutation arrays cross
+/// the language boundary on this per-volume path.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_evaluate_prepared_perlin_stack(
+    handle: u64, xz_scale: f64, y_scale: f64, amplitude: f32,
+    size_x: u32, size_y: u32, size_z: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    step_x: i32, step_y: i32, step_z: i32,
+    output: *mut f32, output_length: u64, flags: u32,
+) -> i32 {
+    if handle == 0 || output.is_null() || size_x == 0 || size_y == 0 || size_z == 0
+        || step_x == 0 || step_y == 0 || step_z == 0 { return STATUS_INVALID_ARGUMENT; }
+    let expected = match (size_x as u64).checked_mul(size_y as u64)
+        .and_then(|n| n.checked_mul(size_z as u64)) {
+        Some(value) => value, None => return STATUS_INVALID_ARGUMENT,
+    };
+    if expected != output_length || expected > MAX_VOLUME_ELEMENTS as u64 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        jpe_cpp_perlin_stack_evaluate(handle, xz_scale, y_scale, amplitude,
+            size_x, size_y, size_z, min_x, min_y, min_z,
+            step_x, step_y, step_z, output, output_length, flags)
+    })) {
+        Ok(STATUS_OK) => STATUS_OK,
+        Ok(code) => code,
+        Err(_) => STATUS_RUST_PANIC,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn jpe_runtime_release_prepared_perlin_stack(handle: u64) -> i32 {
+    match catch_unwind(AssertUnwindSafe(|| unsafe { jpe_cpp_perlin_stack_release(handle) })) {
+        Ok(code) => code,
+        Err(_) => STATUS_RUST_PANIC,
+    }
 }
 
 struct JobState {
@@ -1497,6 +1560,46 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn prepared_perlin_stack_matches_direct_stack_and_reuses_plan() {
+        let permutation_a: [u8; 256] = std::array::from_fn(|i| ((i * 13 + 7) & 255) as u8);
+        let permutation_b: [u8; 256] = std::array::from_fn(|i| ((i * 29 + 3) & 255) as u8);
+        let source = [
+            JpePerlinLayer { permutation: permutation_a.as_ptr(),
+                offset_x: 0.11, offset_y: 0.27, offset_z: 0.39,
+                xz_scale: 0.5, y_scale: 0.5, amplitude: 0.75 },
+            JpePerlinLayer { permutation: permutation_b.as_ptr(),
+                offset_x: -0.21, offset_y: 0.19, offset_z: 0.31,
+                xz_scale: 1.25, y_scale: 1.25, amplitude: -0.25 },
+        ];
+        let handle = unsafe { jpe_runtime_prepare_perlin_stack(source.as_ptr(), source.len() as u32) };
+        assert_ne!(handle, 0);
+        for (xz_scale, y_scale, amplitude) in [(0.8, 1.2, 0.75_f32), (1.1, 0.7, -0.25_f32)] {
+            let direct_layers = [
+                JpePerlinLayer { xz_scale: xz_scale * source[0].xz_scale,
+                    y_scale: y_scale * source[0].y_scale, amplitude: amplitude * source[0].amplitude,
+                    ..source[0] },
+                JpePerlinLayer { xz_scale: xz_scale * source[1].xz_scale,
+                    y_scale: y_scale * source[1].y_scale, amplitude: amplitude * source[1].amplitude,
+                    ..source[1] },
+            ];
+            let mut expected = [0.125_f32; 24];
+            let mut actual = expected;
+            assert_eq!(unsafe { jpe_runtime_perlin_add_stack(
+                direct_layers.as_ptr(), 2, 2, 3, 4, -3, -5, 7, 1, 2, 1,
+                expected.as_mut_ptr(), 24, 0
+            ) }, STATUS_OK);
+            assert_eq!(unsafe { jpe_runtime_evaluate_prepared_perlin_stack(
+                handle, xz_scale, y_scale, amplitude,
+                2, 3, 4, -3, -5, 7, 1, 2, 1,
+                actual.as_mut_ptr(), 24, 0
+            ) }, STATUS_OK);
+            assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
+        }
+        assert_eq!(jpe_runtime_release_prepared_perlin_stack(handle), STATUS_OK);
+        assert_eq!(jpe_runtime_release_prepared_perlin_stack(handle), 2);
     }
 
     #[test]
