@@ -156,6 +156,12 @@ JPE_API int32_t jpe_cpp_aquifer_xoroshiro_offsets(
     int32_t *offset_x, int32_t *offset_y, int32_t *offset_z
 );
 
+JPE_API int32_t jpe_runtime_aquifer_xoroshiro_offsets(
+    uint64_t seed_lo, uint64_t seed_hi,
+    int32_t grid_x, int32_t grid_y, int32_t grid_z,
+    int32_t *offset_x, int32_t *offset_y, int32_t *offset_z
+);
+
 /* Exact Minecraft 26.3 Blender density adapter.
  * Each view exposes raw BlendingData.densities columns. Column pointers may be null.
  * chunk_x/chunk_z are chunk coordinates; min_section_y is LevelHeightAccessor.getMinSectionY().
