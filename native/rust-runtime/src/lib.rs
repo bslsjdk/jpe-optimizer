@@ -36,32 +36,32 @@ const _: [(); 40] = [(); std::mem::size_of::<JpeDensityNode>()];
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-struct JpeAquiferFluidStatus {
-    fluid_level: i32,
-    fluid_type: u32,
+pub struct JpeAquiferFluidStatus {
+    pub fluid_level: i32,
+    pub fluid_type: u32,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-struct JpeAquiferCoreInput {
-    block_y: i32,
-    density: f64,
-    barrier_noise: f32,
-    distance_sqr: [i32; 4],
-    closest: [JpeAquiferFluidStatus; 4],
-    global_fluid_below_type: u32,
-    air_type: u32,
-    water_type: u32,
-    lava_type: u32,
-    debug_disable_fluid_generation: u32,
+pub struct JpeAquiferCoreInput {
+    pub block_y: i32,
+    pub density: f64,
+    pub barrier_noise: f32,
+    pub distance_sqr: [i32; 4],
+    pub closest: [JpeAquiferFluidStatus; 4],
+    pub global_fluid_below_type: u32,
+    pub air_type: u32,
+    pub water_type: u32,
+    pub lava_type: u32,
+    pub debug_disable_fluid_generation: u32,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-struct JpeAquiferCoreOutput {
-    has_block_state: u32,
-    block_state_type: u32,
-    should_schedule_fluid_update: u32,
+pub struct JpeAquiferCoreOutput {
+    pub has_block_state: u32,
+    pub block_state_type: u32,
+    pub should_schedule_fluid_update: u32,
 }
 
 #[repr(C)]
@@ -118,11 +118,11 @@ unsafe extern "C" {
         output: *mut f32, output_length: u64,
     ) -> i32;
     fn jpe_runtime_density_graph_release(graph_handle: u64) -> i32;
-    fn jpe_runtime_aquifer_compute_substance_core(
+    fn jpe_cpp_aquifer_compute_substance_core(
         input: *const JpeAquiferCoreInput,
         output: *mut JpeAquiferCoreOutput,
     ) -> i32;
-    fn jpe_runtime_aquifer_compute_substance_batch(
+    fn jpe_cpp_aquifer_compute_substance_batch(
         inputs: *const JpeAquiferCoreInput,
         count: u32,
         outputs: *mut JpeAquiferCoreOutput,
@@ -155,6 +155,31 @@ unsafe extern "C" {
         center_x: *mut i32, center_y: *mut i32, center_z: *mut i32,
         squared_distances: *mut i32,
     ) -> i32;
+}
+
+/// Runs the scalar Aquifer decision kernel. This wrapper is exported from the Rust cdylib.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_compute_substance_core(
+    input: *const JpeAquiferCoreInput,
+    output: *mut JpeAquiferCoreOutput,
+) -> i32 {
+    if input.is_null() || output.is_null() {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe { jpe_cpp_aquifer_compute_substance_core(input, output) }
+}
+
+/// Runs a complete Aquifer decision batch through one C ABI call.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_compute_substance_batch(
+    inputs: *const JpeAquiferCoreInput,
+    count: u32,
+    outputs: *mut JpeAquiferCoreOutput,
+) -> i32 {
+    if inputs.is_null() || outputs.is_null() || count == 0 || count as usize > MAX_VOLUME_ELEMENTS {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe { jpe_cpp_aquifer_compute_substance_batch(inputs, count, outputs) }
 }
 
 /// Returns the exact Minecraft 26.3 Aquifer positional offsets for XOROSHIRO mode.
