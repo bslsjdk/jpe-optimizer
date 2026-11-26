@@ -82,6 +82,11 @@ float minecraft_clamp(float value, float minimum, float maximum) noexcept {
     return value < minimum ? minimum : java_math_min(value, maximum);
 }
 
+// Exact MinSampler/MaxSampler sampleVolume semantics: comparison-based replacement.
+// NaN comparisons and equal values preserve the left operand, including its signed zero.
+float minecraft_volume_min(float left, float right) noexcept { return right < left ? right : left; }
+float minecraft_volume_max(float left, float right) noexcept { return right > left ? right : left; }
+
 struct StaticBinding {
     uint32_t node;
     float value;
@@ -139,6 +144,8 @@ void build_execution_plan(CompiledGraph& graph) {
             case JPE_DENSITY_MUL:
             case JPE_DENSITY_SUB:
             case JPE_DENSITY_DIV:
+            case JPE_DENSITY_MIN:
+            case JPE_DENSITY_MAX:
                 graph.arithmetic.push_back({node.opcode, node.input_a, node.input_b, i, 0.0f, 0.0f});
                 break;
             case JPE_DENSITY_CLAMP: {
@@ -229,6 +236,8 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
             case JPE_DENSITY_MUL:
             case JPE_DENSITY_SUB:
             case JPE_DENSITY_DIV:
+            case JPE_DENSITY_MIN:
+            case JPE_DENSITY_MAX:
                 if (node.reserved != 0 || node.input_a >= i || node.input_b >= i) return false;
                 break;
             case JPE_DENSITY_CLAMP:
@@ -263,7 +272,7 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
     const JpeDensityNode* nodes, uint32_t node_count, uint32_t root_node,
     uint32_t ir_version, uint64_t configuration_fingerprint
 ) try {
-    if (ir_version != 7 || !valid_graph(nodes, node_count, root_node)) return 0;
+    if (ir_version != 8 || !valid_graph(nodes, node_count, root_node)) return 0;
     const uint64_t fingerprint = hash_graph(nodes, node_count, root_node, ir_version, configuration_fingerprint);
     std::lock_guard<std::mutex> lock(g_mutex);
     const auto range = g_cache.equal_range(fingerprint);
@@ -390,7 +399,7 @@ extern "C" uint64_t jpe_cpp_density_graph_load_cache(
             || !read_u64(bytes, offset, immediate_bits)) return 0;
         std::memcpy(&node.immediate, &immediate_bits, sizeof(immediate_bits));
     }
-    if (offset != payload_length || ir_version != 7 || !valid_graph(nodes.data(), count, root)) return 0;
+    if (offset != payload_length || ir_version != 8 || !valid_graph(nodes.data(), count, root)) return 0;
     return jpe_cpp_density_graph_compile(nodes.data(), count, root, ir_version, configuration);
 } catch (...) { return 0; }
 
@@ -520,6 +529,14 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
                 for (uint32_t sample = 0; sample < count; ++sample) {
                     destination[sample] = left[sample] - right[sample];
                 }
+            } else if (instruction.opcode == JPE_DENSITY_MIN) {
+                for (uint32_t sample = 0; sample < count; ++sample) {
+                    destination[sample] = minecraft_volume_min(left[sample], right[sample]);
+                }
+            } else if (instruction.opcode == JPE_DENSITY_MAX) {
+                for (uint32_t sample = 0; sample < count; ++sample) {
+                    destination[sample] = minecraft_volume_max(left[sample], right[sample]);
+                }
             } else if (instruction.opcode == JPE_DENSITY_CLAMP) {
                 for (uint32_t sample = 0; sample < count; ++sample) {
                     destination[sample] = minecraft_clamp(left[sample],
@@ -620,6 +637,12 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_scalar_reference(
                             break;
                         case JPE_DENSITY_DIV:
                             values[n] = values[node.input_a] / values[node.input_b];
+                            break;
+                        case JPE_DENSITY_MIN:
+                            values[n] = minecraft_volume_min(values[node.input_a], values[node.input_b]);
+                            break;
+                        case JPE_DENSITY_MAX:
+                            values[n] = minecraft_volume_max(values[node.input_a], values[node.input_b]);
                             break;
                         case JPE_DENSITY_CLAMP: {
                             uint64_t packed = 0;
