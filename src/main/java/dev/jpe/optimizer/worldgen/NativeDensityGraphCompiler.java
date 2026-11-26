@@ -579,11 +579,6 @@ public final class NativeDensityGraphCompiler {
         try {
             // Reflection-heavy graph lowering and native compilation deliberately run
             // outside LOCK. Other RandomState instances can prepare in parallel.
-            Builder builder = new Builder(context, blenderEmpty, beardifierEmpty);
-            int rootIndex = builder.lower(root);
-            if (rootIndex < 0 || builder.nodes.isEmpty()) {
-                throw new UnsupportedOperationException("Density graph lowered to an empty graph");
-            }
             PersistentCacheKey cacheKey = persistentCacheKey(root, randomState);
             if (cacheKey != null) {
                 Optional<PortableDensityGraphCache.Graph> cachedGraph = readPersistentGraph(cacheKey);
@@ -870,24 +865,6 @@ public final class NativeDensityGraphCompiler {
         private final Map<Long, Integer> preparedHandleSlots = new HashMap<>();
         private final List<PortableDensityGraphCache.PerlinStack> perlinStacks = new ArrayList<>();
         private final Map<Integer, Integer> constantNodes = new HashMap<>();
-
-        private PortableDensityGraphCache.Graph portableGraph(int rootIndex) {
-            List<NativeRuntime.DensityNode> portableNodes = new ArrayList<>(nodes.size());
-            for (NativeRuntime.DensityNode node : nodes) {
-                if (node.opcode() == 7 || node.opcode() == 31) {
-                    Integer slot = preparedHandleSlots.get((long) node.immediate());
-                    if (slot == null) {
-                        throw new IllegalStateException("Native Perlin handle has no portable descriptor slot");
-                    }
-                    portableNodes.add(new NativeRuntime.DensityNode(
-                            node.opcode(), node.inputA(), node.inputB(), node.reserved(),
-                            slot.doubleValue(), node.auxiliary(), node.tertiary()));
-                } else {
-                    portableNodes.add(node);
-                }
-            }
-            return new PortableDensityGraphCache.Graph(portableNodes, rootIndex, perlinStacks);
-        }
 
         private Builder(DensityFunction.CompileContext context, boolean blenderEmpty,
                         boolean beardifierEmpty, boolean capturePortable) {
