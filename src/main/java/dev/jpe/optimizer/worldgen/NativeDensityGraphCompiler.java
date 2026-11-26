@@ -25,6 +25,8 @@ import net.minecraft.world.level.levelgen.synth.Noise;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.RecordComponent;
+import java.lang.reflect.Method;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -45,6 +47,16 @@ import java.util.concurrent.ExecutionException;
 public final class NativeDensityGraphCompiler {
     private static final long CONFIGURATION_FINGERPRINT = 0x4A50452603000005L;
     private static final Object LOCK = new Object();
+
+    // Density graphs repeatedly read the same record components while lowering
+    // thousands of nodes. Resolve each accessor once per runtime class.
+    private static final ClassValue<ConcurrentHashMap<String, Method>> ACCESSORS =
+            new ClassValue<>() {
+                @Override
+                protected ConcurrentHashMap<String, Method> computeValue(Class<?> type) {
+                    return new ConcurrentHashMap<>();
+                }
+            };
 
     // The compiler context is owned by RandomState and remains stable across chunks.
     // Weak keys prevent a closed world's captured samplers from being retained.
@@ -372,27 +384,42 @@ public final class NativeDensityGraphCompiler {
         }
     }
 
+    private static Method accessor(Class<?> type, String name, boolean recordOnly) {
+        return ACCESSORS.get(type).computeIfAbsent(name, key -> {
+            try {
+                if (type.isRecord()) {
+                    for (RecordComponent component : type.getRecordComponents()) {
+                        if (component.getName().equals(key)) return component.getAccessor();
+                    }
+                }
+                if (!recordOnly) return type.getMethod(key);
+            } catch (ReflectiveOperationException failure) {
+                throw new AccessorLookupFailure(failure);
+            }
+            throw new AccessorLookupFailure(new NoSuchMethodException(type.getName() + "." + key));
+        });
+    }
+
+    private static final class AccessorLookupFailure extends RuntimeException {
+        private AccessorLookupFailure(Throwable cause) { super(cause); }
+    }
+
     private static Object component(Object value, String name) {
         if (value == null || !value.getClass().isRecord()) {
             throw new UnsupportedOperationException("Expected record component " + name);
         }
-        for (RecordComponent component : value.getClass().getRecordComponents()) {
-            if (!component.getName().equals(name)) continue;
-            try {
-                return component.getAccessor().invoke(value);
-            } catch (ReflectiveOperationException failure) {
-                throw new UnsupportedOperationException("Unable to read density component " + name, failure);
-            }
+        try {
+            return accessor(value.getClass(), name, true).invoke(value);
+        } catch (ReflectiveOperationException | AccessorLookupFailure failure) {
+            throw new UnsupportedOperationException("Unable to read density component " + name, failure);
         }
-        throw new UnsupportedOperationException("Missing density component " + name);
     }
 
     private static Object member(Object value, String name) {
         if (value == null) throw new UnsupportedOperationException("Missing spline member " + name);
-        if (value.getClass().isRecord()) return component(value, name);
         try {
-            return value.getClass().getMethod(name).invoke(value);
-        } catch (ReflectiveOperationException failure) {
+            return accessor(value.getClass(), name, false).invoke(value);
+        } catch (ReflectiveOperationException | AccessorLookupFailure failure) {
             throw new UnsupportedOperationException("Unable to read density member " + name, failure);
         }
     }
