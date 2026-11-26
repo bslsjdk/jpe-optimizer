@@ -37,6 +37,9 @@ const DENSITY_Y: u32 = 3;
 const DENSITY_Z: u32 = 4;
 const DENSITY_ADD: u32 = 5;
 const DENSITY_MUL: u32 = 6;
+const DENSITY_SUB: u32 = 8;
+const DENSITY_ABS: u32 = 12;
+const DENSITY_CLAMP: u32 = 22;
 
 unsafe extern "C" {
     fn jpe_runtime_density_graph_compile(
@@ -1608,6 +1611,35 @@ mod tests {
         for (actual, expected) in actual.iter().zip(expected.iter()) {
             assert_eq!(*actual, (*expected as f64) + 0.125);
         }
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
+    fn density_graph_recycles_buffers_for_unary_binary_and_clamp_nodes() {
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 2.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -3.0 },
+            JpeDensityNode { opcode: DENSITY_SUB, input_a: 0, input_b: 1,
+                reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_ABS, input_a: 2,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_CLAMP, input_a: 3,
+                input_b: 0.0_f32.to_bits(), reserved: 4.0_f32.to_bits(), immediate: 0.0 },
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 0xD3517B)
+        };
+        assert_ne!(graph, 0);
+        let mut output = [0.0_f64; 24];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                graph, 2, 3, 4, -3, -5, 7, 1, 2, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        assert!(output.iter().all(|value| *value == 4.0));
         assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
     }
 
