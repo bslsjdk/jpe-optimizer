@@ -102,7 +102,11 @@ enum {
     /* Exact Minecraft Mth.clamp(value,min,max); immediate packs two raw float32 bounds. */
     JPE_DENSITY_CLAMP = 11,
     JPE_DENSITY_MIN = 12,
-    JPE_DENSITY_MAX = 13
+    JPE_DENSITY_MAX = 13,
+    JPE_DENSITY_NEGATE = 14,
+    JPE_DENSITY_ABS = 15,
+    JPE_DENSITY_SQUARE = 16,
+    JPE_DENSITY_CUBE = 17
 };
 /* Returns a retained compiled-plan handle, or zero for an invalid graph. */
 JPE_API uint64_t jpe_runtime_density_graph_compile(
