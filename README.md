@@ -1,1 +1,1 @@
-Minecraft Java Edition optimization engine (in testing): C++ off-heap world generation to cut GC, Rust rendering & multi-layer mod adapter, with JVM fallback. Work in progress, incomplete, for testing only.
+jpe-optimizer
