@@ -62,8 +62,10 @@ public final class NativeAquiferFluidStatusPrefill {
         Objects.requireNonNull(chunk, "chunk");
         Objects.requireNonNull(settings, "settings");
 
-        final boolean strict = Boolean.getBoolean("jpe.nativeAquiferFluidStatusStrict");
-        final boolean verify = Boolean.getBoolean("jpe.nativeAquiferFluidStatusVerify");
+        final boolean strict = Boolean.getBoolean("jpe.nativeAquiferFluidStatusStrict")
+                || Boolean.getBoolean("jpe.nativeAquiferSubstanceStrict");
+        final boolean verify = Boolean.getBoolean("jpe.nativeAquiferFluidStatusVerify")
+                || Boolean.getBoolean("jpe.nativeAquiferSubstanceVerify");
         if (strict && !verify) {
             throw new IllegalStateException(
                     "Strict native Aquifer mode requires the vanilla FluidStatus parity oracle");
