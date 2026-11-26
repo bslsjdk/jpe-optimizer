@@ -125,6 +125,7 @@ extern "C" int32_t jpe_cpp_aquifer_status_cache_insert_batch(
     auto cache = acquire_cache(handle);
     if (!cache) return 1;
 
+    try {
     std::lock_guard<std::mutex> lock(cache->mutex);
 
     // Preflight the complete batch before mutation. Sorting a temporary list
@@ -156,4 +157,8 @@ extern "C" int32_t jpe_cpp_aquifer_status_cache_insert_batch(
         ++cache->size;
     }
     return 0;
+    } catch (...) {
+        // No cache mutation occurs before preflight succeeds.
+        return 2;
+    }
 }
