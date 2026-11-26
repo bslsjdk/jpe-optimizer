@@ -2063,6 +2063,33 @@ mod tests {
     }
 
     #[test]
+    fn density_graph_f32_executes_round_with_per_voxel_multiple() {
+        let nodes = [
+            JpeDensityNode { opcode: 0, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 5.5,
+                auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: 25, input_a: 0, input_b: 0,
+                reserved: 1.0_f32.to_bits(), immediate: 1.0,
+                auxiliary: 3.0, tertiary: 2.0 },
+            JpeDensityNode { opcode: 28, input_a: 0, input_b: 1,
+                reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 2, 0xF32_271)
+        };
+        assert_ne!(graph, 0);
+        let mut output = [f32::NAN; 3];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph, 3, 1, 1, 0, 0, 0, 1, 1, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(output, [5.0, 4.5, 4.0]);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
     fn density_graph_recycles_buffers_for_unary_binary_and_clamp_nodes() {
         let nodes = [
             // This value has no consumers and must release its slot immediately.
