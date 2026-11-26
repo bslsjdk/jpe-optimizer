@@ -385,8 +385,10 @@ public final class ContinuousWorldgenBenchmark {
                     format((worldgenAfter.densitySampleNanos() - worldgenBefore.densitySampleNanos()) / 1_000_000.0),
                     format((worldgenAfter.blockFillNanos() - worldgenBefore.blockFillNanos()) / 1_000_000.0),
                     worldgenAfter.samples() - worldgenBefore.samples(),
-                    format(doFillDensityAllocatedBytes >= 0 ? doFillDensityAllocatedBytes / 1048576.0 : -1.0),
-                    format(doFillBlockAllocatedBytes >= 0 ? doFillBlockAllocatedBytes / 1048576.0 : -1.0),
+                    format(WorldgenMetrics.allocationSupported() && doFillDensityAllocatedBytes >= 0
+                            ? doFillDensityAllocatedBytes / 1048576.0 : -1.0),
+                    format(WorldgenMetrics.allocationSupported() && doFillBlockAllocatedBytes >= 0
+                            ? doFillBlockAllocatedBytes / 1048576.0 : -1.0),
                     format(sampledAquiferNanos / 1_000_000.0),
                     format(sampledPlacementNanos / 1_000_000.0), timingSamples,
                     structureAfter.queries() - structureBefore.queries(),

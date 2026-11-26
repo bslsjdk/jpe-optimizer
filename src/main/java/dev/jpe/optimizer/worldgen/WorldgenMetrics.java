@@ -44,6 +44,7 @@ public final class WorldgenMetrics {
     private WorldgenMetrics() {}
 
     private static com.sun.management.ThreadMXBean allocationBean() {
+        if (!ENABLED) return null;
         java.lang.management.ThreadMXBean bean = ManagementFactory.getThreadMXBean();
         if (!(bean instanceof com.sun.management.ThreadMXBean sunBean)
                 || !sunBean.isThreadAllocatedMemorySupported()) return null;
@@ -53,6 +54,10 @@ public final class WorldgenMetrics {
         } catch (UnsupportedOperationException | SecurityException ignored) {
             return null;
         }
+    }
+
+    public static boolean allocationSupported() {
+        return ENABLED && ALLOCATION_BEAN != null;
     }
 
     /** Returns the current worker's cumulative Java allocation counter, or -1 when unsupported. */
