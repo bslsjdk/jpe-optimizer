@@ -100,3 +100,54 @@ extern "C" JPE_API int32_t jpe_runtime_aquifer_compute_substance_core(
             && !same_status(a, d));
     return 0;
 }
+
+
+extern "C" JPE_API int32_t jpe_runtime_aquifer_find_nearest_four(
+    int32_t block_x, int32_t block_y, int32_t block_z,
+    const JpeAquiferCellLocation* candidates, uint32_t candidate_count,
+    JpeAquiferNearestFour* output
+) {
+    if (candidates == nullptr || output == nullptr || candidate_count != 12) return 1;
+
+    int32_t d1 = INT32_MAX;
+    int32_t d2 = INT32_MAX;
+    int32_t d3 = INT32_MAX;
+    int32_t d4 = INT32_MAX;
+    uint32_t i1 = 0, i2 = 0, i3 = 0, i4 = 0;
+    for (uint32_t index = 0; index < candidate_count; ++index) {
+        const int64_t dx = static_cast<int64_t>(candidates[index].x) - block_x;
+        const int64_t dy = static_cast<int64_t>(candidates[index].y) - block_y;
+        const int64_t dz = static_cast<int64_t>(candidates[index].z) - block_z;
+        const int64_t squared = dx * dx + dy * dy + dz * dz;
+        if (squared > INT32_MAX) return 1;
+        const int32_t distance = static_cast<int32_t>(squared);
+
+        // This ordering intentionally mirrors the 26.3 insertion chain:
+        // >= means a later candidate wins a tie at the same rank.
+        if (d1 >= distance) {
+            d4 = d3; i4 = i3;
+            d3 = d2; i3 = i2;
+            d2 = d1; i2 = i1;
+            d1 = distance; i1 = index;
+        } else if (d2 >= distance) {
+            d4 = d3; i4 = i3;
+            d3 = d2; i3 = i2;
+            d2 = distance; i2 = index;
+        } else if (d3 >= distance) {
+            d4 = d3; i4 = i3;
+            d3 = distance; i3 = index;
+        } else if (d4 >= distance) {
+            d4 = distance; i4 = index;
+        }
+    }
+
+    output->index[0] = i1;
+    output->index[1] = i2;
+    output->index[2] = i3;
+    output->index[3] = i4;
+    output->distance_sqr[0] = d1;
+    output->distance_sqr[1] = d2;
+    output->distance_sqr[2] = d3;
+    output->distance_sqr[3] = d4;
+    return 0;
+}
