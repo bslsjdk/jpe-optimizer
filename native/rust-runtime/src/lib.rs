@@ -1729,6 +1729,37 @@ mod tests {
     }
 
     #[test]
+    fn density_graph_f32_executes_multi_threshold_interval_select() {
+        let nodes = [
+            JpeDensityNode { opcode: 2, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 10.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 20.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -10.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: 27, input_a: 0, input_b: 2,
+                reserved: 3, immediate: f64::NEG_INFINITY, auxiliary: 1.0, tertiary: 0.0},
+            JpeDensityNode { opcode: 27, input_a: 0, input_b: 1,
+                reserved: 4, immediate: f64::NEG_INFINITY, auxiliary: 0.0, tertiary: 0.0},
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 5, 0xF32_269)
+        };
+        assert_ne!(graph, 0);
+        let mut output = [f32::NAN; 3];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph, 3, 1, 1, -1, 0, 0, 1, 1, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(output, [10.0, 20.0, -10.0]);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
     fn density_graph_f32_executes_range_choice_with_exclusive_upper_bound() {
         let nodes = [
             JpeDensityNode { opcode: 2, input_a: DENSITY_NO_INPUT,
