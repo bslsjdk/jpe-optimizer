@@ -435,9 +435,35 @@ public final class NativeRuntime implements AutoCloseable {
 
     private static MemorySegment encodeRawBlendingData(Arena arena, List<RawBlendingDataView> views) {
         if (views.isEmpty()) return MemorySegment.NULL;
+
+        // First size one contiguous density slab. The previous implementation allocated
+        // up to 16 native segments per legacy chunk column, creating allocator overhead
+        // before C++ could even build its spatial index.
+        long totalFloats = 0L;
+        for (RawBlendingDataView view : views) {
+            if (view.sectionCount() <= 0 || view.sectionCount() > 128) {
+                throw new IllegalArgumentException("BlendingData section count is outside the native limit");
+            }
+            float[][] columns = view.densityColumns();
+            int requiredColumnLength = Math.multiplyExact(view.sectionCount(), 2);
+            for (int column = 0; column < 16; ++column) {
+                float[] source = columns != null && column < columns.length ? columns[column] : null;
+                if (source == null || source.length == 0) continue;
+                if (source.length < requiredColumnLength) {
+                    throw new IllegalArgumentException("BlendingData density column is shorter than its section range");
+                }
+                totalFloats = Math.addExact(totalFloats, requiredColumnLength);
+            }
+        }
+
         MemorySegment encoded = arena.allocate(
                 Math.multiplyExact(BLENDING_DATA_VIEW_SIZE, views.size()),
                 BLENDING_DATA_VIEW_LAYOUT.byteAlignment());
+        MemorySegment densitySlab = totalFloats == 0L ? MemorySegment.NULL
+                : arena.allocate(Math.multiplyExact(totalFloats, ValueLayout.JAVA_FLOAT.byteSize()),
+                        ValueLayout.JAVA_FLOAT.byteAlignment());
+        long densityOffsetFloats = 0L;
+
         for (int i = 0; i < views.size(); ++i) {
             RawBlendingDataView view = views.get(i);
             long base = Math.multiplyExact((long) i, BLENDING_DATA_VIEW_SIZE);
@@ -447,9 +473,6 @@ public final class NativeRuntime implements AutoCloseable {
             encoded.set(ValueLayout.JAVA_INT, base + 12L, view.sectionCount());
             float[][] columns = view.densityColumns();
             int requiredColumnLength = Math.multiplyExact(view.sectionCount(), 2);
-            if (view.sectionCount() <= 0 || view.sectionCount() > 128) {
-                throw new IllegalArgumentException("BlendingData section count is outside the native limit");
-            }
             for (int column = 0; column < 16; ++column) {
                 long pointerOffset = base + BLENDING_DATA_POINTERS_OFFSET
                         + (long) column * ValueLayout.ADDRESS.byteSize();
@@ -458,15 +481,18 @@ public final class NativeRuntime implements AutoCloseable {
                     encoded.set(ValueLayout.ADDRESS, pointerOffset, MemorySegment.NULL);
                     continue;
                 }
-                if (source.length < requiredColumnLength) {
-                    throw new IllegalArgumentException("BlendingData density column is shorter than its section range");
-                }
-                MemorySegment rawColumn = arena.allocate(
-                        Math.multiplyExact((long) requiredColumnLength, ValueLayout.JAVA_FLOAT.byteSize()),
-                        ValueLayout.JAVA_FLOAT.byteAlignment());
+                long columnBytes = Math.multiplyExact((long) requiredColumnLength,
+                        ValueLayout.JAVA_FLOAT.byteSize());
+                long byteOffset = Math.multiplyExact(densityOffsetFloats,
+                        ValueLayout.JAVA_FLOAT.byteSize());
+                MemorySegment rawColumn = densitySlab.asSlice(byteOffset, columnBytes);
                 MemorySegment.copy(source, 0, rawColumn, ValueLayout.JAVA_FLOAT, 0, requiredColumnLength);
                 encoded.set(ValueLayout.ADDRESS, pointerOffset, rawColumn);
+                densityOffsetFloats = Math.addExact(densityOffsetFloats, requiredColumnLength);
             }
+        }
+        if (densityOffsetFloats != totalFloats) {
+            throw new IllegalStateException("BlendingData density slab sizing changed during encoding");
         }
         return encoded;
     }
