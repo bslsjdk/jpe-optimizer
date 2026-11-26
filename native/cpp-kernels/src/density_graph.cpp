@@ -445,10 +445,10 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
     // Evaluate a bounded tile of samples at once. Node-major storage lets the
     // compiler vectorize each ADD/MUL across contiguous samples while preserving
     // the topological order (and therefore every float32 rounding point).
-    // Larger tiles amortize per-tile input/coordinate setup and native loop overhead.
-    // The node-value budget still caps scratch at 1 MiB per worker, so complex graphs
-    // automatically use smaller tiles while this 512-sample ceiling benefits compact graphs.
-    constexpr uint32_t kMaxTileSamples = 512;
+    // A complete Minecraft chunk density lattice is 5 x 49 x 5 = 1,225 samples.
+    // Keep that workload in one tile for compact graphs; the node-value budget still
+    // caps scratch at 1 MiB per worker and automatically shrinks tiles for larger graphs.
+    constexpr uint32_t kMaxTileSamples = 1225;
     constexpr size_t kMaxTileValues = 262144; // <= 1 MiB of float scratch.
     const size_t node_count = graph->nodes.size();
     const uint32_t tile_capacity = static_cast<uint32_t>(
