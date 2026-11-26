@@ -96,6 +96,13 @@ public final class NativeRuntime implements AutoCloseable {
         densityScratchArenas.add(scratch);
         return scratch;
     });
+    // Reuses Blender descriptors, copied legacy-density slabs, and volume buffers per worker.
+    private final ConcurrentLinkedQueue<BlenderScratch> blenderScratchArenas = new ConcurrentLinkedQueue<>();
+    private final ThreadLocal<BlenderScratch> blenderScratch = ThreadLocal.withInitial(() -> {
+        BlenderScratch scratch = new BlenderScratch();
+        blenderScratchArenas.add(scratch);
+        return scratch;
+    });
     private final ThreadLocal<PerlinScratch> perlinScratch = ThreadLocal.withInitial(() -> {
         PerlinScratch scratch = new PerlinScratch();
         perlinScratchArenas.add(scratch);
@@ -184,6 +191,68 @@ public final class NativeRuntime implements AutoCloseable {
         }
     }
 
+    private static final class RawBlendingScratch {
+        private MemorySegment views;
+        private int viewCapacity;
+        private MemorySegment density;
+        private long densityCapacityFloats;
+
+        private MemorySegment ensureViews(Arena arena, int requiredViews) {
+            if (requiredViews == 0) return MemorySegment.NULL;
+            if (viewCapacity < requiredViews) {
+                int next = Math.max(8, viewCapacity);
+                while (next < requiredViews) next = Math.multiplyExact(next, 2);
+                views = arena.allocate(Math.multiplyExact(BLENDING_DATA_VIEW_SIZE, next),
+                        BLENDING_DATA_VIEW_LAYOUT.byteAlignment());
+                viewCapacity = next;
+            }
+            return views;
+        }
+
+        private MemorySegment ensureDensity(Arena arena, long requiredFloats) {
+            if (requiredFloats == 0L) return MemorySegment.NULL;
+            if (densityCapacityFloats < requiredFloats) {
+                long next = Math.max(1024L, densityCapacityFloats);
+                while (next < requiredFloats) next = Math.multiplyExact(next, 2L);
+                density = arena.allocate(Math.multiplyExact(next, ValueLayout.JAVA_FLOAT.byteSize()),
+                        ValueLayout.JAVA_FLOAT.byteAlignment());
+                densityCapacityFloats = next;
+            }
+            return density;
+        }
+    }
+
+    private static final class BlenderScratch implements AutoCloseable {
+        private final Arena arena = Arena.ofShared();
+        private final RawBlendingScratch height = new RawBlendingScratch();
+        private final RawBlendingScratch density = new RawBlendingScratch();
+        private MemorySegment noise;
+        private MemorySegment output;
+        private int volumeCapacity;
+        private final AtomicBoolean leased = new AtomicBoolean();
+
+        private boolean tryAcquire() { return leased.compareAndSet(false, true); }
+        private void release() {
+            if (!leased.compareAndSet(true, false)) {
+                throw new IllegalStateException("Blender scratch lease was not active");
+            }
+        }
+        private void ensureVolumeCapacity(int requiredFloats) {
+            if (volumeCapacity < requiredFloats) {
+                int next = Math.max(1024, volumeCapacity);
+                while (next < requiredFloats) next = Math.multiplyExact(next, 2);
+                long bytes = Math.multiplyExact((long) next, ValueLayout.JAVA_FLOAT.byteSize());
+                noise = arena.allocate(bytes, ValueLayout.JAVA_FLOAT.byteAlignment());
+                output = arena.allocate(bytes, ValueLayout.JAVA_FLOAT.byteAlignment());
+                volumeCapacity = next;
+            }
+        }
+        @Override public void close() {
+            if (leased.get()) throw new IllegalStateException("Cannot close a leased Blender scratch arena");
+            arena.close();
+        }
+    }
+
     private static final class PerlinScratch implements AutoCloseable {
         private final Arena arena = Arena.ofShared();
         private MemorySegment permutation;
@@ -253,6 +322,16 @@ public final class NativeRuntime implements AutoCloseable {
         perlinScratch.set(scratch);
         perlinScratchArenas.add(scratch);
         if (!scratch.tryAcquire()) throw new IllegalStateException("Unable to acquire Perlin scratch arena");
+        return scratch;
+    }
+
+    private BlenderScratch acquireBlenderScratch() {
+        BlenderScratch scratch = blenderScratch.get();
+        if (scratch.tryAcquire()) return scratch;
+        scratch = new BlenderScratch();
+        blenderScratch.set(scratch);
+        blenderScratchArenas.add(scratch);
+        if (!scratch.tryAcquire()) throw new IllegalStateException("Unable to acquire Blender scratch arena");
         return scratch;
     }
 
@@ -421,8 +500,10 @@ public final class NativeRuntime implements AutoCloseable {
      * preserved because C++ accumulation must match vanilla floating-point order.
      */
     private static MemorySegment encodeRawBlendingData(
-            Arena arena, Long2ObjectOpenHashMap<BlendingData> source) {
-        if (source.isEmpty()) return MemorySegment.NULL;
+            BlenderScratch scratch, RawBlendingScratch target,
+            Long2ObjectOpenHashMap<BlendingData> source) {
+        int viewCount = source.size();
+        if (viewCount == 0) return MemorySegment.NULL;
 
         long[] totalFloats = {0L};
         source.forEach((long packedChunk, BlendingData data) -> {
@@ -443,16 +524,10 @@ public final class NativeRuntime implements AutoCloseable {
             }
         });
 
-        int viewCount = source.size();
-        MemorySegment encoded = arena.allocate(
-                Math.multiplyExact(BLENDING_DATA_VIEW_SIZE, viewCount),
-                BLENDING_DATA_VIEW_LAYOUT.byteAlignment());
-        MemorySegment densitySlab = totalFloats[0] == 0L ? MemorySegment.NULL
-                : arena.allocate(Math.multiplyExact(totalFloats[0], ValueLayout.JAVA_FLOAT.byteSize()),
-                        ValueLayout.JAVA_FLOAT.byteAlignment());
+        MemorySegment encoded = target.ensureViews(scratch.arena, viewCount);
+        MemorySegment densitySlab = target.ensureDensity(scratch.arena, totalFloats[0]);
         long[] densityOffsetFloats = {0L};
         int[] viewIndex = {0};
-
         source.forEach((long packedChunk, BlendingData data) -> {
             int index = viewIndex[0]++;
             long base = Math.multiplyExact((long) index, BLENDING_DATA_VIEW_SIZE);
@@ -504,6 +579,7 @@ public final class NativeRuntime implements AutoCloseable {
     public void blendDensityVolume(Blender blender, DensityVolume volume,
                                    float[] noiseValues, float[] outputValues) {
         lifecycle.readLock().lock();
+        BlenderScratch scratch = null;
         try {
             ensureOpen();
             if (blendDensityVolume == null) throw new UnsupportedOperationException("Native runtime does not export Blender density volume support");
@@ -518,6 +594,8 @@ public final class NativeRuntime implements AutoCloseable {
                     || noiseValues.length < length || outputValues.length < length) {
                 throw new IllegalArgumentException("Invalid Blender density volume buffers or dimensions");
             }
+            scratch = acquireBlenderScratch();
+            scratch.ensureVolumeCapacity(length);
             boolean measure = Boolean.getBoolean("jpe.nativeBlenderTiming");
             long stageStarted = measure ? System.nanoTime() : 0L;
             BlenderAccessor blenderAccessor = (BlenderAccessor) blender;
@@ -529,46 +607,42 @@ public final class NativeRuntime implements AutoCloseable {
                 BLENDER_CAPTURE_NANOS.add(System.nanoTime() - stageStarted);
                 stageStarted = System.nanoTime();
             }
-            try (Arena arena = Arena.ofConfined()) {
-                MemorySegment nativeHeightViews = encodeRawBlendingData(arena, heightData);
-                MemorySegment nativeDensityViews = encodeRawBlendingData(arena, densityData);
-                if (measure) {
-                    BLENDER_ENCODE_NANOS.add(System.nanoTime() - stageStarted);
-                    stageStarted = System.nanoTime();
-                }
-                long floatBytes = Math.multiplyExact((long) length, ValueLayout.JAVA_FLOAT.byteSize());
-                MemorySegment nativeNoise = arena.allocate(floatBytes, ValueLayout.JAVA_FLOAT.byteAlignment());
-                boolean inPlace = noiseValues == outputValues;
-                MemorySegment nativeOutput = inPlace ? nativeNoise
-                        : arena.allocate(floatBytes, ValueLayout.JAVA_FLOAT.byteAlignment());
-                MemorySegment.copy(noiseValues, 0, nativeNoise, ValueLayout.JAVA_FLOAT, 0, length);
-                if (measure) {
-                    BLENDER_INPUT_COPY_NANOS.add(System.nanoTime() - stageStarted);
-                    stageStarted = System.nanoTime();
-                }
-                int minX = volume.minBlockX(), minY = volume.minBlockY(), minZ = volume.minBlockZ();
-                int stepX = sizeX > 1 ? volume.blockX(1) - minX : 1;
-                int stepY = sizeY > 1 ? volume.blockY(1) - minY : 1;
-                int stepZ = sizeZ > 1 ? volume.blockZ(1) - minZ : 1;
-                int status = (int) blendDensityVolume.invokeExact(
-                        nativeHeightViews, heightData.size(), nativeDensityViews, densityData.size(),
-                        sizeX, sizeY, sizeZ, minX, minY, minZ, stepX, stepY, stepZ,
-                        nativeNoise, nativeOutput, (long) length);
-                if (measure) {
-                    BLENDER_NATIVE_NANOS.add(System.nanoTime() - stageStarted);
-                    stageStarted = System.nanoTime();
-                }
-                checkStatus(status, "blend-density-volume");
-                MemorySegment.copy(nativeOutput, ValueLayout.JAVA_FLOAT, 0L,
-                        outputValues, 0, length);
-                if (measure) {
-                    BLENDER_OUTPUT_COPY_NANOS.add(System.nanoTime() - stageStarted);
-                    BLENDER_TIMED_CALLS.increment();
-                }
-            } catch (Throwable failure) {
-                throw rethrow("Native Blender density volume call failed", failure);
+            MemorySegment nativeHeightViews = encodeRawBlendingData(scratch, scratch.height, heightData);
+            MemorySegment nativeDensityViews = encodeRawBlendingData(scratch, scratch.density, densityData);
+            if (measure) {
+                BLENDER_ENCODE_NANOS.add(System.nanoTime() - stageStarted);
+                stageStarted = System.nanoTime();
             }
+            MemorySegment nativeNoise = scratch.noise;
+            MemorySegment nativeOutput = noiseValues == outputValues ? nativeNoise : scratch.output;
+            MemorySegment.copy(noiseValues, 0, nativeNoise, ValueLayout.JAVA_FLOAT, 0, length);
+            if (measure) {
+                BLENDER_INPUT_COPY_NANOS.add(System.nanoTime() - stageStarted);
+                stageStarted = System.nanoTime();
+            }
+            int minX = volume.minBlockX(), minY = volume.minBlockY(), minZ = volume.minBlockZ();
+            int stepX = sizeX > 1 ? volume.blockX(1) - minX : 1;
+            int stepY = sizeY > 1 ? volume.blockY(1) - minY : 1;
+            int stepZ = sizeZ > 1 ? volume.blockZ(1) - minZ : 1;
+            int status = (int) blendDensityVolume.invokeExact(
+                    nativeHeightViews, heightData.size(), nativeDensityViews, densityData.size(),
+                    sizeX, sizeY, sizeZ, minX, minY, minZ, stepX, stepY, stepZ,
+                    nativeNoise, nativeOutput, (long) length);
+            if (measure) {
+                BLENDER_NATIVE_NANOS.add(System.nanoTime() - stageStarted);
+                stageStarted = System.nanoTime();
+            }
+            checkStatus(status, "blend-density-volume");
+            MemorySegment.copy(nativeOutput, ValueLayout.JAVA_FLOAT, 0L,
+                    outputValues, 0, length);
+            if (measure) {
+                BLENDER_OUTPUT_COPY_NANOS.add(System.nanoTime() - stageStarted);
+                BLENDER_TIMED_CALLS.increment();
+            }
+        } catch (Throwable failure) {
+            throw rethrow("Native Blender density volume call failed", failure);
         } finally {
+            if (scratch != null) scratch.release();
             lifecycle.readLock().unlock();
         }
     }
@@ -1401,6 +1475,8 @@ public final class NativeRuntime implements AutoCloseable {
         }
         DensityScratch density;
         while ((density = densityScratchArenas.poll()) != null) density.close();
+        BlenderScratch blender;
+        while ((blender = blenderScratchArenas.poll()) != null) blender.close();
         // The global FFM arena intentionally keeps the Rust library loaded until JVM exit.
     
         } finally {
