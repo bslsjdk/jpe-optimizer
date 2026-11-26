@@ -1,6 +1,7 @@
 #include "jpe_native_api.h"
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 
 static_assert(sizeof(JpeAquiferFluidStatus) == 8, "Aquifer fluid-status ABI mismatch");
@@ -8,6 +9,17 @@ static_assert(sizeof(JpeAquiferCoreInput) == 88, "Aquifer core input ABI mismatc
 static_assert(sizeof(JpeAquiferCoreOutput) == 12, "Aquifer core output ABI mismatch");
 static_assert(sizeof(JpeAquiferCellLocation) == 12, "Aquifer cell-location ABI mismatch");
 static_assert(sizeof(JpeAquiferNearestFour) == 32, "Aquifer nearest-four ABI mismatch");
+// Offsets are consumed directly by NativeRuntime's Java 25 FFM packer.
+static_assert(offsetof(JpeAquiferCoreInput, block_y) == 0, "Aquifer input block_y offset mismatch");
+static_assert(offsetof(JpeAquiferCoreInput, density) == 8, "Aquifer input density offset mismatch");
+static_assert(offsetof(JpeAquiferCoreInput, barrier_noise) == 16, "Aquifer input barrier offset mismatch");
+static_assert(offsetof(JpeAquiferCoreInput, distance_sqr) == 20, "Aquifer input distance offset mismatch");
+static_assert(offsetof(JpeAquiferCoreInput, closest) == 36, "Aquifer input status offset mismatch");
+static_assert(offsetof(JpeAquiferCoreInput, global_fluid_below_type) == 68, "Aquifer input global fluid offset mismatch");
+static_assert(offsetof(JpeAquiferCoreInput, debug_disable_fluid_generation) == 84, "Aquifer input debug flag offset mismatch");
+static_assert(offsetof(JpeAquiferCoreOutput, has_block_state) == 0, "Aquifer output block flag offset mismatch");
+static_assert(offsetof(JpeAquiferCoreOutput, block_state_type) == 4, "Aquifer output state token offset mismatch");
+static_assert(offsetof(JpeAquiferCoreOutput, should_schedule_fluid_update) == 8, "Aquifer output update flag offset mismatch");
 
 namespace {
 double aquifer_similarity(int32_t first, int32_t second) noexcept {
