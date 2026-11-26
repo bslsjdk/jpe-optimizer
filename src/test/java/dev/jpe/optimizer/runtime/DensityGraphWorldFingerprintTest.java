@@ -53,6 +53,34 @@ class DensityGraphWorldFingerprintTest {
     }
 
     @Test
+    void gameLoaderAbiAndCompilerChangesInvalidateFingerprint() {
+        var mods = List.of(new DensityGraphWorldFingerprint.ModVersion("example", "1.0"));
+        byte[] baseline = create(mods);
+
+        byte[] changedMinecraft = DensityGraphWorldFingerprint.create(
+                123456789L, "26.4", "neoforge", "26.3.0.115", "minecraft:overworld",
+                NativeRuntime.EXPECTED_ABI_VERSION, 0x4A50452603000005L, SETTINGS_DIGEST, mods);
+        byte[] changedLoaderId = DensityGraphWorldFingerprint.create(
+                123456789L, "26.3", "other-loader", "26.3.0.115", "minecraft:overworld",
+                NativeRuntime.EXPECTED_ABI_VERSION, 0x4A50452603000005L, SETTINGS_DIGEST, mods);
+        byte[] changedLoaderVersion = DensityGraphWorldFingerprint.create(
+                123456789L, "26.3", "neoforge", "26.3.0.116", "minecraft:overworld",
+                NativeRuntime.EXPECTED_ABI_VERSION, 0x4A50452603000005L, SETTINGS_DIGEST, mods);
+        byte[] changedAbi = DensityGraphWorldFingerprint.create(
+                123456789L, "26.3", "neoforge", "26.3.0.115", "minecraft:overworld",
+                NativeRuntime.EXPECTED_ABI_VERSION + 1, 0x4A50452603000005L, SETTINGS_DIGEST, mods);
+        byte[] changedCompiler = DensityGraphWorldFingerprint.create(
+                123456789L, "26.3", "neoforge", "26.3.0.115", "minecraft:overworld",
+                NativeRuntime.EXPECTED_ABI_VERSION, 0x4A50452603000006L, SETTINGS_DIGEST, mods);
+
+        assertFalse(java.util.Arrays.equals(baseline, changedMinecraft));
+        assertFalse(java.util.Arrays.equals(baseline, changedLoaderId));
+        assertFalse(java.util.Arrays.equals(baseline, changedLoaderVersion));
+        assertFalse(java.util.Arrays.equals(baseline, changedAbi));
+        assertFalse(java.util.Arrays.equals(baseline, changedCompiler));
+    }
+
+    @Test
     void refusesMissingEffectiveWorldgenDigest() {
         assertThrows(IllegalArgumentException.class, () ->
                 DensityGraphWorldFingerprint.create(
