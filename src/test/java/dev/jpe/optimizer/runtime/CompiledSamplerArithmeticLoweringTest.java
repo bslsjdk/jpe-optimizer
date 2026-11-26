@@ -150,6 +150,21 @@ class CompiledSamplerArithmeticLoweringTest {
     }
 
     @Test
+    void lowersLeakyReluWithExactFloat32NegativeFactor() {
+        CompiledSamplerGraphIr.Graph graph = new CompiledSamplerGraphIr.Graph(List.of(
+                node(0, CompiledSamplerGraphIr.Op.LEAKY_RELU, List.of(1),
+                        Map.of("negativeFactor", "0.25")),
+                node(1, CompiledSamplerGraphIr.Op.OPAQUE, List.of(), Map.of())
+        ), 0, 0);
+        CompiledSamplerArithmeticLowering.LoweredIsland lowered =
+                CompiledSamplerArithmeticLowering.lower(graph,
+                        CompiledSamplerArithmeticIslands.plan(graph).islands().get(0), 0xA87);
+        DensityGraphIr.Node leaky = lowered.graph().nodes().get(lowered.graph().rootNode());
+        assertEquals(DensityGraphIr.LEAKY_RELU, leaky.opcode());
+        assertEquals(0.25, leaky.immediate());
+    }
+
+    @Test
     void lowersConstantLeftDivisionWithoutReversingOperands() {
         CompiledSamplerGraphIr.Graph graph = new CompiledSamplerGraphIr.Graph(List.of(
                 node(0, CompiledSamplerGraphIr.Op.CONST_DIV_LEFT, List.of(1), Map.of("left", "12.0")),
