@@ -48,6 +48,10 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle perlinAddStackHandle;
     private final MethodHandle submitPerlinVolume;
     private final MethodHandle submitPerlinStack;
+    private final MethodHandle preparePerlinStack;
+    private final MethodHandle evaluatePreparedPerlinStack;
+    private final MethodHandle releasePreparedPerlinStack;
+    private final java.util.Set<Long> preparedStackHandles = ConcurrentHashMap.newKeySet();
     private final MethodHandle jobStatus;
     private final MethodHandle waitJob;
     private final MethodHandle cancelJob;
@@ -129,7 +133,9 @@ public final class NativeRuntime implements AutoCloseable {
     private NativeRuntime(MethodHandle configureWorkers, int workerCount,
                           MethodHandle add, MethodHandle perlin, MethodHandle perlinStack, MethodHandle submit, MethodHandle submitStack,
                           MethodHandle status, MethodHandle wait,
-                          MethodHandle cancel, MethodHandle release) {
+                          MethodHandle cancel, MethodHandle release,
+                          MethodHandle preparePreparedStack, MethodHandle evaluatePreparedStack,
+                          MethodHandle releasePreparedStack) {
         this.configureWorkers = configureWorkers;
         this.workerCount = workerCount;
         this.addF32 = add;
@@ -137,6 +143,9 @@ public final class NativeRuntime implements AutoCloseable {
         this.perlinAddStackHandle = perlinStack;
         this.submitPerlinVolume = submit;
         this.submitPerlinStack = submitStack;
+        this.preparePerlinStack = preparePreparedStack;
+        this.evaluatePreparedPerlinStack = evaluatePreparedStack;
+        this.releasePreparedPerlinStack = releasePreparedStack;
         this.jobStatus = status;
         this.waitJob = wait;
         this.cancelJob = cancel;
@@ -198,6 +207,29 @@ public final class NativeRuntime implements AutoCloseable {
                                     ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
                                     ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT)))
                     .orElse(null);
+            MethodHandle preparePreparedStack = lookup.find("jpe_runtime_prepare_perlin_stack")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)))
+                    .orElse(null);
+            MethodHandle evaluatePreparedStack = lookup.find("jpe_runtime_evaluate_prepared_perlin_stack")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_LONG, ValueLayout.JAVA_DOUBLE, ValueLayout.JAVA_DOUBLE,
+                                    ValueLayout.JAVA_FLOAT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT)))
+                    .orElse(null);
+            MethodHandle releasePreparedStack = lookup.find("jpe_runtime_release_prepared_perlin_stack")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG)))
+                    .orElse(null);
+            if (preparePreparedStack == null || evaluatePreparedStack == null || releasePreparedStack == null) {
+                preparePreparedStack = null;
+                evaluatePreparedStack = null;
+                releasePreparedStack = null;
+            }
             MethodHandle status = linker.downcallHandle(
                     lookup.find("jpe_runtime_job_status").orElseThrow(() -> new IllegalStateException("Missing async job status symbol")),
                     FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG));
@@ -218,7 +250,8 @@ public final class NativeRuntime implements AutoCloseable {
             int requestedWorkers = requestedNativeWorkers();
             int actualWorkers = (int) configureWorkers.invokeExact(requestedWorkers);
             if (actualWorkers < 1) throw new IllegalStateException("Unable to configure native workers: " + actualWorkers);
-            return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, perlinStack, submit, submitStack, status, wait, cancel, release);
+            return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, perlinStack, submit, submitStack, status, wait, cancel, release,
+                    preparePreparedStack, evaluatePreparedStack, releasePreparedStack);
         } catch (Throwable failure) {
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
         }
@@ -301,6 +334,92 @@ public final class NativeRuntime implements AutoCloseable {
     }
 
     /** Executes an ordered Perlin stack synchronously on the calling Minecraft worldgen worker. */
+    /** True when the loaded native runtime supports immutable prepared NoiseStack handles. */
+    public boolean supportsPreparedPerlinStack() {
+        return preparePerlinStack != null && evaluatePreparedPerlinStack != null
+                && releasePreparedPerlinStack != null;
+    }
+
+    /** Copies a NoiseStack's immutable octave data into C++ exactly once. */
+    public long preparePerlinStack(Object[] sourceLayers) {
+        if (!supportsPreparedPerlinStack()) return 0L;
+        lifecycle.readLock().lock();
+        PerlinScratch scratch = null;
+        try {
+            ensureOpen();
+            Objects.requireNonNull(sourceLayers, "sourceLayers");
+            if (sourceLayers.length == 0 || sourceLayers.length > 64) {
+                throw new IllegalArgumentException("Perlin stack must contain between 1 and 64 layers");
+            }
+            scratch = acquirePerlinScratch();
+            scratch.ensureStackCapacity(sourceLayers.length, 1);
+            writePerlinBaseLayers(sourceLayers, scratch);
+            long handle = (long) preparePerlinStack.invokeExact(scratch.layerDescriptors, sourceLayers.length);
+            if (handle != 0L) preparedStackHandles.add(handle);
+            return handle;
+        } catch (Throwable failure) {
+            throw rethrow("Unable to prepare native Perlin stack", failure);
+        } finally {
+            if (scratch != null) scratch.release();
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    /** Evaluates a prepared C++ NoiseStack without resending layer descriptors or permutations. */
+    public void evaluatePreparedPerlinStack(long handle,
+                                            double xzScale, double yScale, float amplitude,
+                                            int sizeX, int sizeY, int sizeZ,
+                                            int minX, int minY, int minZ,
+                                            int stepX, int stepY, int stepZ,
+                                            float[] output, boolean farLands) {
+        if (!supportsPreparedPerlinStack()) throw new IllegalStateException("Prepared Perlin API is unavailable");
+        lifecycle.readLock().lock();
+        PerlinScratch scratch = null;
+        try {
+            ensureOpen();
+            Objects.requireNonNull(output, "output");
+            if (handle == 0L || sizeX <= 0 || sizeY <= 0 || sizeZ <= 0
+                    || stepX == 0 || stepY == 0 || stepZ == 0) {
+                throw new IllegalArgumentException("Invalid prepared Perlin handle or volume");
+            }
+            int outputLength = Math.toIntExact(Math.multiplyExact(
+                    Math.multiplyExact((long) sizeX, sizeY), sizeZ));
+            if (outputLength > output.length || outputLength > 1_048_576) {
+                throw new IllegalArgumentException("Prepared Perlin output buffer is too small or volume exceeds native limit");
+            }
+            scratch = acquirePerlinScratch();
+            scratch.ensureCapacity(256, outputLength);
+            copyPrefix(output, outputLength, scratch.output);
+            int status = (int) evaluatePreparedPerlinStack.invokeExact(
+                    handle, xzScale, yScale, amplitude,
+                    sizeX, sizeY, sizeZ, minX, minY, minZ,
+                    stepX, stepY, stepZ,
+                    scratch.output, (long) outputLength, farLands ? 1 : 0);
+            checkStatus(status, "evaluate-prepared-perlin-stack");
+            copyPrefix(scratch.output, output, outputLength);
+        } catch (Throwable failure) {
+            throw rethrow("Unable to evaluate prepared native Perlin stack", failure);
+        } finally {
+            if (scratch != null) scratch.release();
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    public void releasePreparedPerlinStack(long handle) {
+        if (handle == 0L || releasePreparedPerlinStack == null) return;
+        lifecycle.readLock().lock();
+        try {
+            ensureOpen();
+            if (!preparedStackHandles.remove(handle)) return;
+            int status = (int) releasePreparedPerlinStack.invokeExact(handle);
+            checkStatus(status, "release-prepared-perlin-stack");
+        } catch (Throwable failure) {
+            throw rethrow("Unable to release prepared native Perlin stack", failure);
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+    }
+
     public void perlinAddStack(Object[] sourceLayers,
                                double xzScale, double yScale, float amplitude,
                                int sizeX, int sizeY, int sizeZ,
@@ -415,6 +534,36 @@ public final class NativeRuntime implements AutoCloseable {
         } finally {
             if (scratch != null && !transferred) scratch.release();
             lifecycle.readLock().unlock();
+        }
+    }
+
+    private static void writePerlinBaseLayers(Object[] sourceLayers, PerlinScratch scratch) {
+        for (int i = 0; i < sourceLayers.length; ++i) {
+            NoiseStackLayerAccessor layer = (NoiseStackLayerAccessor) Objects.requireNonNull(sourceLayers[i], "layer");
+            Noise layerNoise = layer.jpe$noise();
+            if (layerNoise == null || layerNoise.getClass() != PerlinNoise.class) {
+                throw new IllegalArgumentException("Native prepared stack only accepts exact PerlinNoise layers");
+            }
+            GradientNoiseAccessor noise = (GradientNoiseAccessor) layerNoise;
+            byte[] permutation = noise.jpe$perms();
+            if (permutation == null || permutation.length != 256) {
+                throw new IllegalArgumentException("Each Perlin layer permutation must contain 256 bytes");
+            }
+            if (scratch.layerPermutationSources[i] != permutation) {
+                MemorySegment.copy(permutation, 0, scratch.layerPermutations, ValueLayout.JAVA_BYTE,
+                        (long) i * 256L, 256);
+                scratch.layerPermutationSources[i] = permutation;
+            }
+            double frequency = layer.jpe$frequency();
+            long base = Math.multiplyExact((long) i, PERLIN_LAYER_SIZE);
+            scratch.layerDescriptors.set(ValueLayout.ADDRESS, base, scratch.layerPermutationSegments[i]);
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 8L, noise.jpe$offsetX());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 16L, noise.jpe$offsetY());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 24L, noise.jpe$offsetZ());
+            // Prepared API interprets these as immutable per-layer frequencies/amplitudes.
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 32L, frequency);
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 40L, frequency);
+            scratch.layerDescriptors.set(ValueLayout.JAVA_FLOAT, base + 48L, layer.jpe$amplitude());
         }
     }
 
@@ -583,6 +732,17 @@ public final class NativeRuntime implements AutoCloseable {
                     + " jobs are still owned; cancel, await completion, and release each job first");
         }
         closed = true;
+        if (releasePreparedPerlinStack != null) {
+            for (Long handle : preparedStackHandles) {
+                try {
+                    int status = (int) releasePreparedPerlinStack.invokeExact(handle.longValue());
+                    if (status != 0) throw new IllegalStateException("Prepared stack release status=" + status);
+                } catch (Throwable failure) {
+                    throw rethrow("Unable to release prepared stack during runtime close", failure);
+                }
+            }
+            preparedStackHandles.clear();
+        }
         PerlinScratch scratch;
         while ((scratch = perlinScratchArenas.poll()) != null) {
             scratch.close();
