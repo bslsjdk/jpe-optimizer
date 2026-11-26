@@ -32,6 +32,8 @@ struct JpeDensityNode {
     tertiary: f64,
 }
 
+const _: [(); 40] = [(); std::mem::size_of::<JpeDensityNode>()];
+
 const DENSITY_NO_INPUT: u32 = u32::MAX;
 const DENSITY_CONST: u32 = 1;
 const DENSITY_X: u32 = 2;
