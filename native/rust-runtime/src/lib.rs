@@ -2790,10 +2790,10 @@ mod tests {
 
     #[test]
     fn blender_density_volume_sparse_spatial_fallback_matches_dense_local_result() {
-        let mut near_columns: Vec<Vec<f32>> = (0..16).map(|column| {
+        let near_columns: Vec<Vec<f32>> = (0..16).map(|column| {
             (0..16).map(|y| ((column * 17 + y * 13) % 101) as f32 - 37.0).collect()
         }).collect();
-        let mut far_columns: Vec<Vec<f32>> = (0..16).map(|column| {
+        let far_columns: Vec<Vec<f32>> = (0..16).map(|column| {
             (0..16).map(|y| ((column * 29 + y * 7) % 89) as f32 + 11.0).collect()
         }).collect();
         let near_view = JpeBlendingDataView {
