@@ -504,7 +504,8 @@ public final class GameTests {
             patternedMap.put(ChunkPos.pack(0, 0), patternedData);
             Blender patternedBlender = createSyntheticBlender(
                     new Long2ObjectOpenHashMap<>(), patternedMap);
-            DensityVolume volume = new DensityVolume(5, 9, 5, 0, -48, 0, 4, 8, 4);
+            // Match the complete Minecraft density lattice, not a shortened Y slice.
+            DensityVolume volume = new DensityVolume(5, 49, 5, 0, -64, 0, 4, 8, 4);
             float[] noise = new float[volume.size()];
             for (int i = 0; i < noise.length; ++i) {
                 noise[i] = (i % 31 - 15) * 0.0375F;
@@ -563,10 +564,10 @@ public final class GameTests {
         if (!constructor.trySetAccessible()) {
             throw new IllegalStateException("BlendingData constructor is not reflectively accessible");
         }
-        BlendingData data = constructor.newInstance(-4, 4, Optional.empty());
+        BlendingData data = constructor.newInstance(-4, 20, Optional.empty());
         float[][] columns = ((BlendingDataAccessor) data).jpe$densities();
         for (int column = 0; column < columns.length; ++column) {
-            float[] values = new float[16];
+            float[] values = new float[48];
             for (int y = 0; y < values.length; ++y) {
                 values[y] = 10.0F + column * 0.375F + y * 0.125F;
             }
