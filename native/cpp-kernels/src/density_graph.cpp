@@ -29,7 +29,7 @@ constexpr uint32_t kSub = 8, kDiv = 9, kMin = 10, kMax = 11;
 constexpr uint32_t kAbs = 12, kNegate = 13, kSquare = 14, kCube = 15;
 constexpr uint32_t kSqrt = 16, kHalfNegative = 17, kQuarterNegative = 18;
 constexpr uint32_t kReciprocal = 19, kSign = 20, kPow = 21, kClamp = 22;
-constexpr uint32_t kSqueeze = 23, kLerp = 24, kGradient = 25;
+constexpr uint32_t kSqueeze = 23, kLerp = 24, kGradient = 25, kInterpolated = 26;
 
 struct CompiledGraph {
     uint64_t fingerprint = 0;
@@ -161,6 +161,10 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                     || node.auxiliary > static_cast<double>(std::numeric_limits<int32_t>::max())
                     || node.immediate == node.auxiliary) return false;
                 break;
+            case kInterpolated:
+                if (node.input_a >= i || node.input_b == 0 || node.reserved == 0
+                    || node.immediate != 0.0 || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
+                break;
             case kPerlinStack: {
                 const double handle = node.immediate;
                 const double xz_scale = node.auxiliary;
@@ -244,7 +248,7 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
                 || node.opcode == kMax || node.opcode == kPow) {
                 ++consumers[node.input_a]; ++consumers[node.input_b];
             } else if ((node.opcode >= kAbs && node.opcode <= kSign)
-                || node.opcode == kClamp || node.opcode == kSqueeze) {
+                || node.opcode == kClamp || node.opcode == kSqueeze || node.opcode == kInterpolated) {
                 ++consumers[node.input_a];
             } else if (node.opcode == kLerp) {
                 ++consumers[node.input_a]; ++consumers[node.input_b]; ++consumers[node.reserved];
@@ -268,7 +272,7 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
                 || node.opcode == kMax || node.opcode == kPow) {
                 release_input(node.input_a); release_input(node.input_b);
             } else if ((node.opcode >= kAbs && node.opcode <= kSign)
-                || node.opcode == kClamp || node.opcode == kSqueeze) {
+                || node.opcode == kClamp || node.opcode == kSqueeze || node.opcode == kInterpolated) {
                 release_input(node.input_a);
             } else if (node.opcode == kLerp) {
                 release_input(node.input_a);
@@ -316,23 +320,18 @@ Scalar java_signum_scalar(Scalar value) noexcept {
 }
 
 template <typename Scalar>
-int32_t evaluate_density_graph(
-    uint64_t graph_handle,
+int32_t evaluate_density_graph_impl(
+    const std::shared_ptr<CompiledGraph>& graph,
+    uint32_t root_node,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
-    Scalar* output, uint64_t output_length
+    Scalar* output, uint64_t output_length,
+    uint32_t recursion_depth
 ) {
-    if (output == nullptr || !valid_volume(size_x, size_y, size_z,
-            step_x, step_y, step_z, output_length)) return 1;
-
-    std::shared_ptr<CompiledGraph> graph;
-    {
-        std::lock_guard<std::mutex> lock(g_mutex);
-        const auto found = g_handles.find(graph_handle);
-        if (found == g_handles.end()) return 2;
-        graph = found->second;
-    }
+    if (output == nullptr || root_node >= graph->nodes.size()
+        || recursion_depth > 32
+        || !valid_volume(size_x, size_y, size_z, step_x, step_y, step_z, output_length)) return 1;
 
     try {
         const size_t volume = static_cast<size_t>(output_length);
@@ -341,7 +340,7 @@ int32_t evaluate_density_graph(
         std::vector<float> perlin_scratch;
         if (graph->has_perlin) perlin_scratch.resize(volume);
 
-        for (uint32_t i = 0; i < graph->nodes.size(); ++i) {
+        for (uint32_t i = 0; i <= root_node; ++i) {
             const JpeDensityNode& node = graph->nodes[i];
             const uint32_t slot = graph->node_slots[i];
             auto& values = slots[slot];
@@ -463,6 +462,92 @@ int32_t evaluate_density_graph(
                     }
                     break;
                 }
+                case kInterpolated: {
+                    const int64_t cell_xz = static_cast<int64_t>(node.input_b);
+                    const int64_t cell_y = static_cast<int64_t>(node.reserved);
+                    const auto floor_div = [](int64_t value, int64_t divisor) {
+                        int64_t quotient = value / divisor;
+                        const int64_t remainder = value % divisor;
+                        if (remainder < 0) --quotient;
+                        return quotient;
+                    };
+                    const auto ceil_div = [&](int64_t value, int64_t divisor) {
+                        return -floor_div(-value, divisor);
+                    };
+                    const int64_t max_x = static_cast<int64_t>(min_x)
+                        + static_cast<int64_t>(size_x - 1) * step_x;
+                    const int64_t max_y = static_cast<int64_t>(min_y)
+                        + static_cast<int64_t>(size_y - 1) * step_y;
+                    const int64_t max_z = static_cast<int64_t>(min_z)
+                        + static_cast<int64_t>(size_z - 1) * step_z;
+                    const int64_t corner_min_x = floor_div(min_x, cell_xz) * cell_xz;
+                    const int64_t corner_min_y = floor_div(min_y, cell_y) * cell_y;
+                    const int64_t corner_min_z = floor_div(min_z, cell_xz) * cell_xz;
+                    const int64_t corner_max_x = ceil_div(max_x, cell_xz) * cell_xz;
+                    const int64_t corner_max_y = ceil_div(max_y, cell_y) * cell_y;
+                    const int64_t corner_max_z = ceil_div(max_z, cell_xz) * cell_xz;
+                    if (corner_min_x < INT32_MIN || corner_min_y < INT32_MIN || corner_min_z < INT32_MIN
+                        || corner_max_x > INT32_MAX || corner_max_y > INT32_MAX || corner_max_z > INT32_MAX) {
+                        return 1;
+                    }
+                    const uint64_t corner_x = static_cast<uint64_t>((corner_max_x - corner_min_x) / cell_xz + 1);
+                    const uint64_t corner_y = static_cast<uint64_t>((corner_max_y - corner_min_y) / cell_y + 1);
+                    const uint64_t corner_z = static_cast<uint64_t>((corner_max_z - corner_min_z) / cell_xz + 1);
+                    if (corner_x > UINT32_MAX || corner_y > UINT32_MAX || corner_z > UINT32_MAX
+                        || corner_x * corner_y > kMaxVolumeElements
+                        || corner_x * corner_y * corner_z > kMaxVolumeElements) return 1;
+                    const uint64_t corner_length = corner_x * corner_y * corner_z;
+                    std::vector<Scalar> corner_values(static_cast<size_t>(corner_length));
+                    const int32_t corner_status = evaluate_density_graph_impl<Scalar>(
+                        graph, node.input_a,
+                        static_cast<uint32_t>(corner_x), static_cast<uint32_t>(corner_y),
+                        static_cast<uint32_t>(corner_z),
+                        static_cast<int32_t>(corner_min_x), static_cast<int32_t>(corner_min_y),
+                        static_cast<int32_t>(corner_min_z),
+                        static_cast<int32_t>(cell_xz), static_cast<int32_t>(cell_y),
+                        static_cast<int32_t>(cell_xz),
+                        corner_values.data(), corner_length, recursion_depth + 1);
+                    if (corner_status != 0) return corner_status;
+
+                    const Scalar inv_xz = static_cast<Scalar>(1.0F / static_cast<float>(cell_xz));
+                    const Scalar inv_y = static_cast<Scalar>(1.0F / static_cast<float>(cell_y));
+                    const auto corner_at = [&](uint64_t x, uint64_t y, uint64_t z) -> Scalar {
+                        return corner_values[static_cast<size_t>((z * corner_x + x) * corner_y + y)];
+                    };
+                    const auto lerp = [](Scalar a, Scalar b, Scalar t) -> Scalar {
+                        const Scalar delta = b - a;
+                        volatile Scalar scaled = delta * t;
+                        return a + scaled;
+                    };
+                    size_t out = 0;
+                    for (uint32_t z = 0; z < size_z; ++z) {
+                        const int64_t block_z = wrapped_coordinate(min_z, z, step_z);
+                        const int64_t cell_z = floor_div(block_z, cell_xz) * cell_xz;
+                        const uint64_t cz = static_cast<uint64_t>((cell_z - corner_min_z) / cell_xz);
+                        const Scalar tz = static_cast<Scalar>(block_z - cell_z) * inv_xz;
+                        for (uint32_t x = 0; x < size_x; ++x) {
+                            const int64_t block_x = wrapped_coordinate(min_x, x, step_x);
+                            const int64_t cell_x = floor_div(block_x, cell_xz) * cell_xz;
+                            const uint64_t cx = static_cast<uint64_t>((cell_x - corner_min_x) / cell_xz);
+                            const Scalar tx = static_cast<Scalar>(block_x - cell_x) * inv_xz;
+                            for (uint32_t y = 0; y < size_y; ++y) {
+                                const int64_t block_y = wrapped_coordinate(min_y, y, step_y);
+                                const int64_t cell_y0 = floor_div(block_y, cell_y) * cell_y;
+                                const uint64_t cy = static_cast<uint64_t>((cell_y0 - corner_min_y) / cell_y);
+                                const Scalar ty = static_cast<Scalar>(block_y - cell_y0) * inv_y;
+
+                                const Scalar z00 = lerp(corner_at(cx, cy, cz), corner_at(cx, cy, cz + 1), tz);
+                                const Scalar z10 = lerp(corner_at(cx + 1, cy, cz), corner_at(cx + 1, cy, cz + 1), tz);
+                                const Scalar z01 = lerp(corner_at(cx, cy + 1, cz), corner_at(cx, cy + 1, cz + 1), tz);
+                                const Scalar z11 = lerp(corner_at(cx + 1, cy + 1, cz), corner_at(cx + 1, cy + 1, cz + 1), tz);
+                                const Scalar y0 = lerp(z00, z10, tx);
+                                const Scalar y1 = lerp(z01, z11, tx);
+                                values[out++] = lerp(y0, y1, ty);
+                            }
+                        }
+                    }
+                    break;
+                }
                 case kPerlinStack: {
                     std::fill(perlin_scratch.begin(), perlin_scratch.end(), 0.0F);
                     const int32_t status = jpe_cpp_perlin_stack_evaluate(
@@ -479,12 +564,35 @@ int32_t evaluate_density_graph(
             }
         }
 
-        const auto& root_values = slots[graph->node_slots[graph->root]];
+        const auto& root_values = slots[graph->node_slots[root_node]];
         std::copy(root_values.begin(), root_values.end(), output);
         return 0;
     } catch (...) {
         return 3;
     }
+}
+
+template <typename Scalar>
+int32_t evaluate_density_graph(
+    uint64_t graph_handle,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    Scalar* output, uint64_t output_length
+) {
+    if (output == nullptr || !valid_volume(size_x, size_y, size_z,
+            step_x, step_y, step_z, output_length)) return 1;
+    std::shared_ptr<CompiledGraph> graph;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        const auto found = g_handles.find(graph_handle);
+        if (found == g_handles.end()) return 2;
+        graph = found->second;
+    }
+    return evaluate_density_graph_impl<Scalar>(
+        graph, graph->root, size_x, size_y, size_z,
+        min_x, min_y, min_z, step_x, step_y, step_z,
+        output, output_length, 0);
 }
 
 extern "C" int32_t jpe_runtime_density_graph_evaluate(
