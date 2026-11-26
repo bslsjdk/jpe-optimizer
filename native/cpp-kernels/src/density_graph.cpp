@@ -399,15 +399,17 @@ Scalar java_signum_scalar(Scalar value) noexcept {
 
 template <typename Scalar>
 struct DensitySlotView {
-    Scalar* data = nullptr;
+    Scalar* pointer = nullptr;
     size_t length = 0;
 
-    Scalar& operator[](size_t index) noexcept { return data[index]; }
-    const Scalar& operator[](size_t index) const noexcept { return data[index]; }
-    Scalar* begin() noexcept { return data; }
-    Scalar* end() noexcept { return data + length; }
-    const Scalar* begin() const noexcept { return data; }
-    const Scalar* end() const noexcept { return data + length; }
+    Scalar& operator[](size_t index) noexcept { return pointer[index]; }
+    const Scalar& operator[](size_t index) const noexcept { return pointer[index]; }
+    Scalar* data() noexcept { return pointer; }
+    const Scalar* data() const noexcept { return pointer; }
+    Scalar* begin() noexcept { return pointer; }
+    Scalar* end() noexcept { return pointer + length; }
+    const Scalar* begin() const noexcept { return pointer; }
+    const Scalar* end() const noexcept { return pointer + length; }
 };
 
 template <typename Scalar>
