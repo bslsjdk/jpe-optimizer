@@ -29,7 +29,7 @@ public abstract class NoiseFunctionCaptureMixin {
             Holder<NormalNoise> parameters
     ) {
         Noise noise = context.createNoiseSampler(parameters);
-        NativeDensityGraphCompiler.captureNoise((NoiseFunction) (Object) this, noise);
+        NativeDensityGraphCompiler.captureNoise((NoiseFunction) (Object) this, context, noise);
         return noise;
     }
 }
