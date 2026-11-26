@@ -30,6 +30,7 @@ constexpr uint32_t kAbs = 12, kNegate = 13, kSquare = 14, kCube = 15;
 constexpr uint32_t kSqrt = 16, kHalfNegative = 17, kQuarterNegative = 18;
 constexpr uint32_t kReciprocal = 19, kSign = 20, kPow = 21, kClamp = 22;
 constexpr uint32_t kSqueeze = 23, kLerp = 24, kGradient = 25, kInterpolated = 26, kRangeChoice = 27;
+constexpr uint32_t kRound = 28, kLog = 29;
 
 struct CompiledGraph {
     uint64_t fingerprint = 0;
@@ -169,10 +170,18 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                 break;
             case kRangeChoice:
                 if (node.input_a >= i || node.input_b >= i || node.reserved >= i
-                    || ( !std::isfinite(node.immediate)
-                         && node.immediate != -std::numeric_limits<double>::infinity())
+                    || (!std::isfinite(node.immediate)
+                        && node.immediate != -std::numeric_limits<double>::infinity())
                     || !std::isfinite(node.auxiliary)
                     || node.immediate >= node.auxiliary || node.tertiary != 0.0) return false;
+                break;
+            case kRound:
+                if (node.input_a >= i || node.input_b >= i || node.reserved > 3
+                    || node.immediate != 0.0 || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
+                break;
+            case kLog:
+                if (node.input_a >= i || node.input_b != kNoInput || node.reserved != 0
+                    || node.immediate != 0.0 || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
                 break;
             case kPerlinStack: {
                 const double handle = node.immediate;
@@ -257,9 +266,9 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
                 || node.opcode == kMax || node.opcode == kPow) {
                 ++consumers[node.input_a]; ++consumers[node.input_b];
             } else if ((node.opcode >= kAbs && node.opcode <= kSign)
-                || node.opcode == kClamp || node.opcode == kSqueeze || node.opcode == kInterpolated) {
+                || node.opcode == kClamp || node.opcode == kSqueeze || node.opcode == kInterpolated || node.opcode == kLog) {
                 ++consumers[node.input_a];
-            } else if (node.opcode == kLerp || node.opcode == kRangeChoice) {
+            } else if (node.opcode == kLerp || node.opcode == kRangeChoice || node.opcode == kRound) {
                 ++consumers[node.input_a]; ++consumers[node.input_b]; ++consumers[node.reserved];
             }
         }
@@ -283,7 +292,7 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
             } else if ((node.opcode >= kAbs && node.opcode <= kSign)
                 || node.opcode == kClamp || node.opcode == kSqueeze || node.opcode == kInterpolated) {
                 release_input(node.input_a);
-            } else if (node.opcode == kLerp || node.opcode == kRangeChoice) {
+            } else if (node.opcode == kLerp || node.opcode == kRangeChoice || node.opcode == kRound) {
                 release_input(node.input_a);
                 release_input(node.input_b);
                 release_input(node.reserved);
@@ -468,6 +477,30 @@ int32_t evaluate_density_graph_impl(
                                 values[out++] = from_value + scaled;
                             }
                         }
+                    }
+                    break;
+                }
+                case kRound: {
+                    const auto& input = slots[graph->node_slots[node.input_a]];
+                    const auto& multiple = slots[graph->node_slots[node.input_b]];
+                    for (size_t j = 0; j < volume; ++j) {
+                        const double ratio = static_cast<double>(input[j]) / static_cast<double>(multiple[j]);
+                        double rounded;
+                        switch (node.reserved) {
+                            case 0: rounded = std::floor(ratio); break;
+                            case 1: rounded = std::floor(ratio + 0.5); break;
+                            case 2: rounded = std::ceil(ratio); break;
+                            case 3: rounded = std::trunc(ratio); break;
+                            default: return 1;
+                        }
+                        values[j] = static_cast<Scalar>(rounded) * multiple[j];
+                    }
+                    break;
+                }
+                case kLog: {
+                    const auto& input = slots[graph->node_slots[node.input_a]];
+                    for (size_t j = 0; j < volume; ++j) {
+                        values[j] = static_cast<Scalar>(std::log(static_cast<double>(input[j])));
                     }
                     break;
                 }
