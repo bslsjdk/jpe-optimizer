@@ -19,19 +19,17 @@
 
 #![allow(non_snake_case)]
 
-use super::egl::{EglContext, EGL_OPENGL_API, EGL_OPENGL_ES_API};
+use super::egl::{dlopen_first, EglContext, EGL_OPENGL_API, EGL_OPENGL_ES_API};
 use super::{
     Backend, Capabilities, DrawBatch, FramePixels, Mat4, MeshHandle, RenderError, MAT4_IDENTITY,
 };
 use crate::mesh::{MeshData, Vertex};
-use std::ffi::{c_char, c_int, c_void, CStr};
+use std::ffi::{c_char, c_void, CStr};
 use std::mem::transmute;
 
 extern "C" {
-    fn dlopen(filename: *const c_char, flag: c_int) -> *mut c_void;
     fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
 }
-const RTLD_NOW: c_int = 2;
 
 // --- GL tokens ------------------------------------------------------------
 const GL_RENDERER: u32 = 0x1F01;
@@ -206,10 +204,13 @@ impl Profile {
         }
     }
 
-    fn library(self) -> &'static CStr {
+    /// Candidate SONAMEs, most specific first. Distros ship both the versioned
+    /// name (`libGL.so.1`, `libGLESv2.so.2`) and, when the `-dev` package is
+    /// installed, the unversioned linker name.
+    fn libraries(self) -> &'static [&'static CStr] {
         match self {
-            Profile::Core => c"libGL.so.1",
-            Profile::Es => c"libGLESv2.so.2",
+            Profile::Core => &[c"libGL.so.1", c"libGL.so"],
+            Profile::Es => &[c"libGLESv2.so.2", c"libGLESv2.so"],
         }
     }
 
@@ -348,12 +349,12 @@ impl GlCore {
     pub fn create(profile: Profile) -> Result<Self, RenderError> {
         let (major, minor) = profile.egl_version();
         let egl = EglContext::create(profile.egl_api(), major, minor)?;
-        // SAFETY: `library()` is a static NUL-terminated name.
-        let lib = unsafe { dlopen(profile.library().as_ptr(), RTLD_NOW) };
+        // SAFETY: `libraries()` yields static, NUL-terminated names.
+        let lib = unsafe { dlopen_first(profile.libraries()) };
         if lib.is_null() {
             return Err(RenderError::BackendUnavailable(match profile {
-                Profile::Core => "gl: libGL.so.1 not loadable",
-                Profile::Es => "gles: libGLESv2.so.2 not loadable",
+                Profile::Core => "gl: libGL not loadable",
+                Profile::Es => "gles: libGLESv2 not loadable",
             }));
         }
         Self::init(profile, egl, lib)

@@ -65,7 +65,9 @@ camera returns a frame with **zero** lit pixels. See
 `docs/rust-world-engine-stage2-renderers.md`,
 `docs/rust-world-engine-stage3-textures-and-camera.md` and
 `docs/rust-world-engine-stage4-visibility.md` for the design and the exact
-verification commands.
+verification commands, plus
+`docs/rust-world-engine-software-gpu-ci.md` for what the CI image has to install
+(and how the Vulkan ICD is discovered rather than hard-coded).
 
 Not implemented yet: adopting Minecraft's live window/context (the backends
 render headless or offscreen today; host-context adoption lands with the client

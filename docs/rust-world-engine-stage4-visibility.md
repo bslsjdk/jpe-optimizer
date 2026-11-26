@@ -122,7 +122,9 @@ everything.
 
 ```sh
 cd native/rust-world
-export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+# ci/vulkan-icd.sh prints the lavapipe manifest for this distro; see
+# docs/rust-world-engine-software-gpu-ci.md
+export VK_DRIVER_FILES="$(bash ci/vulkan-icd.sh)"
 export XDG_RUNTIME_DIR=/tmp LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
 export JPE_REQUIRE_RENDER_BACKENDS=1
 cargo test -- --test-threads=1

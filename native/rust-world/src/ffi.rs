@@ -1173,9 +1173,16 @@ mod tests {
             ran += 1;
         }
 
+        if ran == 0 {
+            // Nothing could start: a skip on a GPU-less machine, a failure in CI.
+            require_or_skip("no native render backend could be created here");
+            eprintln!("no native render backend here, skipping the whole renderer ABI check");
+            return;
+        }
+
         // Reading before any completed frame is an explicit error, not stale data.
         let fresh = jpe_world_renderer_create(RENDER_BACKEND_AUTO);
-        assert_ne!(fresh, 0);
+        assert_ne!(fresh, 0, "auto selection must work if a specific backend did");
         let mut pixel = [0u8; 4];
         assert_eq!(
             jpe_world_renderer_read_pixels(

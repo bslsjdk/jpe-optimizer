@@ -71,8 +71,11 @@ jobs:
       - name: Install Mesa software drivers
         run: |
           sudo apt-get update
+          # libegl1 provides the `libEGL.so.1` SONAME; libgl1/libgles2 provide
+          # `libGL.so.1`/`libGLESv2.so.2`; libvulkan1 is the Vulkan loader itself.
           sudo apt-get install -y --no-install-recommends \
-            mesa-vulkan-drivers libegl-mesa0 libgl1-mesa-dri libgles2 libgl1 libglvnd0
+            mesa-vulkan-drivers libegl-mesa0 libgl1-mesa-dri \
+            libegl1 libgl1 libgles2 libglvnd0 libvulkan1
 
       - name: Set up Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -82,18 +85,39 @@ jobs:
         with:
           workspaces: native/rust-world
 
+      # Advisory: shows what the runner actually installed, so a driver/ICD
+      # layout change is readable in the log instead of being an
+      # "incompatible driver" code. Never fails the job.
+      - name: GPU stack diagnostics (advisory)
+        continue-on-error: true
+        run: |
+          dpkg -l | grep -Ei 'mesa|vulkan|egl|glvnd|gles' || true
+          echo "--- manifests shipped by the installed packages ---"
+          dpkg -L mesa-vulkan-drivers libegl1 libgl1 libgles2 libvulkan1 2>/dev/null \
+            | grep -E '\.so|icd\.d' | sort || true
+          echo "--- icd search directories ---"
+          ls -l /usr/share/vulkan/icd.d/ /etc/vulkan/icd.d/ 2>/dev/null || true
+          ls -l /usr/lib/x86_64-linux-gnu/ | grep -Ei 'egl|glesv|libGL|vulkan' || true
+          echo "--- any Vulkan env presets on the image ---"
+          env | grep -Ei '^VK_|GALLIUM|LIBGL' || true
+
       # `JPE_REQUIRE_RENDER_BACKENDS=1` makes the backend tests fail (instead of
       # skipping) if a driver is missing, so this job proves Vulkan, GL and GLES
       # each created a device/context, rendered a frame, and can be driven over
       # the C ABI (the `ffi::tests::renderer_over_c_abi_*` test covers all three).
       - name: Tests including native backends (must not skip)
         env:
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: llvmpipe
           XDG_RUNTIME_DIR: /tmp
           JPE_REQUIRE_RENDER_BACKENDS: "1"
-        run: cargo test -- --test-threads=1
+        run: |
+          # `ci/vulkan-icd.sh` points the loader at the lavapipe manifest this
+          # Ubuntu release actually ships, instead of a hard-coded file name.
+          icd="$(bash ci/vulkan-icd.sh)"
+          if [ -n "$icd" ]; then export VK_DRIVER_FILES="$icd" VK_ICD_FILENAMES="$icd"; fi
+          VK_LOADER_DEBUG=all cargo test --lib -- --test-threads=1 --nocapture vulkan 2>&1 | tail -n 60 || true
+          cargo test -- --test-threads=1
 
   java-bridge:
     name: Java 25 FFM bridge harness
@@ -120,7 +144,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            mesa-vulkan-drivers libegl-mesa0 libgl1-mesa-dri libgles2 libgl1 libglvnd0
+            mesa-vulkan-drivers libegl-mesa0 libgl1-mesa-dri \
+            libegl1 libgl1 libgles2 libglvnd0 libvulkan1
 
       # Drives the Rust scheduler, mesher and a native GPU backend through the
       # C ABI with Java 25 FFM. No C++ library, no Minecraft: the only native
@@ -128,9 +153,11 @@ jobs:
       # `JPE_REQUIRE_RENDER_BACKENDS=1` the renderer section must not skip.
       - name: Build and run harness
         env:
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: llvmpipe
           XDG_RUNTIME_DIR: /tmp
           JPE_REQUIRE_RENDER_BACKENDS: "1"
-        run: java/run_harness.sh
+        run: |
+          icd="$(bash ci/vulkan-icd.sh)"
+          if [ -n "$icd" ]; then export VK_DRIVER_FILES="$icd" VK_ICD_FILENAMES="$icd"; fi
+          java/run_harness.sh

@@ -72,7 +72,9 @@ impl EglContext {
     /// EGL_OPENGL_ES_API) with the requested version.
     pub fn create(api: u32, major: u32, minor: u32) -> Result<Self, RenderError> {
         unsafe {
-            let lib = dlopen(c"libEGL.so.1".as_ptr(), RTLD_NOW);
+            // `libegl1` ships the SONAME; some images only provide the unversioned
+            // dev symlink, so try both before declaring EGL unavailable.
+            let lib = dlopen_first(&[c"libEGL.so.1", c"libEGL.so"]);
             if lib.is_null() {
                 return Err(RenderError::BackendUnavailable("egl: libEGL.so.1 not loadable"));
             }
@@ -252,6 +254,22 @@ impl Drop for EglContext {
             // harmless.
         }
     }
+}
+
+/// `dlopen` the first candidate name that resolves.
+///
+/// Distros differ on whether only the SONAME or also an unversioned symlink is
+/// present at runtime, so a missing `.so.1` should not by itself mean "no
+/// backend".
+pub unsafe fn dlopen_first(names: &[&std::ffi::CStr]) -> *mut c_void {
+    for name in names {
+        // SAFETY: static, NUL-terminated names passed to the platform loader.
+        let handle = unsafe { dlopen(name.as_ptr(), RTLD_NOW) };
+        if !handle.is_null() {
+            return handle;
+        }
+    }
+    null_mut()
 }
 
 unsafe fn load_sym(lib: *mut c_void, name: &std::ffi::CStr) -> Option<*mut c_void> {

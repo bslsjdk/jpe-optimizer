@@ -819,12 +819,16 @@ extern "C" {
 const RTLD_NOW: c_int = 2;
 
 fn open_vulkan() -> Result<*mut c_void, RenderError> {
-    // SAFETY: plain loader call with a static, NUL-terminated name.
-    let handle = unsafe { dlopen(c"libvulkan.so.1".as_ptr(), RTLD_NOW) };
-    if handle.is_null() {
-        return Err(RenderError::BackendUnavailable("vulkan: libvulkan.so.1 not loadable"));
+    // The loader ships as `libvulkan.so.1`; the unversioned name only exists
+    // with the `-dev` package, so try both before giving up.
+    for name in [c"libvulkan.so.1", c"libvulkan.so"] {
+        // SAFETY: plain loader call with a static, NUL-terminated name.
+        let handle = unsafe { dlopen(name.as_ptr(), RTLD_NOW) };
+        if !handle.is_null() {
+            return Ok(handle);
+        }
     }
-    Ok(handle)
+    Err(RenderError::BackendUnavailable("vulkan: libvulkan not loadable"))
 }
 
 fn vk_err(code: i32) -> RenderError {
@@ -837,7 +841,9 @@ fn vk_err(code: i32) -> RenderError {
         -6 => RenderError::BackendUnavailable("vulkan: layer not present"),
         -7 => RenderError::Unsupported("vulkan: extension not present"),
         -8 => RenderError::Unsupported("vulkan: feature not present"),
-        -9 => RenderError::BackendUnavailable("vulkan: incompatible driver"),
+        -9 => RenderError::BackendUnavailable(
+            "vulkan: no usable driver (VK_ERROR_INCOMPATIBLE_DRIVER: loader found no ICD)",
+        ),
         -11 => RenderError::OutOfMemory,
         -12 => RenderError::BackendUnavailable("vulkan: operation failed"),
         _ => RenderError::Api("vulkan: call failed"),
