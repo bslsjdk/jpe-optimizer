@@ -2681,7 +2681,7 @@ mod tests {
         let mut backing: Vec<Vec<f32>> = Vec::with_capacity(9 * 16);
         for view in 0..9 {
             for column in 0..16 {
-                backing.push((0..16).map(|y| {
+                backing.push((0..48).map(|y| {
                     let raw = ((view * 37 + column * 19 + y * 11) % 97) as f32;
                     (raw - 31.0) * 0.137_f32
                 }).collect());
@@ -2695,7 +2695,7 @@ mod tests {
                 chunk_x: (view % 3) as i32,
                 chunk_z: (view / 3) as i32,
                 min_section_y: -4,
-                section_count: 8,
+                section_count: 24,
                 density_columns,
             }
         }).collect();
@@ -2734,7 +2734,7 @@ mod tests {
         let p95 = samples[(ROUNDS * 95 / 100).min(ROUNDS - 1)];
         eprintln!(
             "JPE_BLENDER_FULL_CHUNK_BENCH dims={}x{}x{} views={} points={} repeats={} rounds={} median_ms={:.3} p95_ms={:.3}",
-            SIZE_X, SIZE_Y, SIZE_Z, views.len(), backing.len() * 16,
+            SIZE_X, SIZE_Y, SIZE_Z, views.len(), backing.len() * 48,
             REPEATS, ROUNDS,
             median as f64 / 1_000_000.0,
             p95 as f64 / 1_000_000.0
