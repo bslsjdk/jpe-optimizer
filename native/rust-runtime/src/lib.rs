@@ -104,6 +104,11 @@ unsafe extern "C" {
         grid_x: i32, grid_y: i32, grid_z: i32,
         offset_x: *mut i32, offset_y: *mut i32, offset_z: *mut i32,
     ) -> i32;
+    fn jpe_cpp_aquifer_legacy_offsets(
+        factory_seed: u64,
+        grid_x: i32, grid_y: i32, grid_z: i32,
+        offset_x: *mut i32, offset_y: *mut i32, offset_z: *mut i32,
+    ) -> i32;
 
 }
 
@@ -116,6 +121,20 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_xoroshiro_offsets(
     unsafe {
         jpe_cpp_aquifer_xoroshiro_offsets(
             seed_lo, seed_hi, grid_x, grid_y, grid_z,
+            offset_x, offset_y, offset_z,
+        )
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_legacy_offsets(
+    factory_seed: u64,
+    grid_x: i32, grid_y: i32, grid_z: i32,
+    offset_x: *mut i32, offset_y: *mut i32, offset_z: *mut i32,
+) -> i32 {
+    unsafe {
+        jpe_cpp_aquifer_legacy_offsets(
+            factory_seed, grid_x, grid_y, grid_z,
             offset_x, offset_y, offset_z,
         )
     }
