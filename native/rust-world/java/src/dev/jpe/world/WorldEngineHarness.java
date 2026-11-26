@@ -199,6 +199,22 @@ public final class WorldEngineHarness {
         check("renderer api major >= 1", caps.apiMajor() >= 1);
         check("renderer max texture size >= 256", caps.maxTextureSize() >= 256);
 
+        // Camera maths lives in Rust so Java never keeps a second copy of the
+        // projection code; the renderer takes a finished column-major matrix.
+        float[] viewProj = world.cameraOrtho(new float[]{2.4f, 2.0f, 2.8f},
+                new float[]{0.5f, 0.5f, 0.5f}, new float[]{0.0f, 1.0f, 0.0f},
+                0.9f, 0.9f, 0.1f, 20.0f);
+        check("camera matrix built", viewProj != null && viewProj.length == 16);
+        check("degenerate camera is rejected",
+                world.cameraOrtho(new float[]{1f, 1f, 1f}, new float[]{1f, 1f, 1f},
+                        new float[]{0f, 1f, 0f}, 1f, 1f, 0.1f, 20f) == null);
+        float[] nanMatrix = new float[16];
+        nanMatrix[0] = Float.NaN;
+        nanMatrix[15] = 1f;
+        eq("renderer rejects a non-finite camera",
+                JpeWorldNative.RENDER_INVALID_MESH, world.rendererSetCamera(r, nanMatrix));
+        eq("renderer accepts the camera", 0, world.rendererSetCamera(r, viewProj));
+
         eq("renderer begin frame", 0, world.rendererBeginFrame(r, 128, 128));
 
         short[] blocks = new short[4096];
@@ -219,17 +235,29 @@ public final class WorldEngineHarness {
         check("cleared corner is the dark blue background",
                 bgR <= 16 && bgG <= 16 && bgB >= 18 && bgB <= 34);
 
-        int orange = 0;
+        int lit = 0;
+        java.util.HashSet<String> tones = new java.util.HashSet<>();
         for (int i = 0; i < pixels.length; i += 4) {
             int cr = pixels[i] & 0xff;
             int cg = pixels[i + 1] & 0xff;
             int cb = pixels[i + 2] & 0xff;
             int ca = pixels[i + 3] & 0xff;
-            if (cr >= 250 && Math.abs(cg - 128) <= 4 && Math.abs(cb - 64) <= 4 && ca == 255) {
-                orange++;
+            if (cr == bgR && cg == bgG && cb == bgB) {
+                continue;
             }
+            lit++;
+            // Alpha is part of the contract: the framebuffer must stay opaque.
+            if (ca != 255) {
+                tones.add("alpha<255");
+            }
+            tones.add((cr / 16) + "," + (cg / 16) + "," + (cb / 16));
         }
-        check("shader colour covers pixels (" + orange + ")", orange > 100);
+        check("geometry covers pixels (" + lit + ")", lit > 100);
+        // One flat colour would mean the atlas, the normals or the camera never
+        // reached the GPU. Vulkan, OpenGL and OpenGL ES must all shade here.
+        check("atlas and directional shading produce distinct tones (" + tones.size() + ")",
+                tones.size() >= 3 && !tones.contains("alpha<255"));
+        System.out.println("[harness] frame: " + lit + " lit pixels, " + tones.size() + " tones");
 
         // A renderer is thread-affine; the wrong thread must be rejected rather
         // than touching a context it does not own.
@@ -243,6 +271,17 @@ public final class WorldEngineHarness {
         }
         eq("renderer call from another thread is rejected",
                 JpeWorldNative.RENDER_WRONG_THREAD, wrongThread[0]);
+
+        int[] wrongCameraThread = new int[1];
+        Thread ct = new Thread(() -> wrongCameraThread[0] = world.rendererSetCamera(r, viewProj));
+        ct.start();
+        try {
+            ct.join();
+        } catch (InterruptedException e) {
+            throw new AssertionError(e);
+        }
+        eq("camera call from another thread is rejected",
+                JpeWorldNative.RENDER_WRONG_THREAD, wrongCameraThread[0]);
 
         eq("renderer destroy mesh", 0, world.rendererDestroyMesh(r, mesh.mesh()));
         eq("renderer destroy", 0, world.rendererDestroy(r));

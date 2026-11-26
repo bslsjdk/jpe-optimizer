@@ -96,6 +96,8 @@ public final class JpeWorldNative implements AutoCloseable {
     private final MethodHandle hRendererAvailable;
     private final MethodHandle hRendererDestroy;
     private final MethodHandle hRendererCaps;
+    private final MethodHandle hRendererSetCamera;
+    private final MethodHandle hCameraOrtho;
     private final MethodHandle hRendererBeginFrame;
     private final MethodHandle hRendererUploadSection;
     private final MethodHandle hRendererDestroyMesh;
@@ -108,6 +110,7 @@ public final class JpeWorldNative implements AutoCloseable {
         Linker linker = Linker.nativeLinker();
         ValueLayout.OfInt i32 = ValueLayout.JAVA_INT;
         ValueLayout.OfLong i64 = ValueLayout.JAVA_LONG;
+        ValueLayout.OfFloat f32 = ValueLayout.JAVA_FLOAT;
         var ptr = ValueLayout.ADDRESS;
 
         this.hAbiVersion = down(linker, lookup, "jpe_world_abi_version",
@@ -149,6 +152,10 @@ public final class JpeWorldNative implements AutoCloseable {
                 FunctionDescriptor.of(i32, i64));
         this.hRendererCaps = down(linker, lookup, "jpe_world_renderer_capabilities",
                 FunctionDescriptor.of(i32, i64, ptr));
+        this.hRendererSetCamera = down(linker, lookup, "jpe_world_renderer_set_camera",
+                FunctionDescriptor.of(i32, i64, ptr));
+        this.hCameraOrtho = down(linker, lookup, "jpe_world_camera_ortho",
+                FunctionDescriptor.of(i32, ptr, ptr, ptr, f32, f32, f32, f32, ptr));
         this.hRendererBeginFrame = down(linker, lookup, "jpe_world_renderer_begin_frame",
                 FunctionDescriptor.of(i32, i64, i32, i32));
         this.hRendererUploadSection = down(linker, lookup, "jpe_world_renderer_upload_section",
@@ -363,6 +370,73 @@ public final class JpeWorldNative implements AutoCloseable {
 
     public int rendererBeginFrame(long handle, int width, int height) {
         return invokeInt(hRendererBeginFrame, handle, width, height);
+    }
+
+    /**
+     * Set the column-major view-projection matrix ({@code m.length == 16}) used
+     * by every draw after this call.
+     *
+     * <p>The matrix uses the Vulkan 0..1 depth range on all three backends, so
+     * callers do not need a per-API variant. Status codes as documented in
+     * {@code src/ffi.rs}: {@link #RENDER_OK}, {@link #RENDER_UNKNOWN_HANDLE},
+     * {@link #RENDER_INVALID_ARGUMENT} (null/non-finite), {@link #RENDER_API_ERROR},
+     * {@link #RENDER_NO_FRAME} (backend has no camera) and
+     * {@link #RENDER_WRONG_THREAD}.
+     */
+    public int rendererSetCamera(long handle, float[] m) {
+        if (m == null || m.length != 16) {
+            throw new IllegalArgumentException("expected a 4x4 matrix (16 floats)");
+        }
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment src = a.allocate(64);
+            for (int i = 0; i < 16; i++) {
+                src.setAtIndex(ValueLayout.JAVA_FLOAT, i, m[i]);
+            }
+            return invokeInt(hRendererSetCamera, handle, src);
+        }
+    }
+
+    /**
+     * Build an orthographic look-at view-projection matrix in Rust, so no Java
+     * code has to keep its own copy of the projection maths.
+     *
+     * <p>Returns the 16 column-major floats, or {@code null} when the inputs are
+     * degenerate (zero-length basis vectors, non-positive extents, far &lt;= near).
+     */
+    public float[] cameraOrtho(float[] eye, float[] target, float[] up,
+                               float halfWidth, float halfHeight, float near, float far) {
+        if (eye == null || eye.length != 3 || target == null || target.length != 3
+                || up == null || up.length != 3) {
+            throw new IllegalArgumentException("eye, target and up each need 3 floats");
+        }
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment e = floats3(a, eye);
+            MemorySegment t = floats3(a, target);
+            MemorySegment u = floats3(a, up);
+            MemorySegment out = a.allocate(64);
+            int status = invokeInt(hCameraOrtho, e, t, u, halfWidth, halfHeight, near, far, out);
+            // -4 means the inputs do not define a camera (degenerate basis,
+            // non-positive extents, far <= near); anything else is a contract bug.
+            if (status == RENDER_INVALID_MESH) {
+                return null;
+            }
+            if (status != RENDER_OK) {
+                throw new IllegalStateException("cameraOrtho failed: status " + status);
+            }
+            float[] m = new float[16];
+            for (int i = 0; i < 16; i++) {
+                m[i] = out.getAtIndex(ValueLayout.JAVA_FLOAT, i);
+            }
+            return m;
+        }
+    }
+
+    private static MemorySegment floats3(Arena a, float[] v) {
+        MemorySegment seg = a.allocate(16);
+        for (int i = 0; i < 3; i++) {
+            seg.setAtIndex(ValueLayout.JAVA_FLOAT, i, v[i]);
+        }
+        return seg;
     }
 
     /**

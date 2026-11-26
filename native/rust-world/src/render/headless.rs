@@ -27,6 +27,7 @@ pub struct HeadlessRenderer {
     frame_extent: Option<[u32; 2]>,
     frame_count: u64,
     draws: Vec<DrawBatch>,
+    view_proj: super::Mat4,
 }
 
 impl HeadlessRenderer {
@@ -44,7 +45,13 @@ impl HeadlessRenderer {
             frame_extent: None,
             frame_count: 0,
             draws: Vec::new(),
+            view_proj: super::MAT4_IDENTITY,
         }
+    }
+
+    /// Last view-projection set through [`Renderer::set_view_proj`].
+    pub fn view_proj(&self) -> super::Mat4 {
+        self.view_proj
     }
 
     pub fn mesh_stats(&self, handle: MeshHandle) -> Option<MeshStats> {
@@ -136,6 +143,14 @@ impl Renderer for HeadlessRenderer {
         Ok(())
     }
 
+    fn set_view_proj(&mut self, view_proj: super::Mat4) -> Result<(), RenderError> {
+        if view_proj.iter().any(|v| !v.is_finite()) {
+            return Err(RenderError::InvalidMesh);
+        }
+        self.view_proj = view_proj;
+        Ok(())
+    }
+
     fn end_frame(&mut self) -> Result<(), RenderError> {
         if self.frame_extent.take().is_none() {
             return Err(RenderError::InvalidMesh);
@@ -201,5 +216,21 @@ mod tests {
             })
             .unwrap_err();
         assert_eq!(err, RenderError::InvalidMesh);
+    }
+
+    #[test]
+    fn camera_is_recorded_and_validated() {
+        use crate::render::{ortho_look_at, MAT4_IDENTITY};
+        let mut r = HeadlessRenderer::new();
+        assert_eq!(r.view_proj(), MAT4_IDENTITY);
+
+        let m = ortho_look_at([2.0, 2.0, 2.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0], 1.0, 1.0, 0.1, 10.0)
+            .unwrap();
+        r.set_view_proj(m).unwrap();
+        assert_eq!(r.view_proj(), m);
+
+        let mut bad = m;
+        bad[0] = f32::NAN;
+        assert_eq!(r.set_view_proj(bad), Err(RenderError::InvalidMesh));
     }
 }

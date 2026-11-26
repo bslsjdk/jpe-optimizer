@@ -160,11 +160,15 @@ context and produced pixels.
 - No Minecraft window/context is adopted yet; the backends render to an
   offscreen target. Host-context/surface adoption is part of the client
   integration and is not faked here.
-- No swapchain/presentation, textures, lighting, or greedy meshing.
+- No swapchain/presentation and no greedy meshing.
 - Renderer handles are exposed over the C ABI and exercised by the Java
   harness, but nothing in the NeoForge mod calls them yet: Minecraft's window,
   context and render thread are not wired, so there is no in-game rendering.
 - No performance claims; there is no live workload.
+
+> Update (stage 3): the textures, lighting and camera items below were the next
+> step and are now implemented — see
+> `docs/rust-world-engine-stage3-textures-and-camera.md`.
 
 ## Next steps
 
@@ -172,6 +176,6 @@ context and produced pixels.
    ownership (window, GL context, render thread) is audited.
 2. Call the renderer ABI from the NeoForge mod on the render thread (the C ABI
    and Java binding are already there).
-3. Add textures and a real camera/projection to replace the fixed offscreen
+3. ~~Add textures and a real camera/projection to replace the fixed offscreen
    transform, including the per-backend Y convention (Vulkan framebuffer origin
-   is top-left, GL is bottom-left).
+   is top-left, GL is bottom-left).~~ Done in stage 3.

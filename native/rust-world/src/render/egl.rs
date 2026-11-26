@@ -28,6 +28,7 @@ const EGL_PLATFORM_SURFACELESS_MESA: u32 = 0x31DD;
 const EGL_SURFACE_TYPE: i32 = 0x3033;
 const EGL_PBUFFER_BIT: i32 = 0x0001;
 const EGL_RENDERABLE_TYPE: i32 = 0x3040;
+const EGL_DEPTH_SIZE: i32 = 0x3025;
 const EGL_OPENGL_BIT: i32 = 0x0008;
 const EGL_OPENGL_ES2_BIT: i32 = 0x0004;
 const EGL_OPENGL_ES3_BIT: i32 = 0x0040;
@@ -140,9 +141,13 @@ impl EglContext {
             } else {
                 EGL_OPENGL_ES2_BIT
             };
+            // A depth buffer is requested explicitly: the shared GL core does a
+            // real depth test, and a config without depth bits would silently
+            // make that test a no-op.
             let config_attribs = [
                 EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
                 EGL_RENDERABLE_TYPE, renderable,
+                EGL_DEPTH_SIZE, 24,
                 EGL_NONE,
             ];
             let mut config: *mut c_void = null_mut();

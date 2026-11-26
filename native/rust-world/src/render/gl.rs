@@ -64,6 +64,9 @@ impl Renderer for GlRenderer {
     fn draw(&mut self, batch: DrawBatch) -> Result<(), RenderError> {
         self.core.draw_core(batch)
     }
+    fn set_view_proj(&mut self, view_proj: super::Mat4) -> Result<(), RenderError> {
+        self.core.set_view_proj_core(view_proj)
+    }
     fn end_frame(&mut self) -> Result<(), RenderError> {
         self.core.end_frame_core()
     }
@@ -76,6 +79,7 @@ impl Renderer for GlRenderer {
 mod tests {
     use super::*;
     use crate::mesh::{build_section_mesh, ChunkSection};
+    use crate::render::test_support::{quantized_colour_count, sample_camera};
 
     /// CI sets `JPE_REQUIRE_RENDER_BACKENDS=1` so a missing driver is a failure
     /// instead of a silent skip; that proves the backend actually ran.
@@ -140,6 +144,41 @@ mod tests {
         let background = pixels.pixel(0, 0).expect("corner pixel");
         let non_bg = pixels.count_non_background(background);
         assert!(non_bg > 100, "expected geometry coverage, got {non_bg} non-background pixels");
+
+        renderer.destroy_mesh(handle);
+    }
+
+    /// The camera and the atlas must both be observable in the output: an
+    /// angled view shows three faces, and each face is shaded and textured
+    /// differently, so a flat single-colour frame cannot pass.
+    #[test]
+    fn camera_and_atlas_produce_shaded_pixels() {
+        let mut renderer = match GlRenderer::create_headless() {
+            Ok(r) => r,
+            Err(RenderError::BackendUnavailable(msg)) => {
+                require_or_skip(msg);
+                eprintln!("gl unavailable here, skipping shading draw: {msg}");
+                return;
+            }
+            Err(e) => panic!("create_headless failed: {e:?}"),
+        };
+
+        let mesh = one_block_mesh();
+        let handle = renderer.create_mesh(&mesh).expect("create_mesh");
+        renderer.set_view_proj(sample_camera()).expect("set_view_proj");
+        renderer.begin_frame([128, 128]).expect("begin_frame");
+        renderer
+            .draw(DrawBatch { mesh: handle, index_count: mesh.indices.len() as u32, instance_count: 1 })
+            .expect("draw");
+        renderer.end_frame().expect("end_frame");
+
+        let pixels = renderer.read_pixels().expect("read_pixels");
+        let background = pixels.pixel(0, 0).expect("corner pixel");
+        let non_bg = pixels.count_non_background(background);
+        assert!(non_bg > 100, "expected geometry coverage, got {non_bg}");
+        let colours = quantized_colour_count(&pixels, background);
+        assert!(colours >= 3, "expected shaded atlas tones, got {colours} distinct colours");
+        eprintln!("gl shading: {non_bg} lit pixels, {colours} distinct colours");
 
         renderer.destroy_mesh(handle);
     }

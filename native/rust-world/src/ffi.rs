@@ -12,7 +12,7 @@
 use crate::chunk::ChunkState;
 use crate::coords::ChunkPos;
 use crate::mesh::{build_section_mesh, ChunkSection, Vertex};
-use crate::render::{Backend, DrawBatch, MeshHandle, RenderError, Renderer};
+use crate::render::{Backend, DrawBatch, Mat4, MeshHandle, RenderError, Renderer};
 use crate::scheduler::{Completion, SchedulerCore};
 use crate::task::{ChunkJob, JobKind, Priority};
 use std::collections::HashMap;
@@ -626,6 +626,62 @@ pub extern "C" fn jpe_world_renderer_capabilities(handle: u64, out: *mut JpeRend
     }
 }
 
+/// Set the column-major 4x4 view-projection matrix used by subsequent draws.
+///
+/// `view_proj` must point at 16 readable `f32`s (64 bytes). Shared by every
+/// backend; the matrix uses the Vulkan 0..1 depth range, which is also correct
+/// for GL, so Java never has to care about per-backend projection variants.
+/// 0 ok, -1 unknown renderer, -2 null pointer, -4 non-finite matrix,
+/// -6 backend has no camera support, -7 wrong thread.
+#[no_mangle]
+pub extern "C" fn jpe_world_renderer_set_camera(handle: u64, view_proj: *const f32) -> i32 {
+    if view_proj.is_null() {
+        return -2;
+    }
+    // SAFETY: non-null checked; the caller provides 16 readable f32 values.
+    let matrix: Mat4 = unsafe { std::ptr::read_unaligned(view_proj as *const Mat4) };
+    status(with_renderer(handle, |r| r.set_view_proj(matrix)))
+}
+
+/// Build an orthographic look-at view-projection matrix, single-sourced in Rust
+/// so the Java side passes plain vectors instead of doing matrix maths.
+///
+/// `eye`, `target`, `up` point at 3 readable `f32`s each; `out_view_proj` must
+/// point at 16 writable `f32`s.
+/// 0 ok, -2 null pointer, -4 degenerate basis or invalid extents/range.
+#[no_mangle]
+pub extern "C" fn jpe_world_camera_ortho(
+    eye: *const f32,
+    target: *const f32,
+    up: *const f32,
+    half_width: f32,
+    half_height: f32,
+    near: f32,
+    far: f32,
+    out_view_proj: *mut f32,
+) -> i32 {
+    if eye.is_null() || target.is_null() || up.is_null() || out_view_proj.is_null() {
+        return -2;
+    }
+    // SAFETY: non-null checked; each input points at 3 readable f32s.
+    let (e, t, u) = unsafe {
+        (
+            [eye.read(), eye.add(1).read(), eye.add(2).read()],
+            [target.read(), target.add(1).read(), target.add(2).read()],
+            [up.read(), up.add(1).read(), up.add(2).read()],
+        )
+    };
+    let Some(matrix) = crate::render::ortho_look_at(e, t, u, half_width, half_height, near, far)
+    else {
+        return -4;
+    };
+    // SAFETY: `out_view_proj` non-null checked and points at 16 writable f32s.
+    unsafe {
+        std::ptr::copy_nonoverlapping(matrix.as_ptr(), out_view_proj, 16);
+    }
+    0
+}
+
 /// Start a frame targeting `width` x `height` pixels.
 /// 0 ok, -1 unknown, -4 invalid extent, -5 API error, -7 wrong thread.
 #[no_mangle]
@@ -868,6 +924,59 @@ mod tests {
 
     /// One frame/upload/draw/readback round trip on a live renderer handle.
     fn exercise_renderer(handle: u64) {
+        // Camera maths lives in Rust so the Java side never builds matrices; the
+        // renderer only accepts a finished view-projection.
+        let eye = [2.4f32, 2.0, 2.8];
+        let target = [0.5f32, 0.5, 0.5];
+        let up = [0.0f32, 1.0, 0.0];
+        let mut matrix = [0f32; 16];
+        assert_eq!(
+            jpe_world_camera_ortho(
+                eye.as_ptr(),
+                target.as_ptr(),
+                up.as_ptr(),
+                0.9,
+                0.9,
+                0.1,
+                20.0,
+                matrix.as_mut_ptr()
+            ),
+            0
+        );
+        assert!(matrix.iter().all(|v| v.is_finite()), "camera {matrix:?}");
+        // Eye == target is a degenerate basis; a null output must not be written.
+        assert_eq!(
+            jpe_world_camera_ortho(
+                eye.as_ptr(),
+                eye.as_ptr(),
+                up.as_ptr(),
+                0.9,
+                0.9,
+                0.1,
+                20.0,
+                matrix.as_mut_ptr()
+            ),
+            -4
+        );
+        assert_eq!(
+            jpe_world_camera_ortho(
+                eye.as_ptr(),
+                target.as_ptr(),
+                up.as_ptr(),
+                0.9,
+                0.9,
+                0.1,
+                20.0,
+                std::ptr::null_mut()
+            ),
+            -2
+        );
+        assert_eq!(jpe_world_renderer_set_camera(handle, std::ptr::null()), -2);
+        let mut nan_matrix = matrix;
+        nan_matrix[0] = f32::NAN;
+        assert_eq!(jpe_world_renderer_set_camera(handle, nan_matrix.as_ptr()), -4);
+        assert_eq!(jpe_world_renderer_set_camera(handle, matrix.as_ptr()), 0);
+
         assert_eq!(jpe_world_renderer_begin_frame(handle, 128, 128), 0);
         assert_eq!(jpe_world_renderer_begin_frame(handle, 0, 128), -4);
 
@@ -908,20 +1017,31 @@ mod tests {
         );
         assert_eq!((width, height), (128, 128));
 
-        // Cleared corner is the dark background, and the shader's colour must
-        // cover a real area (the geometry, wherever the backend maps it).
+        // Cleared corner is the dark background, and the geometry must cover a
+        // real area wherever this backend maps it (the Y conventions differ).
         let background = [pixels[0], pixels[1], pixels[2], pixels[3]];
         assert!(background[0] <= 16 && background[1] <= 16, "background {background:?}");
-        let orange = pixels
-            .chunks_exact(4)
-            .filter(|p| {
-                p[0] >= 250 && p[1].abs_diff(128) <= 4 && p[2].abs_diff(64) <= 4 && p[3] == 255
-            })
-            .count();
-        assert!(orange > 100, "expected shader-coloured coverage, got {orange} pixels");
+        let mut lit = 0usize;
+        let mut tones = std::collections::BTreeSet::new();
+        for p in pixels.chunks_exact(4) {
+            if p[0] == background[0] && p[1] == background[1] && p[2] == background[2] {
+                continue;
+            }
+            lit += 1;
+            tones.insert((p[0] / 16, p[1] / 16, p[2] / 16));
+        }
+        assert!(lit > 100, "expected geometry coverage, got {lit} pixels");
+        // A flat single-colour fill would mean the atlas, the normal attribute or
+        // the camera never reached the GPU; shading must produce several tones.
+        assert!(tones.len() >= 3, "expected shaded atlas tones, got {tones:?}");
+        eprintln!("renderer handle {handle}: {lit} lit pixels, {} distinct tones", tones.len());
 
         // A renderer is thread-affine: another thread is rejected, never served.
         let other = std::thread::spawn(move || jpe_world_renderer_begin_frame(handle, 16, 16));
+        assert_eq!(other.join().unwrap(), -7);
+        // The camera call is subject to the same rule, so Java cannot smuggle a
+        // matrix in from a render thread other than the owner's.
+        let other = std::thread::spawn(move || jpe_world_renderer_set_camera(handle, matrix.as_ptr()));
         assert_eq!(other.join().unwrap(), -7);
 
         assert_eq!(jpe_world_renderer_destroy_mesh(handle, mesh), 0);

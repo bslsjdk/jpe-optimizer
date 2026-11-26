@@ -20,7 +20,9 @@
 #![allow(non_snake_case)]
 
 use super::egl::{EglContext, EGL_OPENGL_API, EGL_OPENGL_ES_API};
-use super::{Backend, Capabilities, DrawBatch, FramePixels, MeshHandle, RenderError};
+use super::{
+    Backend, Capabilities, DrawBatch, FramePixels, Mat4, MeshHandle, RenderError, MAT4_IDENTITY,
+};
 use crate::mesh::{MeshData, Vertex};
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::mem::transmute;
@@ -52,7 +54,7 @@ const GL_UNSIGNED_INT: u32 = 0x1405;
 
 const GL_DEPTH_TEST: u32 = 0x0B71;
 const GL_CULL_FACE: u32 = 0x0B44;
-const GL_LEQUAL: u32 = 0x0203;
+const GL_LESS: u32 = 0x0201;
 const GL_COLOR_BUFFER_BIT: u32 = 0x0000_4000;
 const GL_DEPTH_BUFFER_BIT: u32 = 0x0000_0100;
 
@@ -67,6 +69,16 @@ const GL_DEPTH_COMPONENT24: u32 = 0x81A6;
 const GL_RGBA: u32 = 0x1908;
 const GL_UNSIGNED_BYTE: u32 = 0x1401;
 const GL_PACK_ALIGNMENT: u32 = 0x0D05;
+const GL_UNPACK_ALIGNMENT: u32 = 0x0D05;
+
+const GL_TEXTURE_2D: u32 = 0x0DE1;
+const GL_TEXTURE0: u32 = 0x84C0;
+const GL_TEXTURE_MIN_FILTER: u32 = 0x2801;
+const GL_TEXTURE_MAG_FILTER: u32 = 0x2800;
+const GL_TEXTURE_WRAP_S: u32 = 0x2802;
+const GL_TEXTURE_WRAP_T: u32 = 0x2803;
+const GL_NEAREST: u32 = 0x2600;
+const GL_REPEAT: u32 = 0x2901;
 
 // --- function pointer table ----------------------------------------------
 macro_rules! gl_fns {
@@ -129,6 +141,15 @@ gl_fns! {
     glGetProgramInfoLog: fn(u32, i32, *mut i32, *mut c_char) -> ();
     glUseProgram: fn(u32) -> ();
     glDeleteProgram: fn(u32) -> ();
+    glGetUniformLocation: fn(u32, *const c_char) -> i32;
+    glUniform1i: fn(i32, i32) -> ();
+    glUniformMatrix4fv: fn(i32, i32, u8, *const f32) -> ();
+    glGenTextures: fn(i32, *mut u32) -> ();
+    glDeleteTextures: fn(i32, *const u32) -> ();
+    glBindTexture: fn(u32, u32) -> ();
+    glActiveTexture: fn(u32) -> ();
+    glTexParameteri: fn(u32, u32, i32) -> ();
+    glTexImage2D: fn(u32, i32, i32, i32, i32, i32, u32, u32, *const c_void) -> ();
     glGenRenderbuffers: fn(i32, *mut u32) -> ();
     glBindRenderbuffer: fn(u32, u32) -> ();
     glRenderbufferStorage: fn(u32, u32, i32, i32) -> ();
@@ -200,25 +221,51 @@ impl Profile {
     }
 
     fn vertex_source(self) -> &'static CStr {
+        // Both profiles take the same attribute layout as the shared mesh
+        // format: position (0), normal (1), uv (2).
         match self {
             Profile::Core => c"#version 330\n\
                 layout(location = 0) in vec3 aPos;\n\
-                void main() { gl_Position = vec4(aPos.x * 0.5, aPos.y * 0.5, 0.0, 1.0); }\n",
+                layout(location = 1) in vec3 aNormal;\n\
+                layout(location = 2) in vec2 aUv;\n\
+                uniform mat4 uViewProj;\n\
+                out vec3 vNormal;\n\
+                out vec2 vUv;\n\
+                void main() { vNormal = aNormal; vUv = aUv; \
+                gl_Position = uViewProj * vec4(aPos, 1.0); }\n",
             Profile::Es => c"#version 300 es\n\
                 layout(location = 0) in vec3 aPos;\n\
-                void main() { gl_Position = vec4(aPos.x * 0.5, aPos.y * 0.5, 0.0, 1.0); }\n",
+                layout(location = 1) in vec3 aNormal;\n\
+                layout(location = 2) in vec2 aUv;\n\
+                uniform mat4 uViewProj;\n\
+                out vec3 vNormal;\n\
+                out vec2 vUv;\n\
+                void main() { vNormal = aNormal; vUv = aUv; \
+                gl_Position = uViewProj * vec4(aPos, 1.0); }\n",
         }
     }
 
     fn fragment_source(self) -> &'static CStr {
+        // One directional light term plus the chunk atlas: identical GLSL for
+        // both profiles apart from the version and float precision.
         match self {
             Profile::Core => c"#version 330\n\
+                in vec3 vNormal;\n\
+                in vec2 vUv;\n\
+                uniform sampler2D uAtlas;\n\
                 out vec4 fragColor;\n\
-                void main() { fragColor = vec4(1.0, 0.5, 0.25, 1.0); }\n",
+                void main() { vec3 light = vec3(0.40824829, 0.81649658, 0.40824829); \
+                float shade = 0.5 + 0.5 * max(dot(normalize(vNormal), light), 0.0); \
+                fragColor = vec4(texture(uAtlas, vUv).rgb * shade, 1.0); }\n",
             Profile::Es => c"#version 300 es\n\
                 precision mediump float;\n\
+                in vec3 vNormal;\n\
+                in vec2 vUv;\n\
+                uniform sampler2D uAtlas;\n\
                 out vec4 fragColor;\n\
-                void main() { fragColor = vec4(1.0, 0.5, 0.25, 1.0); }\n",
+                void main() { vec3 light = vec3(0.40824829, 0.81649658, 0.40824829); \
+                float shade = 0.5 + 0.5 * max(dot(normalize(vNormal), light), 0.0); \
+                fragColor = vec4(texture(uAtlas, vUv).rgb * shade, 1.0); }\n",
         }
     }
 
@@ -258,11 +305,42 @@ pub struct GlCore {
     capabilities: Capabilities,
     renderer_name: String,
     program: u32,
+    /// Location of `uViewProj` in `program`, or -1 if the driver optimised it out.
+    u_view_proj: i32,
+    /// Location of `uAtlas` in `program`, or -1 if unused.
+    u_atlas: i32,
+    /// Built-in block atlas (see [`atlas_pixels`]).
+    atlas: u32,
+    /// Column-major view-projection applied to every frame.
+    view_proj: Mat4,
     meshes: Vec<Option<GlMesh>>,
     next_handle: u64,
     target: Option<GlTarget>,
     pending: Vec<DrawBatch>,
     last_frame: Option<FramePixels>,
+}
+
+/// Width of the built-in block atlas in texels.
+pub const ATLAS_SIZE: i32 = 8;
+
+/// Build the built-in block atlas: an 8x8 two-tone checker in RGBA8.
+///
+/// It is a real GPU texture sampled by the fragment shader through the mesh's
+/// UVs; a per-block texture atlas loaded from the game's resource pack replaces
+/// it once the Minecraft integration supplies one.
+pub fn atlas_pixels() -> Vec<u8> {
+    let mut px = vec![0u8; (ATLAS_SIZE * ATLAS_SIZE * 4) as usize];
+    for y in 0..ATLAS_SIZE {
+        for x in 0..ATLAS_SIZE {
+            let tone = if (x + y) % 2 == 0 { 235 } else { 175 };
+            let o = ((y * ATLAS_SIZE + x) * 4) as usize;
+            px[o] = tone;
+            px[o + 1] = tone;
+            px[o + 2] = tone;
+            px[o + 3] = 255;
+        }
+    }
+    px
 }
 
 impl GlCore {
@@ -318,6 +396,15 @@ impl GlCore {
             };
 
             let program = build_program(&gl, profile)?;
+            let name = c"uViewProj".as_ptr();
+            let u_view_proj = (gl.glGetUniformLocation)(program, name);
+            let name = c"uAtlas".as_ptr();
+            let u_atlas = (gl.glGetUniformLocation)(program, name);
+            if u_view_proj < 0 || u_atlas < 0 {
+                (gl.glDeleteProgram)(program);
+                return Err(RenderError::Api("gl: shader uniform missing"));
+            }
+            let atlas = create_atlas(&gl)?;
 
             Ok(GlCore {
                 gl,
@@ -327,6 +414,10 @@ impl GlCore {
                 capabilities,
                 renderer_name,
                 program,
+                u_view_proj,
+                u_atlas,
+                atlas,
+                view_proj: MAT4_IDENTITY,
                 meshes: Vec::new(),
                 next_handle: 1,
                 target: None,
@@ -344,6 +435,17 @@ impl GlCore {
     }
     pub fn backend(&self) -> Backend {
         self.profile.backend()
+    }
+    /// Set the column-major view-projection used by subsequent frames.
+    pub fn set_view_proj_core(&mut self, view_proj: Mat4) -> Result<(), RenderError> {
+        if view_proj.iter().any(|v| !v.is_finite()) {
+            return Err(RenderError::InvalidMesh);
+        }
+        self.view_proj = view_proj;
+        Ok(())
+    }
+    pub fn view_proj(&self) -> Mat4 {
+        self.view_proj
     }
     pub fn gl_version_string(&self) -> String {
         // SAFETY: context is current and owned by this renderer.
@@ -477,6 +579,26 @@ impl GlCore {
                 Vertex::STRIDE as i32,
                 std::ptr::null(),
             );
+            // Normal (location 1) and uv (location 2) from the same 32-byte
+            // vertex; offsets match `Vertex` in `crate::mesh`.
+            (gl.glEnableVertexAttribArray)(1);
+            (gl.glVertexAttribPointer)(
+                1,
+                3,
+                GL_FLOAT,
+                GL_FALSE,
+                Vertex::STRIDE as i32,
+                12usize as *const c_void,
+            );
+            (gl.glEnableVertexAttribArray)(2);
+            (gl.glVertexAttribPointer)(
+                2,
+                2,
+                GL_FLOAT,
+                GL_FALSE,
+                Vertex::STRIDE as i32,
+                24usize as *const c_void,
+            );
 
             let mut ibo = 0u32;
             (gl.glGenBuffers)(1, &mut ibo);
@@ -541,6 +663,7 @@ impl GlCore {
         };
         let (width, height) = (target.extent[0], target.extent[1]);
         let gl = &self.gl;
+        let view_proj = self.view_proj;
 
         // SAFETY: draws the validated pending batches into the owned FBO and
         // reads the colour buffer back into host memory.
@@ -549,10 +672,14 @@ impl GlCore {
             (gl.glViewport)(0, 0, width as i32, height as i32);
             (gl.glDisable)(GL_CULL_FACE);
             (gl.glEnable)(GL_DEPTH_TEST);
-            (gl.glDepthFunc)(GL_LEQUAL);
+            (gl.glDepthFunc)(GL_LESS);
             (gl.glClearColor)(0.05, 0.05, 0.1, 1.0);
             (gl.glClear)(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             (gl.glUseProgram)(self.program);
+            (gl.glUniformMatrix4fv)(self.u_view_proj, 1, GL_FALSE, view_proj.as_ptr());
+            (gl.glActiveTexture)(GL_TEXTURE0);
+            (gl.glBindTexture)(GL_TEXTURE_2D, self.atlas);
+            (gl.glUniform1i)(self.u_atlas, 0);
 
             for batch in &self.pending {
                 let idx = batch.mesh.0 as usize - 1;
@@ -643,6 +770,11 @@ impl Drop for GlCore {
                 }
             }
             self.destroy_target();
+            if self.atlas != 0 {
+                (self.gl.glBindTexture)(GL_TEXTURE_2D, 0);
+                (self.gl.glDeleteTextures)(1, &self.atlas);
+                self.atlas = 0;
+            }
             if self.program != 0 {
                 (self.gl.glDeleteProgram)(self.program);
             }
@@ -654,6 +786,44 @@ impl Drop for GlCore {
 }
 
 // --- helpers --------------------------------------------------------------
+
+/// Upload the built-in block atlas as a `GL_TEXTURE_2D`.
+unsafe fn create_atlas(gl: &GlFns) -> Result<u32, RenderError> {
+    let pixels = atlas_pixels();
+    // SAFETY: standard texture creation on the current context; the id is
+    // returned to the caller, which deletes it in `GlCore::drop`.
+    unsafe {
+        let mut tex = 0u32;
+        (gl.glGenTextures)(1, &mut tex);
+        if tex == 0 {
+            return Err(RenderError::Api("gl: glGenTextures failed"));
+        }
+        (gl.glActiveTexture)(GL_TEXTURE0);
+        (gl.glBindTexture)(GL_TEXTURE_2D, tex);
+        (gl.glPixelStorei)(GL_UNPACK_ALIGNMENT, 1);
+        (gl.glTexParameteri)(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST as i32);
+        (gl.glTexParameteri)(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST as i32);
+        (gl.glTexParameteri)(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT as i32);
+        (gl.glTexParameteri)(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT as i32);
+        (gl.glTexImage2D)(
+            GL_TEXTURE_2D,
+            0,
+            GL_RGBA8 as i32,
+            ATLAS_SIZE,
+            ATLAS_SIZE,
+            0,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            pixels.as_ptr() as *const c_void,
+        );
+        let err = (gl.glGetError)();
+        if err != 0 {
+            (gl.glDeleteTextures)(1, &tex);
+            return Err(RenderError::Api("gl: atlas upload failed"));
+        }
+        Ok(tex)
+    }
+}
 
 unsafe fn gl_string(gl: &GlFns, name: u32) -> Option<String> {
     // SAFETY: `name` is a valid GL string enum and the pointer is driver-owned.

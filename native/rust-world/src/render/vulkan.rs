@@ -17,7 +17,10 @@
 //! pipeline and colour readback are implemented and tested. Swapchain
 //! presentation, textures, depth and descriptor sets are not implemented yet.
 
-use super::{Backend, Capabilities, DrawBatch, FramePixels, MeshHandle, RenderError, Renderer};
+use super::{
+    flip_clip_y, Backend, Capabilities, DrawBatch, FramePixels, Mat4, MeshHandle, RenderError,
+    Renderer, MAT4_IDENTITY,
+};
 use crate::mesh::Vertex;
 use std::ffi::{c_char, c_int, c_void};
 use std::mem::{size_of, transmute, zeroed};
@@ -60,12 +63,20 @@ const STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO: u32 = 40;
 const STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO: u32 = 42;
 const STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO: u32 = 43;
 const STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER: u32 = 45;
+const STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO: u32 = 25;
+const STRUCTURE_TYPE_SAMPLER_CREATE_INFO: u32 = 31;
+const STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO: u32 = 32;
+const STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO: u32 = 33;
+const STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO: u32 = 34;
+const STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET: u32 = 35;
 
 const QUEUE_GRAPHICS_BIT: u32 = 0x0000_0001;
 const QUEUE_COMPUTE_BIT: u32 = 0x0000_0002;
 
 const FORMAT_R8G8B8A8_UNORM: u32 = 37;
 const FORMAT_R32G32B32_SFLOAT: u32 = 106;
+const FORMAT_R32G32_SFLOAT: u32 = 103;
+const FORMAT_D32_SFLOAT: u32 = 126;
 
 const IMAGE_TILING_OPTIMAL: u32 = 0;
 const IMAGE_TYPE_2D: u32 = 1;
@@ -73,16 +84,24 @@ const IMAGE_VIEW_TYPE_2D: u32 = 1;
 const COMPONENT_SWIZZLE_IDENTITY: u32 = 0;
 
 const IMAGE_USAGE_TRANSFER_SRC: u32 = 0x0000_0001;
+const IMAGE_USAGE_TRANSFER_DST: u32 = 0x0000_0002;
+const IMAGE_USAGE_SAMPLED: u32 = 0x0000_0004;
 const IMAGE_USAGE_COLOR_ATTACHMENT: u32 = 0x0000_0010;
+const IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT: u32 = 0x0000_0020;
 const BUFFER_USAGE_TRANSFER_SRC: u32 = 0x0000_0001;
-const BUFFER_USAGE_VERTEX: u32 = 0x0000_0040;
-const BUFFER_USAGE_INDEX: u32 = 0x0000_0080;
+const BUFFER_USAGE_INDEX: u32 = 0x0000_0040;
+const BUFFER_USAGE_VERTEX: u32 = 0x0000_0080;
 
 const LAYOUT_UNDEFINED: u32 = 0;
+const LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL: u32 = 3;
+const LAYOUT_SHADER_READ_ONLY_OPTIMAL: u32 = 5;
 const LAYOUT_TRANSFER_SRC_OPTIMAL: u32 = 6;
+const LAYOUT_TRANSFER_DST_OPTIMAL: u32 = 7;
 
 const ATTACHMENT_LOAD_OP_CLEAR: u32 = 1;
+const ATTACHMENT_LOAD_OP_DONT_CARE: u32 = 2;
 const ATTACHMENT_STORE_OP_STORE: u32 = 0;
+const ATTACHMENT_STORE_OP_DONT_CARE: u32 = 1;
 const SHARING_MODE_EXCLUSIVE: u32 = 0;
 
 const PIPELINE_BIND_POINT_GRAPHICS: u32 = 0;
@@ -95,27 +114,46 @@ const BLEND_FACTOR_ONE: u32 = 1;
 const BLEND_FACTOR_ZERO: u32 = 0;
 const BLEND_OP_ADD: u32 = 0;
 const COLOR_COMPONENT_RGBA: u32 = 0xF;
+const COMPARE_OP_LESS: u32 = 1;
 
 const SHADER_STAGE_VERTEX: u32 = 0x0000_0001;
 const SHADER_STAGE_FRAGMENT: u32 = 0x0000_0010;
+const SHADER_STAGE_VERTEX_FRAGMENT: u32 = SHADER_STAGE_VERTEX | SHADER_STAGE_FRAGMENT;
 const DYNAMIC_STATE_VIEWPORT: u32 = 0;
 const DYNAMIC_STATE_SCISSOR: u32 = 1;
 
+const STAGE_TOP_OF_PIPE: u32 = 0x0000_0001;
+const STAGE_FRAGMENT_SHADER: u32 = 0x0000_0080;
 const STAGE_COLOR_ATTACHMENT_OUTPUT: u32 = 0x0000_0400;
 const STAGE_TRANSFER: u32 = 0x0000_1000;
+const ACCESS_SHADER_READ: u32 = 0x0000_0020;
 const ACCESS_COLOR_ATTACHMENT_WRITE: u32 = 0x0000_0100;
+const ACCESS_DEPTH_ATTACHMENT_WRITE: u32 = 0x0000_0400;
+const ACCESS_COLOR_AND_DEPTH_WRITE: u32 = ACCESS_COLOR_ATTACHMENT_WRITE | ACCESS_DEPTH_ATTACHMENT_WRITE;
 const ACCESS_TRANSFER_READ: u32 = 0x0000_0800;
+const ACCESS_TRANSFER_WRITE: u32 = 0x0000_1000;
+
+const DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: u32 = 1;
+const FILTER_NEAREST: u32 = 0;
+const SAMPLER_MIPMAP_MODE_NEAREST: u32 = 0;
+const SAMPLER_ADDRESS_MODE_REPEAT: u32 = 0;
+const BORDER_COLOR_FLOAT_TRANSPARENT_BLACK: u32 = 0;
+const COMPARE_OP_NEVER: u32 = 0;
 
 const MEMORY_PROPERTY_DEVICE_LOCAL: u32 = 0x0000_0001;
 const MEMORY_PROPERTY_HOST_VISIBLE: u32 = 0x0000_0002;
 const MEMORY_PROPERTY_HOST_COHERENT: u32 = 0x0000_0004;
 
 const IMAGE_ASPECT_COLOR: u32 = 0x1;
-const INDEX_TYPE_UINT32: u32 = 1;
+const IMAGE_ASPECT_DEPTH: u32 = 0x2;
+const INDEX_TYPE_UINT32: u32 = 3;
 const COMMAND_BUFFER_LEVEL_PRIMARY: u32 = 0;
 const COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT: u32 = 0x1;
 const SUBPASS_EXTERNAL: u32 = 0xFFFF_FFFF;
 const PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT: u32 = 0x0000_0400;
+const PIPELINE_STAGE_EARLY_FRAGMENT_TESTS: u32 = 0x0000_0100;
+const PIPELINE_STAGE_COLOR_AND_DEPTH: u32 =
+    PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT | PIPELINE_STAGE_EARLY_FRAGMENT_TESTS;
 const SUBPASS_CONTENTS_INLINE: u32 = 0;
 
 // --- FFI types ------------------------------------------------------------
@@ -476,6 +514,129 @@ struct PipelineLayoutCreateInfo {
 }
 
 #[repr(C)]
+struct PushConstantRange {
+    stage_flags: u32,
+    offset: u32,
+    size: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+struct StencilOpState {
+    fail_op: u32,
+    pass_op: u32,
+    depth_fail_op: u32,
+    compare_op: u32,
+    compare_mask: u32,
+    write_mask: u32,
+    reference: u32,
+}
+
+/// `VkPipelineDepthStencilStateCreateInfo`.
+#[repr(C)]
+struct PipelineDepthStencilStateCreateInfo {
+    s_type: u32,
+    p_next: *const c_void,
+    flags: u32,
+    depth_test_enable: u32,
+    depth_write_enable: u32,
+    depth_compare_op: u32,
+    depth_bounds_test_enable: u32,
+    stencil_test_enable: u32,
+    front: StencilOpState,
+    back: StencilOpState,
+    min_depth_bounds: f32,
+    max_depth_bounds: f32,
+}
+
+/// `VkSamplerCreateInfo`.
+#[repr(C)]
+struct SamplerCreateInfo {
+    s_type: u32,
+    p_next: *const c_void,
+    flags: u32,
+    mag_filter: u32,
+    min_filter: u32,
+    mipmap_mode: u32,
+    address_mode_u: u32,
+    address_mode_v: u32,
+    address_mode_w: u32,
+    mip_lod_bias: f32,
+    anisotropy_enable: u32,
+    max_anisotropy: f32,
+    compare_enable: u32,
+    compare_op: u32,
+    min_lod: f32,
+    max_lod: f32,
+    border_color: u32,
+    unnormalized_coordinates: u32,
+}
+
+#[repr(C)]
+struct DescriptorSetLayoutBinding {
+    binding: u32,
+    descriptor_type: u32,
+    descriptor_count: u32,
+    stage_flags: u32,
+    p_immutable_samplers: *const u64,
+}
+
+#[repr(C)]
+struct DescriptorSetLayoutCreateInfo {
+    s_type: u32,
+    p_next: *const c_void,
+    flags: u32,
+    binding_count: u32,
+    p_bindings: *const DescriptorSetLayoutBinding,
+}
+
+#[repr(C)]
+struct DescriptorPoolSize {
+    ty: u32,
+    descriptor_count: u32,
+}
+
+#[repr(C)]
+struct DescriptorPoolCreateInfo {
+    s_type: u32,
+    p_next: *const c_void,
+    flags: u32,
+    max_sets: u32,
+    pool_size_count: u32,
+    p_pool_sizes: *const DescriptorPoolSize,
+}
+
+#[repr(C)]
+struct DescriptorSetAllocateInfo {
+    s_type: u32,
+    p_next: *const c_void,
+    descriptor_pool: u64,
+    descriptor_set_count: u32,
+    p_set_layouts: *const u64,
+}
+
+#[repr(C)]
+struct DescriptorImageInfo {
+    sampler: u64,
+    image_view: u64,
+    image_layout: u32,
+}
+
+#[repr(C)]
+struct WriteDescriptorSet {
+    s_type: u32,
+    p_next: *const c_void,
+    dst_set: u64,
+    dst_binding: u32,
+    dst_array_element: u32,
+    descriptor_count: u32,
+    descriptor_type: u32,
+    p_image_info: *const DescriptorImageInfo,
+    p_buffer_info: *const c_void,
+    p_texel_buffer_view: *const u64,
+}
+
+#[repr(C)]
 struct CommandPoolCreateInfo {
     s_type: u32,
     p_next: *const c_void,
@@ -632,6 +793,17 @@ vk_fns! {
     vkCmdDrawIndexed: fn(CommandBuffer, u32, u32, u32, i32, u32) -> ();
     vkCmdPipelineBarrier: fn(CommandBuffer, u32, u32, u32, u32, *const c_void, u32, *const c_void, u32, *const ImageMemoryBarrier) -> ();
     vkCmdCopyImageToBuffer: fn(CommandBuffer, u64, u32, u64, u32, *const BufferImageCopy) -> ();
+    vkCmdCopyBufferToImage: fn(CommandBuffer, u64, u64, u32, u32, *const BufferImageCopy) -> ();
+    vkCreateSampler: fn(Device, *const SamplerCreateInfo, *const c_void, *mut u64) -> i32;
+    vkDestroySampler: fn(Device, u64, *const c_void) -> ();
+    vkCreateDescriptorSetLayout: fn(Device, *const DescriptorSetLayoutCreateInfo, *const c_void, *mut u64) -> i32;
+    vkDestroyDescriptorSetLayout: fn(Device, u64, *const c_void) -> ();
+    vkCreateDescriptorPool: fn(Device, *const DescriptorPoolCreateInfo, *const c_void, *mut u64) -> i32;
+    vkDestroyDescriptorPool: fn(Device, u64, *const c_void) -> ();
+    vkAllocateDescriptorSets: fn(Device, *const DescriptorSetAllocateInfo, *mut u64) -> i32;
+    vkUpdateDescriptorSets: fn(Device, u32, *const WriteDescriptorSet, u32, *const c_void) -> ();
+    vkCmdBindDescriptorSets: fn(CommandBuffer, u32, u64, u32, u32, *const u64, u32, *const u32) -> ();
+    vkCmdPushConstants: fn(CommandBuffer, u64, u32, u32, u32, *const c_void) -> ();
     vkCreateFence: fn(Device, *const FenceCreateInfo, *const c_void, *mut u64) -> i32;
     vkDestroyFence: fn(Device, u64, *const c_void) -> ();
     vkWaitForFences: fn(Device, u32, *const u64, u32, u64) -> i32;
@@ -721,12 +893,15 @@ struct FrameTarget {
     image: u64,
     image_memory: u64,
     view: u64,
+    depth_image: u64,
+    depth_memory: u64,
+    depth_view: u64,
     framebuffer: u64,
     readback_buffer: u64,
     readback_memory: u64,
 }
 
-/// A Vulkan renderer owning a device and an offscreen colour target.
+/// A Vulkan renderer owning a device and an offscreen colour + depth target.
 pub struct VulkanRenderer {
     // Kept open for the renderer's lifetime; see `Drop`.
     _lib: *mut c_void,
@@ -742,6 +917,15 @@ pub struct VulkanRenderer {
     render_pass: u64,
     pipeline_layout: u64,
     pipeline: u64,
+    sampler: u64,
+    descriptor_set_layout: u64,
+    descriptor_pool: u64,
+    descriptor_set: u64,
+    atlas_image: u64,
+    atlas_memory: u64,
+    atlas_view: u64,
+    /// Column-major view-projection pushed to the vertex stage each frame.
+    view_proj: Mat4,
     capabilities: Capabilities,
     device_name: String,
     meshes: Vec<Option<GpuMesh>>,
@@ -883,19 +1067,84 @@ impl VulkanRenderer {
             let mut command_buffer: CommandBuffer = null_mut();
             check((fns.vkAllocateCommandBuffers)(device, &cbai, &mut command_buffer))?;
 
-            // Render pass: one colour attachment, cleared then stored as transfer src.
-            let attachment = AttachmentDescription {
+            // Sampler for the block atlas: nearest-neighbour, like the GL path.
+            let sampler_ci = SamplerCreateInfo {
+                s_type: STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                p_next: null(),
                 flags: 0,
-                format: FORMAT_R8G8B8A8_UNORM,
-                samples: SAMPLE_COUNT_1,
-                load_op: ATTACHMENT_LOAD_OP_CLEAR,
-                store_op: ATTACHMENT_STORE_OP_STORE,
-                stencil_load_op: ATTACHMENT_LOAD_OP_CLEAR,
-                stencil_store_op: ATTACHMENT_STORE_OP_STORE,
-                initial_layout: LAYOUT_UNDEFINED,
-                final_layout: LAYOUT_TRANSFER_SRC_OPTIMAL,
+                mag_filter: FILTER_NEAREST,
+                min_filter: FILTER_NEAREST,
+                mipmap_mode: SAMPLER_MIPMAP_MODE_NEAREST,
+                address_mode_u: SAMPLER_ADDRESS_MODE_REPEAT,
+                address_mode_v: SAMPLER_ADDRESS_MODE_REPEAT,
+                address_mode_w: SAMPLER_ADDRESS_MODE_REPEAT,
+                mip_lod_bias: 0.0,
+                anisotropy_enable: 0,
+                max_anisotropy: 1.0,
+                compare_enable: 0,
+                compare_op: COMPARE_OP_NEVER,
+                min_lod: 0.0,
+                max_lod: 0.0,
+                border_color: BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,
+                unnormalized_coordinates: 0,
             };
+            let mut sampler = 0u64;
+            check((fns.vkCreateSampler)(device, &sampler_ci, null(), &mut sampler))?;
+
+            // One combined image sampler at set 0 / binding 0, read by the
+            // fragment stage only.
+            let dsl_binding = DescriptorSetLayoutBinding {
+                binding: 0,
+                descriptor_type: DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                descriptor_count: 1,
+                stage_flags: SHADER_STAGE_FRAGMENT,
+                p_immutable_samplers: null(),
+            };
+            let dsl_ci = DescriptorSetLayoutCreateInfo {
+                s_type: STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                p_next: null(),
+                flags: 0,
+                binding_count: 1,
+                p_bindings: &dsl_binding,
+            };
+            let mut descriptor_set_layout = 0u64;
+            check((fns.vkCreateDescriptorSetLayout)(
+                device,
+                &dsl_ci,
+                null(),
+                &mut descriptor_set_layout,
+            ))?;
+
+            // Render pass: colour plus a 32-bit depth attachment.
+            let attachments = [
+                AttachmentDescription {
+                    flags: 0,
+                    format: FORMAT_R8G8B8A8_UNORM,
+                    samples: SAMPLE_COUNT_1,
+                    load_op: ATTACHMENT_LOAD_OP_CLEAR,
+                    store_op: ATTACHMENT_STORE_OP_STORE,
+                    stencil_load_op: ATTACHMENT_LOAD_OP_DONT_CARE,
+                    stencil_store_op: ATTACHMENT_STORE_OP_DONT_CARE,
+                    initial_layout: LAYOUT_UNDEFINED,
+                    final_layout: LAYOUT_TRANSFER_SRC_OPTIMAL,
+                },
+                AttachmentDescription {
+                    flags: 0,
+                    format: FORMAT_D32_SFLOAT,
+                    samples: SAMPLE_COUNT_1,
+                    load_op: ATTACHMENT_LOAD_OP_CLEAR,
+                    store_op: ATTACHMENT_STORE_OP_DONT_CARE,
+                    stencil_load_op: ATTACHMENT_LOAD_OP_DONT_CARE,
+                    stencil_store_op: ATTACHMENT_STORE_OP_DONT_CARE,
+                    initial_layout: LAYOUT_UNDEFINED,
+                    final_layout: LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                },
+            ];
             let colour_ref = AttachmentReference { attachment: 0, layout: 0x2 /* COLOR_ATTACHMENT_OPTIMAL */ };
+            let depth_ref = AttachmentReference {
+                attachment: 1,
+                layout: LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            };
             let subpass = SubpassDescription {
                 flags: 0,
                 pipeline_bind_point: PIPELINE_BIND_POINT_GRAPHICS,
@@ -904,25 +1153,25 @@ impl VulkanRenderer {
                 color_attachment_count: 1,
                 p_color_attachments: &colour_ref,
                 p_resolve_attachments: null(),
-                p_depth_stencil_attachment: null(),
+                p_depth_stencil_attachment: &depth_ref,
                 preserve_attachment_count: 0,
                 p_preserve_attachments: null(),
             };
             let dependency = SubpassDependency {
                 src_subpass: SUBPASS_EXTERNAL,
                 dst_subpass: 0,
-                src_stage_mask: PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT,
-                dst_stage_mask: PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT,
+                src_stage_mask: PIPELINE_STAGE_COLOR_AND_DEPTH,
+                dst_stage_mask: PIPELINE_STAGE_COLOR_AND_DEPTH,
                 src_access_mask: 0,
-                dst_access_mask: ACCESS_COLOR_ATTACHMENT_WRITE,
+                dst_access_mask: ACCESS_COLOR_AND_DEPTH_WRITE,
                 dependency_flags: 0,
             };
             let rpci = RenderPassCreateInfo {
                 s_type: STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
                 p_next: null(),
                 flags: 0,
-                attachment_count: 1,
-                p_attachments: &attachment,
+                attachment_count: attachments.len() as u32,
+                p_attachments: &attachments[0],
                 subpass_count: 1,
                 p_subpasses: &subpass,
                 dependency_count: 1,
@@ -931,15 +1180,21 @@ impl VulkanRenderer {
             let mut render_pass = 0u64;
             check((fns.vkCreateRenderPass)(device, &rpci, null(), &mut render_pass))?;
 
-            // Pipeline layout + graphics pipeline.
+            // Pipeline layout: the atlas descriptor set plus a 64-byte
+            // view-projection push constant used by both shader stages.
+            let push_range = PushConstantRange {
+                stage_flags: SHADER_STAGE_VERTEX_FRAGMENT,
+                offset: 0,
+                size: (std::mem::size_of::<f32>() * 16) as u32,
+            };
             let plci = PipelineLayoutCreateInfo {
                 s_type: STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                 p_next: null(),
                 flags: 0,
-                set_layout_count: 0,
-                p_set_layouts: null(),
-                push_constant_range_count: 0,
-                p_push_constant_ranges: null(),
+                set_layout_count: 1,
+                p_set_layouts: &descriptor_set_layout,
+                push_constant_range_count: 1,
+                p_push_constant_ranges: &push_range as *const PushConstantRange as *const c_void,
             };
             let mut pipeline_layout = 0u64;
             check((fns.vkCreatePipelineLayout)(device, &plci, null(), &mut pipeline_layout))?;
@@ -948,7 +1203,7 @@ impl VulkanRenderer {
             let mut modules = [0u64; 2];
             VulkanRenderer::create_pipeline(&fns, device, render_pass, pipeline_layout, &mut pipeline, &mut modules)?;
 
-            Ok(VulkanRenderer {
+            let mut renderer = VulkanRenderer {
                 _lib: lib,
                 fns,
                 instance,
@@ -962,6 +1217,14 @@ impl VulkanRenderer {
                 render_pass,
                 pipeline_layout,
                 pipeline,
+                sampler,
+                descriptor_set_layout,
+                descriptor_pool: 0,
+                descriptor_set: 0,
+                atlas_image: 0,
+                atlas_memory: 0,
+                atlas_view: 0,
+                view_proj: MAT4_IDENTITY,
                 capabilities: Capabilities {
                     backend: BACKEND,
                     api_version: (props.api_major, props.api_minor),
@@ -974,8 +1237,298 @@ impl VulkanRenderer {
                 target: None,
                 pending: Vec::new(),
                 last_frame: None,
-            })
+            };
+            renderer.create_atlas()?;
+            renderer.create_descriptor_set()?;
+            Ok(renderer)
         }
+    }
+
+    /// Upload the built-in block atlas into a sampled `VK_IMAGE`.
+    ///
+    /// Host-visible staging buffer → `vkCmdCopyBufferToImage` → device-local
+    /// image, with the layout transitions the API requires.
+    fn create_atlas(&mut self) -> Result<(), RenderError> {
+        let pixels = super::glcore::atlas_pixels();
+        let size = super::glcore::ATLAS_SIZE;
+        let fns = &self.fns;
+        let device = self.device;
+
+        let (staging, staging_memory) = self.create_buffer(
+            pixels.len() as u64,
+            BUFFER_USAGE_TRANSFER_SRC,
+            MEMORY_PROPERTY_HOST_VISIBLE | MEMORY_PROPERTY_HOST_COHERENT,
+        )?;
+        if let Err(e) = self.write_buffer(staging_memory, &pixels) {
+            unsafe {
+                (fns.vkDestroyBuffer)(device, staging, null());
+                (fns.vkFreeMemory)(device, staging_memory, null());
+            }
+            return Err(e);
+        }
+
+        let image_ci = ImageCreateInfo {
+            s_type: STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            p_next: null(),
+            flags: 0,
+            image_type: IMAGE_TYPE_2D,
+            format: FORMAT_R8G8B8A8_UNORM,
+            extent: Extent3D { width: size as u32, height: size as u32, depth: 1 },
+            mip_levels: 1,
+            array_layers: 1,
+            samples: SAMPLE_COUNT_1,
+            tiling: IMAGE_TILING_OPTIMAL,
+            usage: IMAGE_USAGE_TRANSFER_DST | IMAGE_USAGE_SAMPLED,
+            sharing_mode: SHARING_MODE_EXCLUSIVE,
+            queue_family_index_count: 0,
+            p_queue_family_indices: null(),
+            initial_layout: LAYOUT_UNDEFINED,
+        };
+        let mut image = 0u64;
+        unsafe { check((fns.vkCreateImage)(device, &image_ci, null(), &mut image))? };
+
+        let created = unsafe { self.create_image_memory(image) }.and_then(|memory| {
+            let range = ImageSubresourceRange {
+                aspect_mask: IMAGE_ASPECT_COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            };
+            let view_ci = ImageViewCreateInfo {
+                s_type: STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                p_next: null(),
+                flags: 0,
+                image,
+                view_type: IMAGE_VIEW_TYPE_2D,
+                format: FORMAT_R8G8B8A8_UNORM,
+                components: ComponentMapping {
+                    r: COMPONENT_SWIZZLE_IDENTITY,
+                    g: COMPONENT_SWIZZLE_IDENTITY,
+                    b: COMPONENT_SWIZZLE_IDENTITY,
+                    a: COMPONENT_SWIZZLE_IDENTITY,
+                },
+                subresource_range: range,
+            };
+            let mut view = 0u64;
+            unsafe { check((fns.vkCreateImageView)(device, &view_ci, null(), &mut view))? };
+            Ok((memory, view))
+        });
+        let (image_memory, view) = match created {
+            Ok(v) => v,
+            Err(e) => {
+                unsafe {
+                    (fns.vkDestroyImage)(device, image, null());
+                    (fns.vkDestroyBuffer)(device, staging, null());
+                    (fns.vkFreeMemory)(device, staging_memory, null());
+                }
+                return Err(e);
+            }
+        };
+
+        // One-time copy commands on the renderer's own command buffer.
+        let begin = CommandBufferBeginInfo {
+            s_type: STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: null(),
+            flags: COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT,
+            p_inheritance_info: null(),
+        };
+        let range = ImageSubresourceRange {
+            aspect_mask: IMAGE_ASPECT_COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+        let to_dst = ImageMemoryBarrier {
+            s_type: STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            p_next: null(),
+            src_access_mask: 0,
+            dst_access_mask: ACCESS_TRANSFER_WRITE,
+            old_layout: LAYOUT_UNDEFINED,
+            new_layout: LAYOUT_TRANSFER_DST_OPTIMAL,
+            src_queue_family_index: SUBPASS_EXTERNAL,
+            dst_queue_family_index: SUBPASS_EXTERNAL,
+            image,
+            subresource_range: range,
+        };
+        let to_read_only = ImageMemoryBarrier {
+            s_type: STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            p_next: null(),
+            src_access_mask: ACCESS_TRANSFER_WRITE,
+            dst_access_mask: ACCESS_SHADER_READ,
+            old_layout: LAYOUT_TRANSFER_DST_OPTIMAL,
+            new_layout: LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            src_queue_family_index: SUBPASS_EXTERNAL,
+            dst_queue_family_index: SUBPASS_EXTERNAL,
+            image,
+            subresource_range: range,
+        };
+        let region = BufferImageCopy {
+            buffer_offset: 0,
+            buffer_row_length: 0,
+            buffer_image_height: 0,
+            image_subresource: ImageSubresourceLayers {
+                aspect_mask: IMAGE_ASPECT_COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+            image_offset: Offset3D { x: 0, y: 0, z: 0 },
+            image_extent: Extent3D { width: size as u32, height: size as u32, depth: 1 },
+        };
+        unsafe {
+            check((fns.vkBeginCommandBuffer)(self.command_buffer, &begin))?;
+            (fns.vkCmdPipelineBarrier)(
+                self.command_buffer,
+                STAGE_TOP_OF_PIPE,
+                STAGE_TRANSFER,
+                0,
+                0,
+                null(),
+                0,
+                null(),
+                1,
+                &to_dst,
+            );
+            (fns.vkCmdCopyBufferToImage)(
+                self.command_buffer,
+                staging,
+                image,
+                LAYOUT_TRANSFER_DST_OPTIMAL,
+                1,
+                &region,
+            );
+            (fns.vkCmdPipelineBarrier)(
+                self.command_buffer,
+                STAGE_TRANSFER,
+                STAGE_FRAGMENT_SHADER,
+                0,
+                0,
+                null(),
+                0,
+                null(),
+                1,
+                &to_read_only,
+            );
+            check((fns.vkEndCommandBuffer)(self.command_buffer))?;
+
+            let fence_ci = FenceCreateInfo {
+                s_type: STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                p_next: null(),
+                flags: 0,
+            };
+            let mut fence = 0u64;
+            check((fns.vkCreateFence)(device, &fence_ci, null(), &mut fence))?;
+            let submit = SubmitInfo {
+                s_type: STRUCTURE_TYPE_SUBMIT_INFO,
+                p_next: null(),
+                wait_semaphore_count: 0,
+                p_wait_semaphores: null(),
+                p_wait_dst_stage_mask: null(),
+                command_buffer_count: 1,
+                p_command_buffers: &self.command_buffer,
+                signal_semaphore_count: 0,
+                p_signal_semaphores: null(),
+            };
+            let submitted = (fns.vkQueueSubmit)(self.queue, 1, &submit, fence);
+            let waited = if submitted == VK_SUCCESS {
+                (fns.vkWaitForFences)(device, 1, &fence, 1, u64::MAX)
+            } else {
+                submitted
+            };
+            (fns.vkDestroyFence)(device, fence, null());
+            check(submitted)?;
+            check(waited)?;
+
+            (fns.vkDestroyBuffer)(device, staging, null());
+            (fns.vkFreeMemory)(device, staging_memory, null());
+        }
+
+        self.atlas_image = image;
+        self.atlas_memory = image_memory;
+        self.atlas_view = view;
+        Ok(())
+    }
+
+    /// Allocate and write the single descriptor set pointing at the atlas.
+    fn create_descriptor_set(&mut self) -> Result<(), RenderError> {
+        let fns = &self.fns;
+        let device = self.device;
+        let pool_size = DescriptorPoolSize {
+            ty: DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            descriptor_count: 1,
+        };
+        let pool_ci = DescriptorPoolCreateInfo {
+            s_type: STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            p_next: null(),
+            flags: 0,
+            max_sets: 1,
+            pool_size_count: 1,
+            p_pool_sizes: &pool_size,
+        };
+        let mut pool = 0u64;
+        unsafe { check((fns.vkCreateDescriptorPool)(device, &pool_ci, null(), &mut pool))? };
+
+        let alloc = DescriptorSetAllocateInfo {
+            s_type: STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            p_next: null(),
+            descriptor_pool: pool,
+            descriptor_set_count: 1,
+            p_set_layouts: &self.descriptor_set_layout,
+        };
+        let mut set = 0u64;
+        unsafe {
+            if check((fns.vkAllocateDescriptorSets)(device, &alloc, &mut set)).is_err() {
+                (fns.vkDestroyDescriptorPool)(device, pool, null());
+                return Err(RenderError::Api("vulkan: descriptor set alloc failed"));
+            }
+            let info = DescriptorImageInfo {
+                sampler: self.sampler,
+                image_view: self.atlas_view,
+                image_layout: LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            };
+            let write = WriteDescriptorSet {
+                s_type: STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                p_next: null(),
+                dst_set: set,
+                dst_binding: 0,
+                dst_array_element: 0,
+                descriptor_count: 1,
+                descriptor_type: DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                p_image_info: &info,
+                p_buffer_info: null(),
+                p_texel_buffer_view: null(),
+            };
+            (fns.vkUpdateDescriptorSets)(device, 1, &write, 0, null());
+        }
+        self.descriptor_pool = pool;
+        self.descriptor_set = set;
+        Ok(())
+    }
+
+    /// Allocate and bind device-local memory for an image.
+    ///
+    /// # Safety
+    /// `image` must be a live image created on this renderer's device.
+    unsafe fn create_image_memory(&self, image: u64) -> Result<u64, RenderError> {
+        let mut req: MemoryRequirements = unsafe { zeroed() };
+        unsafe { (self.fns.vkGetImageMemoryRequirements)(self.device, image, &mut req) };
+        let index = self
+            .memory_type(req.memory_type_bits, MEMORY_PROPERTY_DEVICE_LOCAL)
+            .ok_or(RenderError::BackendUnavailable("vulkan: no device-local memory"))?;
+        let ai = MemoryAllocateInfo {
+            s_type: STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            p_next: null(),
+            allocation_size: req.size,
+            memory_type_index: index,
+        };
+        let mut memory = 0u64;
+        unsafe {
+            check((self.fns.vkAllocateMemory)(self.device, &ai, null(), &mut memory))?;
+            check((self.fns.vkBindImageMemory)(self.device, image, memory, 0))?;
+        }
+        Ok(memory)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1027,20 +1580,35 @@ impl VulkanRenderer {
             },
         ];
         let binding = VertexInputBindingDescription { binding: 0, stride: Vertex::STRIDE as u32, input_rate: 0 };
-        let attribute = VertexInputAttributeDescription {
-            location: 0,
-            binding: 0,
-            format: FORMAT_R32G32B32_SFLOAT,
-            offset: 0,
-        };
+        // Matches the shared 32-byte `Vertex`: position, normal, uv.
+        let attributes = [
+            VertexInputAttributeDescription {
+                location: 0,
+                binding: 0,
+                format: FORMAT_R32G32B32_SFLOAT,
+                offset: 0,
+            },
+            VertexInputAttributeDescription {
+                location: 1,
+                binding: 0,
+                format: FORMAT_R32G32B32_SFLOAT,
+                offset: 12,
+            },
+            VertexInputAttributeDescription {
+                location: 2,
+                binding: 0,
+                format: FORMAT_R32G32_SFLOAT,
+                offset: 24,
+            },
+        ];
         let vertex_input = PipelineVertexInputStateCreateInfo {
             s_type: STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
             p_next: null(),
             flags: 0,
             vertex_binding_description_count: 1,
             p_vertex_binding_descriptions: &binding,
-            vertex_attribute_description_count: 1,
-            p_vertex_attribute_descriptions: &attribute,
+            vertex_attribute_description_count: attributes.len() as u32,
+            p_vertex_attribute_descriptions: &attributes[0],
         };
         let input_assembly = PipelineInputAssemblyStateCreateInfo {
             s_type: STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -1112,6 +1680,21 @@ impl VulkanRenderer {
             dynamic_state_count: dynamic_states.len() as u32,
             p_dynamic_states: dynamic_states.as_ptr(),
         };
+        // Depth test on, writing, nearer wins; no stencil.
+        let depth_stencil = PipelineDepthStencilStateCreateInfo {
+            s_type: STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+            p_next: null(),
+            flags: 0,
+            depth_test_enable: 1,
+            depth_write_enable: 1,
+            depth_compare_op: COMPARE_OP_LESS,
+            depth_bounds_test_enable: 0,
+            stencil_test_enable: 0,
+            front: StencilOpState::default(),
+            back: StencilOpState::default(),
+            min_depth_bounds: 0.0,
+            max_depth_bounds: 1.0,
+        };
         let gpci = GraphicsPipelineCreateInfo {
             s_type: STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
             p_next: null(),
@@ -1124,7 +1707,8 @@ impl VulkanRenderer {
             p_viewport_state: &viewport_state,
             p_rasterization_state: &raster,
             p_multisample_state: &multisample,
-            p_depth_stencil_state: null(),
+            p_depth_stencil_state: &depth_stencil as *const PipelineDepthStencilStateCreateInfo
+                as *const c_void,
             p_color_blend_state: &blend,
             p_dynamic_state: &dynamic,
             layout,
@@ -1223,23 +1807,13 @@ impl VulkanRenderer {
         };
         let mut image = 0u64;
         unsafe { check((self.fns.vkCreateImage)(self.device, &image_ci, null(), &mut image))?; }
-        let mut req: MemoryRequirements = unsafe { zeroed() };
-        unsafe { (self.fns.vkGetImageMemoryRequirements)(self.device, image, &mut req) };
-        let Some(index) = self.memory_type(req.memory_type_bits, MEMORY_PROPERTY_DEVICE_LOCAL) else {
-            unsafe { (self.fns.vkDestroyImage)(self.device, image, null()) };
-            return Err(RenderError::BackendUnavailable("vulkan: no device-local memory"));
+        let image_memory = match unsafe { self.create_image_memory(image) } {
+            Ok(m) => m,
+            Err(e) => {
+                unsafe { (self.fns.vkDestroyImage)(self.device, image, null()) };
+                return Err(e);
+            }
         };
-        let ai = MemoryAllocateInfo {
-            s_type: STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            p_next: null(),
-            allocation_size: req.size,
-            memory_type_index: index,
-        };
-        let mut image_memory = 0u64;
-        unsafe {
-            check((self.fns.vkAllocateMemory)(self.device, &ai, null(), &mut image_memory))?;
-            check((self.fns.vkBindImageMemory)(self.device, image, image_memory, 0))?;
-        }
 
         let view_ci = ImageViewCreateInfo {
             s_type: STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -1265,13 +1839,72 @@ impl VulkanRenderer {
         let mut view = 0u64;
         unsafe { check((self.fns.vkCreateImageView)(self.device, &view_ci, null(), &mut view))?; }
 
+        // Depth target for the pipeline's depth test.
+        let depth_ci = ImageCreateInfo {
+            s_type: STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            p_next: null(),
+            flags: 0,
+            image_type: IMAGE_TYPE_2D,
+            format: FORMAT_D32_SFLOAT,
+            extent: Extent3D { width, height, depth: 1 },
+            mip_levels: 1,
+            array_layers: 1,
+            samples: SAMPLE_COUNT_1,
+            tiling: IMAGE_TILING_OPTIMAL,
+            usage: IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT,
+            sharing_mode: SHARING_MODE_EXCLUSIVE,
+            queue_family_index_count: 0,
+            p_queue_family_indices: null(),
+            initial_layout: LAYOUT_UNDEFINED,
+        };
+        let mut depth_image = 0u64;
+        unsafe { check((self.fns.vkCreateImage)(self.device, &depth_ci, null(), &mut depth_image))? };
+        let depth_memory = match unsafe { self.create_image_memory(depth_image) } {
+            Ok(m) => m,
+            Err(e) => {
+                unsafe {
+                    (self.fns.vkDestroyImage)(self.device, depth_image, null());
+                    (self.fns.vkDestroyImageView)(self.device, view, null());
+                    (self.fns.vkDestroyImage)(self.device, image, null());
+                    (self.fns.vkFreeMemory)(self.device, image_memory, null());
+                }
+                return Err(e);
+            }
+        };
+        let depth_view_ci = ImageViewCreateInfo {
+            s_type: STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            p_next: null(),
+            flags: 0,
+            image: depth_image,
+            view_type: IMAGE_VIEW_TYPE_2D,
+            format: FORMAT_D32_SFLOAT,
+            components: ComponentMapping {
+                r: COMPONENT_SWIZZLE_IDENTITY,
+                g: COMPONENT_SWIZZLE_IDENTITY,
+                b: COMPONENT_SWIZZLE_IDENTITY,
+                a: COMPONENT_SWIZZLE_IDENTITY,
+            },
+            subresource_range: ImageSubresourceRange {
+                aspect_mask: IMAGE_ASPECT_DEPTH,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+        };
+        let mut depth_view = 0u64;
+        unsafe {
+            check((self.fns.vkCreateImageView)(self.device, &depth_view_ci, null(), &mut depth_view))?
+        };
+
+        let attachments = [view, depth_view];
         let fb_ci = FramebufferCreateInfo {
             s_type: STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             p_next: null(),
             flags: 0,
             render_pass: self.render_pass,
-            attachment_count: 1,
-            p_attachments: &view,
+            attachment_count: attachments.len() as u32,
+            p_attachments: &attachments[0],
             width,
             height,
             layers: 1,
@@ -1288,6 +1921,9 @@ impl VulkanRenderer {
             image,
             image_memory,
             view,
+            depth_image,
+            depth_memory,
+            depth_view,
             framebuffer,
             readback_buffer,
             readback_memory,
@@ -1299,6 +1935,9 @@ impl VulkanRenderer {
         if let Some(t) = self.target.take() {
             unsafe {
                 (self.fns.vkDestroyFramebuffer)(self.device, t.framebuffer, null());
+                (self.fns.vkDestroyImageView)(self.device, t.depth_view, null());
+                (self.fns.vkDestroyImage)(self.device, t.depth_image, null());
+                (self.fns.vkFreeMemory)(self.device, t.depth_memory, null());
                 (self.fns.vkDestroyImageView)(self.device, t.view, null());
                 (self.fns.vkDestroyImage)(self.device, t.image, null());
                 (self.fns.vkFreeMemory)(self.device, t.image_memory, null());
@@ -1330,7 +1969,12 @@ impl VulkanRenderer {
             check((fns.vkBeginCommandBuffer)(self.command_buffer, &begin))?;
         }
 
-        let clear = ClearValue { color: ClearColorValue { float32: [0.05, 0.05, 0.1, 1.0] } };
+        // Two clear values: colour, then depth 1.0 (far). `VkClearValue` is a
+        // 16-byte union, so a u32 array of four is the correct layout for both.
+        let clear_values: [ClearValue; 2] = [
+            ClearValue { color: ClearColorValue { float32: [0.05, 0.05, 0.1, 1.0] } },
+            ClearValue { color: ClearColorValue { float32: [1.0, 0.0, 0.0, 0.0] } },
+        ];
         let rp_begin = RenderPassBeginInfo {
             s_type: STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
             p_next: null(),
@@ -1340,8 +1984,8 @@ impl VulkanRenderer {
                 offset: Offset2D { x: 0, y: 0 },
                 extent: Extent2D { width: target.extent[0], height: target.extent[1] },
             },
-            clear_value_count: 1,
-            p_clear_values: &clear,
+            clear_value_count: clear_values.len() as u32,
+            p_clear_values: &clear_values[0],
         };
         let viewport = Viewport {
             x: 0.0, y: 0.0,
@@ -1358,6 +2002,24 @@ impl VulkanRenderer {
             (fns.vkCmdBindPipeline)(self.command_buffer, PIPELINE_BIND_POINT_GRAPHICS, self.pipeline);
             (fns.vkCmdSetViewport)(self.command_buffer, 0, 1, &viewport);
             (fns.vkCmdSetScissor)(self.command_buffer, 0, 1, &scissor);
+            (fns.vkCmdBindDescriptorSets)(
+                self.command_buffer,
+                PIPELINE_BIND_POINT_GRAPHICS,
+                self.pipeline_layout,
+                0,
+                1,
+                &self.descriptor_set,
+                0,
+                null(),
+            );
+            (fns.vkCmdPushConstants)(
+                self.command_buffer,
+                self.pipeline_layout,
+                SHADER_STAGE_VERTEX_FRAGMENT,
+                0,
+                (std::mem::size_of::<f32>() * 16) as u32,
+                self.view_proj.as_ptr() as *const c_void,
+            );
             for batch in &self.pending {
                 let idx = batch.mesh.0 as usize - 1;
                 if let Some(Some(mesh)) = self.meshes.get(idx) {
@@ -1475,6 +2137,16 @@ impl Renderer for VulkanRenderer {
         Ok(())
     }
 
+    fn set_view_proj(&mut self, view_proj: Mat4) -> Result<(), RenderError> {
+        if view_proj.iter().any(|v| !v.is_finite()) {
+            return Err(RenderError::InvalidMesh);
+        }
+        // Vulkan's framebuffer origin is top-left, so the shared (world-up)
+        // camera needs its clip Y negated to match the GL backends.
+        self.view_proj = flip_clip_y(&view_proj);
+        Ok(())
+    }
+
     fn create_mesh(&mut self, mesh: &crate::mesh::MeshData) -> Result<MeshHandle, RenderError> {
         if mesh.vertices.is_empty() || mesh.indices.is_empty() {
             return Err(RenderError::InvalidMesh);
@@ -1568,6 +2240,37 @@ impl Drop for VulkanRenderer {
             self.destroy_target();
             (self.fns.vkDestroyPipeline)(self.device, self.pipeline, null());
             (self.fns.vkDestroyPipelineLayout)(self.device, self.pipeline_layout, null());
+            // Descriptor pool frees its sets; then the atlas and sampler it
+            // refers to, then the layout they were allocated from.
+            if self.descriptor_pool != 0 {
+                (self.fns.vkDestroyDescriptorPool)(self.device, self.descriptor_pool, null());
+                self.descriptor_pool = 0;
+                self.descriptor_set = 0;
+            }
+            if self.atlas_view != 0 {
+                (self.fns.vkDestroyImageView)(self.device, self.atlas_view, null());
+                self.atlas_view = 0;
+            }
+            if self.atlas_image != 0 {
+                (self.fns.vkDestroyImage)(self.device, self.atlas_image, null());
+                self.atlas_image = 0;
+            }
+            if self.atlas_memory != 0 {
+                (self.fns.vkFreeMemory)(self.device, self.atlas_memory, null());
+                self.atlas_memory = 0;
+            }
+            if self.sampler != 0 {
+                (self.fns.vkDestroySampler)(self.device, self.sampler, null());
+                self.sampler = 0;
+            }
+            if self.descriptor_set_layout != 0 {
+                (self.fns.vkDestroyDescriptorSetLayout)(
+                    self.device,
+                    self.descriptor_set_layout,
+                    null(),
+                );
+                self.descriptor_set_layout = 0;
+            }
             (self.fns.vkDestroyRenderPass)(self.device, self.render_pass, null());
             (self.fns.vkDestroyCommandPool)(self.device, self.command_pool, null());
             (self.fns.vkDestroyDevice)(self.device, null());
@@ -1585,6 +2288,7 @@ impl Drop for VulkanRenderer {
 mod tests {
     use super::*;
     use crate::mesh::{build_section_mesh, ChunkSection};
+    use crate::render::test_support::{quantized_colour_count, sample_camera};
 
     /// CI sets `JPE_REQUIRE_RENDER_BACKENDS=1` so a missing driver is a failure
     /// instead of a silent skip; that proves the backend actually ran.
@@ -1647,6 +2351,42 @@ mod tests {
         let background = pixels.pixel(0, 0).expect("corner pixel");
         let non_bg = pixels.count_non_background(background);
         assert!(non_bg > 100, "expected geometry coverage, got {non_bg} non-background pixels");
+
+        renderer.destroy_mesh(handle);
+    }
+
+    /// With a real camera matrix the cube shows several faces at once, so the
+    /// directional term and the atlas checker must produce more than one lit
+    /// colour in the readback. Asserting colour statistics rather than fixed
+    /// pixel positions keeps this robust against the Vulkan/GL Y conventions.
+    #[test]
+    fn camera_and_atlas_produce_shaded_pixels() {
+        let mut renderer = match VulkanRenderer::create_headless() {
+            Ok(r) => r,
+            Err(RenderError::BackendUnavailable(msg)) => {
+                require_or_skip(msg);
+                eprintln!("vulkan unavailable here, skipping shading draw: {msg}");
+                return;
+            }
+            Err(e) => panic!("create_headless failed: {e:?}"),
+        };
+
+        let mesh = one_block_mesh();
+        let handle = renderer.create_mesh(&mesh).expect("create_mesh");
+        renderer.set_view_proj(sample_camera()).expect("set_view_proj");
+        renderer.begin_frame([128, 128]).expect("begin_frame");
+        renderer
+            .draw(DrawBatch { mesh: handle, index_count: mesh.indices.len() as u32, instance_count: 1 })
+            .expect("draw");
+        renderer.end_frame().expect("end_frame");
+
+        let pixels = renderer.read_pixels().expect("read_pixels");
+        let background = pixels.pixel(0, 0).expect("corner pixel");
+        let non_bg = pixels.count_non_background(background);
+        assert!(non_bg > 100, "expected geometry coverage, got {non_bg}");
+        let colours = quantized_colour_count(&pixels, background);
+        assert!(colours >= 3, "expected shaded atlas tones, got {colours} distinct colours");
+        eprintln!("vulkan shading: {non_bg} lit pixels, {colours} distinct colours");
 
         renderer.destroy_mesh(handle);
     }
