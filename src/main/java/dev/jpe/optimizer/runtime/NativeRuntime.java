@@ -697,6 +697,10 @@ public final class NativeRuntime implements AutoCloseable {
         public static DensityNode sign(int input) { return new DensityNode(20, input, -1, 0, 0.0, 0.0, 0.0); }
         public static DensityNode squeeze(int input) { return new DensityNode(23, input, -1, 0, 0.0, 0.0, 0.0); }
         public static DensityNode log(int input) { return new DensityNode(29, input, -1, 0, 0.0, 0.0, 0.0); }
+        public static DensityNode distanceToPoint(int x, int y, int z, int metric) {
+            if (metric < 0 || metric > 3) throw new IllegalArgumentException("Invalid distance metric");
+            return new DensityNode(30, metric, -1, 0, x, y, z);
+        }
         public static DensityNode round(int input, int multiple, int type) {
             if (type < 0 || type > 3) throw new IllegalArgumentException("Invalid density round type");
             return new DensityNode(28, input, multiple, type, 0.0, 0.0, 0.0);
