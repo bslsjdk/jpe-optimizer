@@ -574,7 +574,7 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
     uint64_t seed_lo = 0;
     uint64_t seed_hi = 0;
     int32_t sea_level = 0;
-    int32_t min_y = 0;
+    int32_t picker_min_y = 0;
     uint32_t default_fluid_type = 0;
     uint32_t default_fluid_is_air = 0;
     uint32_t debug_disable_fluid_generation = 0;
@@ -585,7 +585,7 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
         seed_lo = context->seed_lo;
         seed_hi = context->seed_hi;
         sea_level = context->sea_level;
-        min_y = context->min_y;
+        picker_min_y = context->min_y;
         default_fluid_type = context->default_fluid_type;
         default_fluid_is_air = context->default_fluid_is_air;
         debug_disable_fluid_generation = context->debug_disable_fluid_generation;
@@ -594,7 +594,7 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
     auto global_picker = [&](int32_t y) noexcept -> JpeAquiferFluidStatus {
         if (debug_disable_fluid_generation != 0) {
             const int32_t empty_level = static_cast<int32_t>(
-                static_cast<uint32_t>(min_y) * 2U);
+                static_cast<uint32_t>(picker_min_y) * 2U);
             return JpeAquiferFluidStatus{empty_level, context->air_type};
         }
         if (y < std::min(-54, sea_level)) {
