@@ -2304,6 +2304,64 @@ mod tests {
     }
 
     #[test]
+    fn density_graph_f32_gradient_reuses_only_selected_axis_for_full_volume() {
+        // This exercises the 3D Z/X/Y output layout with non-unit steps and
+        // negative world coordinates. The expected value depends on only one
+        // selected axis; the other dimensions must be broadcast unchanged.
+        let axis_values = [
+            [-1.0_f32, -0.75_f32, 0.0_f32],
+            [-1.0_f32, -0.5_f32, 0.0_f32],
+            [-1.0_f32, -0.25_f32, 1.0_f32],
+        ];
+        for axis in 0..3_u32 {
+            let nodes = [JpeDensityNode {
+                opcode: 25,
+                input_a: axis,
+                input_b: 0, // CLAMP_TO_EDGE
+                reserved: (-1.0_f32).to_bits(),
+                immediate: -4.0,
+                auxiliary: 4.0,
+                tertiary: 1.0,
+            }];
+            let graph = unsafe {
+                jpe_runtime_density_graph_compile(
+                    nodes.as_ptr(), 1, 0, 0x6AAD_2000 + axis as u64,
+                )
+            };
+            assert_ne!(graph, 0);
+
+            let mut output = [f32::NAN; 27];
+            assert_eq!(unsafe {
+                jpe_runtime_density_graph_evaluate_f32(
+                    graph, 3, 3, 3, -6, -4, -5, 3, 2, 4,
+                    output.as_mut_ptr(), output.len() as u64,
+                )
+            }, STATUS_OK);
+
+            let mut expected = Vec::with_capacity(27);
+            for z in 0..3 {
+                for x in 0..3 {
+                    for y in 0..3 {
+                        let selected = match axis {
+                            0 => x,
+                            1 => y,
+                            _ => z,
+                        };
+                        expected.push(axis_values[axis as usize][selected]);
+                    }
+                }
+            }
+            assert_eq!(
+                output.map(f32::to_bits),
+                expected.iter().copied().map(f32::to_bits).collect::<Vec<_>>().try_into().unwrap(),
+                "gradient axis {}",
+                axis,
+            );
+            assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+        }
+    }
+
+    #[test]
     fn density_graph_f32_gradient_matches_java_for_descending_ranges() {
         let cases = [
             (0_u32, [1.0_f32, 1.0, 0.75, 0.5, 0.25, 0.0, 0.0]),
