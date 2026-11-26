@@ -1775,6 +1775,37 @@ mod tests {
     }
 
     #[test]
+    fn density_graph_f32_executes_all_distance_metrics() {
+        let expected = [4.0_f32, 5.0_f32, 25.0_f32, 7.0_f32];
+        for metric in 0..4_u32 {
+            let nodes = [JpeDensityNode {
+                opcode: 30,
+                input_a: metric,
+                input_b: DENSITY_NO_INPUT,
+                reserved: 0,
+                immediate: 3.0,
+                auxiliary: 4.0,
+                tertiary: 0.0,
+            }];
+            let graph = unsafe {
+                jpe_runtime_density_graph_compile(
+                    nodes.as_ptr(), nodes.len() as u32, 0, 0xF32_272 + metric as u64,
+                )
+            };
+            assert_ne!(graph, 0, "distance metric {} graph rejected", metric);
+            let mut output = [f32::NAN; 1];
+            assert_eq!(unsafe {
+                jpe_runtime_density_graph_evaluate_f32(
+                    graph, 1, 1, 1, 0, 0, 0, 1, 1, 1,
+                    output.as_mut_ptr(), 1,
+                )
+            }, STATUS_OK);
+            assert_eq!(output[0], expected[metric as usize], "metric {}", metric);
+            assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+        }
+    }
+
+    #[test]
     fn density_graph_f32_executes_multi_threshold_interval_select() {
         let nodes = [
             JpeDensityNode { opcode: 2, input_a: DENSITY_NO_INPUT,
