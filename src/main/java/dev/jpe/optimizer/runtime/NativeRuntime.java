@@ -65,9 +65,13 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle aquiferStatusCacheDestroy;
     private final MethodHandle aquiferStatusCacheLookup;
     private final MethodHandle aquiferStatusCacheInsert;
+    private final MethodHandle aquiferContextCreate;
+    private final MethodHandle aquiferContextDestroy;
+    private final MethodHandle aquiferContextEvaluateSamplersF32;
     private final ConcurrentHashMap<Long, java.util.concurrent.atomic.AtomicInteger> densityGraphHandles = new ConcurrentHashMap<>();
     private final java.util.Set<Long> preparedStackHandles = ConcurrentHashMap.newKeySet();
     private final java.util.Set<Long> aquiferStatusCacheHandles = ConcurrentHashMap.newKeySet();
+    private final java.util.Set<Long> aquiferContextHandles = ConcurrentHashMap.newKeySet();
     private final MethodHandle jobStatus;
     private final MethodHandle waitJob;
     private final MethodHandle cancelJob;
@@ -293,7 +297,9 @@ public final class NativeRuntime implements AutoCloseable {
                           MethodHandle aquiferGridCenters, MethodHandle aquiferNearestFour,
                           MethodHandle aquiferSubstanceBatch,
                           MethodHandle aquiferStatusCacheCreate, MethodHandle aquiferStatusCacheDestroy,
-                          MethodHandle aquiferStatusCacheLookup, MethodHandle aquiferStatusCacheInsert) {
+                          MethodHandle aquiferStatusCacheLookup, MethodHandle aquiferStatusCacheInsert,
+                          MethodHandle aquiferContextCreate, MethodHandle aquiferContextDestroy,
+                          MethodHandle aquiferContextEvaluateSamplersF32) {
         this.configureWorkers = configureWorkers;
         this.workerCount = workerCount;
         this.addF32 = add;
@@ -318,6 +324,9 @@ public final class NativeRuntime implements AutoCloseable {
         this.aquiferStatusCacheDestroy = aquiferStatusCacheDestroy;
         this.aquiferStatusCacheLookup = aquiferStatusCacheLookup;
         this.aquiferStatusCacheInsert = aquiferStatusCacheInsert;
+        this.aquiferContextCreate = aquiferContextCreate;
+        this.aquiferContextDestroy = aquiferContextDestroy;
+        this.aquiferContextEvaluateSamplersF32 = aquiferContextEvaluateSamplersF32;
         this.jobStatus = status;
         this.waitJob = wait;
         this.cancelJob = cancel;
@@ -493,6 +502,22 @@ public final class NativeRuntime implements AutoCloseable {
                                     ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
                                     ValueLayout.JAVA_INT)))
                     .orElse(null);
+            MethodHandle aquiferContextCreate = lookup.find("jpe_runtime_aquifer_context_create")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)))
+                    .orElse(null);
+            MethodHandle aquiferContextDestroy = lookup.find("jpe_runtime_aquifer_context_destroy")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG)))
+                    .orElse(null);
+            MethodHandle aquiferContextEvaluateSamplersF32 = lookup.find(
+                    "jpe_runtime_aquifer_context_evaluate_samplers_f32")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_LONG,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                                    ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)))
+                    .orElse(null);
             if (graphCompile == null || graphEvaluate == null || graphRelease == null) {
                 graphCompile = null;
                 graphEvaluate = null;
@@ -523,7 +548,8 @@ public final class NativeRuntime implements AutoCloseable {
                     graphCompile, graphEvaluate, graphEvaluateF32, graphEvaluatePoints, graphEvaluatePointsF32,
                     graphEvaluateMultiPointsF32, graphRelease, aquiferGridCenters, aquiferNearestFour,
                     aquiferSubstanceBatch, aquiferStatusCacheCreate, aquiferStatusCacheDestroy,
-                    aquiferStatusCacheLookup, aquiferStatusCacheInsert);
+                    aquiferStatusCacheLookup, aquiferStatusCacheInsert,
+                    aquiferContextCreate, aquiferContextDestroy, aquiferContextEvaluateSamplersF32);
         } catch (Throwable failure) {
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
         }
