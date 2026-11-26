@@ -24,6 +24,18 @@ neoForge {
 }
 repositories { mavenCentral() }
 
+// Stage 6: the Java 25 FFM binding for the Rust world engine lives next to the
+// crate so the standalone harness and Minecraft compile against exactly one copy.
+// WorldEngineHarness is a dev tool with its own main() and stays out of the mod.
+sourceSets {
+    main {
+        java {
+            srcDir 'native/rust-world/java/src'
+            exclude 'dev/jpe/world/WorldEngineHarness.java'
+        }
+    }
+}
+
 // Expand the mod metadata template and include it in the main source set.
 // Without this, NeoForge sees the compiled classes directory but cannot
 // discover META-INF/neoforge.mods.toml, so the development mod is rejected.

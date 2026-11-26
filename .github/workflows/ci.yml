@@ -53,6 +53,14 @@ jobs:
           cargo test --manifest-path native/rust-runtime/Cargo.toml
           cargo build --release --manifest-path native/rust-runtime/Cargo.toml
 
+      # Stage 6: the Rust world engine shared library the Minecraft GameTest below
+      # loads through the Java 25 FFM bridge. Built only when the Java run happens,
+      # so pure-native PRs do not pay for it; the full crate test/backend matrix
+      # lives in rust-world.yml.
+      - name: Build Rust world engine library
+        if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
+        run: cargo build --release --manifest-path native/rust-world/Cargo.toml
+
       - name: Full-chunk Native Blender benchmark
         if: github.event_name == 'workflow_dispatch'
         run: |
@@ -84,12 +92,31 @@ jobs:
           set -o pipefail
           gradle vectorBenchmark --no-daemon --stacktrace | tee build/vector-probe/result.txt
 
+      # Stage 6 Minecraft GameTest needs a real native GPU backend. The runner has
+      # no discrete GPU, so lavapipe (Mesa's software Vulkan driver) provides one;
+      # this is the same package set the rust-world.yml gpu-backends job installs.
+      - name: Install Mesa software drivers (for the Rust world engine)
+        if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            mesa-vulkan-drivers libegl-mesa0 libgl1-mesa-dri \
+            libegl1 libgl1 libgles2 libglvnd0 libvulkan1
+
       - name: GameTest correctness suite
         if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         env:
-          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.perlinVectorEnabled=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=true -Djpe.nativePerlinEnabled=true -Djpe.paletteHashEnabled=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
+          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector --enable-native-access=ALL-UNNAMED -Djpe.perlinVectorEnabled=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=true -Djpe.nativePerlinEnabled=true -Djpe.paletteHashEnabled=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so -Djpe.worldLibrary=${{ github.workspace }}/native/rust-world/target/release/libjpe_world.so -Djpe.worldRequired=true
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+          XDG_RUNTIME_DIR: /tmp
         run: |
           mkdir -p build/gametest
+          # Point the Vulkan loader at whatever lavapipe ICD this Ubuntu shipped
+          # (the file name differs across releases); empty output means no driver
+          # and jpe.worldRequired=true turns that into a hard failure, never a skip.
+          icd="$(bash native/rust-world/ci/vulkan-icd.sh)"
+          if [ -n "$icd" ]; then export VK_DRIVER_FILES="$icd" VK_ICD_FILENAMES="$icd"; fi
           set +e
           gradle runGameTestServer --no-daemon --stacktrace
           test_status=$?
@@ -104,7 +131,18 @@ jobs:
             grep -F 'JPE_NATIVE_BLENDER_BACKEND_SUMMARY attempts=8 completed=8 fallbacks=0 paritySamples=' build/gametest/logs/latest.log
             grep -F 'JPE_AQUIFER_XOROSHIRO_PARITY comparisons=36 bitExact=true' build/gametest/logs/latest.log
             grep -F 'JPE_AQUIFER_LEGACY_PARITY comparisons=36 bitExact=true' build/gametest/logs/latest.log
-            grep -F 'All 10 required tests passed' build/gametest/logs/latest.log
+            # Stage 6: real generated chunks meshed, uploaded and drawn by the Rust
+            # engine on a native backend, with a non-empty facing frame, full culling
+            # when the camera looks away, a non-vacuous block-layout parity, and no
+            # vanilla render takeover. worldRequired=true guarantees this line is
+            # either "passed" with lit pixels or the whole run fails; it can never
+            # silently skip to a green build.
+            grep -E 'JPE_RUST_WORLD_GAME_TEST result=passed backend=(vulkan|opengl|opengles) .*litPixels=[1-9][0-9]* of=[1-9][0-9]* .*awayLitPixels=0 .*columnsSolid=[1-9][0-9]* cellsChecked=[1-9][0-9]* distinctBlockStates=[3-9].*paletteParity=true .*takeover=false' build/gametest/logs/latest.log
+            if grep -F 'JPE_RUST_WORLD_GAME_TEST result=skipped' build/gametest/logs/latest.log; then
+              echo 'Rust world engine reported skipped although worldRequired=true' >&2
+              exit 1
+            fi
+            grep -F 'All 11 required tests passed' build/gametest/logs/latest.log
           fi
           exit "$test_status"
 

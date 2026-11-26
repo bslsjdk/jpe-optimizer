@@ -10,9 +10,14 @@ import java.util.List;
 import java.util.function.Consumer;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.chunk.LevelChunkSection;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.gametest.framework.FunctionGameTestInstance;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.gametest.framework.TestData;
@@ -47,6 +52,9 @@ import dev.jpe.optimizer.runtime.NativePerlinNoiseBackend;
 import dev.jpe.optimizer.runtime.NativeBlenderDensityBackend;
 import dev.jpe.optimizer.vector.DensityVectorRuntime;
 import dev.jpe.optimizer.vector.PerlinNoiseVectorizer;
+import dev.jpe.optimizer.world.MinecraftChunkReader;
+import dev.jpe.optimizer.world.RustWorldBridge;
+import dev.jpe.world.JpeWorldNative;
 
 public final class GameTests {
     private GameTests() {}
@@ -83,6 +91,9 @@ public final class GameTests {
 
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> PALETTE_HASH_CONFIGURATION =
             TEST_FUNCTIONS.register("palette_hash_configuration", () -> GameTests::paletteHashConfiguration);
+
+    public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> RUST_WORLD_PIPELINE =
+            TEST_FUNCTIONS.register("rust_world_pipeline", () -> GameTests::rustWorldPipeline);
 
     public static void registerFunctions(net.neoforged.bus.api.IEventBus modEventBus) {
         TEST_FUNCTIONS.register(modEventBus);
@@ -138,6 +149,10 @@ public final class GameTests {
         event.registerTest(
                 Identifier.parse("jpe_optimizer:palette_hash_configuration"),
                 new FunctionGameTestInstance(PALETTE_HASH_CONFIGURATION.getKey(), data)
+        );
+        event.registerTest(
+                Identifier.parse("jpe_optimizer:rust_world_pipeline"),
+                new FunctionGameTestInstance(RUST_WORLD_PIPELINE.getKey(), data)
         );
     }
 
@@ -1007,6 +1022,547 @@ public final class GameTests {
                 String.format(java.util.Locale.ROOT, "%.3f", elapsedNs / 1_000_000.0)
         );
         helper.succeed();
+    }
+
+    /**
+     * Stage 6 in-Minecraft verification. Block data comes out of real, server-generated
+     * chunks; the Rust world engine then owns meshing, GPU section residency,
+     * visibility, culling and the per-frame draw loop, and a real Minecraft block
+     * update is pushed through the same hand-off.
+     *
+     * <p>Deliberately narrow claims. Minecraft still generates the terrain; the engine
+     * draws into its own offscreen target (not Minecraft's window or swapchain); block
+     * indices are assigned by {@link MinecraftChunkReader} instead of the C++ terrain
+     * engine. This proves the Java-to-Rust hand-off works inside the game process, not
+     * that vanilla rendering has been replaced.
+     *
+     * <p>Skipped (logged, not silently) unless {@code -Djpe.worldLibrary} is set; with
+     * {@code -Djpe.worldRequired=true} a missing library or a missing GPU backend fails.
+     */
+    private static void rustWorldPipeline(GameTestHelper helper) {
+        java.util.Optional<java.nio.file.Path> library = RustWorldBridge.configuredLibrary();
+        boolean required = RustWorldBridge.required();
+        if (library.isEmpty()) {
+            JPEOptimizer.LOGGER.info(
+                    "JPE_RUST_WORLD_GAME_TEST result=skipped reason=library_not_configured "
+                            + "property={} required={}",
+                    RustWorldBridge.LIBRARY_PROPERTY, required);
+            if (required) {
+                throw new AssertionError("Set -D" + RustWorldBridge.LIBRARY_PROPERTY
+                        + " to the built libjpe_world when -D" + RustWorldBridge.REQUIRED_PROPERTY
+                        + "=true");
+            }
+            helper.succeed();
+            return;
+        }
+
+        var level = helper.getLevel();
+        final int windowSections = 3;
+        // More than one 2x2 patch is scanned on purpose. A band made of a single block
+        // (a sandstone plateau, a frozen ocean floor) cannot expose a transposed index
+        // layout, so the search only stops at terrain with at least three distinct
+        // block states inside the window that gets handed over.
+        int[][] candidates = {
+                {256, -256}, {264, -256}, {256, -264}, {272, -248}, {248, -272},
+                {288, -240}, {240, -240}, {304, -272}, {272, -288}, {296, -296},
+                {320, -256}, {336, -240}, {192, -192}, {160, -224}
+        };
+        int chunkX = 0;
+        int chunkZ = 0;
+        int baseSectionY = 0;
+        int bandVariety = 0;
+        int vanillaHeightmapY = 0;
+        int topFilledSection = 0;
+        short[][] patchBlocks = new short[4][];
+        java.util.Set<Long> expectedKeys = new java.util.HashSet<>();
+        int nonEmptySections = 0;
+        int firstChunkNonEmpty = 0;
+        int cellsChecked = 0;
+        int columnsChecked = 0;
+        int columnsSolid = 0;
+        int patchesConsidered = 0;
+        MinecraftChunkReader reader = null;
+        BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+
+        for (int[] candidate : candidates) {
+            chunkX = candidate[0];
+            chunkZ = candidate[1];
+            // The candidate chunks sit far from the GameTest origin, so the plain
+            // two-argument getChunk (which loads and generates synchronously at
+            // FULL status) is required; getChunk(..., FULL, false) returns null for
+            // every unloaded position and the whole search would consider 0 patches.
+            var probe = level.getChunk(chunkX, chunkZ);
+            if (probe == null) {
+                continue;
+            }
+            patchesConsidered++;
+            int minSection = SectionPos.blockToSectionCoord(probe.getMinY());
+            int maxSection = minSection + (probe.getHeight() >> 4) - 1;
+            LevelChunkSection[] probeSections = probe.getSections();
+            int topFilled = -1;
+            for (int i = probeSections.length - 1; i >= 0; --i) {
+                if (probeSections[i] != null && !probeSections[i].hasOnlyAir()) {
+                    topFilled = minSection + i;
+                    break;
+                }
+            }
+            if (topFilled < 0) {
+                continue;
+            }
+            vanillaHeightmapY = probe.getHeight(Heightmap.Types.OCEAN_FLOOR, 8, 8);
+            topFilledSection = topFilled;
+
+            // Take the surface band (or the first band below it that still fits the
+            // window). Natural variety at these coordinates is not guaranteed — a
+            // frozen-ocean floor is one block state — so the layout parity is made
+            // non-vacuous below by stamping an asymmetric multi-state pattern into
+            // the patch through Minecraft's own setBlock, rather than by hoping the
+            // seed happens to be varied.
+            int chosen = -1;
+            for (int base = topFilled; base >= topFilled - 2; --base) {
+                if (base < minSection || base + windowSections > maxSection + 1) {
+                    continue;
+                }
+                chosen = base;
+                break;
+            }
+            if (chosen < 0) {
+                continue;
+            }
+            baseSectionY = chosen;
+
+            // Three distinct blocks at positions that differ along every axis, so a
+            // transposed (y<<8)|(z<<4)|x index layout, or an x/z or y/z swap, changes
+            // which sampled cell holds which state and the parity check below fails.
+            stampParityBlocks(level, chunkX, chunkZ, baseSectionY, cursor);
+
+            reader = new MinecraftChunkReader();
+            expectedKeys.clear();
+            nonEmptySections = 0;
+            firstChunkNonEmpty = 0;
+            for (int dx = 0; dx < 2; ++dx) {
+                for (int dz = 0; dz < 2; ++dz) {
+                    var chunk = level.getChunk(chunkX + dx, chunkZ + dz);
+                    short[] blocks = reader.read(chunk, baseSectionY, windowSections);
+                    patchBlocks[dx * 2 + dz] = blocks;
+                    int perChunk = 0;
+                    for (int s = 0; s < windowSections; ++s) {
+                        for (int i = 0; i < MinecraftChunkReader.SECTION_VOLUME; ++i) {
+                            if (blocks[s * MinecraftChunkReader.SECTION_VOLUME + i] != 0) {
+                                expectedKeys.add(SectionPos.asLong(chunkX + dx, baseSectionY + s,
+                                        chunkZ + dz));
+                                nonEmptySections++;
+                                perChunk++;
+                                break;
+                            }
+                        }
+                    }
+                    if (dx == 0 && dz == 0) {
+                        firstChunkNonEmpty = perChunk;
+                    }
+                }
+            }
+            if (nonEmptySections == 0) {
+                throw new AssertionError("Real terrain at (" + chunkX + "," + chunkZ
+                        + ") produced no blocks to mesh");
+            }
+            if (!reader.paletteParity()) {
+                throw new AssertionError("Block hand-off counts disagree with Minecraft palettes: "
+                        + reader.describe());
+            }
+            // Distinct states actually handed over (natural terrain plus the stamped
+            // pattern). >= 3 makes the layout-parity result non-vacuous.
+            bandVariety = reader.distinctStates();
+
+            // Layout parity against Minecraft itself. Every sampled cell must carry the
+            // id Minecraft reports for that world block position when read through
+            // LevelChunk.getBlockState, and the topmost block of each sampled column
+            // must be the block a direct vanilla scan finds. That checks the
+            // (y<<8)|(z<<4)|x layout, the section order inside a chunk, and the
+            // "0 means air" convention.
+            int windowBottomY = baseSectionY * 16;
+            int windowTopY = windowBottomY + windowSections * 16 - 1;
+            cellsChecked = 0;
+            columnsChecked = 0;
+            columnsSolid = 0;
+            for (int dx = 0; dx < 2; ++dx) {
+                for (int dz = 0; dz < 2; ++dz) {
+                    var chunk = level.getChunk(chunkX + dx, chunkZ + dz);
+                    short[] handed = patchBlocks[dx * 2 + dz];
+                    int baseBlockX = (chunkX + dx) * 16;
+                    int baseBlockZ = (chunkZ + dz) * 16;
+                    for (int lx = 0; lx < 16; lx += 5) {
+                        for (int lz = 0; lz < 16; lz += 5) {
+                            for (int y = windowBottomY; y <= windowTopY; y += 7) {
+                                int section = Math.floorDiv(y, 16) - baseSectionY;
+                                int localY = Math.floorMod(y, 16);
+                                int index = section * MinecraftChunkReader.SECTION_VOLUME
+                                        + (localY << 8) + (lz << 4) + lx;
+                                int expectedId = reader.idOf(chunk.getBlockState(
+                                        cursor.set(baseBlockX + lx, y, baseBlockZ + lz)));
+                                if ((handed[index] & 0xFFFF) != expectedId) {
+                                    throw new AssertionError("Hand-off cell ("
+                                            + (baseBlockX + lx) + "," + y + ","
+                                            + (baseBlockZ + lz) + ") holds id " + handed[index]
+                                            + " but Minecraft reports state id " + expectedId
+                                            + " at flat index " + index);
+                                }
+                                cellsChecked++;
+                            }
+                            int vanillaTop = windowBottomY - 1;
+                            for (int y = windowTopY; y >= windowBottomY; --y) {
+                                if (!chunk.getBlockState(cursor.set(baseBlockX + lx, y,
+                                        baseBlockZ + lz)).isAir()) {
+                                    vanillaTop = y;
+                                    break;
+                                }
+                            }
+                            int engineTop = windowBottomY - 1;
+                            scanned:
+                            for (int s = windowSections - 1; s >= 0; --s) {
+                                for (int y = 15; y >= 0; --y) {
+                                    if (handed[s * MinecraftChunkReader.SECTION_VOLUME
+                                            + (y << 8) + (lz << 4) + lx] != 0) {
+                                        engineTop = (baseSectionY + s) * 16 + y;
+                                        break scanned;
+                                    }
+                                }
+                            }
+                            if (engineTop != vanillaTop) {
+                                throw new AssertionError("Top of column ("
+                                        + (baseBlockX + lx) + "," + (baseBlockZ + lz)
+                                        + ") disagrees with a direct vanilla scan: hand-off="
+                                        + engineTop + ", minecraft=" + vanillaTop);
+                            }
+                            columnsChecked++;
+                            if (vanillaTop >= windowBottomY) {
+                                columnsSolid++;
+                            }
+                        }
+                    }
+                }
+            }
+            if (columnsChecked != 64 || columnsSolid == 0 || cellsChecked < 200) {
+                throw new AssertionError("Parity sampling did not cover the patch: columns="
+                        + columnsChecked + " cells=" + cellsChecked + " solid=" + columnsSolid);
+            }
+            if (reader.distinctStates() >= 3) {
+                break;
+            }
+        }
+        if (reader == null || reader.distinctStates() < 3) {
+            throw new AssertionError("Scanned " + patchesConsidered + " of " + candidates.length
+                    + " terrain patches and none could carry a non-empty band with the stamped"
+                    + " distinct block states the layout parity check needs; last patch"
+                    + " topFilledSection=" + topFilledSection + " heightmapY=" + vanillaHeightmapY
+                    + " handedStates=" + bandVariety);
+        }
+        int windowBottomY = baseSectionY * 16;
+        int windowTopY = windowBottomY + windowSections * 16 - 1;
+
+        RustWorldBridge bridge;
+        try {
+            bridge = RustWorldBridge.open(library.get(),
+                    RustWorldBridge.Options.testRig(baseSectionY, baseSectionY + windowSections - 1));
+        } catch (RuntimeException | Error unavailable) {
+            JPEOptimizer.LOGGER.info(
+                    "JPE_RUST_WORLD_GAME_TEST result=skipped reason=bridge_unavailable required={} detail={}",
+                    required, unavailable.getMessage());
+            if (required) {
+                throw new AssertionError("Rust world engine is required but did not start",
+                        unavailable);
+            }
+            helper.succeed();
+            return;
+        }
+
+        try {
+            for (int dx = 0; dx < 2; ++dx) {
+                for (int dz = 0; dz < 2; ++dz) {
+                    int submitted = bridge.submitChunk(chunkX + dx, chunkZ + dz, baseSectionY,
+                            patchBlocks[dx * 2 + dz]);
+                    if (submitted != JpeWorldNative.SUBMIT_NEW) {
+                        throw new AssertionError("First hand-off of chunk (" + (chunkX + dx) + ","
+                                + (chunkZ + dz) + ") returned submit code " + submitted
+                                + ", expected SUBMIT_NEW");
+                    }
+                }
+            }
+
+            float[] up = {0.0f, 1.0f, 0.0f};
+            float[] target = {(chunkX + 1) * 16.0f, windowBottomY + windowSections * 8.0f,
+                    (chunkZ + 1) * 16.0f};
+            float[] eye = {target[0], target[1] + 32.0f, target[2] + 64.0f};
+            float[] viewProj = bridge.ortho(eye, target, up, 40.0f, 40.0f, 1.0f, 400.0f);
+            if (viewProj == null) {
+                throw new AssertionError("Rust camera helper rejected the rig");
+            }
+
+            JpeWorldNative.FrameStats visibleFrame = null;
+            for (int frame = 0; frame < 6; ++frame) {
+                visibleFrame = bridge.frame(viewProj, eye);
+            }
+            if (visibleFrame == null) {
+                throw new AssertionError("no frames ran");
+            }
+            var settledStats = bridge.stats();
+            java.util.Set<Long> residentKeys = new java.util.HashSet<>();
+            for (long key : bridge.residentKeys(64)) {
+                residentKeys.add(key);
+            }
+
+            RustWorldBridge.FramePixels visible = bridge.readPixels();
+            int litPixels = visible.litPixels();
+
+            // Culling: look the other way and nothing may be drawn.
+            float[] awayEye = {target[0] + 400.0f, target[1] + 32.0f, target[2]};
+            float[] awayTarget = {target[0] + 800.0f, target[1], target[2]};
+            float[] awayView = bridge.ortho(awayEye, awayTarget, up, 40.0f, 40.0f, 1.0f, 400.0f);
+            JpeWorldNative.FrameStats away = bridge.frame(awayView, awayEye);
+            int awayLit = bridge.readPixels().litPixels();
+
+            // A real Minecraft block update, pushed through the same hand-off: three
+            // distinct blocks are placed with Level.setBlock, the chunk is read again
+            // from live Minecraft data, and the engine must remesh and replace the GPU
+            // geometry it already holds.
+            int probeLocalX = 3;
+            int probeLocalZ = 3;
+            int probeBlockX = chunkX * 16 + probeLocalX;
+            int probeBlockZ = chunkZ * 16 + probeLocalZ;
+            int probeY = Math.min(windowTopY - 2,
+                    Math.max(windowBottomY, level.getHeight(Heightmap.Types.OCEAN_FLOOR,
+                            probeBlockX, probeBlockZ)));
+            int updateFlags = Block.UPDATE_NEIGHBORS | Block.UPDATE_CLIENTS;
+            level.setBlock(cursor.set(probeBlockX, probeY, probeBlockZ),
+                    Blocks.GOLD_BLOCK.defaultBlockState(), updateFlags, 0);
+            level.setBlock(cursor.set(probeBlockX, probeY + 1, probeBlockZ),
+                    Blocks.GLASS.defaultBlockState(), updateFlags, 0);
+            level.setBlock(cursor.set(probeBlockX, probeY + 2, probeBlockZ),
+                    Blocks.OAK_PLANKS.defaultBlockState(), updateFlags, 0);
+            var probedChunk = level.getChunk(chunkX, chunkZ);
+            short[] updatedBlocks = reader.read(probedChunk, baseSectionY, windowSections);
+            patchBlocks[0] = updatedBlocks;
+            int updatedSubmit = bridge.submitChunk(chunkX, chunkZ, baseSectionY, updatedBlocks);
+            for (int frame = 0; frame < 4; ++frame) {
+                bridge.frame(viewProj, eye);
+            }
+            var afterUpdateStats = bridge.stats();
+
+            // The three placed blocks must be exactly where the engine now holds them.
+            int placedVerified = 0;
+            for (int dy = 0; dy < 3; ++dy) {
+                int y = probeY + dy;
+                int section = Math.floorDiv(y, 16) - baseSectionY;
+                int localY = Math.floorMod(y, 16);
+                int index = section * MinecraftChunkReader.SECTION_VOLUME
+                        + (localY << 8) + (probeLocalZ << 4) + probeLocalX;
+                int expectedId = reader.idOf(probedChunk.getBlockState(
+                        cursor.set(probeBlockX, y, probeBlockZ)));
+                if ((updatedBlocks[index] & 0xFFFF) != expectedId) {
+                    throw new AssertionError("Block update at (" + probeBlockX + "," + y + ","
+                            + probeBlockZ + ") reached the engine as id " + updatedBlocks[index]
+                            + " but Minecraft reports " + expectedId);
+                }
+                placedVerified++;
+            }
+
+            // Air hand-off for one chunk: its meshes must be retired, not left drawn.
+            int airSubmit = bridge.submitChunk(chunkX, chunkZ, baseSectionY,
+                    new short[windowSections * MinecraftChunkReader.SECTION_VOLUME]);
+            for (int frame = 0; frame < 4; ++frame) {
+                bridge.frame(viewProj, eye);
+            }
+            var afterAirStats = bridge.stats();
+            long afterAirResident = bridge.residentKeys(64).length;
+            long expectedAfterAir = Math.max(0, expectedKeys.size() - firstChunkNonEmpty);
+
+            // Lifetime control surface: player focus, tickets, radius unload, epoch reset.
+            int playerStatus = bridge.setPlayer(chunkX, chunkZ);
+            int ticketAcquire = bridge.ticket(chunkX, chunkZ, true);
+            int untrackedTicket = bridge.ticket(chunkX + 5000, chunkZ - 5000, true);
+            int ticketRelease = bridge.ticket(chunkX, chunkZ, false);
+            int unloadStatus = bridge.unloadOutside(chunkX, chunkZ, 0);
+            bridge.frame(viewProj, eye);
+            long unloadedResident = bridge.residentKeys(64).length;
+            var finalStats = bridge.stats();
+            long epochAfterReset = bridge.reset();
+
+            // ---- assertions ----------------------------------------------------
+            if (visibleFrame.resident() != expectedKeys.size()) {
+                throw new AssertionError("Resident sections " + visibleFrame.resident()
+                        + " != non-empty sections handed over " + expectedKeys.size());
+            }
+            if (settledStats.published() < expectedKeys.size()) {
+                throw new AssertionError("Published count " + settledStats.published()
+                        + " is below the handed-over sections " + expectedKeys.size());
+            }
+            if (!residentKeys.equals(expectedKeys)) {
+                throw new AssertionError("Registry keys are not the Minecraft sections that were"
+                        + " submitted: resident=" + residentKeys + " expected=" + expectedKeys);
+            }
+            if (visibleFrame.visible() != expectedKeys.size() || visibleFrame.culled() != 0) {
+                throw new AssertionError("Facing camera should draw everything: visible="
+                        + visibleFrame.visible() + " culled=" + visibleFrame.culled());
+            }
+            if (visibleFrame.batches() == 0) {
+                throw new AssertionError("Facing camera queued no draw batches");
+            }
+            if (litPixels <= 200) {
+                throw new AssertionError("Real Minecraft blocks drew too little: " + litPixels
+                        + " lit pixels of " + visible.size());
+            }
+            if (visible.distinctColours() < 2) {
+                throw new AssertionError("Frame is a single flat colour, shading did not run: "
+                        + visible.distinctColours());
+            }
+            if (away.visible() != 0 || away.culled() != expectedKeys.size() || away.batches() != 0) {
+                throw new AssertionError("Away camera must cull everything: visible=" + away.visible()
+                        + " culled=" + away.culled() + " batches=" + away.batches());
+            }
+            if (awayLit != 0) {
+                throw new AssertionError("Culled frame still lit " + awayLit + " pixels");
+            }
+            if (updatedSubmit < 0) {
+                throw new AssertionError("Block-update hand-off rejected with " + updatedSubmit);
+            }
+            if (placedVerified != 3) {
+                throw new AssertionError("Placed blocks were not all verified in the engine copy");
+            }
+            if (afterUpdateStats.replaced() <= settledStats.replaced()) {
+                throw new AssertionError("A real Minecraft block update did not replace any GPU"
+                        + " mesh: before=" + settledStats.replaced()
+                        + " after=" + afterUpdateStats.replaced());
+            }
+            if (airSubmit < 0) {
+                throw new AssertionError("Air hand-off rejected with " + airSubmit);
+            }
+            if (afterAirResident != expectedAfterAir) {
+                throw new AssertionError("Air update retired the wrong number of sections: resident="
+                        + afterAirResident + " expected=" + expectedAfterAir);
+            }
+            if (afterAirStats.meshesDestroyed() < firstChunkNonEmpty) {
+                throw new AssertionError("Retired meshes were not destroyed on the GPU: "
+                        + afterAirStats.meshesDestroyed());
+            }
+            if (afterAirStats.remeshChunks() == 0) {
+                throw new AssertionError("Neighbouring chunks were never re-meshed after the"
+                        + " block update");
+            }
+            if (settledStats.pendingMesh() != 0 || settledStats.pendingRemesh() != 0) {
+                throw new AssertionError("Pipeline had queued work after 6 frames: pendingMesh="
+                        + settledStats.pendingMesh() + " pendingRemesh="
+                        + settledStats.pendingRemesh());
+            }
+            if (playerStatus != 0 || ticketAcquire != 1 || ticketRelease != 0) {
+                // Documented ABI: the call returns the ticket count, so the first
+                // acquire is 1 and the last release is 0.
+                throw new AssertionError("Player/ticket control failed: player=" + playerStatus
+                        + " acquire=" + ticketAcquire + " release=" + ticketRelease);
+            }
+            if (untrackedTicket >= 0) {
+                throw new AssertionError("Ticket was accepted for an untracked chunk: "
+                        + untrackedTicket);
+            }
+            if (unloadStatus != 0 || unloadedResident != 0) {
+                throw new AssertionError("Radius unload left sections resident: status="
+                        + unloadStatus + " resident=" + unloadedResident);
+            }
+            if (epochAfterReset != 2) {
+                throw new AssertionError("Reset must bump the world epoch to 2, got " + epochAfterReset);
+            }
+            if (bridge.engineThreadId() == Thread.currentThread().threadId()) {
+                throw new AssertionError("The renderer must own its own thread, not the server thread");
+            }
+            if (bridge.backend().code() == JpeWorldNative.BACKEND_AUTO) {
+                throw new AssertionError("Capabilities reported the selector, not a concrete backend");
+            }
+
+            JPEOptimizer.LOGGER.info(
+                    "JPE_RUST_WORLD_GAME_TEST result=passed backend={} api={}.{} library={} "
+                            + "patchesScanned={} patch=({},{}@{}) windowSections={} baseSectionY={} "
+                            + "topFilledSection={} vanillaHeightmapY={} handedStates={} "
+                            + "nonEmptySections={} resident={} published={} replaced={} "
+                            + "remeshChunks={} meshesDestroyed={} emptySections={} pendingMesh={} "
+                            + "pendingRemesh={} sourceSections={} sourceMissingReads={} "
+                            + "sectionsUnloaded={} chunksUnloaded={} visible={} culled={} "
+                            + "batches={} litPixels={} of={} distinctColours={} awayLitPixels={} "
+                            + "updateSubmitCode={} afterAirResident={} afterUnloadResident={} "
+                            + "epochAfterReset={} columnsChecked={} columnsSolid={} cellsChecked={} "
+                            + "distinctBlockStates={} states={} blocksScanned={} nonAirBlocks={} "
+                            + "paletteParity=true engineThread={} serverThread={} takeover=false",
+                    bridge.backend().name(),
+                    bridge.backend().apiMajor(),
+                    bridge.backend().apiMinor(),
+                    bridge.library(),
+                    patchesConsidered,
+                    chunkX,
+                    chunkZ,
+                    baseSectionY,
+                    windowSections,
+                    baseSectionY,
+                    topFilledSection,
+                    vanillaHeightmapY,
+                    bandVariety,
+                    nonEmptySections,
+                    visibleFrame.resident(),
+                    settledStats.published(),
+                    afterAirStats.replaced(),
+                    afterAirStats.remeshChunks(),
+                    afterAirStats.meshesDestroyed(),
+                    afterAirStats.emptySections(),
+                    settledStats.pendingMesh(),
+                    settledStats.pendingRemesh(),
+                    afterAirStats.sourceSections(),
+                    afterAirStats.sourceMissingReads(),
+                    finalStats.sectionsUnloaded(),
+                    finalStats.chunksUnloaded(),
+                    visibleFrame.visible(),
+                    visibleFrame.culled(),
+                    visibleFrame.batches(),
+                    litPixels,
+                    visible.size(),
+                    visible.distinctColours(),
+                    awayLit,
+                    updatedSubmit,
+                    afterAirResident,
+                    unloadedResident,
+                    epochAfterReset,
+                    columnsChecked,
+                    columnsSolid,
+                    cellsChecked,
+                    reader.distinctStates(),
+                    reader.stateNames(8),
+                    reader.blocksScanned(),
+                    reader.nonAirBlocks(),
+                    bridge.engineThreadId(),
+                    Thread.currentThread().threadId());
+            helper.succeed();
+        } finally {
+            bridge.close();
+        }
+    }
+
+    /**
+     * Writes three distinct, hard-to-confuse block states into the first section of the
+     * chosen band through Minecraft's own {@code Level.setBlock}. The positions differ
+     * along all three axes (x, y and z), so if the hand-off applied a transposed flat
+     * index — an x/z swap, or either axis traded for y — the parity scan would find the
+     * wrong state where Minecraft reports the stamped one. This is what makes the layout
+     * check non-vacuous regardless of how uniform the surrounding generated terrain is.
+     */
+    private static void stampParityBlocks(net.minecraft.world.level.Level level, int chunkX,
+                                          int chunkZ, int baseSectionY,
+                                          BlockPos.MutableBlockPos cursor) {
+        int baseX = chunkX * 16;
+        int baseZ = chunkZ * 16;
+        int baseY = baseSectionY * 16;
+        int flags = Block.UPDATE_NEIGHBORS | Block.UPDATE_CLIENTS;
+        level.setBlock(cursor.set(baseX + 2, baseY + 1, baseZ + 5),
+                Blocks.GOLD_BLOCK.defaultBlockState(), flags, 0);
+        level.setBlock(cursor.set(baseX + 7, baseY + 2, baseZ + 2),
+                Blocks.DIAMOND_BLOCK.defaultBlockState(), flags, 0);
+        level.setBlock(cursor.set(baseX + 2, baseY + 3, baseZ + 5),
+                Blocks.OAK_PLANKS.defaultBlockState(), flags, 0);
     }
 
     private static long processCpuTime() {
