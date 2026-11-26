@@ -692,7 +692,7 @@ public final class NativeRuntime implements AutoCloseable {
     /** Releases the context, its FluidStatus cache, and its six retained graph references. */
     public void destroyAquiferContext(long contextHandle) {
         if (contextHandle == 0L) throw new IllegalArgumentException("Aquifer context handle must be non-zero");
-        lifecycle.readLock().lock();
+        lifecycle.writeLock().lock();
         try {
             ensureOpen();
             if (!aquiferContextHandles.contains(contextHandle)) {
@@ -706,7 +706,7 @@ public final class NativeRuntime implements AutoCloseable {
                 throw rethrow("Unable to destroy native Aquifer context", failure);
             }
         } finally {
-            lifecycle.readLock().unlock();
+            lifecycle.writeLock().unlock();
         }
     }
 
