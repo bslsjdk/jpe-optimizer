@@ -109,6 +109,12 @@ unsafe extern "C" {
         grid_x: i32, grid_y: i32, grid_z: i32,
         offset_x: *mut i32, offset_y: *mut i32, offset_z: *mut i32,
     ) -> i32;
+    fn jpe_cpp_aquifer_nearest_four(
+        random_mode:u32, seed_lo:u64, seed_hi:u64,
+        block_x:*const i32, block_y:*const i32, block_z:*const i32, sample_count:u32,
+        center_x:*mut i32, center_y:*mut i32, center_z:*mut i32, squared_distances:*mut i32,
+    )->i32;
+
 
 }
 
@@ -138,6 +144,22 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_legacy_offsets(
             offset_x, offset_y, offset_z,
         )
     }
+}
+
+
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_nearest_four(
+    random_mode:u32,seed_lo:u64,seed_hi:u64,
+    block_x:*const i32,block_y:*const i32,block_z:*const i32,sample_count:u32,
+    center_x:*mut i32,center_y:*mut i32,center_z:*mut i32,squared_distances:*mut i32,
+)->i32 {
+    if random_mode>1 || sample_count==0 || sample_count as usize>MAX_VOLUME_ELEMENTS
+       || block_x.is_null() || block_y.is_null() || block_z.is_null()
+       || center_x.is_null() || center_y.is_null() || center_z.is_null() || squared_distances.is_null() {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe { jpe_cpp_aquifer_nearest_four(random_mode,seed_lo,seed_hi,
+        block_x,block_y,block_z,sample_count,center_x,center_y,center_z,squared_distances) }
 }
 
 #[no_mangle]
@@ -860,6 +882,51 @@ mod tests {
                 std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
             )
         }, -1);
+    }
+
+
+    #[test]
+    fn aquifer_nearest_four_matches_independent_vanilla_order_reference() {
+        let cases=[
+            (0_u32,0x0123_4567_89ab_cdef_u64,0xfedc_ba98_7654_3210_u64,
+             [0,15,-1,-17],[-64,-1,0,23],[0,15,-1,-33]),
+            (1_u32,0x9e37_79b9_7f4a_7c15_u64,0_u64,
+             [1,16,-16,i32::MIN],[2,-13,25,i32::MAX],[3,-17,31,i32::MIN]),
+        ];
+        for(mode,seed_lo,seed_hi,xs,ys,zs) in cases {
+            let mut ox=[0_i32;16]; let mut oy=[0_i32;16];
+            let mut oz=[0_i32;16]; let mut od=[0_i32;16];
+            assert_eq!(unsafe { jpe_cpp_aquifer_nearest_four(mode,seed_lo,seed_hi,
+                xs.as_ptr(),ys.as_ptr(),zs.as_ptr(),4,ox.as_mut_ptr(),oy.as_mut_ptr(),
+                oz.as_mut_ptr(),od.as_mut_ptr()) },STATUS_OK);
+            for s in 0..4 {
+                let ax=xs[s].wrapping_sub(5)>>4;
+                let ay=ys[s].wrapping_add(1).div_euclid(12);
+                let az=zs[s].wrapping_sub(5)>>4;
+                let mut expected:Vec<(i32,i32,i32,i32)>=Vec::new();
+                for dx in 0..=1 { for dy in -1..=1 { for dz in 0..=1 {
+                    let gx=ax.wrapping_add(dx); let gy=ay.wrapping_add(dy); let gz=az.wrapping_add(dz);
+                    let mut r=[0_i32;3];
+                    let status=unsafe { if mode==0 {
+                        jpe_cpp_aquifer_xoroshiro_offsets(seed_lo,seed_hi,gx,gy,gz,&mut r[0],&mut r[1],&mut r[2])
+                    } else { jpe_cpp_aquifer_legacy_offsets(seed_lo,gx,gy,gz,&mut r[0],&mut r[1],&mut r[2]) }};
+                    assert_eq!(status,0);
+                    let cx=gx.wrapping_mul(16).wrapping_add(r[0]);
+                    let cy=gy.wrapping_mul(12).wrapping_add(r[1]);
+                    let cz=gz.wrapping_mul(16).wrapping_add(r[2]);
+                    let x= cx.wrapping_sub(xs[s]); let y=cy.wrapping_sub(ys[s]); let z=cz.wrapping_sub(zs[s]);
+                    let d=x.wrapping_mul(x).wrapping_add(y.wrapping_mul(y)).wrapping_add(z.wrapping_mul(z));
+                    let pos=expected.iter().position(|v|d<=v.3).unwrap_or(expected.len());
+                    expected.insert(pos,(cx,cy,cz,d)); if expected.len()>4 { expected.pop(); }
+                }}}
+                for i in 0..4 { let n=s*4+i;
+                    assert_eq!((ox[n],oy[n],oz[n],od[n]),expected[i],"mode={mode} sample={s} neighbor={i}");
+                }
+            }
+        }
+        assert_eq!(unsafe { jpe_cpp_aquifer_nearest_four(2,0,0,std::ptr::null(),
+            std::ptr::null(),std::ptr::null(),1,std::ptr::null_mut(),std::ptr::null_mut(),
+            std::ptr::null_mut(),std::ptr::null_mut()) },STATUS_INVALID_ARGUMENT);
     }
 
     #[test]
