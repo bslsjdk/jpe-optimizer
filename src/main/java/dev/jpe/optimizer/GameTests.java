@@ -355,7 +355,10 @@ public final class GameTests {
                 {-17, -64, 33},
                 {-2, -1, -3},
                 {31, 7, -49},
-                {-128, -25, 96}
+                {-128, -25, 96},
+                {Integer.MIN_VALUE, Integer.MAX_VALUE, Integer.MIN_VALUE},
+                {Integer.MAX_VALUE, Integer.MIN_VALUE, Integer.MAX_VALUE},
+                {0x40000001, -0x40000001, 0x7ffffffe}
         };
 
         try (NativeRuntime runtime = NativeRuntime.load(java.nio.file.Path.of(library))) {
