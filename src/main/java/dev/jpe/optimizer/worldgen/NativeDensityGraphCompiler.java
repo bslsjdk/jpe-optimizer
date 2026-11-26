@@ -171,6 +171,13 @@ public final class NativeDensityGraphCompiler {
         }
         Beardifier beardifier = samplerContext.getField(Beardifier.CONTEXT_KEY);
         boolean beardifierEmpty = beardifier == null || beardifier == Beardifier.EMPTY;
+        // The current native DAG lowers BEARDIFIER to zero only for the empty
+        // context. Handles are cached by root identity within RandomState, so
+        // never allow a non-empty context to reuse a graph compiled for empty.
+        // Full native Beardifier lowering is a separate implementation stage.
+        if (!beardifierEmpty) {
+            return fallback("Non-empty Beardifier requires a native Beardifier node");
+        }
         long handle;
         try {
             handle = graphHandle(root, randomState, context, true, beardifierEmpty, runtime);
