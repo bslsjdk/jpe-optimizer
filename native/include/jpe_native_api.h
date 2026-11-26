@@ -195,8 +195,9 @@ typedef struct JpeAquiferCoreOutput {
 JPE_API int32_t jpe_runtime_aquifer_compute_substance_core(
     const JpeAquiferCoreInput *input, JpeAquiferCoreOutput *output
 );
-/* Batch form for a complete chunk fill pass. Inputs and outputs are contiguous;
- * count must be in 1..=1,048,576. No allocation or per-voxel ABI crossing occurs. */
+/* Batch form for a complete chunk fill pass. Inputs and outputs are contiguous
+ * and must not overlap; count must be in [1, 1,048,576]. No allocation or
+ * per-voxel ABI crossing occurs. The full input range is validated before writes. */
 JPE_API int32_t jpe_runtime_aquifer_compute_substance_batch(
     const JpeAquiferCoreInput *inputs, uint32_t count,
     JpeAquiferCoreOutput *outputs
