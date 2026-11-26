@@ -145,6 +145,17 @@ JPE_API uint64_t jpe_runtime_density_graph_load_cache(const char *path, const ch
 JPE_API int32_t jpe_runtime_density_graph_save_cache(uint64_t graph_handle, const char *path, const char *cache_key);
 
 
+/* Exact Minecraft XOROSHIRO Aquifer cell-center offsets.
+ * seed_lo/seed_hi are the final XoroshiroPositionalRandomFactory fields obtained
+ * once from RandomState's named "aquifer" factory. The function performs Mth.getSeed,
+ * Xoroshiro128++ initialization, and nextInt(10), nextInt(9), nextInt(10).
+ */
+JPE_API int32_t jpe_cpp_aquifer_xoroshiro_offsets(
+    uint64_t seed_lo, uint64_t seed_hi,
+    int32_t grid_x, int32_t grid_y, int32_t grid_z,
+    int32_t *offset_x, int32_t *offset_y, int32_t *offset_z
+);
+
 /* Exact Minecraft 26.3 Blender density adapter.
  * Each view exposes raw BlendingData.densities columns. Column pointers may be null.
  * chunk_x/chunk_z are chunk coordinates; min_section_y is LevelHeightAccessor.getMinSectionY().
