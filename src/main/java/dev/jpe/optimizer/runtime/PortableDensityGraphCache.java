@@ -155,6 +155,8 @@ public final class PortableDensityGraphCache {
         if (fileSize < 8 + 4 + 8 + 32 + 4 + 4 + 4 + DIGEST_BYTES
                 || fileSize > MAX_FILE_BYTES) return Optional.empty();
         byte[] complete = Files.readAllBytes(source);
+        if (complete.length < 8 + 4 + 8 + 32 + 4 + 4 + 4 + DIGEST_BYTES
+                || complete.length > MAX_FILE_BYTES) return Optional.empty();
         int bodyLength = complete.length - DIGEST_BYTES;
         byte[] body = Arrays.copyOf(complete, bodyLength);
         byte[] actualDigest = Arrays.copyOfRange(complete, bodyLength, complete.length);
@@ -196,7 +198,9 @@ public final class PortableDensityGraphCache {
             }
             if (input.available() != 0) return Optional.empty();
             return Optional.of(new Graph(nodes, root, stacks));
-        } catch (IllegalArgumentException | java.io.EOFException malformed) {
+        } catch (RuntimeException | IOException malformed) {
+            // A cache file is an optimization artifact, never trusted worldgen input.
+            // Any malformed descriptor or concurrent file replacement becomes a cache miss.
             return Optional.empty();
         }
     }
