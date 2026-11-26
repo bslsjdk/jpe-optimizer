@@ -2028,6 +2028,41 @@ mod tests {
     }
 
     #[test]
+    fn density_graph_f32_gradient_matches_java_for_descending_ranges() {
+        let cases = [
+            (0_u32, [1.0_f32, 1.0, 0.75, 0.5, 0.25, 0.0, 0.0]),
+            (1_u32, [0.25_f32, 0.0, 0.75, 0.5, 0.25, 0.0, 0.75]),
+            (2_u32, [0.75_f32, 1.0, 0.75, 0.5, 0.25, 0.0, 0.25]),
+        ];
+        for (tiling, expected) in cases {
+            let nodes = [JpeDensityNode {
+                opcode: 25,
+                input_a: 0, // X axis
+                input_b: tiling,
+                reserved: 0.0_f32.to_bits(),
+                immediate: 4.0,
+                auxiliary: 0.0,
+                tertiary: 1.0,
+            }];
+            let graph = unsafe {
+                jpe_runtime_density_graph_compile(
+                    nodes.as_ptr(), 1, 0, 0x6AAD_1000 + tiling as u64,
+                )
+            };
+            assert_ne!(graph, 0);
+            let mut output = [f32::NAN; 7];
+            assert_eq!(unsafe {
+                jpe_runtime_density_graph_evaluate_f32(
+                    graph, 7, 1, 1, -1, 0, 0, 1, 1, 1,
+                    output.as_mut_ptr(), output.len() as u64,
+                )
+            }, STATUS_OK);
+            assert_eq!(output, expected, "descending gradient tiling mode {}", tiling);
+            assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+        }
+    }
+
+    #[test]
     fn density_graph_recycles_buffers_for_unary_binary_and_clamp_nodes() {
         let nodes = [
             // This value has no consumers and must release its slot immediately.
