@@ -626,11 +626,13 @@ public final class NativeDensityGraphCompiler {
                 throw new UnsupportedOperationException("Density graph lowered to an empty graph");
             }
             if (cacheKey != null && builder.portableGraphSupported) {
-                PortableDensityGraphCache.Graph portableGraph = builder.portableGraph(rootIndex);
                 try {
+                    PortableDensityGraphCache.Graph portableGraph = builder.portableGraph(rootIndex);
                     PortableDensityGraphCache.write(
                             cacheKey.path(), cacheKey.fingerprint(), CONFIGURATION_FINGERPRINT, portableGraph);
                 } catch (IOException | RuntimeException cacheWriteFailure) {
+                    // Cache construction is optional. A valid live Minecraft graph
+                    // must still compile through the established native path.
                     JPEOptimizer.LOGGER.warn(
                             "Unable to write persistent density graph cache for {}: {}",
                             root.getClass().getName(), describe(cacheWriteFailure));
