@@ -19,6 +19,7 @@ import net.minecraft.world.level.levelgen.NoiseChunk;
 import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
 import net.minecraft.world.level.levelgen.PositionalRandomFactory;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
+import net.minecraft.world.level.levelgen.densityfunction.ScopedDensityBuffer;
 
 import java.nio.ByteBuffer;
 import java.security.MessageDigest;
@@ -27,14 +28,13 @@ import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Experimental one-shot native prefill for a NoiseBasedAquifer's complete cell-center
- * FluidStatus cache. C++ evaluates the six prepared density graphs, all thirteen
- * surface probes, the global FluidPicker, and the FluidStatus rules in one batched
- * call. The Java reference implementation is optionally used as a parity oracle
- * before any native result is committed.
+ * Prepares one chunk-scoped native Aquifer context. The context owns all six
+ * density plans and a FluidStatus cache. Once opened, computeSubstance for the
+ * complete DensityVolume is executed by one C++ call.
  *
- * The native context is deliberately scoped to this one chunk fill and is destroyed
- * before the voxel placement loop begins. No native handle is stored in world data.
+ * A vanilla computeFluid oracle is run before returning in verification mode.
+ * The Java oracle is never used to produce native outputs or as a fallback from
+ * the native full-volume path.
  */
 public final class NativeAquiferFluidStatusPrefill {
     private static final int AIR_TOKEN = 100;
@@ -44,14 +44,12 @@ public final class NativeAquiferFluidStatusPrefill {
     private static final long SEMANTIC_FINGERPRINT = 0x4A50_4541_5155_4632L;
     private static final AtomicBoolean REPORTED_SUCCESS = new AtomicBoolean();
     private static final AtomicBoolean REPORTED_FAILURE = new AtomicBoolean();
+    private static final int MAX_STATUS_BATCH = 65_536;
 
     private NativeAquiferFluidStatusPrefill() {}
 
-    /**
-     * Returns the number of cache entries filled, zero when already complete, and
-     * -1 when the optional native prefill is unavailable or declined.
-     */
-    public static int prefill(
+    /** Opens a context for this chunk fill, or returns null when optional native mode declines. */
+    public static Prepared open(
             AquiferNoiseBasedAccessor aquifer,
             NoiseChunk noiseChunk,
             ChunkAccess chunk,
@@ -67,7 +65,7 @@ public final class NativeAquiferFluidStatusPrefill {
         final boolean verify = Boolean.getBoolean("jpe.nativeAquiferFluidStatusVerify");
         if (strict && !verify) {
             throw new IllegalStateException(
-                    "Strict native Aquifer FluidStatus mode requires the vanilla parity oracle");
+                    "Strict native Aquifer mode requires the vanilla FluidStatus parity oracle");
         }
 
         NativeRuntime runtime;
@@ -77,18 +75,15 @@ public final class NativeAquiferFluidStatusPrefill {
             return fail(strict, "Native density-graph runtime is unavailable", unavailable);
         }
         if (runtime == null || !runtime.supportsAquiferContext()) {
-            return fail(strict, "Native Aquifer context ABI is unavailable", null);
+            return fail(strict, "Native Aquifer context/full-volume ABI is unavailable", null);
         }
         if (plans == null || !plans.belongsTo(runtime)) {
             return fail(strict, "Six native Aquifer sampler plans were not prepared for this runtime", null);
         }
 
         long[] locationCache = aquifer.jpe$getAquiferLocationCache();
-        Aquifer.FluidStatus[] statusCache = aquifer.jpe$getAquiferCache();
-        if (locationCache == null || statusCache == null || locationCache.length == 0
-                || locationCache.length != statusCache.length
-                || locationCache.length > 1_048_576) {
-            return fail(strict, "Vanilla Aquifer location/status cache dimensions are invalid", null);
+        if (locationCache == null || locationCache.length == 0 || locationCache.length > 1_048_576) {
+            return fail(strict, "Vanilla Aquifer location cache dimensions are invalid", null);
         }
 
         final int randomMode;
@@ -111,93 +106,91 @@ public final class NativeAquiferFluidStatusPrefill {
         long contextHandle = 0L;
         try {
             ensureLocationCache(runtime, aquifer, locationCache, randomMode, seedLo, seedHi);
-
-            int missingCount = 0;
+            long[] cacheKeys = new long[locationCache.length];
+            int[] pointX = new int[locationCache.length];
+            int[] pointY = new int[locationCache.length];
+            int[] pointZ = new int[locationCache.length];
             for (int i = 0; i < locationCache.length; i++) {
-                if (locationCache[i] == Long.MAX_VALUE) {
+                long packed = locationCache[i];
+                if (packed == Long.MAX_VALUE) {
                     throw new IllegalStateException("Native Aquifer location cache contains an unfilled cell");
                 }
-                if (statusCache[i] == null) missingCount++;
-            }
-            if (missingCount == 0) return 0;
-
-            long[] cacheKeys = new long[missingCount];
-            int[] pointX = new int[missingCount];
-            int[] pointY = new int[missingCount];
-            int[] pointZ = new int[missingCount];
-            int[] cacheIndices = new int[missingCount];
-            int out = 0;
-            for (int i = 0; i < locationCache.length; i++) {
-                if (statusCache[i] != null) continue;
-                long packed = locationCache[i];
-                cacheKeys[out] = packed;
-                pointX[out] = BlockPos.getX(packed);
-                pointY[out] = BlockPos.getY(packed);
-                pointZ[out] = BlockPos.getZ(packed);
-                cacheIndices[out] = i;
-                out++;
+                cacheKeys[i] = packed;
+                pointX[i] = BlockPos.getX(packed);
+                pointY[i] = BlockPos.getY(packed);
+                pointZ[i] = BlockPos.getZ(packed);
             }
 
             BlockState defaultFluid = settings.defaultFluid();
             int defaultFluidToken = tokenForDefaultFluid(defaultFluid);
             byte[] fingerprint = makeEphemeralFingerprint(
                     noiseChunk, chunk, aquifer, randomMode, seedLo, seedHi);
-            long[] graphHandles = plans.copyHandles();
             contextHandle = runtime.createAquiferContext(
-                    graphHandles, fingerprint, SEMANTIC_FINGERPRINT,
+                    plans.copyHandles(), fingerprint, SEMANTIC_FINGERPRINT,
                     seedLo, seedHi, randomMode,
                     AIR_TOKEN, WATER_TOKEN, LAVA_TOKEN,
-                    Math.max(1, missingCount));
+                    Math.max(1, locationCache.length));
             runtime.configureAquiferGlobalFluidPicker(
                     contextHandle, fingerprint, SEMANTIC_FINGERPRINT,
                     settings.seaLevel(), DimensionType.MIN_Y,
                     defaultFluidToken, defaultFluid.isAir(),
                     SharedConstants.DEBUG_DISABLE_FLUID_GENERATION);
 
-            int[] fluidLevels = new int[missingCount];
-            int[] fluidTypes = new int[missingCount];
-            runtime.computeAquiferFluidStatusPointsBatch(
-                    contextHandle, fingerprint, SEMANTIC_FINGERPRINT,
-                    cacheKeys, pointX, pointY, pointZ, fluidLevels, fluidTypes);
-
-            BlockState[] decodedStates = new BlockState[missingCount];
-            for (int i = 0; i < missingCount; i++) {
-                decodedStates[i] = stateForToken(fluidTypes[i], defaultFluid);
-            }
-
+            int total = cacheKeys.length;
+            int[] fluidLevels = new int[Math.min(total, MAX_STATUS_BATCH)];
+            int[] fluidTypes = new int[Math.min(total, MAX_STATUS_BATCH)];
             if (verify) {
-                for (int i = 0; i < missingCount; i++) {
-                    Aquifer.FluidStatus expected =
-                            aquifer.jpe$computeFluid(pointX[i], pointY[i], pointZ[i]);
-                    if (expected.fluidLevel() != fluidLevels[i]
-                            || !expected.fluidType().equals(decodedStates[i])) {
-                        throw new IllegalStateException(
-                                "Native FluidStatus parity mismatch at cell index " + cacheIndices[i]
-                                        + " center=(" + pointX[i] + "," + pointY[i] + "," + pointZ[i] + ")"
-                                        + " vanilla=(" + expected.fluidLevel() + "," + expected.fluidType() + ")"
-                                        + " native=(" + fluidLevels[i] + "," + decodedStates[i] + ")");
+                for (int start = 0; start < total; start += MAX_STATUS_BATCH) {
+                    int count = Math.min(MAX_STATUS_BATCH, total - start);
+                    long[] keys = java.util.Arrays.copyOfRange(cacheKeys, start, start + count);
+                    int[] xs = java.util.Arrays.copyOfRange(pointX, start, start + count);
+                    int[] ys = java.util.Arrays.copyOfRange(pointY, start, start + count);
+                    int[] zs = java.util.Arrays.copyOfRange(pointZ, start, start + count);
+                    if (fluidLevels.length < count) {
+                        fluidLevels = new int[count];
+                        fluidTypes = new int[count];
                     }
+                    runtime.computeAquiferFluidStatusPointsBatch(
+                            contextHandle, fingerprint, SEMANTIC_FINGERPRINT,
+                            keys, xs, ys, zs, fluidLevels, fluidTypes);
+                    for (int i = 0; i < count; i++) {
+                        Aquifer.FluidStatus expected = aquifer.jpe$computeFluid(xs[i], ys[i], zs[i]);
+                        BlockState actualState = stateForToken(fluidTypes[i], defaultFluid);
+                        if (expected.fluidLevel() != fluidLevels[i]
+                                || !expected.fluidType().equals(actualState)) {
+                            throw new IllegalStateException(
+                                    "Native FluidStatus parity mismatch at cell index " + (start + i)
+                                            + " center=(" + xs[i] + "," + ys[i] + "," + zs[i] + ")"
+                                            + " vanilla=(" + expected.fluidLevel() + "," + expected.fluidType() + ")"
+                                            + " native=(" + fluidLevels[i] + "," + actualState + ")");
+                        }
+                    }
+                }
+            } else {
+                // The point-status call both computes missing values and fills the
+                // context cache. Split requests to keep every C ABI batch bounded.
+                for (int start = 0; start < total; start += MAX_STATUS_BATCH) {
+                    int count = Math.min(MAX_STATUS_BATCH, total - start);
+                    runtime.computeAquiferFluidStatusPointsBatch(
+                            contextHandle, fingerprint, SEMANTIC_FINGERPRINT,
+                            java.util.Arrays.copyOfRange(cacheKeys, start, start + count),
+                            java.util.Arrays.copyOfRange(pointX, start, start + count),
+                            java.util.Arrays.copyOfRange(pointY, start, start + count),
+                            java.util.Arrays.copyOfRange(pointZ, start, start + count),
+                            fluidLevels, fluidTypes);
                 }
             }
 
-            // Release the temporary native context before publishing any cache entry.
-            // A cleanup failure must not leave a half-committed Java cache.
-            runtime.destroyAquiferContext(contextHandle);
-            contextHandle = 0L;
-
-            // Commit only after the complete native batch, optional oracle pass,
-            // and native-context cleanup have all succeeded.
-            for (int i = 0; i < missingCount; i++) {
-                statusCache[cacheIndices[i]] = new Aquifer.FluidStatus(fluidLevels[i], decodedStates[i]);
-            }
+            Prepared prepared = new Prepared(runtime, contextHandle, fingerprint, defaultFluid);
+            contextHandle = 0L; // Ownership transfers to Prepared.
             if (REPORTED_SUCCESS.compareAndSet(false, true)) {
                 JPEOptimizer.LOGGER.info(
-                        "JPE_NATIVE_AQUIFER_FLUID_STATUS_PREFILL cells={} verified={} randomMode={} elapsedUs={}",
-                        missingCount, verify, randomMode, (System.nanoTime() - started) / 1_000.0);
+                        "JPE_NATIVE_AQUIFER_CONTEXT_READY cells={} verified={} randomMode={} elapsedUs={}",
+                        total, verify, randomMode, (System.nanoTime() - started) / 1_000.0);
             }
-            return missingCount;
+            return prepared;
         } catch (RuntimeException | LinkageError failure) {
-            return fail(strict, "Native Aquifer FluidStatus prefill failed", failure);
+            return fail(strict, "Native Aquifer context preparation failed", failure);
         } finally {
             if (contextHandle != 0L) {
                 try {
@@ -205,14 +198,57 @@ public final class NativeAquiferFluidStatusPrefill {
                 } catch (RuntimeException | LinkageError failure) {
                     if (strict) {
                         throw new IllegalStateException(
-                                "Strict native Aquifer FluidStatus context cleanup failed", failure);
+                                "Strict native Aquifer context cleanup failed", failure);
                     }
                     if (REPORTED_FAILURE.compareAndSet(false, true)) {
-                        JPEOptimizer.LOGGER.warn(
-                                "Native Aquifer context cleanup failed: {}", failure.toString());
+                        JPEOptimizer.LOGGER.warn("Native Aquifer context cleanup failed: {}", failure.toString());
                     }
                 }
             }
+        }
+    }
+
+    public static final class Prepared implements AutoCloseable {
+        private final NativeRuntime runtime;
+        private final long contextHandle;
+        private final byte[] fingerprint;
+        private final BlockState defaultFluid;
+        private boolean closed;
+
+        private Prepared(
+                NativeRuntime runtime, long contextHandle, byte[] fingerprint, BlockState defaultFluid
+        ) {
+            this.runtime = runtime;
+            this.contextHandle = contextHandle;
+            this.fingerprint = fingerprint.clone();
+            this.defaultFluid = defaultFluid;
+        }
+
+        public NativeRuntime.AquiferSubstanceVolumeResult computeSubstanceVolumeF32(
+                AquiferNoiseBasedAccessor aquifer,
+                DensityVolume volume,
+                ScopedDensityBuffer density
+        ) {
+            ensureOpen();
+            return runtime.computeAquiferSubstanceVolumeF32(
+                    contextHandle, fingerprint, SEMANTIC_FINGERPRINT,
+                    aquifer.jpe$getSkipSamplingAboveY(), volume, density);
+        }
+
+        public BlockState blockStateForToken(int token) {
+            ensureOpen();
+            return stateForToken(token, defaultFluid);
+        }
+
+        private void ensureOpen() {
+            if (closed) throw new IllegalStateException("Native Aquifer context is closed");
+        }
+
+        @Override
+        public void close() {
+            ensureOpen();
+            closed = true;
+            runtime.destroyAquiferContext(contextHandle);
         }
     }
 
@@ -290,17 +326,17 @@ public final class NativeAquiferFluidStatusPrefill {
         }
     }
 
-    private static int fail(boolean strict, String message, Throwable cause) {
+    private static Prepared fail(boolean strict, String message, Throwable cause) {
         if (strict) {
             throw cause == null
                     ? new IllegalStateException("[JPE strict native Aquifer mode] " + message)
                     : new IllegalStateException("[JPE strict native Aquifer mode] " + message, cause);
         }
         if (REPORTED_FAILURE.compareAndSet(false, true)) {
-            if (cause == null) JPEOptimizer.LOGGER.warn("{}; vanilla FluidStatus cache remains untouched", message);
-            else JPEOptimizer.LOGGER.warn("{}; vanilla FluidStatus cache remains untouched: {}",
+            if (cause == null) JPEOptimizer.LOGGER.warn("{}; vanilla Aquifer remains available", message);
+            else JPEOptimizer.LOGGER.warn("{}; vanilla Aquifer remains available: {}",
                     message, cause.toString());
         }
-        return -1;
+        return null;
     }
 }
