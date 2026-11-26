@@ -166,6 +166,11 @@ void build_execution_plan(CompiledGraph& graph) {
     }
 }
 
+#ifdef JPE_DENSITY_GRAPH_TEST_REFERENCE
+// Test-only per-thread override for same-process tile-size A/B benchmarks.
+thread_local uint32_t g_test_tile_limit = 0;
+#endif
+
 std::mutex g_mutex;
 uint64_t g_next_handle = 1;
 std::unordered_map<uint64_t, std::shared_ptr<CompiledGraph>> g_handles;
@@ -451,8 +456,14 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
     constexpr uint32_t kMaxTileSamples = 1225;
     constexpr size_t kMaxTileValues = 262144; // <= 1 MiB of float scratch.
     const size_t node_count = graph->nodes.size();
+    uint32_t tile_sample_limit = kMaxTileSamples;
+#ifdef JPE_DENSITY_GRAPH_TEST_REFERENCE
+    if (g_test_tile_limit != 0) {
+        tile_sample_limit = std::min(tile_sample_limit, g_test_tile_limit);
+    }
+#endif
     const uint32_t tile_capacity = static_cast<uint32_t>(
-        std::max<size_t>(1, std::min<size_t>(kMaxTileSamples, kMaxTileValues / node_count)));
+        std::max<size_t>(1, std::min<size_t>(tile_sample_limit, kMaxTileValues / node_count)));
     // The FFM call is synchronous and this evaluator never calls back into Java,
     // so one bounded scratch vector can be safely reused by each worldgen worker.
     // Capacity is capped at 1 MiB and retained per native worker thread.
@@ -664,6 +675,10 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_scalar_reference(
     }
     return 0;
 } catch (...) { return 3; }
+
+extern "C" void jpe_cpp_density_graph_set_test_tile_limit(uint32_t max_samples) noexcept {
+    g_test_tile_limit = max_samples;
+}
 
 #endif // JPE_DENSITY_GRAPH_TEST_REFERENCE
 
