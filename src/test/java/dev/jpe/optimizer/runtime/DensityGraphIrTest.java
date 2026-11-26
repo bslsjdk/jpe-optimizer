@@ -115,6 +115,25 @@ class DensityGraphIrTest {
     }
 
     @Test
+    void preservesParameterizedLeakyReluFloat32Factor() {
+        DensityGraphIr graph = new DensityGraphIr(List.of(
+                DensityGraphIr.Node.input(0),
+                DensityGraphIr.Node.leakyRelu(0, 0.25F)
+        ), 1, 0xA87L);
+        assertEquals(DensityGraphIr.LEAKY_RELU, graph.nodes().get(1).opcode());
+        assertEquals(0.25, graph.nodes().get(1).immediate());
+    }
+
+    @Test
+    void rejectsNonFloat32LeakyReluFactor() {
+        assertThrows(IllegalArgumentException.class, () -> new DensityGraphIr(List.of(
+                DensityGraphIr.Node.input(0),
+                new DensityGraphIr.Node(DensityGraphIr.LEAKY_RELU, 0,
+                        DensityGraphIr.NO_INPUT, 0.2500000001)
+        ), 1, 0L));
+    }
+
+    @Test
     void rejectsUnaryNodesWithSecondInputOrForwardReference() {
         assertThrows(IllegalArgumentException.class, () -> new DensityGraphIr(List.of(
                 DensityGraphIr.Node.constant(1.0),
