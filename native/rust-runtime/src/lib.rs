@@ -2351,12 +2351,15 @@ mod tests {
                     }
                 }
             }
-            assert_eq!(
-                output.map(f32::to_bits),
-                expected.iter().copied().map(f32::to_bits).collect::<Vec<_>>().try_into().unwrap(),
-                "gradient axis {}",
-                axis,
-            );
+            for index in 0..output.len() {
+                assert_eq!(
+                    output[index].to_bits(),
+                    expected[index].to_bits(),
+                    "gradient axis {}, voxel {}",
+                    axis,
+                    index,
+                );
+            }
             assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
         }
     }
