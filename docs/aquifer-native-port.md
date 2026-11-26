@@ -69,15 +69,15 @@ For cell center (x,y,z):
 - If y+12 > adjusted surface, or this is center offset, query global fluid at (sampleX,adjustedSurface,sampleZ). If non-air at adjustedSurface, mark center-under-global-fluid for center offset; if top exceeds adjusted surface, return that global status immediately.
 - Track minimum unadjusted preliminary surface.
 
-Surface selection:
-- If exclusion noise>0: partial and full floodedness are -1.
-- Else distanceBelowSurface=(lowest preliminary surface+8)-y.
-- floodednessFactor=clamped map distance 0..64 to 1..0 when center is under global fluid, else 0.
-- floodedness noise is clamped [-1,1].
-- full threshold maps factor 1..0 to -0.3..0.8; partial threshold maps 1..0 to -0.8..0.4.
+Surface selection (numeric overloads confirmed against the exact 26.3 bytecode):
+- If exclusion sampler's float result, widened to double, is >0.0, partial and full floodedness are -1.
+- Else distanceBelowSurface=(lowest preliminary surface+8)-y using Java int arithmetic.
+- floodednessFactor uses the double overload Mth.clampedMap(distance,0.0,64.0,1.0,0.0) when center is under global fluid, else 0.0.
+- floodedness sampler returns float, widened to double for the double Mth.clamp overload with [-1.0,1.0].
+- full threshold uses double Mth.map(factor,1.0,0.0,-0.3,0.8); partial threshold uses double Mth.map(factor,1.0,0.0,-0.8,0.4).
 - Fully flooded selects global fluid level; partially flooded selects randomized level; otherwise level is WAY_BELOW_MIN_Y.
-- Randomized level: fluid cell=floorDiv(x,16), floorDiv(y,40), floorDiv(z,16); middleY=cellY*40+20; spread=spreadNoise(cell)*10.0F; quantize spread to step 3; target=middleY+quantized; result=min(lowest preliminary surface,target).
-- Fluid type starts as global type. If level<=-10, not WAY_BELOW_MIN_Y, and global type is not lava, sample lava noise at floorDiv(x,64), floorDiv(y,40), floorDiv(z,64); abs(noise)>0.3 selects lava.
+- Randomized level: fluid cell=floorDiv(x,16), floorDiv(y,40), floorDiv(z,16); middleY=cellY*40+20. Spread sampler returns float and is multiplied by 10.0F in float precision, then widened to double for Mth.quantize(double,3), whose bytecode is floor(value/3.0)*3 with Java int conversion/multiplication. target=middleY+quantized; result=min(lowest preliminary surface,target).
+- Fluid type starts as global type. If level<=-10, not WAY_BELOW_MIN_Y, and global type is not lava, sample lava noise at floorDiv(x,64), floorDiv(y,40), floorDiv(z,64); preserve the exact float-to-double conversion and comparison from the audited implementation.
 
 ## Constructor-derived bounds
 
