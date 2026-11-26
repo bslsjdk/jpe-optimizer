@@ -223,6 +223,39 @@ JPE_API int32_t jpe_runtime_aquifer_find_nearest_four(
     JpeAquiferNearestFour *output
 );
 
+/* Exact positional-random offsets used by Minecraft 26.3 Aquifer cells.
+ * random mode 0 is XOROSHIRO; mode 1 is Legacy. */
+JPE_API int32_t jpe_runtime_aquifer_xoroshiro_offsets(
+    uint64_t seed_lo, uint64_t seed_hi,
+    int32_t grid_x, int32_t grid_y, int32_t grid_z,
+    int32_t *offset_x, int32_t *offset_y, int32_t *offset_z
+);
+JPE_API int32_t jpe_runtime_aquifer_legacy_offsets(
+    uint64_t factory_seed,
+    int32_t grid_x, int32_t grid_y, int32_t grid_z,
+    int32_t *offset_x, int32_t *offset_y, int32_t *offset_z
+);
+
+/* Precompute the full packed location cache. The number of Y layers is
+ * derived from cell_count / (grid_size_x * grid_size_z). */
+JPE_API int32_t jpe_runtime_aquifer_grid_centers(
+    uint32_t random_mode, uint64_t seed_lo, uint64_t seed_hi,
+    int32_t min_grid_x, int32_t min_grid_y, int32_t min_grid_z,
+    uint32_t grid_size_x, uint32_t grid_size_z, uint32_t cell_count,
+    uint64_t *packed_locations
+);
+
+/* Batch nearest-four lookup. Input arrays contain sample_count coordinates.
+ * Each output array needs sample_count * 4 entries; outputs are sample-major.
+ * Input and output arrays must be non-overlapping. Distances preserve Java int32 wrap. */
+JPE_API int32_t jpe_runtime_aquifer_nearest_four(
+    uint32_t random_mode, uint64_t seed_lo, uint64_t seed_hi,
+    const int32_t *block_x, const int32_t *block_y, const int32_t *block_z,
+    uint32_t sample_count,
+    int32_t *center_x, int32_t *center_y, int32_t *center_z,
+    int32_t *squared_distances
+);
+
 #ifdef __cplusplus
 }
 #endif
