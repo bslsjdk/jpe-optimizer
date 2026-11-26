@@ -173,7 +173,8 @@ JPE_API int32_t jpe_runtime_density_graph_evaluate_f32(
 );
 
 /* Evaluate arbitrary non-grid-aligned points in input order. Output length must
- * equal point_count; each output maps to the coordinate triple at the same index. */
+ * equal point_count; each output maps to the coordinate triple at the same index.
+ * The output range must not overlap any input coordinate range. */
 JPE_API int32_t jpe_runtime_density_graph_evaluate_points(
     uint64_t graph_handle,
     const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
