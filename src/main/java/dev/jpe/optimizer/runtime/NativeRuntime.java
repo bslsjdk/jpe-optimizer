@@ -761,6 +761,16 @@ public final class NativeRuntime implements AutoCloseable {
             return new DensityNode(7, -1, -1, Float.floatToRawIntBits(amplitude),
                     (double) preparedHandle, xzScale, yScale);
         }
+        public static DensityNode perlinStackWarped(long preparedHandle, double xzScale, double yScale,
+                                                     int shiftX, int shiftY, int shiftZ) {
+            if (preparedHandle <= 0 || preparedHandle > 9_007_199_254_740_991L
+                    || !Double.isFinite(xzScale) || !Double.isFinite(yScale)
+                    || shiftX < 0 || shiftY < 0 || shiftZ < 0) {
+                throw new IllegalArgumentException("Invalid warped prepared Perlin stack parameters");
+            }
+            return new DensityNode(31, shiftX, shiftY, shiftZ,
+                    (double) preparedHandle, xzScale, yScale);
+        }
     }
 
     public boolean supportsDensityGraph() {
