@@ -558,6 +558,158 @@ public final class NativeRuntime implements AutoCloseable {
     /** Number of native workers selected during runtime initialization. */
     public int workerCount() { return workerCount; }
 
+    /** True when the C++ runtime can own six world-scoped Aquifer sampler plans. */
+    public boolean supportsAquiferContext() {
+        return densityGraphCompile != null && densityGraphRelease != null
+                && aquiferContextCreate != null && aquiferContextDestroy != null
+                && aquiferContextEvaluateSamplersF32 != null;
+    }
+
+    /**
+     * Creates a native Aquifer context. The C++ side retains each density graph
+     * independently, so the caller may release its original graph references
+     * after this method returns.
+     */
+    public long createAquiferContext(
+            long[] graphHandles, byte[] worldFingerprint, long semanticFingerprint,
+            long seedLo, long seedHi, int randomMode,
+            int airToken, int waterToken, int lavaToken, int maxStatusCacheEntries
+    ) {
+        Objects.requireNonNull(graphHandles, "graphHandles");
+        Objects.requireNonNull(worldFingerprint, "worldFingerprint");
+        if (!supportsAquiferContext()) {
+            throw new IllegalStateException("Native Aquifer context ABI is unavailable");
+        }
+        if (graphHandles.length != 6 || worldFingerprint.length != 32
+                || semanticFingerprint == 0L || randomMode < 0 || randomMode > 1
+                || airToken == waterToken || airToken == lavaToken || waterToken == lavaToken
+                || maxStatusCacheEntries <= 0 || maxStatusCacheEntries > 1_048_576) {
+            throw new IllegalArgumentException("Invalid native Aquifer context descriptor");
+        }
+        boolean fingerprintIsZero = true;
+        for (byte value : worldFingerprint) fingerprintIsZero &= value == 0;
+        if (fingerprintIsZero) throw new IllegalArgumentException("World fingerprint must not be all zero");
+        for (long handle : graphHandles) {
+            if (handle == 0L) throw new IllegalArgumentException("Aquifer sampler graph handles must be non-zero");
+        }
+
+        lifecycle.readLock().lock();
+        try {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment info = arena.allocate(128L, 8L);
+                for (int i = 0; i < 6; i++) {
+                    info.set(ValueLayout.JAVA_LONG, (long) i * 8L, graphHandles[i]);
+                }
+                MemorySegment.copy(worldFingerprint, 0, info, ValueLayout.JAVA_BYTE, 48L, 32L);
+                info.set(ValueLayout.JAVA_LONG, 80L, semanticFingerprint);
+                info.set(ValueLayout.JAVA_LONG, 88L, seedLo);
+                info.set(ValueLayout.JAVA_LONG, 96L, seedHi);
+                info.set(ValueLayout.JAVA_INT, 104L, randomMode);
+                info.set(ValueLayout.JAVA_INT, 108L, airToken);
+                info.set(ValueLayout.JAVA_INT, 112L, waterToken);
+                info.set(ValueLayout.JAVA_INT, 116L, lavaToken);
+                info.set(ValueLayout.JAVA_INT, 120L, maxStatusCacheEntries);
+                info.set(ValueLayout.JAVA_INT, 124L, 0);
+                long handle = (long) aquiferContextCreate.invokeExact(info);
+                if (handle == 0L) {
+                    throw new IllegalStateException("Native Aquifer context creation was rejected");
+                }
+                aquiferContextHandles.add(handle);
+                return handle;
+            } catch (Throwable failure) {
+                throw rethrow("Unable to create native Aquifer context", failure);
+            }
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    /**
+     * Evaluates the six context-owned sampler graphs in one FFM call.
+     * Coordinates and outputs are sampler-major, with an independent point set
+     * for barrier, floodedness, spread, lava, exclusion, and surface.
+     */
+    public void evaluateAquiferSamplersF32(
+            long contextHandle, int[][] pointX, int[][] pointY, int[][] pointZ, float[][] output
+    ) {
+        Objects.requireNonNull(pointX, "pointX");
+        Objects.requireNonNull(pointY, "pointY");
+        Objects.requireNonNull(pointZ, "pointZ");
+        Objects.requireNonNull(output, "output");
+        if (!supportsAquiferContext()) throw new IllegalStateException("Native Aquifer context ABI is unavailable");
+        if (contextHandle == 0L || !aquiferContextHandles.contains(contextHandle)
+                || pointX.length != 6 || pointY.length != 6 || pointZ.length != 6 || output.length != 6) {
+            throw new IllegalArgumentException("Invalid native Aquifer sampler batch");
+        }
+        int pointsPerSampler = Objects.requireNonNull(pointX[0], "pointX[0]").length;
+        long total = Math.multiplyExact(6L, pointsPerSampler);
+        if (pointsPerSampler == 0 || total > 1_048_576L) {
+            throw new IllegalArgumentException("Aquifer sampler point count must be in [1, 174762]");
+        }
+        for (int sampler = 0; sampler < 6; sampler++) {
+            if (Objects.requireNonNull(pointX[sampler], "pointX row").length != pointsPerSampler
+                    || Objects.requireNonNull(pointY[sampler], "pointY row").length != pointsPerSampler
+                    || Objects.requireNonNull(pointZ[sampler], "pointZ row").length != pointsPerSampler
+                    || Objects.requireNonNull(output[sampler], "output row").length < pointsPerSampler) {
+                throw new IllegalArgumentException("Aquifer sampler rows must have equal point counts");
+            }
+        }
+
+        lifecycle.readLock().lock();
+        AquiferScratch scratch = null;
+        try {
+            ensureOpen();
+            scratch = acquireAquiferScratch();
+            MemorySegment[] buffers = scratch.ensurePointCapacity(Math.toIntExact(total));
+            MemorySegment x = buffers[0], y = buffers[1], z = buffers[2], values = buffers[3];
+            for (int sampler = 0; sampler < 6; sampler++) {
+                long baseBytes = Math.multiplyExact(
+                        Math.multiplyExact((long) sampler, pointsPerSampler),
+                        ValueLayout.JAVA_INT.byteSize());
+                MemorySegment.copy(pointX[sampler], 0, x, ValueLayout.JAVA_INT, baseBytes, pointsPerSampler);
+                MemorySegment.copy(pointY[sampler], 0, y, ValueLayout.JAVA_INT, baseBytes, pointsPerSampler);
+                MemorySegment.copy(pointZ[sampler], 0, z, ValueLayout.JAVA_INT, baseBytes, pointsPerSampler);
+            }
+            int status = (int) aquiferContextEvaluateSamplersF32.invokeExact(
+                    contextHandle, x, y, z, pointsPerSampler, values, total);
+            checkStatus(status, "aquifer-context-evaluate-samplers-f32");
+            for (int sampler = 0; sampler < 6; sampler++) {
+                long baseBytes = Math.multiplyExact(
+                        Math.multiplyExact((long) sampler, pointsPerSampler),
+                        ValueLayout.JAVA_FLOAT.byteSize());
+                MemorySegment.copy(values, ValueLayout.JAVA_FLOAT, baseBytes,
+                        output[sampler], 0, pointsPerSampler);
+            }
+        } catch (Throwable failure) {
+            throw rethrow("Unable to evaluate native Aquifer sampler batch", failure);
+        } finally {
+            if (scratch != null) scratch.release();
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    /** Releases the context, its FluidStatus cache, and its six retained graph references. */
+    public void destroyAquiferContext(long contextHandle) {
+        if (contextHandle == 0L) throw new IllegalArgumentException("Aquifer context handle must be non-zero");
+        lifecycle.readLock().lock();
+        try {
+            ensureOpen();
+            if (!aquiferContextHandles.contains(contextHandle)) {
+                throw new IllegalArgumentException("Unknown or already destroyed Aquifer context");
+            }
+            try {
+                int status = (int) aquiferContextDestroy.invokeExact(contextHandle);
+                checkStatus(status, "aquifer-context-destroy");
+                aquiferContextHandles.remove(contextHandle);
+            } catch (Throwable failure) {
+                throw rethrow("Unable to destroy native Aquifer context", failure);
+            }
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+    }
+
     /** True when the loaded native runtime exposes the experimental Aquifer cache prefill kernel. */
     public boolean supportsAquiferGridCenters() {
         return aquiferGridCenters != null;
