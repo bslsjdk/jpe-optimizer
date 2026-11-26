@@ -552,9 +552,12 @@ public final class NativeDensityGraphCompiler {
                     case "GradientFunction" -> {
                         String axisName = component(function, "axis").toString();
                         String tilingName = component(function, "tiling").toString();
-                        if (!tilingName.equals("CLAMP_TO_EDGE")) {
-                            throw new UnsupportedOperationException("Unsupported gradient tiling " + tilingName);
-                        }
+                        int tiling = switch (tilingName) {
+                            case "CLAMP_TO_EDGE" -> 0;
+                            case "REPEAT" -> 1;
+                            case "MIRRORED_REPEAT" -> 2;
+                            default -> throw new UnsupportedOperationException("Unknown gradient tiling " + tilingName);
+                        };
                         int axis = switch (axisName) {
                             case "X" -> 0;
                             case "Y" -> 1;
@@ -566,7 +569,7 @@ public final class NativeDensityGraphCompiler {
                         float fromValue = ((Number) component(function, "fromValue")).floatValue();
                         float toValue = ((Number) component(function, "toValue")).floatValue();
                         result = append(NativeRuntime.DensityNode.gradient(
-                                axis, fromCoordinate, toCoordinate, fromValue, toValue));
+                                axis, tiling, fromCoordinate, toCoordinate, fromValue, toValue));
                     }
                     case "RoundFunction" -> {
                         String typeName = component(function, "type").toString();
