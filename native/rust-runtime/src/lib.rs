@@ -3188,7 +3188,7 @@ mod tests {
             ];
             graph_handles[sampler as usize] = unsafe {
                 jpe_runtime_density_graph_compile(
-                    nodes.as_ptr(), nodes.len() as u32, 2, 0xAQU1_FER0 + sampler as u64,
+                    nodes.as_ptr(), nodes.len() as u32, 2, 0xA9A1_F3A0 + sampler as u64,
                 )
             };
             assert_ne!(graph_handles[sampler as usize], 0, "sampler {sampler} compile failed");
