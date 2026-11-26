@@ -4,6 +4,7 @@ import net.minecraft.world.level.levelgen.Aquifer;
 import net.minecraft.world.level.levelgen.PositionalRandomFactory;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Accessor;
+import org.spongepowered.asm.mixin.gen.Invoker;
 
 /** Accesses vanilla Aquifer cache metadata and the fluid-update side-effect flag. */
 @Mixin(Aquifer.NoiseBasedAquifer.class)
@@ -40,7 +41,4 @@ public interface AquiferNoiseBasedAccessor {
 
     @Accessor("positionalRandomFactory")
     PositionalRandomFactory jpe$getPositionalRandomFactory();
-
-    @Accessor("skipSamplingAboveY")
-    int jpe$getSkipSamplingAboveY();
 }
