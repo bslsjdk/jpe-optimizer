@@ -1,6 +1,7 @@
 #include "jpe_native_api.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -396,6 +397,28 @@ Scalar java_signum_scalar(Scalar value) noexcept {
 }
 
 template <typename Scalar>
+struct DensityEvaluationScratch {
+    std::vector<std::vector<Scalar>> slots;
+    std::vector<float> perlin;
+    std::vector<Scalar> corner_values;
+    std::vector<Scalar> sliced_values;
+
+    void prepare(uint32_t slot_count, size_t volume, bool has_perlin) {
+        if (slots.size() < slot_count) slots.resize(slot_count);
+        for (uint32_t i = 0; i < slot_count; ++i) slots[i].resize(volume);
+        if (has_perlin) perlin.resize(volume);
+    }
+};
+
+template <typename Scalar>
+DensityEvaluationScratch<Scalar>& density_evaluation_scratch(uint32_t depth) {
+    // One independent frame per recursive graph evaluation level. A fixed array
+    // keeps parent references stable while INTERPOLATED/SLICE recurse.
+    thread_local std::array<DensityEvaluationScratch<Scalar>, 33> frames;
+    return frames[depth];
+}
+
+template <typename Scalar>
 int32_t evaluate_density_graph_impl(
     const std::shared_ptr<CompiledGraph>& graph,
     uint32_t root_node,
@@ -411,10 +434,10 @@ int32_t evaluate_density_graph_impl(
 
     try {
         const size_t volume = static_cast<size_t>(output_length);
-        std::vector<std::vector<Scalar>> slots(graph->slot_count);
-        for (auto& slot : slots) slot.resize(volume);
-        std::vector<float> perlin_scratch;
-        if (graph->has_perlin) perlin_scratch.resize(volume);
+        auto& scratch = density_evaluation_scratch<Scalar>(recursion_depth);
+        scratch.prepare(graph->slot_count, volume, graph->has_perlin);
+        auto& slots = scratch.slots;
+        auto& perlin_scratch = scratch.perlin;
 
         for (uint32_t i = 0; i <= root_node; ++i) {
             const JpeDensityNode& node = graph->nodes[i];
@@ -670,7 +693,8 @@ int32_t evaluate_density_graph_impl(
                         || corner_x * corner_y > kMaxVolumeElements
                         || corner_x * corner_y * corner_z > kMaxVolumeElements) return 1;
                     const uint64_t corner_length = corner_x * corner_y * corner_z;
-                    std::vector<Scalar> corner_values(static_cast<size_t>(corner_length));
+                    auto& corner_values = scratch.corner_values;
+                    corner_values.resize(static_cast<size_t>(corner_length));
                     const int32_t corner_status = evaluate_density_graph_impl<Scalar>(
                         graph, node.input_a,
                         static_cast<uint32_t>(corner_x), static_cast<uint32_t>(corner_y),
@@ -722,7 +746,8 @@ int32_t evaluate_density_graph_impl(
                     break;
                 }
                 case kSlice: {
-                    std::vector<Scalar> sliced_values(volume);
+                    auto& sliced_values = scratch.sliced_values;
+                    sliced_values.resize(volume);
                     int32_t sliced_min_x = min_x, sliced_min_y = min_y, sliced_min_z = min_z;
                     int32_t sliced_step_x = step_x, sliced_step_y = step_y, sliced_step_z = step_z;
                     const int32_t coordinate = static_cast<int32_t>(node.immediate);

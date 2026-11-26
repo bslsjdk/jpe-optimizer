@@ -45,6 +45,11 @@ def generateModMetadata = tasks.register("generateModMetadata", ProcessResources
 
 sourceSets.main.resources.srcDir(generateModMetadata)
 
+// Unit tests for codec-backed worldgen helpers need the same Minecraft and
+// Mojang serialization compile/runtime libraries as the main mod source set.
+sourceSets.test.compileClasspath += sourceSets.main.compileClasspath
+sourceSets.test.runtimeClasspath += sourceSets.main.runtimeClasspath
+
 dependencies {
     testImplementation platform('org.junit:junit-bom:5.12.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
