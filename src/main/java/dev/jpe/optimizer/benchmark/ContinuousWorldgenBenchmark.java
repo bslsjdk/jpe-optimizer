@@ -107,6 +107,7 @@ public final class ContinuousWorldgenBenchmark {
         private long serverCpuBefore = -1L;
         private long processCpuBefore = -1L;
         private long allocatedBefore = -1L;
+        private long liveThreadsAllocatedBefore = -1L;
         private long gcCountBefore;
         private long gcTimeBefore;
         private long requestSubmissionNanos;
@@ -277,6 +278,7 @@ public final class ContinuousWorldgenBenchmark {
             serverCpuBefore = currentThreadCpuTime();
             processCpuBefore = processCpuTime();
             allocatedBefore = allocatedBytes(threadBean, serverThreadId);
+            liveThreadsAllocatedBefore = allocatedBytesAllLiveThreads(threadBean);
             gcCountBefore = gcCount();
             gcTimeBefore = gcTime();
             nextIssueTick = tick;
@@ -336,6 +338,7 @@ public final class ContinuousWorldgenBenchmark {
             long serverCpuAfter = currentThreadCpuTime();
             long processCpuAfter = processCpuTime();
             long allocatedAfter = allocatedBytes(threadBean, serverThreadId);
+            long liveThreadsAllocatedAfter = allocatedBytesAllLiveThreads(threadBean);
 
             JPEOptimizer.LOGGER.info(
                     "JPE_CONTINUOUS_WORLDGEN_BENCH seed={} generator={} mode={} speedBlocksPerSecond={} "
@@ -343,7 +346,7 @@ public final class ContinuousWorldgenBenchmark {
                             + "throughputChunksPerSecond={} meanChunkLatencyMs={} medianChunkLatencyMs={} p95ChunkLatencyMs={} "
                             + "p95ServerTickMs={} maxInFlight={} maxPendingTasks={} maxLoadedChunks={} maxConcurrentDoFill={} "
                             + "avgGetChunkFutureCallMs={} maxGetChunkFutureCallMs={} elapsedSeconds={} "
-                            + "serverThreadCpuMs={} processCpuMs={} serverThreadAllocatedMiB={} gcCollections={} gcMs={} "
+                            + "serverThreadCpuMs={} processCpuMs={} serverThreadAllocatedMiB={} liveThreadsAllocatedMiB={} gcCollections={} gcMs={} "
                             + "doFillCalls={} doFillDensityMs={} doFillBlockMs={} doFillSamples={} "
                             + "sampledAquiferMs={} sampledPlacementMs={} timingSamples={} "
                             + "structureQueries={} structureIndexBuilds={} structureIndexedPieces={} "
@@ -370,6 +373,8 @@ public final class ContinuousWorldgenBenchmark {
                     deltaMs(processCpuBefore, processCpuAfter),
                     allocatedBefore >= 0 && allocatedAfter >= allocatedBefore
                             ? format((allocatedAfter - allocatedBefore) / 1048576.0) : "unsupported",
+                    liveThreadsAllocatedBefore >= 0 && liveThreadsAllocatedAfter >= liveThreadsAllocatedBefore
+                            ? format((liveThreadsAllocatedAfter - liveThreadsAllocatedBefore) / 1048576.0) : "unsupported",
                     gcCount() - gcCountBefore, gcTime() - gcTimeBefore,
                     doFillCalls,
                     format((worldgenAfter.densitySampleNanos() - worldgenBefore.densitySampleNanos()) / 1_000_000.0),
@@ -460,6 +465,31 @@ public final class ContinuousWorldgenBenchmark {
             return sunBean.getThreadAllocatedBytes(threadId);
         }
         return -1L;
+    }
+
+    /**
+     * Sums cumulative allocation counters for threads alive at each snapshot.
+     * Minecraft's worldgen workers are persistent pool threads, so this captures
+     * their allocations in addition to the server thread. Threads that terminate
+     * between snapshots cannot be recovered by ThreadMXBean and are excluded.
+     */
+    private static long allocatedBytesAllLiveThreads(ThreadMXBean bean) {
+        if (!(bean instanceof com.sun.management.ThreadMXBean sunBean)
+                || !sunBean.isThreadAllocatedMemorySupported()) return -1L;
+        if (!sunBean.isThreadAllocatedMemoryEnabled()) {
+            try {
+                sunBean.setThreadAllocatedMemoryEnabled(true);
+            } catch (UnsupportedOperationException | SecurityException ignored) {
+                return -1L;
+            }
+        }
+        long[] ids = bean.getAllThreadIds();
+        long[] allocated = sunBean.getThreadAllocatedBytes(ids);
+        long total = 0L;
+        for (long value : allocated) {
+            if (value > 0L) total += value;
+        }
+        return total;
     }
 
     private static long gcCount() {
