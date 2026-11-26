@@ -454,7 +454,7 @@ public final class GameTests {
 
         for (int sample = 0; sample < blockX.length; ++sample) {
             int anchorX = Math.floorDiv(blockX[sample] - 5, 16);
-            int anchorY = Math.floorDiv(blockY[sample] + 1, 12) - 1;
+            int anchorY = Math.floorDiv(blockY[sample] + 1, 12);
             int anchorZ = Math.floorDiv(blockZ[sample] - 5, 16);
             int[] candidateX = new int[12];
             int[] candidateY = new int[12];
