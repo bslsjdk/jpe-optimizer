@@ -3,6 +3,12 @@
 #include <cmath>
 #include <cstdint>
 
+static_assert(sizeof(JpeAquiferFluidStatus) == 8, "Aquifer fluid-status ABI mismatch");
+static_assert(sizeof(JpeAquiferCoreInput) == 88, "Aquifer core input ABI mismatch");
+static_assert(sizeof(JpeAquiferCoreOutput) == 12, "Aquifer core output ABI mismatch");
+static_assert(sizeof(JpeAquiferCellLocation) == 12, "Aquifer cell-location ABI mismatch");
+static_assert(sizeof(JpeAquiferNearestFour) == 32, "Aquifer nearest-four ABI mismatch");
+
 namespace {
 double aquifer_similarity(int32_t first, int32_t second) noexcept {
     return 1.0 - static_cast<double>(static_cast<int64_t>(second) - first) / 25.0;
