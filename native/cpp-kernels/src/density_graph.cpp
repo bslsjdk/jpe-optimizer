@@ -629,9 +629,35 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
                     const float square = left[sample] * left[sample];
                     destination[sample] = square * left[sample];
                 }
-            } else if (instruction.opcode >= JPE_DENSITY_SQRT && instruction.opcode <= JPE_DENSITY_LEAKY_RELU) {
+            } else if (instruction.opcode == JPE_DENSITY_SQRT) {
                 for (uint32_t sample = 0; sample < count; ++sample) {
-                    destination[sample] = apply_unary_density(instruction.opcode, left[sample], instruction.parameter_a);
+                    destination[sample] = static_cast<float>(std::sqrt(static_cast<double>(left[sample])));
+                }
+            } else if (instruction.opcode == JPE_DENSITY_LOG) {
+                for (uint32_t sample = 0; sample < count; ++sample) {
+                    destination[sample] = static_cast<float>(std::log(static_cast<double>(left[sample])));
+                }
+            } else if (instruction.opcode == JPE_DENSITY_RECIPROCAL) {
+                for (uint32_t sample = 0; sample < count; ++sample) {
+                    destination[sample] = 1.0f / left[sample];
+                }
+            } else if (instruction.opcode == JPE_DENSITY_SIGN) {
+                for (uint32_t sample = 0; sample < count; ++sample) {
+                    const float value = left[sample];
+                    destination[sample] = (std::isnan(value) || value == 0.0f)
+                        ? value : std::copysign(1.0f, value);
+                }
+            } else if (instruction.opcode == JPE_DENSITY_SQUEEZE) {
+                for (uint32_t sample = 0; sample < count; ++sample) {
+                    const float value = minecraft_clamp(left[sample], -1.0f, 1.0f);
+                    const float cube = (value * value) * value;
+                    destination[sample] = (value / 2.0f) - (cube / 24.0f);
+                }
+            } else if (instruction.opcode == JPE_DENSITY_LEAKY_RELU) {
+                const float negative_factor = instruction.parameter_a;
+                for (uint32_t sample = 0; sample < count; ++sample) {
+                    const float value = left[sample];
+                    destination[sample] = value > 0.0f ? value : negative_factor * value;
                 }
             } else {
                 for (uint32_t sample = 0; sample < count; ++sample) {
