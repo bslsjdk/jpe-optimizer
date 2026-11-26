@@ -124,6 +124,13 @@ extern "C" JPE_API int32_t jpe_runtime_aquifer_find_nearest_four(
         const int64_t dx = static_cast<int64_t>(candidates[index].x) - block_x;
         const int64_t dy = static_cast<int64_t>(candidates[index].y) - block_y;
         const int64_t dz = static_cast<int64_t>(candidates[index].z) - block_z;
+        // Minecraft's squared-distance result is represented as int32.
+        // Reject out-of-range deltas before multiplication so malformed or
+        // extreme coordinates cannot overflow signed int64 during validation.
+        constexpr int64_t max_axis_delta = 46340;
+        if (dx < -max_axis_delta || dx > max_axis_delta
+            || dy < -max_axis_delta || dy > max_axis_delta
+            || dz < -max_axis_delta || dz > max_axis_delta) return 1;
         const int64_t squared = dx * dx + dy * dy + dz * dz;
         if (squared > INT32_MAX) return 1;
         const int32_t distance = static_cast<int32_t>(squared);
