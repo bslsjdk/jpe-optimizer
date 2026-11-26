@@ -43,7 +43,7 @@ public final class NativeBlenderDensityBackend {
         float[] nativeOutput = verify ? new float[length] : input;
         try {
             runtime.blendDensityVolume(blender, volume, input, nativeOutput);
-            if (Boolean.getBoolean("jpe.nativeBlenderTiming") && (ATTEMPTS.sum() & 63L) == 0L) {
+            if (Boolean.getBoolean("jpe.nativeBlenderTiming") && ((ATTEMPTS.sum() & 63L) == 0L || ATTEMPTS.sum() == 1L)) {
                 JPEOptimizer.LOGGER.info("JPE_NATIVE_BLENDER_STAGES {}", NativeRuntime.blenderDensityMetrics());
             }
         } catch (RuntimeException | LinkageError failure) {
