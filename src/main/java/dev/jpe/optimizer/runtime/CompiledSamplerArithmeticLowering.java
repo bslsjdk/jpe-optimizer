@@ -208,8 +208,6 @@ public final class CompiledSamplerArithmeticLowering {
                         resolveOnlyChild(node, members, nativeIndex, inputSlot)));
                 case SQRT -> lowered.add(DensityGraphIr.Node.sqrt(
                         resolveOnlyChild(node, members, nativeIndex, inputSlot)));
-                case LOG -> lowered.add(DensityGraphIr.Node.log(
-                        resolveOnlyChild(node, members, nativeIndex, inputSlot)));
                 case RECIPROCAL -> lowered.add(DensityGraphIr.Node.reciprocal(
                         resolveOnlyChild(node, members, nativeIndex, inputSlot)));
                 case SIGN -> lowered.add(DensityGraphIr.Node.sign(
@@ -326,7 +324,6 @@ public final class CompiledSamplerArithmeticLowering {
                 || op == CompiledSamplerGraphIr.Op.SQUARE
                 || op == CompiledSamplerGraphIr.Op.CUBE
                 || op == CompiledSamplerGraphIr.Op.SQRT
-                || op == CompiledSamplerGraphIr.Op.LOG
                 || op == CompiledSamplerGraphIr.Op.RECIPROCAL
                 || op == CompiledSamplerGraphIr.Op.SIGN
                 || op == CompiledSamplerGraphIr.Op.SQUEEZE
