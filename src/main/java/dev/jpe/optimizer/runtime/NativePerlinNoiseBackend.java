@@ -144,10 +144,6 @@ public final class NativePerlinNoiseBackend {
         boolean terminal = false;
         try {
             Object[] sourceLayers = null;
-            if (Boolean.getBoolean("jpe.nativePerlinProfile")) {
-                sourceLayers = readNoiseStackLayers(stack);
-                profilePerlinYRuns(sourceLayers, xzScale, yScale, amplitude, volume);
-            }
 
             int sizeX = volume.sizeX();
             int sizeY = volume.sizeY();
@@ -168,14 +164,15 @@ public final class NativePerlinNoiseBackend {
             // Avoid FFM setup, descriptor writes and native dispatch for tiny volumes.
             // The caller falls through to the exact vanilla NoiseStack implementation.
             if (expectedElements < MIN_NATIVE_VOLUME_ELEMENTS) return false;
-            List<NativeRuntime.PerlinLayer> layers = null;
-            if (!Boolean.getBoolean("jpe.nativePerlinSynchronous")) {
-                layers = toPerlinLayers(sourceLayers, xzScale, yScale, amplitude);
-            }
             float[] target = ((DensityBufferAccessor) buffer).jpe$values();
             if (target.length < expectedElements) {
                 BUFFER_VOLUME_MISMATCHES.increment();
                 return false;
+            }
+
+            if (Boolean.getBoolean("jpe.nativePerlinProfile")) {
+                sourceLayers = readNoiseStackLayers(stack);
+                profilePerlinYRuns(sourceLayers, xzScale, yScale, amplitude, volume);
             }
 
             NativeRuntime nativeRuntime = runtime();
