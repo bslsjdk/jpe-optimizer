@@ -124,6 +124,7 @@ enum {
     JPE_DENSITY_CLAMP = 22,
     JPE_DENSITY_SQUEEZE = 23,
     JPE_DENSITY_LERP = 24,
+    /* GRADIENT: input_a=axis (0=X,1=Y,2=Z); input_b=tiling (0=clamp,1=repeat,2=mirrored repeat); reserved=f32 fromValue bits; immediate/auxiliary=from/to coordinates; tertiary=toValue. */
     JPE_DENSITY_GRADIENT = 25,
     JPE_DENSITY_INTERPOLATED = 26,
     JPE_DENSITY_RANGE_CHOICE = 27,
