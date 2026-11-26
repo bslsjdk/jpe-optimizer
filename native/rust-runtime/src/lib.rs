@@ -35,7 +35,7 @@ struct JpeDensityNode {
 const _: [(); 40] = [(); std::mem::size_of::<JpeDensityNode>()];
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct JpeAquiferFluidStatus {
     pub fluid_level: i32,
     pub fluid_type: u32,
