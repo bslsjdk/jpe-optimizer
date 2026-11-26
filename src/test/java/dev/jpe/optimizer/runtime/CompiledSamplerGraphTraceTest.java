@@ -103,11 +103,11 @@ class CompiledSamplerGraphTraceTest {
     void classifiesExactMinecraftUnaryMathSamplerClasses() {
         String prefix = "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$";
         java.util.List<String> classes = java.util.List.of(
-                "SqrtSampler", "LogSampler", "ReciprocalSampler", "SignSampler", "SqueezeSampler");
+                "SqrtSampler", "LogSampler", "ReciprocalSampler", "SignSampler", "SqueezeSampler", "LeakyReLUSampler");
         java.util.List<CompiledSamplerGraphIr.Op> expected = java.util.List.of(
                 CompiledSamplerGraphIr.Op.SQRT, CompiledSamplerGraphIr.Op.LOG,
                 CompiledSamplerGraphIr.Op.RECIPROCAL, CompiledSamplerGraphIr.Op.SIGN,
-                CompiledSamplerGraphIr.Op.SQUEEZE);
+                CompiledSamplerGraphIr.Op.SQUEEZE, CompiledSamplerGraphIr.Op.LEAKY_RELU);
         java.util.ArrayList<CompiledSamplerGraphTrace.NodeInfo> nodes = new java.util.ArrayList<>();
         for (int i = 0; i < classes.size(); i++) {
             nodes.add(new CompiledSamplerGraphTrace.NodeInfo(i, prefix + classes.get(i),
