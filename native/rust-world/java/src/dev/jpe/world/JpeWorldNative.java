@@ -693,9 +693,13 @@ public final class JpeWorldNative implements AutoCloseable {
         }
         try (Arena a = Arena.ofConfined()) {
             MemorySegment data = a.allocate(2L * blocks.length);
-            for (int i = 0; i < blocks.length; i++) {
-                data.setAtIndex(ValueLayout.JAVA_SHORT, i, blocks[i]);
-            }
+            // Bulk native copy instead of an element-wise setAtIndex loop: one
+            // memcpy-style transfer rather than a bounds-checked Java store per
+            // block id. Hot during chunk streaming (up to ~28k ids per submit).
+            MemorySegment.copy(
+                    blocks, 0,
+                    data, ValueLayout.JAVA_SHORT, 0L,
+                    blocks.length);
             return invokeInt(hPipelineSubmitChunk, handle, chunkX, chunkZ, baseSectionY,
                     blocks.length / 4096, data);
         }
