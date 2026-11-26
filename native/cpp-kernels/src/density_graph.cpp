@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -266,6 +267,11 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate(
                     return 1;
             }
 
+            if (graph->prepared_handles[i] != 0) {
+                std::fprintf(stderr, "DENSITY_GRAPH_DEBUG node=%u opcode=%u root=%u slot=%u value0=%.17g immediate=%.17g input_a=%u input_b=%u reserved=%u\\n",
+                    i, node.opcode, graph->root, slot, values.empty() ? 0.0 : values[0],
+                    node.immediate, node.input_a, node.input_b, node.reserved);
+            }
             if (node.opcode == JPE_DENSITY_ADD || node.opcode == JPE_DENSITY_MUL) {
                 const uint32_t inputs[2] = {node.input_a, node.input_b};
                 for (uint32_t input : inputs) {
