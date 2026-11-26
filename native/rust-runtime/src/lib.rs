@@ -2175,6 +2175,16 @@ mod tests {
                 -100, 64, -100, candidates.as_ptr(), 11, &mut output,
             )
         }, STATUS_INVALID_ARGUMENT);
+
+        // Extreme coordinates must be rejected before signed multiplication;
+        // this used to risk overflowing int64 before the int32-range check.
+        let mut extreme = candidates;
+        extreme[0].x = i32::MIN;
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_find_nearest_four(
+                i32::MAX, 64, -100, extreme.as_ptr(), 12, &mut output,
+            )
+        }, STATUS_INVALID_ARGUMENT);
     }
 
     #[test]
