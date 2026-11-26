@@ -1617,19 +1617,22 @@ mod tests {
     #[test]
     fn density_graph_recycles_buffers_for_unary_binary_and_clamp_nodes() {
         let nodes = [
+            // This value has no consumers and must release its slot immediately.
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 999.0 },
             JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
                 input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 2.0 },
             JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
                 input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -3.0 },
-            JpeDensityNode { opcode: DENSITY_SUB, input_a: 0, input_b: 1,
+            JpeDensityNode { opcode: DENSITY_SUB, input_a: 1, input_b: 2,
                 reserved: 0, immediate: 0.0 },
-            JpeDensityNode { opcode: DENSITY_ABS, input_a: 2,
+            JpeDensityNode { opcode: DENSITY_ABS, input_a: 3,
                 input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
-            JpeDensityNode { opcode: DENSITY_CLAMP, input_a: 3,
+            JpeDensityNode { opcode: DENSITY_CLAMP, input_a: 4,
                 input_b: 0.0_f32.to_bits(), reserved: 4.0_f32.to_bits(), immediate: 0.0 },
         ];
         let graph = unsafe {
-            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 0xD3517B)
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 5, 0xD3517B)
         };
         assert_ne!(graph, 0);
         let mut output = [0.0_f64; 24];
