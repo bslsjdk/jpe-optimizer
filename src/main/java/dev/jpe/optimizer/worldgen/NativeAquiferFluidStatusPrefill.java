@@ -34,9 +34,9 @@ import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Prepares one chunk-scoped native Aquifer context. The context owns all six
- * density plans and a FluidStatus cache. Once opened, computeSubstance for the
- * complete DensityVolume is executed by one C++ call.
+ * Reuses one bounded native Aquifer context per RandomState. Its immutable
+ * sampler plans and global picker are shared across chunk fills; worker calls
+ * use independent FFM scratch and the native FluidStatus/surface caches are bounded.
  *
  * A vanilla computeFluid oracle is run before returning in verification mode.
  * The Java oracle is never used to produce native outputs or as a fallback from
@@ -178,7 +178,7 @@ public final class NativeAquiferFluidStatusPrefill {
 
     private NativeAquiferFluidStatusPrefill() {}
 
-    /** Opens a context for this chunk fill, or returns null when optional native mode declines. */
+    /** Acquires the world context for this chunk, or returns null when optional native mode declines. */
     public static Prepared open(
             AquiferNoiseBasedAccessor aquifer,
             NoiseChunk noiseChunk,
@@ -187,7 +187,6 @@ public final class NativeAquiferFluidStatusPrefill {
     ) {
         Objects.requireNonNull(aquifer, "aquifer");
         Objects.requireNonNull(noiseChunk, "noiseChunk");
-        Objects.requireNonNull(chunk, "chunk");
         Objects.requireNonNull(settings, "settings");
 
         final boolean strict = Boolean.getBoolean("jpe.nativeAquiferFluidStatusStrict")
