@@ -531,8 +531,9 @@ public final class GameTests {
         }
         String backendMetrics = NativeBlenderDensityBackend.metrics();
         JPEOptimizer.LOGGER.info("JPE_NATIVE_BLENDER_BACKEND_SUMMARY {}", backendMetrics);
-        if (!backendMetrics.contains("attempts=4 completed=4 fallbacks=0")
-                || !backendMetrics.contains("parityMismatches=0")) {
+        if (!backendMetrics.contains("attempts=8 completed=8 fallbacks=0")
+                || !backendMetrics.contains("parityMismatches=0")
+                || !backendMetrics.matches("(?s).*snapshotCacheHits=[4-9][0-9]*.*")) {
             throw new AssertionError("Production Native Blender backend did not complete all synthetic legacy cases: "
                     + backendMetrics);
         }
@@ -551,6 +552,7 @@ public final class GameTests {
         float[] values = new float[16];
         values[3] = rawValue;
         columns[columnIndex] = values;
+        ((BlendingDataAccessor) data).jpe$setHasCalculatedData(true);
         return data;
     }
 
@@ -570,6 +572,7 @@ public final class GameTests {
             }
             columns[column] = values;
         }
+        ((BlendingDataAccessor) data).jpe$setHasCalculatedData(true);
         return data;
     }
 
@@ -611,6 +614,10 @@ public final class GameTests {
         if (!NativeBlenderDensityBackend.tryBlendForDiagnostics(blender, volume, backendInput)) {
             throw new AssertionError("Production Native Blender backend declined synthetic case " + label);
         }
+        float[] repeatedBackendInput = input.clone();
+        if (!NativeBlenderDensityBackend.tryBlendForDiagnostics(blender, volume, repeatedBackendInput)) {
+            throw new AssertionError("Production Native Blender backend declined repeated cached case " + label);
+        }
         for (int i = 0; i < expected.length; ++i) {
             if (Float.floatToRawIntBits(expected[i]) != Float.floatToRawIntBits(actual[i])) {
                 throw new AssertionError("Native Blender " + label + " direct runtime mismatch at " + i
@@ -620,8 +627,12 @@ public final class GameTests {
                 throw new AssertionError("Native Blender " + label + " production backend mismatch at " + i
                         + ": java=" + expected[i] + ", backend=" + backendInput[i]);
             }
+            if (Float.floatToRawIntBits(expected[i]) != Float.floatToRawIntBits(repeatedBackendInput[i])) {
+                throw new AssertionError("Native Blender " + label + " cached backend mismatch at " + i
+                        + ": java=" + expected[i] + ", cached=" + repeatedBackendInput[i]);
+            }
         }
-        JPEOptimizer.LOGGER.info("JPE_NATIVE_BLENDER_PARITY case={} samples={} bitExact=true productionBackend=true",
+        JPEOptimizer.LOGGER.info("JPE_NATIVE_BLENDER_PARITY case={} samples={} bitExact=true productionBackend=true cacheRepeat=true",
                 label, expected.length);
     }
 
