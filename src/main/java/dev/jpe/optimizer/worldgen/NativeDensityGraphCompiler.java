@@ -198,6 +198,11 @@ public final class NativeDensityGraphCompiler {
                 rootIndex = builder.lower(root);
             } catch (RuntimeException | LinkageError unsupported) {
                 stateGraphs.disabled.add(root);
+                JPEOptimizer.LOGGER.debug(
+                        "Native density graph rejected for {}: {}",
+                        root.getClass().getName(),
+                        unsupported.getMessage() == null ? unsupported.getClass().getName() : unsupported.getMessage()
+                );
                 return 0L;
             }
 
