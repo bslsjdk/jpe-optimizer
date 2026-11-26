@@ -171,11 +171,12 @@ extern "C" int32_t jpe_cpp_perlin_stack_sample_warped(
         shift_x, shift_y, shift_z, xz_scale, y_scale, output);
 }
 
-extern "C" int32_t jpe_cpp_perlin_stack_sample_warped_batch(
+template <typename ShiftScalar>
+int32_t sample_warped_prepared_batch(
     uint64_t handle, uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
-    const double* shift_x, const double* shift_y, const double* shift_z,
+    const ShiftScalar* shift_x, const ShiftScalar* shift_y, const ShiftScalar* shift_z,
     double xz_scale, double y_scale, float* output, uint64_t output_length
 ) noexcept {
     if (shift_x == nullptr || shift_y == nullptr || shift_z == nullptr || output == nullptr
@@ -198,14 +199,39 @@ extern "C" int32_t jpe_cpp_perlin_stack_sample_warped_batch(
             for (uint32_t y = 0; y < size_y; ++y) {
                 const int32_t world_y = wrapped_axis_coordinate(min_y, y, step_y);
                 const int32_t status = sample_warped_prepared(*prepared,
-                    world_x, world_y, world_z, shift_x[out], shift_y[out], shift_z[out],
-                    xz_scale, y_scale, &output[out]);
+                    world_x, world_y, world_z,
+                    static_cast<double>(shift_x[out]), static_cast<double>(shift_y[out]),
+                    static_cast<double>(shift_z[out]), xz_scale, y_scale, &output[out]);
                 if (status != 0) return status;
                 ++out;
             }
         }
     }
     return 0;
+}
+
+extern "C" int32_t jpe_cpp_perlin_stack_sample_warped_batch_f32(
+    uint64_t handle, uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    const float* shift_x, const float* shift_y, const float* shift_z,
+    double xz_scale, double y_scale, float* output, uint64_t output_length
+) noexcept {
+    return sample_warped_prepared_batch(handle, size_x, size_y, size_z,
+        min_x, min_y, min_z, step_x, step_y, step_z, shift_x, shift_y, shift_z,
+        xz_scale, y_scale, output, output_length);
+}
+
+extern "C" int32_t jpe_cpp_perlin_stack_sample_warped_batch_f64(
+    uint64_t handle, uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    const double* shift_x, const double* shift_y, const double* shift_z,
+    double xz_scale, double y_scale, float* output, uint64_t output_length
+) noexcept {
+    return sample_warped_prepared_batch(handle, size_x, size_y, size_z,
+        min_x, min_y, min_z, step_x, step_y, step_z, shift_x, shift_y, shift_z,
+        xz_scale, y_scale, output, output_length);
 }
 
 extern "C" uint64_t jpe_cpp_perlin_stack_retain(uint64_t handle) noexcept {
