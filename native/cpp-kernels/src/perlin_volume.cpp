@@ -11,6 +11,7 @@
 #endif
 
 namespace {
+constexpr uint32_t kAllowZeroSteps = 1U << 31;
 constexpr int kGradientX[16] = {1,-1,1,-1,1,-1,1,-1,0,0,0,0,1,0,-1,0};
 constexpr int kGradientY[16] = {1,1,-1,-1,0,0,0,0,1,-1,1,-1,1,-1,1,-1};
 constexpr int kGradientZ[16] = {0,0,0,0,1,1,-1,-1,1,1,-1,-1,0,1,0,-1};
@@ -569,6 +570,8 @@ extern "C" int32_t jpe_cpp_perlin_add_volume(
     uint64_t output_length,
     uint32_t flags
 ) noexcept {
+    if ((step_x == 0 || step_y == 0 || step_z == 0)
+        && (flags & kAllowZeroSteps) == 0) return 1;
 #if (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
     static const bool avx2_available = []() noexcept {
         __builtin_cpu_init();
