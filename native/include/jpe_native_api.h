@@ -185,6 +185,18 @@ JPE_API int32_t jpe_runtime_aquifer_nearest_four(
     int32_t *squared_distances
 );
 
+
+/* Precomputes the complete vanilla Aquifer location cache in its native flat-array order.
+ * random_mode: 0=XOROSHIRO, 1=LEGACY. grid_size_y is derived from cell_count/(grid_size_x*grid_size_z).
+ * Each output is packed exactly like BlockPos.asLong(x,y,z).
+ */
+JPE_API int32_t jpe_runtime_aquifer_grid_centers(
+    uint32_t random_mode, uint64_t seed_lo, uint64_t seed_hi,
+    int32_t min_grid_x, int32_t min_grid_y, int32_t min_grid_z,
+    uint32_t grid_size_x, uint32_t grid_size_z,
+    uint32_t cell_count, uint64_t *packed_locations
+);
+
 /* Exact Minecraft 26.3 Blender density adapter.
  * Each view exposes raw BlendingData.densities columns. Column pointers may be null.
  * chunk_x/chunk_z are chunk coordinates; min_section_y is LevelHeightAccessor.getMinSectionY().
