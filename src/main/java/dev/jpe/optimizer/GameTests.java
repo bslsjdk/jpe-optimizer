@@ -168,7 +168,37 @@ public final class GameTests {
             int[][] samplerY = new int[6][3];
             int[][] samplerZ = new int[6][3];
             float[][] values = new float[6][3];
-            runtime.evaluateAquiferSamplersF32(context, samplerX, samplerY, samplerZ, values);
+            runtime.evaluateAquiferSamplersF32(
+                    context, worldFingerprint, 0xA91F_2630_0001L,
+                    samplerX, samplerY, samplerZ, values);
+
+            float[][] rejectedValues = new float[6][3];
+            for (float[] row : rejectedValues) java.util.Arrays.fill(row, -123.5F);
+            byte[] wrongWorldFingerprint = new byte[32];
+            java.util.Arrays.fill(wrongWorldFingerprint, (byte) 0xA5);
+            try {
+                runtime.evaluateAquiferSamplersF32(
+                        context, wrongWorldFingerprint, 0xA91F_2630_0001L,
+                        samplerX, samplerY, samplerZ, rejectedValues);
+                throw new AssertionError("Mismatched Aquifer world fingerprint was accepted");
+            } catch (IllegalStateException expected) {
+                // A stale or cross-world context must fail before publishing any output.
+            }
+            for (float[] row : rejectedValues) {
+                for (float value : row) {
+                    if (Float.floatToRawIntBits(value) != Float.floatToRawIntBits(-123.5F)) {
+                        throw new AssertionError("Rejected Aquifer context modified caller output");
+                    }
+                }
+            }
+            try {
+                runtime.evaluateAquiferSamplersF32(
+                        context, worldFingerprint, 0xA91F_2630_0002L,
+                        samplerX, samplerY, samplerZ, rejectedValues);
+                throw new AssertionError("Mismatched Aquifer semantic fingerprint was accepted");
+            } catch (IllegalStateException expected) {
+                // The execution contract version is checked with the world fingerprint.
+            }
 
             for (int sampler = 0; sampler < 6; sampler++) {
                 for (int point = 0; point < 3; point++) {
