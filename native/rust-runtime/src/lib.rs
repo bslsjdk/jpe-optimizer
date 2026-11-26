@@ -122,6 +122,11 @@ unsafe extern "C" {
         input: *const JpeAquiferCoreInput,
         output: *mut JpeAquiferCoreOutput,
     ) -> i32;
+    fn jpe_runtime_aquifer_compute_substance_batch(
+        inputs: *const JpeAquiferCoreInput,
+        count: u32,
+        outputs: *mut JpeAquiferCoreOutput,
+    ) -> i32;
     fn jpe_runtime_aquifer_find_nearest_four(
         block_x: i32, block_y: i32, block_z: i32,
         candidates: *const JpeAquiferCellLocation, candidate_count: u32,
