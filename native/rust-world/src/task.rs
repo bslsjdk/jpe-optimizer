@@ -36,6 +36,11 @@ impl Priority {
 pub enum JobKind {
     GenerateTerrain,
     BuildMesh,
+    /// Re-mesh of a chunk that is already uploaded, because a neighbour's
+    /// terrain arrived and hid some of its boundary faces. Kept distinct from
+    /// `BuildMesh` so dropping the job rolls back to `Uploaded`, not to
+    /// `TerrainReady`, and the chunk never loses its drawable state.
+    RemeshMesh,
     UploadMesh,
     Unload,
 }

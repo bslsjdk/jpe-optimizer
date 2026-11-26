@@ -142,6 +142,8 @@ impl SchedulerCore {
         let outcome = self
             .queue
             .submit(priority, JobKind::BuildMesh, pos, self.world_epoch(), dist);
+        // On rejection the chunk goes straight back to TerrainReady, so it can be
+        // requested again on a later frame instead of being stuck in MeshQueued.
         self.finish_submit(pos, ChunkState::TerrainReady, outcome)
     }
 
@@ -171,16 +173,15 @@ impl SchedulerCore {
     }
 
     fn rollback_evicted(&mut self, job: ChunkJob) {
-        let expected = match job.kind {
-            JobKind::GenerateTerrain => ChunkState::TerrainQueued,
-            JobKind::BuildMesh => ChunkState::MeshQueued,
+        // (queued state, state to return to). A cancelled remesh must land back on
+        // `Uploaded`, because its old mesh is still resident and still drawn.
+        let (expected, previous) = match job.kind {
+            JobKind::GenerateTerrain => (ChunkState::TerrainQueued, ChunkState::Empty),
+            JobKind::BuildMesh => (ChunkState::MeshQueued, ChunkState::TerrainReady),
+            JobKind::RemeshMesh => (ChunkState::MeshQueued, ChunkState::Uploaded),
             JobKind::UploadMesh | JobKind::Unload => return,
         };
         if self.store.state(job.pos) == Some(expected) {
-            let previous = match job.kind {
-                JobKind::GenerateTerrain => ChunkState::Empty,
-                _ => ChunkState::TerrainReady,
-            };
             let _ = self.store.transition(job.pos, previous);
         }
     }
@@ -196,7 +197,9 @@ impl SchedulerCore {
             }
             let (expected, in_progress) = match job.kind {
                 JobKind::GenerateTerrain => (ChunkState::TerrainQueued, ChunkState::TerrainGenerating),
-                JobKind::BuildMesh => (ChunkState::MeshQueued, ChunkState::Meshing),
+                JobKind::BuildMesh | JobKind::RemeshMesh => {
+                    (ChunkState::MeshQueued, ChunkState::Meshing)
+                }
                 JobKind::UploadMesh => (ChunkState::MeshReady, ChunkState::Uploaded),
                 JobKind::Unload => (ChunkState::Unloading, ChunkState::Unloading),
             };
@@ -228,7 +231,7 @@ impl SchedulerCore {
                 .store
                 .transition(job.pos, ChunkState::TerrainReady)
                 .map(|revision| Completion::Committed { revision }),
-            JobKind::BuildMesh => self
+            JobKind::BuildMesh | JobKind::RemeshMesh => self
                 .store
                 .transition(job.pos, ChunkState::MeshReady)
                 .map(|revision| Completion::Committed { revision }),
@@ -252,6 +255,36 @@ impl SchedulerCore {
                 Completion::Stale
             }
         }
+    }
+
+    /// Hold a chunk against unloading.
+    pub fn acquire_ticket(&mut self, pos: ChunkPos) -> Result<u32, SchedError> {
+        Ok(self.store.acquire_ticket(pos)?)
+    }
+
+    /// Release one hold on a chunk; returns the remaining ticket count.
+    pub fn release_ticket(&mut self, pos: ChunkPos) -> Result<u32, SchedError> {
+        Ok(self.store.release_ticket(pos)?)
+    }
+
+    /// Re-mesh a chunk that is already uploaded, because a neighbour's terrain
+    /// arrived and its boundary faces may now be hidden. Rolls back to
+    /// `Uploaded` (not `TerrainReady`) if the queue rejects it, so the chunk
+    /// never stops being drawable.
+    pub fn request_remesh(&mut self, pos: ChunkPos) -> Result<u64, SchedError> {
+        let state = self.store.state(pos);
+        if state != Some(ChunkState::Uploaded) {
+            return Err(SchedError::IllegalState {
+                expected: ChunkState::Uploaded,
+                actual: state,
+            });
+        }
+        self.store.transition(pos, ChunkState::MeshQueued)?;
+        let (_, dist) = self.rank(pos);
+        let outcome = self
+            .queue
+            .submit(Priority::Near, JobKind::RemeshMesh, pos, self.world_epoch(), dist);
+        self.finish_submit(pos, ChunkState::Uploaded, outcome)
     }
 
     /// GPU upload happens on the render thread; it is not queued.
@@ -459,6 +492,140 @@ mod tests {
                 expected: ChunkState::Empty,
                 actual: Some(ChunkState::TerrainQueued)
             }
+        );
+    }
+
+    fn drive_upload(s: &mut SchedulerCore, pos: ChunkPos) {
+        drive_terrain(s, pos);
+        s.request_mesh(pos).unwrap();
+        let job = s.take_job().expect("mesh job");
+        assert!(matches!(s.complete(job), Completion::Committed { .. }));
+        s.mark_uploaded(pos).unwrap();
+        assert_eq!(s.store().state(pos), Some(ChunkState::Uploaded));
+    }
+
+    #[test]
+    fn rejected_mesh_request_goes_back_to_terrain_ready() {
+        // Regression guard: the mesh rollback target used to be a state that
+        // `MeshQueued` could not legally return to, so one full queue permanently
+        // stranded every chunk it touched.
+        let mut s = SchedulerCore::new(1, 1);
+        // Outside the urgent band, so its mesh job is Near and cannot displace
+        // the urgent blocker below.
+        let chunk = ChunkPos::new(8, 0);
+        drive_terrain(&mut s, chunk);
+
+        // Occupy the only slot with an urgent job that a Near mesh job cannot evict.
+        let blocker = ChunkPos::new(1, 0);
+        s.request_terrain(blocker).unwrap();
+        assert_eq!(s.request_mesh(chunk).unwrap_err(), SchedError::QueueRejected);
+        assert_eq!(
+            s.store().state(chunk),
+            Some(ChunkState::TerrainReady),
+            "a rejected mesh request must leave the chunk requestable again"
+        );
+        assert_eq!(s.stats().rejected_full, 1);
+
+        let job = s.take_job().unwrap();
+        assert_eq!(job.pos, blocker);
+        s.complete(job);
+        s.request_mesh(chunk).unwrap();
+        assert_eq!(s.take_job().unwrap().kind, JobKind::BuildMesh);
+    }
+
+    #[test]
+    fn rejected_remesh_stays_uploaded_and_can_be_retried() {
+        let mut s = SchedulerCore::new(1, 1);
+        let chunk = ChunkPos::new(0, 0);
+        drive_upload(&mut s, chunk);
+
+        let blocker = ChunkPos::new(1, 0);
+        s.request_terrain(blocker).unwrap();
+        assert_eq!(s.request_remesh(chunk).unwrap_err(), SchedError::QueueRejected);
+        assert_eq!(
+            s.store().state(chunk),
+            Some(ChunkState::Uploaded),
+            "a cancelled remesh must leave the old mesh drawn, not drop back to TerrainReady"
+        );
+
+        let job = s.take_job().unwrap();
+        s.complete(job);
+        s.request_remesh(chunk).unwrap();
+        let job = s.take_job().unwrap();
+        assert_eq!(job.kind, JobKind::RemeshMesh);
+        assert!(matches!(s.complete(job), Completion::Committed { .. }));
+        assert_eq!(s.store().state(chunk), Some(ChunkState::MeshReady));
+        s.mark_uploaded(chunk).unwrap();
+    }
+
+    #[test]
+    fn an_evicted_remesh_job_leaves_the_old_mesh_resident() {
+        let mut s = SchedulerCore::new(1, 1);
+        let chunk = ChunkPos::new(0, 0);
+        drive_upload(&mut s, chunk);
+        s.request_remesh(chunk).unwrap();
+        assert_eq!(s.store().state(chunk), Some(ChunkState::MeshQueued));
+
+        // A nearer terrain job kicks the queued remesh out of the queue.
+        s.request_terrain(ChunkPos::new(1, 1)).unwrap();
+        assert_eq!(s.stats().evicted, 1);
+        assert_eq!(s.store().state(chunk), Some(ChunkState::Uploaded));
+
+        let job = s.take_job().unwrap();
+        assert_eq!(job.kind, JobKind::GenerateTerrain);
+    }
+
+    #[test]
+    fn remesh_is_only_legal_from_uploaded() {
+        let mut s = SchedulerCore::new(1, 8);
+        let pos = ChunkPos::new(3, -2);
+        assert_eq!(
+            s.request_remesh(pos).unwrap_err(),
+            SchedError::IllegalState {
+                expected: ChunkState::Uploaded,
+                actual: None,
+            },
+            "an unknown chunk must not be created by a remesh request"
+        );
+        drive_terrain(&mut s, pos);
+        assert_eq!(
+            s.request_remesh(pos).unwrap_err(),
+            SchedError::IllegalState {
+                expected: ChunkState::Uploaded,
+                actual: Some(ChunkState::TerrainReady),
+            }
+        );
+        s.request_mesh(pos).unwrap();
+        let job = s.take_job().unwrap();
+        s.complete(job);
+        assert_eq!(
+            s.request_remesh(pos).unwrap_err(),
+            SchedError::IllegalState {
+                expected: ChunkState::Uploaded,
+                actual: Some(ChunkState::MeshReady),
+            }
+        );
+        assert_eq!(s.store().state(pos), Some(ChunkState::MeshReady));
+    }
+
+    #[test]
+    fn tickets_are_refcounted_and_hold_off_unload() {
+        let mut s = SchedulerCore::new(1, 8);
+        let pos = ChunkPos::new(2, 2);
+        drive_upload(&mut s, pos);
+        assert_eq!(s.acquire_ticket(pos).unwrap(), 1);
+        assert_eq!(s.acquire_ticket(pos).unwrap(), 2);
+        assert_eq!(s.release_ticket(pos).unwrap(), 1);
+        let err = s.unload_now(pos).unwrap_err();
+        assert_eq!(err, SchedError::Store(ChunkStoreError::HasTickets { tickets: 1 }));
+        assert_eq!(s.release_ticket(pos).unwrap(), 0);
+        let revision = s.store().get(pos).expect("entry present").revision;
+        // begin_unload is itself a transition, so the removal reports the bumped revision.
+        assert_eq!(s.unload_now(pos).unwrap(), revision + 1);
+        assert_eq!(s.store().state(pos), None);
+        assert_eq!(
+            s.acquire_ticket(pos).unwrap_err(),
+            SchedError::Store(ChunkStoreError::NotFound(pos))
         );
     }
 

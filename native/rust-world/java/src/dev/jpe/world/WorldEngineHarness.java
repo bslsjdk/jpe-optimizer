@@ -39,12 +39,13 @@ public final class WorldEngineHarness {
         epochInvalidation(world);
         renderers(world);
         visibility(world);
+        pipeline(world);
 
         System.out.println("[harness] all " + checks + " checks passed");
     }
 
     private static void abi(JpeWorldNative world) {
-        eq("abi version", 1, world.abiVersion());
+        eq("abi version", 2, world.abiVersion());
         eq("max section quads", 2048 * 6, world.maxSectionQuads());
     }
 
@@ -386,6 +387,150 @@ public final class WorldEngineHarness {
             eq("renderer destroy mesh", 0, world.rendererDestroyMesh(r, section.mesh()));
         }
         eq("renderer destroy (visibility)", 0, world.rendererDestroy(r));
+    }
+
+    /**
+     * The stage-5 path: Java hands block ids to Rust, and Rust runs the whole
+     * chunk lifecycle (schedule, mesh, upload, publish, cull, draw) and reports it
+     * back. Skipped when no native backend runs here, unless
+     * {@code JPE_REQUIRE_RENDER_BACKENDS} is set.
+     */
+    private static void pipeline(JpeWorldNative world) {
+        long r = world.rendererCreate(JpeWorldNative.BACKEND_AUTO);
+        if (r == 0) {
+            if (System.getenv("JPE_REQUIRE_RENDER_BACKENDS") != null) {
+                throw new AssertionError("check failed: render backend required for pipeline");
+            }
+            System.out.println("[harness] no native render backend here, skipping pipeline checks");
+            return;
+        }
+
+        JpeWorldNative.PipelineConfig config =
+                new JpeWorldNative.PipelineConfig(4, 4, 4, 2, 1, 1, 64, 64);
+        long h = world.pipelineCreate(r, 1L, 16, config);
+        check("pipeline create returns a handle", h != 0);
+        eq("pipeline create rejects an unknown renderer", 0L,
+                world.pipelineCreate(999_999L, 1L, 16, config));
+
+        // Contract checks before any real work.
+        eq("null block pointer rejected", JpeWorldNative.RENDER_INVALID_ARGUMENT,
+                world.pipelineSubmitChunk(h, 0, 0, 1, 1, true));
+        eq("zero section count rejected", JpeWorldNative.RENDER_INVALID_MESH,
+                world.pipelineSubmitChunk(h, 0, 0, 1, 0, false));
+        eq("sections past the world top rejected", JpeWorldNative.RENDER_INVALID_MESH,
+                world.pipelineSubmitChunk(h, 0, 0, 19, 2, false));
+        eq("null frame matrix rejected", JpeWorldNative.RENDER_INVALID_ARGUMENT,
+                world.pipelineFrameRaw(h, null, new float[]{0, 0, 0}));
+        eq("null frame output rejected", JpeWorldNative.RENDER_INVALID_ARGUMENT,
+                world.pipelineFrameRaw(h, new float[16], new float[]{0.0f, 0.0f, 0.0f}));
+        eq("negative unload radius rejected", JpeWorldNative.RENDER_INVALID_MESH,
+                world.pipelineUnloadOutsideStatus(h, 0, 0, -1));
+        eq("unknown pipeline handle rejected", JpeWorldNative.RENDER_UNKNOWN_HANDLE,
+                world.pipelineDestroy(999_999L));
+        eq("tickets need a tracked chunk", JpeWorldNative.RENDER_INVALID_MESH,
+                world.pipelineTicket(h, 7777, 7777, true));
+
+        float[] eye = {8.0f, 24.0f, 48.0f};
+        float[] up3 = {0.0f, 1.0f, 0.0f};
+        float[] viewProj = world.cameraOrtho(eye, new float[]{8.0f, 24.0f, 0.0f}, up3,
+                14.0f, 14.0f, 0.5f, 200.0f);
+        check("pipeline camera built", viewProj != null);
+        float[] awayEye = {8.0f, 24.0f, -64.0f};
+        float[] away = world.cameraOrtho(awayEye, new float[]{8.0f, 24.0f, -112.0f}, up3,
+                14.0f, 14.0f, 0.5f, 200.0f);
+        check("away pipeline camera built", away != null);
+
+        // A renderer is thread-affine, and so is the pipeline that draws with it.
+        int[] crossThread = new int[2];
+        Thread other = new Thread(() -> {
+            try {
+                crossThread[0] = world.pipelineTryFrame(h, viewProj, eye);
+                crossThread[1] = world.pipelineStatsStatus(h);
+            } catch (RuntimeException e) {
+                crossThread[0] = -100;
+            }
+        });
+        try {
+            other.start();
+            other.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("check failed: cross-thread pipeline probe interrupted", e);
+        }
+        eq("pipeline frame rejected on another thread", JpeWorldNative.RENDER_WRONG_THREAD,
+                crossThread[0]);
+        eq("pipeline stats rejected on another thread", JpeWorldNative.RENDER_WRONG_THREAD,
+                crossThread[1]);
+        eq("pipeline frame accepted on the owner thread", 0,
+                world.pipelineTryFrame(h, viewProj, eye));
+        eq("pipeline stats readable on the owner thread", 0, world.pipelineStatsStatus(h));
+
+        // 1. Load: one solid 16^3 section in chunk (0,0), section y=1.
+        eq("first submit queues terrain", JpeWorldNative.SUBMIT_NEW,
+                world.pipelineSubmitChunk(h, 0, 0, 1, JpeWorldNative.solidSections(1, (short) 1)));
+        eq("repeat submit while queued does nothing", JpeWorldNative.SUBMIT_IN_FLIGHT,
+                world.pipelineSubmitChunk(h, 0, 0, 1, JpeWorldNative.solidSections(1, (short) 1)));
+        JpeWorldNative.FrameStats loaded = world.pipelineFrame(h, viewProj, eye);
+        eq("terrain job ran", 1L, loaded.terrainJobs());
+        eq("mesh job ran", 1L, loaded.meshJobs());
+        eq("section published", 1L, loaded.published());
+        eq("section resident", 1L, loaded.resident());
+        eq("section visible", 1L, loaded.visible());
+        eq("nothing culled", 0L, loaded.culled());
+        eq("one draw batch", 1L, loaded.batches());
+        eq("resident keys reported", 1L, world.pipelineResidentKeys(h, 8).length);
+        int lit = countLit(world.rendererReadPixels(r, 64, 64));
+        check("pipeline drew geometry (" + lit + " pixels)", lit > 100);
+
+        // 2. Turn around: the same resident section must be culled, not drawn.
+        JpeWorldNative.FrameStats awayFrame = world.pipelineFrame(h, away, awayEye);
+        eq("away frame still resident", 1L, awayFrame.resident());
+        eq("away frame visible", 0L, awayFrame.visible());
+        eq("away frame culled", 1L, awayFrame.culled());
+        eq("away frame batches", 0L, awayFrame.batches());
+        eq("culled frame draws nothing", 0, countLit(world.rendererReadPixels(r, 64, 64)));
+
+        // 3. Block update to air: the old mesh must be retired, not left drawn.
+        eq("air submit requests remesh", JpeWorldNative.SUBMIT_REMESH_REQUESTED,
+                world.pipelineSubmitChunk(h, 0, 0, 1, JpeWorldNative.solidSections(1, (short) 0)));
+        JpeWorldNative.FrameStats cleared = world.pipelineFrame(h, viewProj, eye);
+        eq("remesh processed", 1L, cleared.remeshChunks());
+        eq("old mesh destroyed", 1L, cleared.destroyed());
+        eq("nothing resident after clearing", 0L, cleared.resident());
+        eq("no keys after clearing", 0L, world.pipelineResidentKeys(h, 8).length);
+        eq("cleared frame draws nothing", 0, countLit(world.rendererReadPixels(r, 64, 64)));
+
+        // 4. Reload and hold the chunk with a ticket, then release and unload.
+        eq("resubmit requests a remesh", JpeWorldNative.SUBMIT_REMESH_REQUESTED,
+                world.pipelineSubmitChunk(h, 0, 0, 1, JpeWorldNative.solidSections(1, (short) 1)));
+        eq("reloaded section resident", 1L, world.pipelineFrame(h, viewProj, eye).resident());
+        eq("ticket acquired", 1, world.pipelineTicket(h, 0, 0, true));
+        eq("ticketed chunk survives the sweep", 0L, world.pipelineUnloadOutside(h, 40, 40, 0));
+        eq("ticket released", 0, world.pipelineTicket(h, 0, 0, false));
+        eq("chunk unloaded", 1L, world.pipelineUnloadOutside(h, 40, 40, 0));
+        JpeWorldNative.PipelineStats after = world.pipelineStats(h);
+        eq("block data released with the chunk", 0L, after.sourceSections());
+        eq("no cached sections left", 0L, after.cachedSections());
+        eq("no resident sections left", 0L, after.residentSections());
+        // 1 owner-thread probe frame during the contract checks, then load, away,
+        // clear and reload.
+        eq("frames counted", 5L, after.frames());
+        eq("meshes destroyed counted", 2L, after.meshesDestroyed());
+        System.out.println("[harness] pipeline: " + after.frames() + " frames, "
+                + after.published() + " published, " + after.remeshChunks() + " remeshed, "
+                + after.meshesDestroyed() + " meshes destroyed, " + lit + " lit pixels");
+
+        // 5. Reset drops GPU data and bumps the world epoch.
+        eq("reset bumps the epoch", 2L, world.pipelineReset(h));
+        JpeWorldNative.PipelineStats reset = world.pipelineStats(h);
+        eq("reset cleared residency", 0L, reset.residentSections());
+        eq("reset cleared cached data", 0L, reset.cachedSections());
+        eq("reset leaves nothing pending", 0L, reset.pendingRemesh());
+
+        eq("pipeline destroy", 0, world.pipelineDestroy(h));
+        eq("pipeline destroy twice", JpeWorldNative.RENDER_UNKNOWN_HANDLE,
+                world.pipelineDestroy(h));
+        eq("renderer destroy (pipeline)", 0, world.rendererDestroy(r));
     }
 
     /** Non-background pixels of a frame, using the cleared top-left corner. */

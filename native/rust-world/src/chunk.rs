@@ -67,10 +67,12 @@ impl ChunkState {
                 | (TerrainReady, MeshQueued)
                 | (MeshQueued, Meshing)
                 | (MeshQueued, MeshReady) // cached mesh reused
+                | (MeshQueued, TerrainReady) // mesh job cancelled before start
                 | (Meshing, MeshReady)
                 | (Meshing, MeshQueued) // remesh requested while meshing
                 | (MeshReady, Uploaded)
                 | (Uploaded, MeshQueued) // neighbour changed
+                | (MeshQueued, Uploaded) // remesh job cancelled before start
                 | (Unloading, Empty)
         )
     }

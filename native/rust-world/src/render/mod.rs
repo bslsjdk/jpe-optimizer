@@ -293,6 +293,7 @@ pub mod gles;
 pub mod gl;
 pub mod headless;
 pub mod plan;
+pub mod registry;
 pub mod vulkan;
 
 /// Try every backend in priority order and return the first that initialises a

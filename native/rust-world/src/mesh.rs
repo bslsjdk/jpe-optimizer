@@ -46,6 +46,26 @@ impl ChunkSection {
     pub fn is_empty(&self) -> bool {
         self.blocks.iter().all(|&b| b == 0)
     }
+
+    /// Section from a flat block-index array in `(y << 8) | (z << 4) | x` order,
+    /// i.e. x fastest, then z, then y — exactly how [`ChunkSection::set`] indexes.
+    ///
+    /// This is the hand-off shape for callers that own the block data (Java for
+    /// now, the C++ terrain engine later): they copy indices straight in with no
+    /// transpose. Returns `None` unless the length is exactly [`ChunkSection::VOLUME`].
+    pub fn from_indices(blocks: &[u16]) -> Option<Self> {
+        if blocks.len() != Self::VOLUME {
+            return None;
+        }
+        Some(Self {
+            blocks: blocks.to_vec(),
+        })
+    }
+
+    /// The block indices in the same order [`ChunkSection::from_indices`] expects.
+    pub fn indices(&self) -> &[u16] {
+        &self.blocks
+    }
 }
 
 impl Default for ChunkSection {
@@ -433,6 +453,21 @@ impl Frustum {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn from_indices_round_trips_in_documented_order() {
+        let mut flat = vec![0u16; ChunkSection::VOLUME];
+        // (y << 8) | (z << 4) | x
+        flat[(2 << 8) | (3 << 4) | 5] = 7;
+        let section = ChunkSection::from_indices(&flat).expect("exact volume");
+        assert_eq!(section.get(5, 2, 3), 7);
+        assert_eq!(section.indices(), &flat[..]);
+        assert!(ChunkSection::from_indices(&flat[..100]).is_none());
+        assert!(ChunkSection::from_indices(&[]).is_none());
+        let mut sparse = ChunkSection::new();
+        sparse.set(1, 1, 1, 4);
+        assert_eq!(sparse.indices()[(1 << 8) | (1 << 4) | 1], 4);
+    }
 
     fn solid_cube() -> ChunkSection {
         let mut s = ChunkSection::new();

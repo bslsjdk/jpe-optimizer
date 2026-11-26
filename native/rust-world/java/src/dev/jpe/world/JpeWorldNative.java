@@ -37,6 +37,13 @@ public final class JpeWorldNative implements AutoCloseable {
     public static final int KIND_BUILD_MESH = 1;
     public static final int KIND_UPLOAD_MESH = 2;
     public static final int KIND_UNLOAD = 3;
+    public static final int KIND_REMESH_MESH = 4;
+
+    /** Pipeline submit-result codes, mirroring {@code Submit} in Rust. */
+    public static final int SUBMIT_NEW = 0;
+    public static final int SUBMIT_MESH_REQUESTED = 1;
+    public static final int SUBMIT_REMESH_REQUESTED = 2;
+    public static final int SUBMIT_IN_FLIGHT = 3;
 
     /** Completion codes. */
     public static final int COMPLETE_COMMITTED = 0;
@@ -82,6 +89,32 @@ public final class JpeWorldNative implements AutoCloseable {
     /** A mesh uploaded to the renderer, plus the index count to draw it. */
     public record MeshUpload(long mesh, int indexCount) {}
 
+    /**
+     * Pipeline per-frame budgets. Mirrors the 32-byte {@code JpePipelineConfig}.
+     * A zero field means "use the Rust default", so callers only set what they
+     * care about.
+     */
+    public record PipelineConfig(int terrainBudget, int meshBudget, int remeshBudget,
+                                 int threads, int sectionYMin, int sectionYMax,
+                                 int width, int height) {
+        public static PipelineConfig defaults() {
+            return new PipelineConfig(0, 0, 0, 0, 0, -1, 0, 0);
+        }
+    }
+
+    /** Outcome of one {@code jpe_pipeline_frame}; mirrors the 88-byte struct. */
+    public record FrameStats(long terrainJobs, long meshJobs, long remeshChunks, long published,
+                             long replaced, long destroyed, long resident, long batches,
+                             long considered, long visible, long culled) {}
+
+    /** Lifetime pipeline counters; mirrors the 128-byte {@code JpePipelineStats}. */
+    public record PipelineStats(long frames, long terrainJobs, long meshJobs, long remeshChunks,
+                                long published, long replaced, long emptySections,
+                                long meshesDestroyed, long chunksUnloaded, long sectionsUnloaded,
+                                long cachedSections, long pendingMesh, long pendingRemesh,
+                                long residentSections, long sourceSections,
+                                long sourceMissingReads) {}
+
     private final Arena arena = Arena.ofShared();
 
     private final MethodHandle hAbiVersion;
@@ -113,6 +146,17 @@ public final class JpeWorldNative implements AutoCloseable {
     private final MethodHandle hRendererDrawVisible;
     private final MethodHandle hRendererEndFrame;
     private final MethodHandle hRendererReadPixels;
+
+    private final MethodHandle hPipelineCreate;
+    private final MethodHandle hPipelineDestroy;
+    private final MethodHandle hPipelineSubmitChunk;
+    private final MethodHandle hPipelineFrame;
+    private final MethodHandle hPipelineUnloadOutside;
+    private final MethodHandle hPipelineSetPlayer;
+    private final MethodHandle hPipelineTicket;
+    private final MethodHandle hPipelineStats;
+    private final MethodHandle hPipelineResidentKeys;
+    private final MethodHandle hPipelineReset;
 
     public JpeWorldNative(Path library) {
         SymbolLookup lookup = SymbolLookup.libraryLookup(library, arena);
@@ -179,6 +223,27 @@ public final class JpeWorldNative implements AutoCloseable {
                 FunctionDescriptor.of(i32, i64));
         this.hRendererReadPixels = down(linker, lookup, "jpe_world_renderer_read_pixels",
                 FunctionDescriptor.of(i32, i64, ptr, i64, ptr, ptr));
+
+        this.hPipelineCreate = down(linker, lookup, "jpe_pipeline_create",
+                FunctionDescriptor.of(i64, i64, i64, i32, ptr));
+        this.hPipelineDestroy = down(linker, lookup, "jpe_pipeline_destroy",
+                FunctionDescriptor.of(i32, i64));
+        this.hPipelineSubmitChunk = down(linker, lookup, "jpe_pipeline_submit_chunk",
+                FunctionDescriptor.of(i32, i64, i32, i32, i32, i32, ptr));
+        this.hPipelineFrame = down(linker, lookup, "jpe_pipeline_frame",
+                FunctionDescriptor.of(i32, i64, ptr, ptr, ptr));
+        this.hPipelineUnloadOutside = down(linker, lookup, "jpe_pipeline_unload_outside",
+                FunctionDescriptor.of(i32, i64, i32, i32, i32, ptr));
+        this.hPipelineSetPlayer = down(linker, lookup, "jpe_pipeline_set_player",
+                FunctionDescriptor.of(i32, i64, i32, i32));
+        this.hPipelineTicket = down(linker, lookup, "jpe_pipeline_ticket",
+                FunctionDescriptor.of(i32, i64, i32, i32, i32));
+        this.hPipelineStats = down(linker, lookup, "jpe_pipeline_stats",
+                FunctionDescriptor.of(i32, i64, ptr));
+        this.hPipelineResidentKeys = down(linker, lookup, "jpe_pipeline_resident_keys",
+                FunctionDescriptor.of(i32, i64, ptr, i32));
+        this.hPipelineReset = down(linker, lookup, "jpe_pipeline_reset",
+                FunctionDescriptor.of(i32, i64, ptr));
     }
 
     private static MethodHandle down(Linker linker, SymbolLookup lookup, String name,
@@ -577,6 +642,223 @@ public final class JpeWorldNative implements AutoCloseable {
             }
             return dst.toArray(ValueLayout.JAVA_BYTE);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // World pipeline (ABI v2): chunk lifecycle, GPU section registry, frame loop
+    // -----------------------------------------------------------------------
+
+    /**
+     * Create a pipeline that draws through {@code renderer} (a handle from
+     * {@link #rendererCreate}). Must be called on the thread that owns the
+     * renderer, because that thread holds the GPU context.
+     *
+     * @return a non-zero handle, or 0 when {@code config} is invalid, the
+     *         renderer handle is unknown, or the renderer belongs to another thread
+     */
+    public long pipelineCreate(long renderer, long worldEpoch, int queueCapacity,
+                               PipelineConfig config) {
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment buf = a.allocate(32);
+            buf.set(ValueLayout.JAVA_INT, 0, config.terrainBudget());
+            buf.set(ValueLayout.JAVA_INT, 4, config.meshBudget());
+            buf.set(ValueLayout.JAVA_INT, 8, config.remeshBudget());
+            buf.set(ValueLayout.JAVA_INT, 12, config.threads());
+            buf.set(ValueLayout.JAVA_INT, 16, config.sectionYMin());
+            buf.set(ValueLayout.JAVA_INT, 20, config.sectionYMax());
+            buf.set(ValueLayout.JAVA_INT, 24, config.width());
+            buf.set(ValueLayout.JAVA_INT, 28, config.height());
+            return invokeLong(hPipelineCreate, renderer, worldEpoch, queueCapacity, buf);
+        }
+    }
+
+    public int pipelineDestroy(long handle) {
+        return invokeInt(hPipelineDestroy, handle);
+    }
+
+    /**
+     * Hand one chunk of finished block data to the world engine: {@code blocks}
+     * is {@code sectionCount * 4096} block ids in section order from
+     * {@code baseSectionY} upwards, each indexed {@code (y<<8)|(z<<4)|x}.
+     *
+     * <p>Terrain generation is not part of this call. The Rust side takes over
+     * scheduling, meshing, GPU upload, visibility and culling.
+     *
+     * @return one of the SUBMIT_* codes
+     */
+    public int pipelineSubmitChunk(long handle, int chunkX, int chunkZ, int baseSectionY,
+                                   short[] blocks) {
+        if (blocks == null || blocks.length == 0 || blocks.length % 4096 != 0) {
+            throw new IllegalArgumentException("expected a whole number of 4096-block sections");
+        }
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment data = a.allocate(2L * blocks.length);
+            for (int i = 0; i < blocks.length; i++) {
+                data.setAtIndex(ValueLayout.JAVA_SHORT, i, blocks[i]);
+            }
+            return invokeInt(hPipelineSubmitChunk, handle, chunkX, chunkZ, baseSectionY,
+                    blocks.length / 4096, data);
+        }
+    }
+
+    /**
+     * Contract check: the status is returned instead of thrown, and the pointer
+     * can be forced to null. The buffer is always large enough for the requested
+     * section count, so an out-of-range count is rejected on its own argument
+     * rather than by reading past an undersized allocation.
+     */
+    public int pipelineSubmitChunk(long handle, int chunkX, int chunkZ, int baseSectionY,
+                                   int sectionCount, boolean nullBlocks) {
+        try (Arena a = Arena.ofConfined()) {
+            long bytes = nullBlocks ? 0L : 8192L * Math.max(1, Math.min(sectionCount, 24));
+            MemorySegment data = nullBlocks ? MemorySegment.NULL : a.allocate(bytes);
+            return invokeInt(hPipelineSubmitChunk, handle, chunkX, chunkZ, baseSectionY,
+                    sectionCount, data);
+        }
+    }
+
+    /**
+     * Run one frame: pump terrain/mesh/remesh jobs within the budgets, upload and
+     * publish geometry, cull the resident sections against {@code viewProj} and
+     * draw the survivors through the pipeline's renderer.
+     */
+    public FrameStats pipelineFrame(long handle, float[] viewProj, float[] eye) {
+        if (viewProj == null || viewProj.length != 16 || eye == null || eye.length != 3) {
+            throw new IllegalArgumentException("expected a 4x4 matrix and a 3-float eye");
+        }
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment out = a.allocate(88);
+            int status = invokeInt(hPipelineFrame, handle, floats(a, viewProj), floats3(a, eye), out);
+            if (status != RENDER_OK) {
+                throw new IllegalStateException("pipelineFrame failed: status " + status);
+            }
+            return new FrameStats(
+                    out.get(ValueLayout.JAVA_LONG, 0),
+                    out.get(ValueLayout.JAVA_LONG, 8),
+                    out.get(ValueLayout.JAVA_LONG, 16),
+                    out.get(ValueLayout.JAVA_LONG, 24),
+                    out.get(ValueLayout.JAVA_LONG, 32),
+                    out.get(ValueLayout.JAVA_LONG, 40),
+                    out.get(ValueLayout.JAVA_LONG, 48),
+                    out.get(ValueLayout.JAVA_LONG, 56),
+                    out.get(ValueLayout.JAVA_LONG, 64),
+                    out.get(ValueLayout.JAVA_LONG, 72),
+                    out.get(ValueLayout.JAVA_LONG, 80));
+        }
+    }
+
+    /** Full call with a real output block, but the status returned, not thrown. */
+    public int pipelineTryFrame(long handle, float[] viewProj, float[] eye) {
+        try (Arena a = Arena.ofConfined()) {
+            return invokeInt(hPipelineFrame, handle, floats(a, viewProj), floats3(a, eye),
+                    a.allocate(88));
+        }
+    }
+
+    public int pipelineFrameRaw(long handle, float[] viewProj, float[] eye) {
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment vp = viewProj == null ? MemorySegment.NULL : floats(a, viewProj);
+            MemorySegment ev = eye == null ? MemorySegment.NULL : floats3(a, eye);
+            return invokeInt(hPipelineFrame, handle, vp, ev, MemorySegment.NULL);
+        }
+    }
+
+    /** Unload every tracked chunk outside {@code radius}; returns chunks unloaded. */
+    public long pipelineUnloadOutside(long handle, int centerX, int centerZ, int radius) {
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment out = a.allocate(4);
+            int status = invokeInt(hPipelineUnloadOutside, handle, centerX, centerZ, radius, out);
+            if (status != RENDER_OK) {
+                throw new IllegalStateException("pipelineUnloadOutside failed: status " + status);
+            }
+            return Integer.toUnsignedLong(out.get(ValueLayout.JAVA_INT, 0));
+        }
+    }
+
+    /** Status-only variant, for contract checks. */
+    public int pipelineUnloadOutsideStatus(long handle, int centerX, int centerZ, int radius) {
+        return invokeInt(hPipelineUnloadOutside, handle, centerX, centerZ, radius,
+                MemorySegment.NULL);
+    }
+
+    /** Status-only variant: 0 means the stats block is readable. */
+    public int pipelineStatsStatus(long handle) {
+        try (Arena a = Arena.ofConfined()) {
+            return invokeInt(hPipelineStats, handle, a.allocate(128));
+        }
+    }
+
+    public int pipelineSetPlayer(long handle, int chunkX, int chunkZ) {
+        return invokeInt(hPipelineSetPlayer, handle, chunkX, chunkZ);
+    }
+
+    /** Hold a chunk against unloading, or release one hold. Returns ticket count. */
+    public int pipelineTicket(long handle, int chunkX, int chunkZ, boolean acquire) {
+        return invokeInt(hPipelineTicket, handle, chunkX, chunkZ, acquire ? 1 : 0);
+    }
+
+    public PipelineStats pipelineStats(long handle) {
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment buf = a.allocate(128);
+            int status = invokeInt(hPipelineStats, handle, buf);
+            if (status != RENDER_OK) {
+                throw new IllegalStateException("pipelineStats failed: status " + status);
+            }
+            return new PipelineStats(
+                    buf.get(ValueLayout.JAVA_LONG, 0),
+                    buf.get(ValueLayout.JAVA_LONG, 8),
+                    buf.get(ValueLayout.JAVA_LONG, 16),
+                    buf.get(ValueLayout.JAVA_LONG, 24),
+                    buf.get(ValueLayout.JAVA_LONG, 32),
+                    buf.get(ValueLayout.JAVA_LONG, 40),
+                    buf.get(ValueLayout.JAVA_LONG, 48),
+                    buf.get(ValueLayout.JAVA_LONG, 56),
+                    buf.get(ValueLayout.JAVA_LONG, 64),
+                    buf.get(ValueLayout.JAVA_LONG, 72),
+                    buf.get(ValueLayout.JAVA_LONG, 80),
+                    buf.get(ValueLayout.JAVA_LONG, 88),
+                    buf.get(ValueLayout.JAVA_LONG, 96),
+                    buf.get(ValueLayout.JAVA_LONG, 104),
+                    buf.get(ValueLayout.JAVA_LONG, 112),
+                    buf.get(ValueLayout.JAVA_LONG, 120));
+        }
+    }
+
+    /** Resident section keys (packed {@code SectionPos} longs), ascending. */
+    public long[] pipelineResidentKeys(long handle, int max) {
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment buf = a.allocate(8L * max);
+            int written = invokeInt(hPipelineResidentKeys, handle, buf, max);
+            if (written < 0) {
+                throw new IllegalStateException("pipelineResidentKeys failed: status " + written);
+            }
+            long[] keys = new long[written];
+            for (int i = 0; i < written; i++) {
+                keys[i] = buf.getAtIndex(ValueLayout.JAVA_LONG, i);
+            }
+            return keys;
+        }
+    }
+
+    /** Drop all GPU data and start a new world epoch. */
+    public long pipelineReset(long handle) {
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment out = a.allocate(8);
+            int status = invokeInt(hPipelineReset, handle, out);
+            if (status != RENDER_OK) {
+                throw new IllegalStateException("pipelineReset failed: status " + status);
+            }
+            return out.get(ValueLayout.JAVA_LONG, 0);
+        }
+    }
+
+    /** Solid {@code sectionCount}-section block array helper for tests and demos. */
+    public static short[] solidSections(int sectionCount, short block) {
+        short[] blocks = new short[sectionCount * 4096];
+        if (block != 0) {
+            java.util.Arrays.fill(blocks, block);
+        }
+        return blocks;
     }
 
     /**

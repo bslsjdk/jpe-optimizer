@@ -34,6 +34,21 @@
 //!   draw/draw-visible/readback), thread-affinity enforced, exercised by the
 //!   Java harness
 //! - terrain FFI declarations for the existing ABI v8 (`cpp-bridge` feature)
+//! - per-frame world pipeline (`pipeline`): terrain and mesh jobs pumped under
+//!   per-frame budgets, geometry built on worker threads through `parallel_map`,
+//!   uploaded on the render thread, published into a GPU-owned
+//!   `render::registry::SectionRegistry`, then culled and submitted by
+//!   `render::plan` — chunk state transitions now produce the draw list instead
+//!   of the caller supplying one, neighbour arrival re-meshes the old chunk
+//!   through the scheduler (`JobKind::RemeshMesh`), and an empty result retires
+//!   the superseded GPU mesh so cleared blocks stop being drawn
+//! - `pipeline::PushSource`: Java hands over finished block ids (section layout
+//!   `(y<<8)|(z<<4)|x`, no transpose) and Rust owns everything after that
+//! - Java ABI v2: `jpe_pipeline_*` entry points (create/destroy/submit-chunk/
+//!   frame/unload-outside/set-player/ticket/stats/resident-keys/reset) plus
+//!   `JpePipelineConfig` / `JpeFrameStats` / `JpePipelineStats`, enforced
+//!   thread-affine and exercised end to end by the Java harness, including pixel
+//!   proof that a culled camera and a cleared section draw nothing
 //!
 //! **Not implemented yet** (must not be reported as done):
 //! - adopting Minecraft's live window/context (backends render offscreen today;
@@ -43,10 +58,11 @@
 //!   small test atlas; per-block texture coordinates from the game are not
 //!   wired), biome light / skylight data, fog
 //! - wiring into live Minecraft chunk generation / rendering (the C ABI and
-//!   Java binding exist; no mod code calls them yet)
-//! - feeding the draw list from `ChunkStore` / `SchedulerCore`: the plan takes a
-//!   caller-owned section registry, so nothing turns chunk state transitions into
-//!   records or runs a per-frame loop yet
+//!   Java binding exist; no mod code calls them yet). The pipeline is driven only
+//!   by explicit `jpe_pipeline_submit_chunk` calls, so it does not see
+//!   Minecraft's own chunk loads, block updates or light data yet
+//! - terrain handoff from the C++ engine: `pipeline::PushSource` takes block ids
+//!   from Java; the `cpp-bridge` path is still unwired
 //! - greedy meshing, ambient occlusion
 //! - shared-memory / zero-copy transport to C++
 
@@ -56,6 +72,7 @@ pub mod chunk;
 pub mod coords;
 pub mod ffi;
 pub mod mesh;
+pub mod pipeline;
 pub mod render;
 pub mod scheduler;
 pub mod task;

@@ -12,6 +12,7 @@
 use crate::chunk::ChunkState;
 use crate::coords::ChunkPos;
 use crate::mesh::{build_section_mesh, ChunkSection, Vertex};
+use crate::pipeline::{Camera, PipelineConfig, PushSource, Submit, WorldPipeline};
 use crate::render::{Backend, DrawBatch, Mat4, MeshHandle, RenderError, Renderer};
 use crate::render::plan::{plan_draws, SectionRecord};
 use crate::scheduler::{Completion, SchedulerCore};
@@ -20,7 +21,11 @@ use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 /// ABI version of this Java-facing surface (independent of the C++ ABI v8).
-pub const JAVA_ABI_VERSION: u32 = 1;
+///
+/// v2 adds the world pipeline entry points (`jpe_pipeline_*`), the
+/// `JpePipelineStats` job kind code 4 (`RemeshMesh`) and the pipeline config,
+/// frame and stats structures. All v1 entry points are unchanged.
+pub const JAVA_ABI_VERSION: u32 = 2;
 
 /// Worst-case quads for one 16^3 section: a checkerboard of 2048 solid blocks,
 /// every face exposed.
@@ -48,6 +53,7 @@ fn kind_code(kind: JobKind) -> u32 {
         JobKind::BuildMesh => 1,
         JobKind::UploadMesh => 2,
         JobKind::Unload => 3,
+        JobKind::RemeshMesh => 4,
     }
 }
 
@@ -57,6 +63,7 @@ fn kind_from(code: u32) -> Option<JobKind> {
         1 => Some(JobKind::BuildMesh),
         2 => Some(JobKind::UploadMesh),
         3 => Some(JobKind::Unload),
+        4 => Some(JobKind::RemeshMesh),
         _ => None,
     }
 }
@@ -904,13 +911,514 @@ pub extern "C" fn jpe_world_renderer_read_pixels(
     0
 }
 
+// ---------------------------------------------------------------------------
+// World pipeline (chunk lifecycle + GPU section registry + per-frame loop)
+// ---------------------------------------------------------------------------
+
+/// Java-facing pipeline configuration, handed to [`jpe_pipeline_create`].
+///
+/// 32 bytes, every field 4 bytes. A zero budget or extent means "use the Rust
+/// default", so a caller that only wants to change one field can zero the rest.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct JpePipelineConfig {
+    pub terrain_budget: u32,
+    pub mesh_budget: u32,
+    pub remesh_budget: u32,
+    pub threads: u32,
+    pub section_y_min: i32,
+    pub section_y_max: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// What one [`jpe_pipeline_frame`] did. 11 `u64` fields = 88 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct JpeFrameStats {
+    pub terrain_jobs: u64,
+    pub mesh_jobs: u64,
+    pub remesh_chunks: u64,
+    pub published: u64,
+    pub replaced: u64,
+    pub destroyed: u64,
+    /// Resident sections the planner considered.
+    pub resident: u64,
+    pub batches: u64,
+    pub considered: u64,
+    pub visible: u64,
+    pub culled: u64,
+}
+
+/// Lifetime pipeline counters. 16 `u64` fields = 128 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct JpePipelineStats {
+    pub frames: u64,
+    pub terrain_jobs: u64,
+    pub mesh_jobs: u64,
+    pub remesh_chunks: u64,
+    pub published: u64,
+    pub replaced: u64,
+    pub empty_sections: u64,
+    pub meshes_destroyed: u64,
+    pub chunks_unloaded: u64,
+    pub sections_unloaded: u64,
+    /// Cached block arrays the pipeline is holding on the CPU side.
+    pub cached_sections: u64,
+    pub pending_mesh: u64,
+    pub pending_remesh: u64,
+    pub resident_sections: u64,
+    /// Sections handed in by Java and not yet released by an unload.
+    pub source_sections: u64,
+    /// Reads of sections the caller never submitted.
+    pub source_missing_reads: u64,
+}
+
+/// `Submit` as an ABI code: 0 new, 1 mesh queued, 2 remesh queued, 3 stored only.
+#[inline]
+fn submit_code(submit: Submit) -> i32 {
+    match submit {
+        Submit::New => 0,
+        Submit::MeshRequested => 1,
+        Submit::RemeshRequested => 2,
+        Submit::InFlight => 3,
+    }
+}
+
+struct PipelineEntry {
+    thread: std::thread::ThreadId,
+    renderer: u64,
+    world: WorldPipeline<PushSource>,
+}
+
+// SAFETY: a pipeline draws through a renderer, which is thread-affine. Every
+// entry point compares the caller's thread against the creating thread and
+// returns -7 before touching the pipeline or the GPU, and the registry mutex
+// serialises calls, so no pipeline is driven concurrently or cross-thread.
+// `Send` is required only to store entries in the process-wide registry.
+unsafe impl Send for PipelineEntry {}
+
+#[derive(Default)]
+struct PipelineRegistry {
+    next: u64,
+    entries: HashMap<u64, PipelineEntry>,
+}
+
+fn pipeline_registry() -> &'static Mutex<PipelineRegistry> {
+    static REG: OnceLock<Mutex<PipelineRegistry>> = OnceLock::new();
+    REG.get_or_init(|| Mutex::new(PipelineRegistry::default()))
+}
+
+fn pipeline_lock() -> MutexGuard<'static, PipelineRegistry> {
+    pipeline_registry().lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Lock order is always pipeline -> renderer; no renderer entry point takes the
+/// pipeline lock, so the two can be held together without a cycle.
+fn with_pipeline<R>(
+    handle: u64,
+    f: impl FnOnce(&mut WorldPipeline<PushSource>) -> R,
+) -> Result<R, i32> {
+    let mut reg = pipeline_lock();
+    let Some(entry) = reg.entries.get_mut(&handle) else {
+        return Err(-1);
+    };
+    if entry.thread != std::thread::current().id() {
+        return Err(-7);
+    }
+    Ok(f(&mut entry.world))
+}
+
+/// As [`with_pipeline`], plus the renderer this pipeline was created against.
+/// `Err(-3)` when that renderer no longer exists.
+fn with_pipeline_renderer<R>(
+    handle: u64,
+    f: impl FnOnce(&mut WorldPipeline<PushSource>, &mut dyn Renderer) -> Result<R, RenderError>,
+) -> Result<R, i32> {
+    let mut reg = pipeline_lock();
+    let Some(entry) = reg.entries.get_mut(&handle) else {
+        return Err(-1);
+    };
+    let thread = entry.thread;
+    if thread != std::thread::current().id() {
+        return Err(-7);
+    }
+    let mut rreg = renderer_lock();
+    let Some(renderer_entry) = rreg.entries.get_mut(&entry.renderer) else {
+        return Err(-3);
+    };
+    let renderer = renderer_entry.renderer.as_mut();
+    f(&mut entry.world, renderer).map_err(render_error_code)
+}
+
+fn pipeline_config(cfg: &JpePipelineConfig) -> PipelineConfig {
+    let defaults = PipelineConfig::default();
+    let section_y = if cfg.section_y_max >= cfg.section_y_min {
+        (cfg.section_y_min, cfg.section_y_max)
+    } else {
+        defaults.section_y
+    };
+    let budget = |value: u32, fallback: usize| {
+        if value == 0 {
+            fallback
+        } else {
+            value.min(4096) as usize
+        }
+    };
+    PipelineConfig {
+        terrain_budget: budget(cfg.terrain_budget, defaults.terrain_budget),
+        mesh_budget: budget(cfg.mesh_budget, defaults.mesh_budget),
+        remesh_budget: budget(cfg.remesh_budget, defaults.remesh_budget),
+        threads: budget(cfg.threads, defaults.threads),
+        section_y,
+        extent: [
+            if cfg.width == 0 { defaults.extent[0] } else { cfg.width },
+            if cfg.height == 0 { defaults.extent[1] } else { cfg.height },
+        ],
+    }
+}
+
+/// Create a pipeline that draws through `renderer` (as returned by
+/// `jpe_world_renderer_create`).
+///
+/// The pipeline must be driven from the same thread that created the renderer,
+/// because that is the thread holding the GPU context. Returns a non-zero handle,
+/// or 0 when `config` is null, the renderer handle is unknown, or the renderer
+/// belongs to another thread.
+#[no_mangle]
+pub extern "C" fn jpe_pipeline_create(
+    renderer: u64,
+    world_epoch: u64,
+    queue_capacity: u32,
+    config: *const JpePipelineConfig,
+) -> u64 {
+    if config.is_null() {
+        return 0;
+    }
+    // SAFETY: non-null checked; points at one readable `JpePipelineConfig`.
+    let cfg = pipeline_config(&unsafe { *config });
+    let owner = {
+        let rreg = renderer_lock();
+        rreg.entries.get(&renderer).map(|entry| entry.thread)
+    };
+    let Some(owner) = owner else {
+        return 0;
+    };
+    if owner != std::thread::current().id() {
+        return 0;
+    }
+    let mut reg = pipeline_lock();
+    reg.next = reg.next.wrapping_add(1).max(1);
+    let handle = reg.next;
+    reg.entries.insert(
+        handle,
+        PipelineEntry {
+            thread: owner,
+            renderer,
+            world: WorldPipeline::new(
+                world_epoch,
+                queue_capacity.max(1) as usize,
+                cfg,
+                PushSource::new(),
+            ),
+        },
+    );
+    handle
+}
+
+/// Destroy a pipeline, releasing every mesh it still owns on its renderer first.
+/// 0 ok, -1 unknown handle, -7 wrong thread.
+#[no_mangle]
+pub extern "C" fn jpe_pipeline_destroy(handle: u64) -> i32 {
+    let (thread, renderer) = {
+        let reg = pipeline_lock();
+        match reg.entries.get(&handle) {
+            Some(entry) => (entry.thread, entry.renderer),
+            None => return -1,
+        }
+    };
+    if thread != std::thread::current().id() {
+        return -7;
+    }
+    let mut reg = pipeline_lock();
+    let Some(entry) = reg.entries.get_mut(&handle) else {
+        return -1;
+    };
+    let mut rreg = renderer_lock();
+    if let Some(renderer_entry) = rreg.entries.get_mut(&renderer) {
+        // If the renderer is already gone, its GPU objects died with it.
+        entry.world.reset(renderer_entry.renderer.as_mut());
+    }
+    drop(rreg);
+    reg.entries.remove(&handle);
+    0
+}
+
+/// Hand one chunk of finished block data to the world engine.
+///
+/// `blocks` holds `section_count * 4096` `u16` block ids in section order from
+/// `base_section_y` upwards, each section indexed `(y<<8)|(z<<4)|x` — exactly the
+/// layout [`ChunkSection`] uses, so no transpose is needed. Terrain math is *not*
+/// done here: Java (and later the C++ terrain engine) owns it.
+/// 0 new chunk, 1 mesh queued, 2 remesh queued, 3 stored without queueing,
+/// -1 unknown handle, -2 null pointer, -4 bad section count or out-of-world Y,
+/// -7 wrong thread.
+#[no_mangle]
+pub extern "C" fn jpe_pipeline_submit_chunk(
+    handle: u64,
+    chunk_x: i32,
+    chunk_z: i32,
+    base_section_y: i32,
+    section_count: u32,
+    blocks: *const u16,
+) -> i32 {
+    if blocks.is_null() {
+        return -2;
+    }
+    let sections = section_count as usize;
+    if sections == 0 || sections > crate::coords::SECTION_COUNT as usize {
+        return -4;
+    }
+    let top = base_section_y + sections as i32 - 1;
+    if base_section_y < crate::coords::MIN_SECTION_Y || top > crate::coords::MAX_SECTION_Y {
+        return -4;
+    }
+    let volume = ChunkSection::VOLUME;
+    // SAFETY: non-null checked; the caller provides `sections * 4096` readable
+    // u16 values, so every chunk below is exactly one section volume.
+    let flat = unsafe { std::slice::from_raw_parts(blocks, sections * volume) };
+    let mut owned: Vec<ChunkSection> = Vec::with_capacity(sections);
+    for column in flat.chunks(volume) {
+        // No `expect`: a panic must never cross the C boundary. `chunks()` yields
+        // exact volumes here, so this arm is unreachable in practice.
+        let Some(section) = ChunkSection::from_indices(column) else {
+            return -4;
+        };
+        owned.push(section);
+    }
+    match with_pipeline(handle, |world| {
+        world.submit_chunk(ChunkPos::new(chunk_x, chunk_z), base_section_y, &owned)
+    }) {
+        Ok(submit) => submit_code(submit),
+        Err(code) => code,
+    }
+}
+
+/// Run one frame: pump scheduled terrain/mesh/remesh work within the configured
+/// budgets, upload and publish geometry, cull the resident sections against
+/// `view_proj`, and draw the surviving batches through the pipeline's renderer.
+///
+/// `view_proj` is 16 column-major `f32`s and `eye` is 3 `f32`s, the same
+/// convention as `jpe_world_renderer_set_camera`; the planner and the backend
+/// share exactly this matrix.
+/// 0 ok, -1 unknown handle, -2 null pointer, -3 renderer gone, -4 degenerate
+/// camera or empty mesh, -5 API/device error, -6 unsupported, -7 wrong thread.
+#[no_mangle]
+pub extern "C" fn jpe_pipeline_frame(
+    handle: u64,
+    view_proj: *const f32,
+    eye: *const f32,
+    out: *mut JpeFrameStats,
+) -> i32 {
+    if view_proj.is_null() || eye.is_null() || out.is_null() {
+        return -2;
+    }
+    // SAFETY: non-null checked; 16 readable f32s and 3 readable f32s.
+    let (matrix, eye_pos) = unsafe {
+        (
+            std::ptr::read_unaligned(view_proj as *const Mat4),
+            [eye.read(), eye.add(1).read(), eye.add(2).read()],
+        )
+    };
+    let camera = Camera {
+        view_proj: matrix,
+        eye: eye_pos,
+    };
+    match with_pipeline_renderer(handle, |world, renderer| world.frame(renderer, camera)) {
+        Ok(outcome) => {
+            // SAFETY: `out` non-null checked and points at one writable struct.
+            unsafe {
+                *out = JpeFrameStats {
+                    terrain_jobs: outcome.terrain_jobs as u64,
+                    mesh_jobs: outcome.mesh_jobs as u64,
+                    remesh_chunks: outcome.remesh_chunks as u64,
+                    published: outcome.published as u64,
+                    replaced: outcome.replaced as u64,
+                    destroyed: outcome.destroyed as u64,
+                    resident: outcome.resident as u64,
+                    batches: outcome.batches as u64,
+                    considered: u64::from(outcome.plan.considered),
+                    visible: u64::from(outcome.plan.visible),
+                    culled: u64::from(outcome.plan.culled),
+                };
+            }
+            0
+        }
+        Err(code) => code,
+    }
+}
+
+/// Unload every tracked chunk outside `radius` of the centre, destroying its GPU
+/// meshes on this thread, and release the block data Java handed in for it.
+/// 0 ok, -1 unknown handle, -3 renderer gone, -4 negative radius, -7 wrong thread.
+#[no_mangle]
+pub extern "C" fn jpe_pipeline_unload_outside(
+    handle: u64,
+    center_x: i32,
+    center_z: i32,
+    radius: i32,
+    out_unloaded: *mut u32,
+) -> i32 {
+    if radius < 0 {
+        return -4;
+    }
+    let unloaded = match with_pipeline_renderer(handle, |world, renderer| {
+        let n = world.unload_outside(renderer, ChunkPos::new(center_x, center_z), radius);
+        let _ = world.flush_source_data();
+        Ok(n as u32)
+    }) {
+        Ok(n) => n,
+        Err(code) => return code,
+    };
+    // SAFETY: out pointer is optional.
+    unsafe {
+        if !out_unloaded.is_null() {
+            *out_unloaded = unloaded;
+        }
+    }
+    0
+}
+
+/// Move the scheduling reference point; queue priorities follow the player.
+/// 0 ok, -1 unknown handle, -7 wrong thread.
+#[no_mangle]
+pub extern "C" fn jpe_pipeline_set_player(handle: u64, chunk_x: i32, chunk_z: i32) -> i32 {
+    match with_pipeline(handle, |world| {
+        world.set_player(ChunkPos::new(chunk_x, chunk_z));
+    }) {
+        Ok(()) => 0,
+        Err(code) => code,
+    }
+}
+
+/// Hold a chunk against unloading (`acquire != 0`) or release one hold
+/// (`acquire == 0`). Returns the remaining ticket count, or a negative status:
+/// -1 unknown handle, -4 unknown chunk, -7 wrong thread.
+#[no_mangle]
+pub extern "C" fn jpe_pipeline_ticket(
+    handle: u64,
+    chunk_x: i32,
+    chunk_z: i32,
+    acquire: u32,
+) -> i32 {
+    let pos = ChunkPos::new(chunk_x, chunk_z);
+    let result = with_pipeline(handle, |world| {
+        if acquire == 0 {
+            world.release_ticket(pos)
+        } else {
+            world.acquire_ticket(pos)
+        }
+    });
+    match result {
+        Ok(Ok(count)) => i32::try_from(count).unwrap_or(i32::MAX),
+        // A chunk the scheduler does not know cannot be ticketed.
+        Ok(Err(_)) => -4,
+        Err(code) => code,
+    }
+}
+
+/// Report how many chunks and sections the pipeline is holding, plus lifetime
+/// counters. 0 ok, -1 unknown handle, -2 null pointer, -7 wrong thread.
+#[no_mangle]
+pub extern "C" fn jpe_pipeline_stats(handle: u64, out: *mut JpePipelineStats) -> i32 {
+    if out.is_null() {
+        return -2;
+    }
+    let stats = match with_pipeline(handle, |world| {
+        let s = world.stats();
+        let source = world.source();
+        JpePipelineStats {
+            frames: s.frames,
+            terrain_jobs: s.terrain_jobs,
+            mesh_jobs: s.mesh_jobs,
+            remesh_chunks: s.remesh_chunks,
+            published: s.published,
+            replaced: s.replaced,
+            empty_sections: s.empty_sections,
+            meshes_destroyed: s.meshes_destroyed,
+            chunks_unloaded: s.chunks_unloaded,
+            sections_unloaded: s.sections_unloaded,
+            cached_sections: world.cached_section_count() as u64,
+            pending_mesh: s.pending_mesh,
+            pending_remesh: s.pending_remesh,
+            resident_sections: world.registry().len() as u64,
+            source_sections: source.section_count() as u64,
+            source_missing_reads: source.missing_reads,
+        }
+    }) {
+        Ok(stats) => stats,
+        Err(code) => return code,
+    };
+    // SAFETY: `out` non-null checked and points at one writable struct.
+    unsafe {
+        *out = stats;
+    }
+    0
+}
+
+/// Write up to `max` resident section keys (packed `SectionPos` longs) into
+/// `out`, in ascending order. Returns the number written, or a negative status:
+/// -1 unknown handle, -2 null pointer, -7 wrong thread.
+#[no_mangle]
+pub extern "C" fn jpe_pipeline_resident_keys(
+    handle: u64,
+    out: *mut u64,
+    max: u32,
+) -> i32 {
+    if out.is_null() {
+        return -2;
+    }
+    let keys = match with_pipeline(handle, |world| world.resident_keys()) {
+        Ok(keys) => keys,
+        Err(code) => return code,
+    };
+    let written = keys.len().min(max as usize);
+    // SAFETY: `out` non-null checked; only `written <= max` slots are touched.
+    unsafe {
+        std::ptr::copy_nonoverlapping(keys.as_ptr(), out, written);
+    }
+    written as i32
+}
+
+/// Drop all GPU data and start a new world epoch (the caller must re-submit
+/// every chunk). Returns the new epoch through `out_new_epoch`.
+/// 0 ok, -1 unknown handle, -2 null pointer, -3 renderer gone, -7 wrong thread.
+#[no_mangle]
+pub extern "C" fn jpe_pipeline_reset(handle: u64, out_new_epoch: *mut u64) -> i32 {
+    if out_new_epoch.is_null() {
+        return -2;
+    }
+    let epoch = match with_pipeline_renderer(handle, |world, renderer| {
+        Ok(world.reset(renderer))
+    }) {
+        Ok(epoch) => epoch,
+        Err(code) => return code,
+    };
+    // SAFETY: `out_new_epoch` non-null checked.
+    unsafe {
+        *out_new_epoch = epoch;
+    }
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn abi_version_is_stable() {
-        assert_eq!(jpe_world_abi_version(), 1);
+        assert_eq!(jpe_world_abi_version(), 2);
     }
 
     #[test]
@@ -1462,5 +1970,248 @@ mod tests {
             assert_eq!(jpe_world_renderer_destroy_mesh(handle, section.mesh), 0);
         }
         assert_eq!(jpe_world_renderer_destroy(handle), 0);
+    }
+
+    #[test]
+    fn pipeline_abi_structs_have_documented_layout() {
+        assert_eq!(std::mem::size_of::<JpePipelineConfig>(), 32);
+        assert_eq!(std::mem::align_of::<JpePipelineConfig>(), 4);
+        assert_eq!(std::mem::size_of::<JpeFrameStats>(), 88);
+        assert_eq!(std::mem::size_of::<JpePipelineStats>(), 128);
+        // Offsets are part of the ABI; Java reads these fields by constant offset.
+        assert_eq!(std::mem::offset_of!(JpePipelineConfig, terrain_budget), 0);
+        assert_eq!(std::mem::offset_of!(JpePipelineConfig, threads), 12);
+        assert_eq!(std::mem::offset_of!(JpePipelineConfig, section_y_min), 16);
+        assert_eq!(std::mem::offset_of!(JpePipelineConfig, height), 28);
+        assert_eq!(std::mem::offset_of!(JpeFrameStats, resident), 48);
+        assert_eq!(std::mem::offset_of!(JpeFrameStats, culled), 80);
+        assert_eq!(std::mem::offset_of!(JpePipelineStats, cached_sections), 80);
+        assert_eq!(std::mem::offset_of!(JpePipelineStats, source_missing_reads), 120);
+    }
+
+    #[test]
+    fn pipeline_abi_rejects_bad_handles_and_arguments() {
+        let mut frame = JpeFrameStats::default();
+        let mut stats = JpePipelineStats::default();
+        let mut unloaded = 0u32;
+        let mut epoch = 0u64;
+        let matrix = [1.0f32; 16];
+        let eye = [0.0f32; 3];
+        let blocks = [0u16; 4096];
+        let unknown = 0xFFFF_FFFF_FFFF_u64;
+
+        // Unknown handles are refused everywhere, including destroy (no double free).
+        assert_eq!(jpe_pipeline_destroy(unknown), -1);
+        assert_eq!(jpe_pipeline_submit_chunk(unknown, 0, 0, 1, 1, blocks.as_ptr()), -1);
+        assert_eq!(jpe_pipeline_frame(unknown, matrix.as_ptr(), eye.as_ptr(), &mut frame), -1);
+        assert_eq!(jpe_pipeline_stats(unknown, &mut stats), -1);
+        assert_eq!(jpe_pipeline_set_player(unknown, 0, 0), -1);
+        assert_eq!(jpe_pipeline_ticket(unknown, 0, 0, 1), -1);
+        assert_eq!(jpe_pipeline_resident_keys(unknown, std::ptr::null_mut(), 4), -2);
+        assert_eq!(jpe_pipeline_unload_outside(unknown, 0, 0, 0, &mut unloaded), -1);
+        assert_eq!(jpe_pipeline_reset(unknown, &mut epoch), -1);
+
+        // A pipeline needs a live renderer of the caller's own thread.
+        assert_eq!(jpe_pipeline_create(unknown, 1, 8, std::ptr::null()), 0);
+        let r = jpe_world_renderer_create(RENDER_BACKEND_AUTO);
+        assert_ne!(r, 0);
+        assert_eq!(jpe_pipeline_create(r, 1, 8, std::ptr::null()), 0);
+        assert_eq!(jpe_pipeline_create(unknown, 1, 8, std::ptr::null()), 0);
+        let other = std::thread::spawn(move || jpe_pipeline_create(r, 1, 8, std::ptr::null()));
+        assert_eq!(other.join().unwrap(), 0, "renderer belongs to another thread");
+        assert_eq!(jpe_world_renderer_destroy(r), 0);
+
+        // Argument validation on a real pipeline.
+        let config = JpePipelineConfig {
+            section_y_min: 1,
+            section_y_max: 1,
+            width: 32,
+            height: 32,
+            ..JpePipelineConfig::default()
+        };
+        let renderer = jpe_world_renderer_create(RENDER_BACKEND_AUTO);
+        let h = jpe_pipeline_create(renderer, 1, 8, &config);
+        assert_ne!(h, 0);
+        assert_eq!(jpe_pipeline_submit_chunk(h, 0, 0, 1, 1, std::ptr::null()), -2);
+        assert_eq!(jpe_pipeline_submit_chunk(h, 0, 0, 1, 0, blocks.as_ptr()), -4);
+        assert_eq!(jpe_pipeline_submit_chunk(h, 0, 0, 1, 99, blocks.as_ptr()), -4);
+        // Sections must stay inside the world: y=19 plus two sections overflows.
+        assert_eq!(jpe_pipeline_submit_chunk(h, 0, 0, 19, 2, blocks.as_ptr()), -4);
+        assert_eq!(jpe_pipeline_submit_chunk(h, 0, 0, -4, 1, blocks.as_ptr()), 0);
+        assert_eq!(jpe_pipeline_unload_outside(h, 0, 0, -1, &mut unloaded), -4);
+        assert_eq!(jpe_pipeline_frame(h, std::ptr::null(), eye.as_ptr(), &mut frame), -2);
+        assert_eq!(jpe_pipeline_frame(h, matrix.as_ptr(), std::ptr::null(), &mut frame), -2);
+        assert_eq!(jpe_pipeline_frame(h, matrix.as_ptr(), eye.as_ptr(), std::ptr::null_mut()), -2);
+        assert_eq!(jpe_pipeline_stats(h, std::ptr::null_mut()), -2);
+        assert_eq!(jpe_pipeline_reset(h, std::ptr::null_mut()), -2);
+        assert_eq!(jpe_pipeline_ticket(h, 1234, 1234, 1), -4, "unknown chunk");
+
+        // Thread affinity applies to the pipeline, not just the renderer.
+        let cross = std::thread::spawn(move || {
+            let mut out = JpeFrameStats::default();
+            jpe_pipeline_frame(h, matrix.as_ptr(), eye.as_ptr(), &mut out)
+        });
+        assert_eq!(cross.join().unwrap(), -7);
+        let cross = std::thread::spawn(move || jpe_pipeline_destroy(h));
+        assert_eq!(cross.join().unwrap(), -7);
+        assert_eq!(jpe_pipeline_destroy(h), 0);
+        assert_eq!(jpe_world_renderer_destroy(renderer), 0);
+    }
+
+    /// End-to-end over the C ABI: Java hands in block ids, Rust schedules,
+    /// meshes, uploads, culls and draws, and the pixels come back.
+    fn exercise_pipeline(backend: u32) {
+        let renderer = jpe_world_renderer_create(backend);
+        if renderer == 0 {
+            require_or_skip("requested native render backend unavailable");
+            eprintln!("backend code {backend} unavailable here, skipping pipeline");
+            return;
+        }
+        let config = JpePipelineConfig {
+            terrain_budget: 4,
+            mesh_budget: 4,
+            remesh_budget: 4,
+            threads: 2,
+            section_y_min: 1,
+            section_y_max: 1,
+            width: 64,
+            height: 64,
+        };
+        let h = jpe_pipeline_create(renderer, 1, 16, &config);
+        assert_ne!(h, 0);
+
+        // Solid 16^3 section at section y=1 of chunk (0,0): world y 16..=31.
+        let solid = vec![1u16; 4096];
+        assert_eq!(jpe_pipeline_submit_chunk(h, 0, 0, 1, 1, solid.as_ptr()), 0);
+        assert_eq!(jpe_pipeline_submit_chunk(h, 0, 0, 1, 1, solid.as_ptr()), 3);
+
+        let mut matrix = [0f32; 16];
+        assert_eq!(
+            jpe_world_camera_ortho(
+                [8.0f32, 24.0, 48.0].as_ptr(),
+                [8.0f32, 24.0, 0.0].as_ptr(),
+                [0.0f32, 1.0, 0.0].as_ptr(),
+                14.0,
+                14.0,
+                0.5,
+                200.0,
+                matrix.as_mut_ptr()
+            ),
+            0
+        );
+        let eye = [8.0f32, 24.0, 48.0];
+        let mut frame = JpeFrameStats::default();
+        assert_eq!(jpe_pipeline_frame(h, matrix.as_ptr(), eye.as_ptr(), &mut frame), 0);
+        assert_eq!(frame.terrain_jobs, 1, "the submitted chunk was pumped");
+        assert_eq!(frame.published, 1);
+        assert_eq!(frame.resident, 1);
+        assert_eq!((frame.considered, frame.visible, frame.culled), (1, 1, 0));
+        assert_eq!(frame.batches, 1);
+
+        let mut keys = [0u64; 8];
+        assert_eq!(jpe_pipeline_resident_keys(h, keys.as_mut_ptr(), 8), 1);
+
+        let lit = count_lit_pixels(renderer, 64);
+        assert!(lit > 100, "expected geometry coverage, got {lit} pixels");
+
+        // Turn the camera away: the planner must cull the only resident section.
+        let mut away = [0f32; 16];
+        assert_eq!(
+            jpe_world_camera_ortho(
+                [8.0f32, 24.0, -64.0].as_ptr(),
+                [8.0f32, 24.0, -112.0].as_ptr(),
+                [0.0f32, 1.0, 0.0].as_ptr(),
+                14.0,
+                14.0,
+                0.5,
+                200.0,
+                away.as_mut_ptr()
+            ),
+            0
+        );
+        assert_eq!(
+            jpe_pipeline_frame(h, away.as_ptr(), [8.0, 24.0, -64.0].as_ptr(), &mut frame),
+            0
+        );
+        assert_eq!((frame.resident, frame.visible, frame.culled), (1, 0, 1));
+        assert_eq!(frame.batches, 0);
+        assert_eq!(count_lit_pixels(renderer, 64), 0, "nothing may be drawn when culled");
+
+        // A block update to air must retire the mesh instead of leaving it drawn.
+        let air = vec![0u16; 4096];
+        assert_eq!(jpe_pipeline_submit_chunk(h, 0, 0, 1, 1, air.as_ptr()), 2);
+        assert_eq!(jpe_pipeline_frame(h, matrix.as_ptr(), eye.as_ptr(), &mut frame), 0);
+        assert_eq!(frame.remesh_chunks, 1);
+        assert_eq!(frame.destroyed, 1);
+        assert_eq!(frame.resident, 0);
+        assert_eq!(jpe_pipeline_resident_keys(h, keys.as_mut_ptr(), 8), 0);
+        assert_eq!(count_lit_pixels(renderer, 64), 0);
+
+        let mut stats = JpePipelineStats::default();
+        assert_eq!(jpe_pipeline_stats(h, &mut stats), 0);
+        assert_eq!(stats.frames, 3);
+        assert_eq!(stats.terrain_jobs, 1);
+        assert_eq!(stats.remesh_chunks, 1);
+        assert_eq!(stats.published, 1);
+        assert_eq!(stats.resident_sections, 0);
+        assert_eq!(stats.meshes_destroyed, 1);
+        assert_eq!(stats.empty_sections, 1);
+        assert_eq!(stats.source_sections, 1, "the submitted data is still held");
+
+        // Unloading releases the GPU meshes and Java's block data together.
+        let mut unloaded = 0u32;
+        assert_eq!(jpe_pipeline_unload_outside(h, 40, 40, 0, &mut unloaded), 0);
+        assert_eq!(unloaded, 1);
+        assert_eq!(jpe_pipeline_stats(h, &mut stats), 0);
+        assert_eq!(stats.source_sections, 0);
+        assert_eq!(stats.cached_sections, 0);
+        assert_eq!(stats.chunks_unloaded, 1);
+        assert_eq!(
+            stats.sections_unloaded, 0,
+            "the mesh was already retired by the air remesh, not by the unload sweep"
+        );
+
+        assert_eq!(jpe_pipeline_destroy(h), 0);
+        assert_eq!(jpe_pipeline_destroy(h), -1);
+        assert_eq!(jpe_world_renderer_destroy(renderer), 0);
+    }
+
+    /// Pixels that differ from the cleared background corner of the last frame.
+    fn count_lit_pixels(renderer: u64, size: u32) -> usize {
+        let mut width = 0u32;
+        let mut height = 0u32;
+        let mut pixels = vec![0u8; (size * size * 4) as usize];
+        assert_eq!(
+            jpe_world_renderer_read_pixels(
+                renderer,
+                pixels.as_mut_ptr(),
+                pixels.len(),
+                &mut width,
+                &mut height
+            ),
+            0
+        );
+        assert_eq!((width, height), (size, size));
+        let background = [pixels[0], pixels[1], pixels[2]];
+        pixels
+            .chunks_exact(4)
+            .filter(|p| [p[0], p[1], p[2]] != background)
+            .count()
+    }
+
+    #[test]
+    fn pipeline_over_c_abi_on_every_backend() {
+        let mut ran = 0u32;
+        for backend in [RENDER_BACKEND_VULKAN, RENDER_BACKEND_GL, RENDER_BACKEND_GLES] {
+            let before = jpe_world_renderer_available(backend);
+            exercise_pipeline(backend);
+            // Whatever the backend reports, the pipeline must have been driven.
+            if before == 1 {
+                ran += 1;
+            }
+        }
+        // The always-available headless path carries the functional assertions.
+        exercise_pipeline(RENDER_BACKEND_AUTO);
+        eprintln!("pipeline exercised on {ran} native backend(s) plus headless");
     }
 }

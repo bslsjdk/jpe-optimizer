@@ -47,8 +47,11 @@ with stale-epoch rejection, scoped parallel map, culled section mesher, AABB /
 frustum culling, renderer trait, headless reference renderer, **three native GPU
 backends (Vulkan, OpenGL, OpenGL ES) with textured, depth-tested, camera-driven
 offscreen rendering and frame readback**, camera-derived frustum culling and a
-front-to-back draw-list planner (`src/render/plan.rs`), ABI v8 FFI declarations,
-Java-facing C ABI (`src/ffi.rs`), Java 25 FFM binding and harness (`java/`).
+front-to-back draw-list planner (`src/render/plan.rs`), a GPU-owned section
+registry (`src/render/registry.rs`) and the per-frame world pipeline
+(`src/pipeline.rs`) that runs schedule -> mesh -> upload -> publish -> cull ->
+draw, ABI v8 FFI declarations, Java-facing C ABI v2 (`src/ffi.rs`), Java 25 FFM
+binding and harness (`java/`).
 
 The three backends call the native APIs directly through hand-written bindings —
 no wgpu/gfx-hal/vulkano/glium. Each one creates a real device or context, uploads
@@ -67,15 +70,18 @@ camera returns a frame with **zero** lit pixels. See
 `docs/rust-world-engine-stage4-visibility.md` for the design and the exact
 verification commands, plus
 `docs/rust-world-engine-software-gpu-ci.md` for what the CI image has to install
-(and how the Vulkan ICD is discovered rather than hard-coded).
+(and how the Vulkan ICD is discovered rather than hard-coded), and
+`docs/rust-world-engine-stage5-pipeline.md` for the registry and pipeline design
+plus the measured evidence behind them.
 
 Not implemented yet: adopting Minecraft's live window/context (the backends
 render headless or offscreen today; host-context adoption lands with the client
 integration), presentation/swapchain, the real resource-pack/block-colour atlas
-and game light data (the backends build a small test atlas), feeding the draw list
-from `ChunkStore` / `SchedulerCore` (the planner takes a caller-owned section
-registry; there is no per-frame loop yet), occlusion queries, greedy meshing,
-ambient occlusion, Minecraft integration, shared-memory transport. The C++ terrain
-bridge is gated behind the `cpp-bridge` feature and not yet exercised. See
+and game light data (the backends build a small test atlas), occlusion queries,
+greedy meshing, ambient occlusion, Minecraft integration, shared-memory transport.
+The pipeline is fed by explicit `jpe_pipeline_submit_chunk` calls from Java, so
+Minecraft's own chunk loads, block updates and light data are not wired in yet,
+and the C++ terrain engine is not yet the source of those block ids. The C++
+terrain bridge is gated behind the `cpp-bridge` feature and not yet exercised. See
 `docs/rust-world-engine-stage1.md` and the stage 2/3/4 renderer docs for the full
 audit trail.
