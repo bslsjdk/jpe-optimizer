@@ -534,7 +534,7 @@ public final class GameTests {
         JPEOptimizer.LOGGER.info("JPE_NATIVE_BLENDER_BACKEND_SUMMARY {}", backendMetrics);
         if (!backendMetrics.contains("attempts=8 completed=8 fallbacks=0")
                 || !backendMetrics.contains("parityMismatches=0")
-                || !backendMetrics.matches("(?s).*snapshotCacheHits=[4-9][0-9]*.*")) {
+                || !backendMetrics.matches("(?s).*snapshotCacheHits=(?:[4-9]|[1-9][0-9]+).*")) {
             throw new AssertionError("Production Native Blender backend did not complete all synthetic legacy cases: "
                     + backendMetrics);
         }
