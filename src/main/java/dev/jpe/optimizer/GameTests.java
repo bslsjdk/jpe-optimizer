@@ -432,10 +432,51 @@ public final class GameTests {
             assertAquiferNearestFourBatch(runtime, legacyFactory, 1,
                     legacyAccessor.jpe$seed(), 0L);
             JPEOptimizer.LOGGER.info("JPE_AQUIFER_NEAREST_FOUR_BATCH modes=2 samples=9 neighbors=36 exact=true");
+            if (!runtime.supportsAquiferGridCenters()) {
+                throw new AssertionError("Native library does not export Aquifer grid-center batch support");
+            }
+            assertAquiferGridCenterBatch(runtime, xorFactory, 0,
+                    xorAccessor.jpe$seedLo(), xorAccessor.jpe$seedHi());
+            assertAquiferGridCenterBatch(runtime, legacyFactory, 1,
+                    legacyAccessor.jpe$seed(), 0L);
+            JPEOptimizer.LOGGER.info("JPE_AQUIFER_GRID_CENTER_BATCH modes=2 cells=225 packedBlockPos=true exact=true");
         } catch (Exception failure) {
             throw new AssertionError("Native Aquifer XOROSHIRO parity failed", failure);
         }
         helper.succeed();
+    }
+
+
+    /** Checks complete flat Aquifer location-cache generation against vanilla positional RNG. */
+    private static void assertAquiferGridCenterBatch(
+            NativeRuntime runtime, PositionalRandomFactory factory,
+            int randomMode, long seedLo, long seedHi) {
+        int minX = -7, minY = -11, minZ = 13;
+        int sizeX = 5, sizeZ = 5, sizeY = 9;
+        long[] actual = new long[sizeX * sizeY * sizeZ];
+        runtime.aquiferGridCenters(randomMode, seedLo, seedHi,
+                minX, minY, minZ, sizeX, sizeZ, actual);
+        int index = 0;
+        for (int gyIndex = 0; gyIndex < sizeY; ++gyIndex) {
+            int gy = minY + gyIndex;
+            for (int gzIndex = 0; gzIndex < sizeZ; ++gzIndex) {
+                int gz = minZ + gzIndex;
+                for (int gxIndex = 0; gxIndex < sizeX; ++gxIndex) {
+                    int gx = minX + gxIndex;
+                    RandomSource random = factory.at(gx, gy, gz);
+                    int x = gx * 16 + random.nextInt(10);
+                    int y = gy * 12 + random.nextInt(9);
+                    int z = gz * 16 + random.nextInt(10);
+                    long expected = BlockPos.asLong(x, y, z);
+                    if (actual[index] != expected) {
+                        throw new AssertionError("Aquifer packed center mismatch at flat index " + index
+                                + " grid=(" + gx + "," + gy + "," + gz + ")"
+                                + " expected=" + expected + " actual=" + actual[index]);
+                    }
+                    ++index;
+                }
+            }
+        }
     }
 
     /** Independently checks the Java FFM batch ABI against Minecraft's positional factories. */
