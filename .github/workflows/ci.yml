@@ -81,7 +81,7 @@ jobs:
       - name: GameTest correctness suite
         if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         env:
-          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.perlinVectorEnabled=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=true -Djpe.nativePerlinEnabled=true -Djpe.paletteHashEnabled=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
+          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.perlinVectorEnabled=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=true -Djpe.nativePerlinEnabled=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphVerify=true -Djpe.paletteHashEnabled=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
         run: |
           mkdir -p build/gametest
           set +e
