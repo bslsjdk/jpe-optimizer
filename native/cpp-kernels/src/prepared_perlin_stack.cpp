@@ -113,6 +113,20 @@ extern "C" int32_t jpe_cpp_perlin_stack_evaluate(
     }
 }
 
+extern "C" uint64_t jpe_cpp_perlin_stack_retain(uint64_t handle) noexcept {
+    std::lock_guard<std::mutex> lock(g_prepared_mutex);
+    const auto found = g_prepared_stacks.find(handle);
+    if (found == g_prepared_stacks.end()) return 0;
+    uint64_t retained = g_next_prepared_handle++;
+    if (retained == 0) retained = g_next_prepared_handle++;
+    try {
+        g_prepared_stacks.emplace(retained, found->second);
+        return retained;
+    } catch (...) {
+        return 0;
+    }
+}
+
 extern "C" int32_t jpe_cpp_perlin_stack_release(uint64_t handle) noexcept {
     std::lock_guard<std::mutex> lock(g_prepared_mutex);
     return g_prepared_stacks.erase(handle) == 1 ? 0 : 2;
