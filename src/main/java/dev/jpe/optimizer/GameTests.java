@@ -149,10 +149,65 @@ public final class GameTests {
                     xorAccessor.jpe$seedLo(), xorAccessor.jpe$seedHi(), xorFactory, "xoroshiro");
             verifyAquiferNearestFour(runtime, 1,
                     legacyAccessor.jpe$seed(), 0L, legacyFactory, "legacy");
+            verifyAquiferSubstanceBatch(runtime);
         } catch (Exception failure) {
             throw new AssertionError("Native Aquifer grid-cache parity failed", failure);
         }
         helper.succeed();
+    }
+
+    private static void verifyAquiferSubstanceBatch(NativeRuntime runtime) {
+        if (!runtime.supportsAquiferSubstanceBatch()) {
+            throw new AssertionError("Native Aquifer substance batch API is unavailable");
+        }
+        final int air = 0, water = 1, lava = 2;
+        int[] blockY = {10, 10, 10, 10};
+        double[] density = {0.25, -1.0, -1.0, -1.0};
+        float[] barrierNoise = {0.0F, 0.0F, 0.0F, 0.0F};
+        int[] distances = {
+                0, 1, 4, 9,
+                0, 1, 4, 9,
+                0, 1, 4, 9,
+                0, 1, 4, 9
+        };
+        int[] fluidLevels = {
+                20, 20, 20, 20,
+                20, 20, 20, 20,
+                20, 20, 20, 20,
+                20, 20, 20, 20
+        };
+        int[] fluidTypes = {
+                water, water, water, water,
+                water, water, water, water,
+                water, water, water, water,
+                water, water, water, water
+        };
+        int[] globalBelowTypes = {air, air, lava, lava};
+        NativeRuntime.AquiferSubstanceBatch result = runtime.aquiferSubstanceBatch(
+                blockY, density, barrierNoise, distances, fluidLevels, fluidTypes,
+                globalBelowTypes, air, water, lava, true);
+
+        // Positive density keeps terrain. Equal water statuses return water without
+        // scheduling. Water above a global lava layer requests an update; debug mode
+        // suppresses the block fluid but preserves that scheduling decision.
+        if (result.hasBlockState()[0] || result.blockStateTypes()[0] != air
+                || result.shouldScheduleFluidUpdate()[0]) {
+            throw new AssertionError("Aquifer batch positive-density decision mismatch");
+        }
+        if (!result.hasBlockState()[1] || result.blockStateTypes()[1] != water
+                || result.shouldScheduleFluidUpdate()[1]) {
+            throw new AssertionError("Aquifer batch equal-water decision mismatch");
+        }
+        if (!result.hasBlockState()[2] || result.blockStateTypes()[2] != water
+                || !result.shouldScheduleFluidUpdate()[2]) {
+            throw new AssertionError("Aquifer batch global lava-adjacency decision mismatch");
+        }
+        if (!result.hasBlockState()[3] || result.blockStateTypes()[3] != air
+                || !result.shouldScheduleFluidUpdate()[3]) {
+            throw new AssertionError("Aquifer batch debug-fluid suppression mismatch");
+        }
+        JPEOptimizer.LOGGER.info(
+                "JPE_AQUIFER_SUBSTANCE_BATCH samples=4 singleFfmCall=true expectedDecisions=true");
     }
 
     private static void verifyAquiferNearestFour(NativeRuntime runtime, int mode,
