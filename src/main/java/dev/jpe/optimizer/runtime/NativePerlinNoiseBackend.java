@@ -116,7 +116,8 @@ public final class NativePerlinNoiseBackend {
     public static NativeRuntime runtimeForDensityGraph() {
         if (!Boolean.getBoolean("jpe.nativeDensityGraphEnabled")
                 && !Boolean.getBoolean("jpe.nativeAquiferSamplerPlansEnabled")
-                && !Boolean.getBoolean("jpe.nativeAquiferFluidStatusEnabled")) return null;
+                && !Boolean.getBoolean("jpe.nativeAquiferFluidStatusEnabled")
+                && !Boolean.getBoolean("jpe.nativeAquiferSubstanceEnabled")) return null;
         NativeRuntime current = runtime();
         return current != null && current.supportsDensityGraphF32() ? current : null;
     }
