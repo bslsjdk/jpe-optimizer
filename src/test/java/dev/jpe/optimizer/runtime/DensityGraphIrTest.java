@@ -100,6 +100,33 @@ class DensityGraphIrTest {
     }
 
     @Test
+    void acceptsUnaryNativeDensityOpcodes() {
+        DensityGraphIr graph = new DensityGraphIr(List.of(
+                DensityGraphIr.Node.input(0),
+                DensityGraphIr.Node.negate(0),
+                DensityGraphIr.Node.abs(0),
+                DensityGraphIr.Node.square(0),
+                DensityGraphIr.Node.cube(0)
+        ), 4, 0xA85L);
+        assertEquals(DensityGraphIr.NEGATE, graph.nodes().get(1).opcode());
+        assertEquals(DensityGraphIr.ABS, graph.nodes().get(2).opcode());
+        assertEquals(DensityGraphIr.SQUARE, graph.nodes().get(3).opcode());
+        assertEquals(DensityGraphIr.CUBE, graph.nodes().get(4).opcode());
+    }
+
+    @Test
+    void rejectsUnaryNodesWithSecondInputOrForwardReference() {
+        assertThrows(IllegalArgumentException.class, () -> new DensityGraphIr(List.of(
+                DensityGraphIr.Node.constant(1.0),
+                new DensityGraphIr.Node(DensityGraphIr.ABS, 0, 0, 0.0)
+        ), 1, 0L));
+        assertThrows(IllegalArgumentException.class, () -> new DensityGraphIr(List.of(
+                new DensityGraphIr.Node(DensityGraphIr.NEGATE, 1, DensityGraphIr.NO_INPUT, 0.0),
+                DensityGraphIr.Node.constant(1.0)
+        ), 0, 0L));
+    }
+
+    @Test
     void rejectsForwardReferences() {
         assertThrows(IllegalArgumentException.class, () -> new DensityGraphIr(List.of(
                 DensityGraphIr.Node.add(1, 0),
