@@ -31,7 +31,7 @@ public final class EffectiveNoiseRouterDigest {
         try {
             Optional<JsonElement> encoded = NoiseRouter.CODEC.encodeStart(ops, router).result();
             return encoded.flatMap(EffectiveNoiseRouterDigest::digestEncoded);
-        } catch (RuntimeException | NoSuchAlgorithmException failure) {
+        } catch (RuntimeException failure) {
             return Optional.empty();
         }
     }
