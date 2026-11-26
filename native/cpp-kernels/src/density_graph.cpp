@@ -20,6 +20,11 @@ extern "C" int32_t jpe_cpp_perlin_stack_evaluate(
 extern "C" int32_t jpe_cpp_perlin_stack_sample_warped(
     uint64_t, int32_t, int32_t, int32_t, double, double, double,
     double, double, float*) noexcept;
+extern "C" int32_t jpe_cpp_perlin_stack_sample_warped_batch(
+    uint64_t, uint32_t, uint32_t, uint32_t,
+    int32_t, int32_t, int32_t, int32_t, int32_t, int32_t,
+    const double*, const double*, const double*, double, double,
+    float*, uint64_t) noexcept;
 
 static_assert(sizeof(JpeDensityNode) == 40, "JpeDensityNode ABI layout mismatch");
 
@@ -752,24 +757,25 @@ int32_t evaluate_density_graph_impl(
                     const auto& shift_x = slots[graph->node_slots[node.input_a]];
                     const auto& shift_y = slots[graph->node_slots[node.input_b]];
                     const auto& shift_z = slots[graph->node_slots[node.reserved]];
-                    size_t out = 0;
-                    for (uint32_t z = 0; z < size_z; ++z) {
-                        const int32_t world_z = wrapped_coordinate(min_z, z, step_z);
-                        for (uint32_t x = 0; x < size_x; ++x) {
-                            const int32_t world_x = wrapped_coordinate(min_x, x, step_x);
-                            for (uint32_t y = 0; y < size_y; ++y) {
-                                const int32_t world_y = wrapped_coordinate(min_y, y, step_y);
-                                float sample = 0.0F;
-                                const int32_t status = jpe_cpp_perlin_stack_sample_warped(
-                                    graph->prepared_handles[i], world_x, world_y, world_z,
-                                    static_cast<double>(shift_x[out]),
-                                    static_cast<double>(shift_y[out]),
-                                    static_cast<double>(shift_z[out]),
-                                    node.auxiliary, node.tertiary, &sample);
-                                if (status != 0) return status;
-                                values[out++] = static_cast<Scalar>(sample);
-                            }
-                        }
+                    // Convert shifts once, then resolve the immutable prepared-stack
+                    // handle once for the whole volume instead of taking its global
+                    // registry mutex for every voxel.
+                    std::vector<double> shift_x_values(volume);
+                    std::vector<double> shift_y_values(volume);
+                    std::vector<double> shift_z_values(volume);
+                    for (size_t j = 0; j < volume; ++j) {
+                        shift_x_values[j] = static_cast<double>(shift_x[j]);
+                        shift_y_values[j] = static_cast<double>(shift_y[j]);
+                        shift_z_values[j] = static_cast<double>(shift_z[j]);
+                    }
+                    const int32_t status = jpe_cpp_perlin_stack_sample_warped_batch(
+                        graph->prepared_handles[i], size_x, size_y, size_z,
+                        min_x, min_y, min_z, step_x, step_y, step_z,
+                        shift_x_values.data(), shift_y_values.data(), shift_z_values.data(),
+                        node.auxiliary, node.tertiary, perlin_scratch.data(), output_length);
+                    if (status != 0) return status;
+                    for (size_t j = 0; j < volume; ++j) {
+                        values[j] = static_cast<Scalar>(perlin_scratch[j]);
                     }
                     break;
                 }
