@@ -53,6 +53,13 @@ unsafe extern "C" {
         step_x: i32, step_y: i32, step_z: i32,
         output: *mut f64, output_length: u64,
     ) -> i32;
+    fn jpe_runtime_density_graph_evaluate_f32(
+        graph_handle: u64,
+        size_x: u32, size_y: u32, size_z: u32,
+        min_x: i32, min_y: i32, min_z: i32,
+        step_x: i32, step_y: i32, step_z: i32,
+        output: *mut f32, output_length: u64,
+    ) -> i32;
     fn jpe_runtime_density_graph_release(graph_handle: u64) -> i32;
 }
 
@@ -1611,6 +1618,45 @@ mod tests {
         for (actual, expected) in actual.iter().zip(expected.iter()) {
             assert_eq!(*actual, (*expected as f64) + 0.125);
         }
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
+    fn density_graph_f32_preserves_single_precision_intermediate_rounding() {
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 16_777_216.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 },
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 0, input_b: 1,
+                reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -16_777_216.0 },
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 2, input_b: 3,
+                reserved: 0, immediate: 0.0 },
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 0xF32_263)
+        };
+        assert_ne!(graph, 0);
+
+        let mut output = [f32::NAN; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph, 2, 2, 1, 0, 0, 0, 1, 1, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(output, [0.0; 4]);
+
+        let mut double_output = [f64::NAN; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                graph, 2, 2, 1, 0, 0, 0, 1, 1, 1,
+                double_output.as_mut_ptr(), double_output.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(double_output, [1.0; 4]);
         assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
     }
 
