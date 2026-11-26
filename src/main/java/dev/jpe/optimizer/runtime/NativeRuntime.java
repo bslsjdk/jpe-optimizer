@@ -1575,8 +1575,8 @@ public final class NativeRuntime implements AutoCloseable {
         long total = Math.multiplyExact((long) graphCount, pointsPerGraph);
         if (total > 1_048_576L) throw new IllegalArgumentException("Multi-sampler point volume exceeds native limit");
         for (int graphIndex = 0; graphIndex < graphCount; graphIndex++) {
-            if (graphHandles[graphIndex] == 0L || !densityGraphHandles.containsKey(graphHandles[graphIndex])) {
-                throw new IllegalArgumentException("Unknown native density graph handle at sampler " + graphIndex);
+            if (graphHandles[graphIndex] == 0L) {
+                throw new IllegalArgumentException("Null native density graph handle at sampler " + graphIndex);
             }
             if (Objects.requireNonNull(pointX[graphIndex], "pointX row").length != pointsPerGraph
                     || Objects.requireNonNull(pointY[graphIndex], "pointY row").length != pointsPerGraph
