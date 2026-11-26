@@ -715,12 +715,30 @@ impl GlCore {
                 eprintln!("gl: error 0x{err:04x} after frame");
             }
         }
+        Ok(())
+    }
+
+    /// Copy the last rendered offscreen FBO into host memory and return it.
+    ///
+    /// Opt-in readback: the steady `end_frame_core` path no longer reads the
+    /// pixels, so the full-frame `glReadPixels` plus the row-flip allocation
+    /// only run when a frame is actually read back via `read_pixels_core`
+    /// (GameTest / pixel tests). The FBO still holds the previous frame's
+    /// contents (nothing clears it until the next `begin_frame`), so no redraw
+    /// is required.
+    pub fn capture_core(&mut self) -> Result<FramePixels, RenderError> {
+        let Some(target) = self.target.as_ref() else {
+            return Err(RenderError::Unsupported("no completed frame to read"));
+        };
+        let (width, height) = (target.extent[0], target.extent[1]);
+        let framebuffer = target.framebuffer;
+        let gl = &self.gl;
 
         let mut bottom_up = vec![0u8; (width as usize) * (height as usize) * 4];
         // SAFETY: the FBO is complete and RGBA8; `bottom_up` is sized to the
         // full frame with pack alignment 1.
         unsafe {
-            (gl.glBindFramebuffer)(GL_FRAMEBUFFER, target.framebuffer);
+            (gl.glBindFramebuffer)(GL_FRAMEBUFFER, framebuffer);
             (gl.glPixelStorei)(GL_PACK_ALIGNMENT, 1);
             (gl.glReadPixels)(
                 0,
@@ -741,18 +759,17 @@ impl GlCore {
             let src = (height as usize - 1 - y) * row;
             top_down[y * row..(y + 1) * row].copy_from_slice(&bottom_up[src..src + row]);
         }
-        self.last_frame = Some(FramePixels {
+        let frame = FramePixels {
             width,
             height,
             rgba8: top_down,
-        });
-        Ok(())
+        };
+        self.last_frame = Some(frame.clone());
+        Ok(frame)
     }
 
     pub fn read_pixels_core(&mut self) -> Result<FramePixels, RenderError> {
-        self.last_frame
-            .clone()
-            .ok_or(RenderError::Unsupported("no completed frame to read"))
+        self.capture_core()
     }
 }
 

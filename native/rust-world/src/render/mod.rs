@@ -276,12 +276,21 @@ pub trait Renderer {
         Err(RenderError::Unsupported("camera"))
     }
 
-    /// Finish the frame and (for offscreen targets) make it readable.
+    /// Finish the frame and submit its work.
+    ///
+    /// The steady render path does NOT copy pixels into host memory. Offscreen
+    /// backends leave the target readable so that a subsequent [`Renderer::read_pixels`]
+    /// call can capture it on demand, keeping the per-frame cost of a full-frame
+    /// readback off the hot path.
     fn end_frame(&mut self) -> Result<(), RenderError>;
 
-    /// Read back the last completed frame. Backends that cannot read back
-    /// return [`RenderError::Unsupported`]; the default keeps CPU-only
-    /// renderers out of the contract.
+    /// Read back the last completed frame, capturing it on demand.
+    ///
+    /// Backends that cannot read back return [`RenderError::Unsupported`]; the
+    /// default keeps CPU-only renderers out of the contract. For the offscreen
+    /// GPU backends this is the opt-in readback path: the full-frame
+    /// GPU->host transfer runs here, not in [`Renderer::end_frame`], so it is
+    /// paid for only when a frame is actually inspected (pixel tests, GameTest).
     fn read_pixels(&mut self) -> Result<FramePixels, RenderError> {
         Err(RenderError::Unsupported("pixel readback"))
     }

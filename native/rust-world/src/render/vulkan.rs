@@ -2042,51 +2042,15 @@ impl VulkanRenderer {
                 }
             }
             (fns.vkCmdEndRenderPass)(self.command_buffer);
-
-            // Colour attachment -> transfer read, then copy into the host buffer.
-            let barrier = ImageMemoryBarrier {
-                s_type: STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                p_next: null(),
-                src_access_mask: ACCESS_COLOR_ATTACHMENT_WRITE,
-                dst_access_mask: ACCESS_TRANSFER_READ,
-                old_layout: LAYOUT_TRANSFER_SRC_OPTIMAL,
-                new_layout: LAYOUT_TRANSFER_SRC_OPTIMAL,
-                src_queue_family_index: SUBPASS_EXTERNAL,
-                dst_queue_family_index: SUBPASS_EXTERNAL,
-                image: target.image,
-                subresource_range: ImageSubresourceRange {
-                    aspect_mask: IMAGE_ASPECT_COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-            };
-            (fns.vkCmdPipelineBarrier)(
-                self.command_buffer,
-                STAGE_COLOR_ATTACHMENT_OUTPUT, STAGE_TRANSFER, 0,
-                0, null(), 0, null(), 1, &barrier,
-            );
-            let region = BufferImageCopy {
-                buffer_offset: 0,
-                buffer_row_length: 0,
-                buffer_image_height: 0,
-                image_subresource: ImageSubresourceLayers {
-                    aspect_mask: IMAGE_ASPECT_COLOR,
-                    mip_level: 0,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                image_offset: Offset3D { x: 0, y: 0, z: 0 },
-                image_extent: Extent3D { width: target.extent[0], height: target.extent[1], depth: 1 },
-            };
-            (fns.vkCmdCopyImageToBuffer)(
-                self.command_buffer, target.image, LAYOUT_TRANSFER_SRC_OPTIMAL,
-                target.readback_buffer, 1, &region,
-            );
             check((fns.vkEndCommandBuffer)(self.command_buffer))?;
 
-            // Submit and wait.
+            // Submit the draw and block until it retires. The colour attachment
+            // is left in the render pass's final transfer-src layout, so a later
+            // `capture_pixels` can copy it straight into the host buffer. The
+            // steady render path does NOT copy pixels: the full-frame
+            // GPU->host transfer plus CPU allocation now only runs when a frame
+            // is actually read back via `read_pixels` (GameTest / pixel tests),
+            // not on every rendered frame.
             let fence_ci = FenceCreateInfo { s_type: STRUCTURE_TYPE_FENCE_CREATE_INFO, p_next: null(), flags: 0 };
             let mut fence = 0u64;
             check((fns.vkCreateFence)(device, &fence_ci, null(), &mut fence))?;
@@ -2110,22 +2074,117 @@ impl VulkanRenderer {
             (fns.vkDestroyFence)(device, fence, null());
             check(wait_result)?;
         }
-
-        // Read back into CPU memory.
-        let target = self.target.as_ref().unwrap();
-        let size = target.extent[0] as u64 * target.extent[1] as u64 * 4;
-        let mut ptr: *mut c_void = null_mut();
-        unsafe {
-            check((fns.vkMapMemory)(device, target.readback_memory, 0, size, 0, &mut ptr))?;
-            let slice = std::slice::from_raw_parts(ptr as *const u8, size as usize);
-            self.last_frame = Some(FramePixels {
-                width: target.extent[0],
-                height: target.extent[1],
-                rgba8: slice.to_vec(),
-            });
-            (fns.vkUnmapMemory)(device, target.readback_memory);
-        }
         Ok(())
+    }
+
+    /// Copy the last rendered offscreen target into host memory and return it.
+    ///
+    /// This is the opt-in readback path: it records a transfer-only command
+    /// buffer (the image is already in transfer-src layout from the render
+    /// pass's final layout), submits it, waits, and maps the host-visible
+    /// readback buffer. It runs only when `read_pixels` is called, so the
+    /// per-frame cost is paid exclusively by callers that need the pixels.
+    fn capture_pixels(&mut self) -> Result<FramePixels, RenderError> {
+        let Some(target) = &self.target else {
+            return Err(RenderError::Unsupported("no completed frame to read"));
+        };
+        let image = target.image;
+        let readback_buffer = target.readback_buffer;
+        let readback_memory = target.readback_memory;
+        let (width, height) = (target.extent[0], target.extent[1]);
+        let fns = &self.fns;
+        let device = self.device;
+        let queue = self.queue;
+        let cb = self.command_buffer;
+        let size = width as u64 * height as u64 * 4;
+
+        let begin = CommandBufferBeginInfo {
+            s_type: STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            p_next: null(),
+            flags: COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT,
+            p_inheritance_info: null(),
+        };
+        let rgba8 = unsafe {
+            check((fns.vkBeginCommandBuffer)(cb, &begin))?;
+
+            // Order the completed colour writes before the transfer read. The
+            // layout is already transfer-src; the barrier only fixes access.
+            let barrier = ImageMemoryBarrier {
+                s_type: STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                p_next: null(),
+                src_access_mask: ACCESS_COLOR_ATTACHMENT_WRITE,
+                dst_access_mask: ACCESS_TRANSFER_READ,
+                old_layout: LAYOUT_TRANSFER_SRC_OPTIMAL,
+                new_layout: LAYOUT_TRANSFER_SRC_OPTIMAL,
+                src_queue_family_index: SUBPASS_EXTERNAL,
+                dst_queue_family_index: SUBPASS_EXTERNAL,
+                image,
+                subresource_range: ImageSubresourceRange {
+                    aspect_mask: IMAGE_ASPECT_COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+            };
+            (fns.vkCmdPipelineBarrier)(
+                cb,
+                STAGE_COLOR_ATTACHMENT_OUTPUT, STAGE_TRANSFER, 0,
+                0, null(), 0, null(), 1, &barrier,
+            );
+            let region = BufferImageCopy {
+                buffer_offset: 0,
+                buffer_row_length: 0,
+                buffer_image_height: 0,
+                image_subresource: ImageSubresourceLayers {
+                    aspect_mask: IMAGE_ASPECT_COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                image_offset: Offset3D { x: 0, y: 0, z: 0 },
+                image_extent: Extent3D { width, height, depth: 1 },
+            };
+            (fns.vkCmdCopyImageToBuffer)(
+                cb, image, LAYOUT_TRANSFER_SRC_OPTIMAL,
+                readback_buffer, 1, &region,
+            );
+            check((fns.vkEndCommandBuffer)(cb))?;
+
+            let fence_ci = FenceCreateInfo { s_type: STRUCTURE_TYPE_FENCE_CREATE_INFO, p_next: null(), flags: 0 };
+            let mut fence = 0u64;
+            check((fns.vkCreateFence)(device, &fence_ci, null(), &mut fence))?;
+            let submit = SubmitInfo {
+                s_type: STRUCTURE_TYPE_SUBMIT_INFO,
+                p_next: null(),
+                wait_semaphore_count: 0,
+                p_wait_semaphores: null(),
+                p_wait_dst_stage_mask: null(),
+                command_buffer_count: 1,
+                p_command_buffers: &cb,
+                signal_semaphore_count: 0,
+                p_signal_semaphores: null(),
+            };
+            let submit_result = (fns.vkQueueSubmit)(queue, 1, &submit, fence);
+            if submit_result != VK_SUCCESS {
+                (fns.vkDestroyFence)(device, fence, null());
+                return Err(vk_err(submit_result));
+            }
+            let wait_result = (fns.vkWaitForFences)(device, 1, &fence, 1, u64::MAX);
+            (fns.vkDestroyFence)(device, fence, null());
+            check(wait_result)?;
+
+            // Copy the mapped readback buffer out into an owned Vec.
+            let mut ptr: *mut c_void = null_mut();
+            check((fns.vkMapMemory)(device, readback_memory, 0, size, 0, &mut ptr))?;
+            let slice = std::slice::from_raw_parts(ptr as *const u8, size as usize);
+            let data = slice.to_vec();
+            (fns.vkUnmapMemory)(device, readback_memory);
+            data
+        };
+        let frame = FramePixels { width, height, rgba8 };
+        self.last_frame = Some(frame.clone());
+        Ok(frame)
     }
 }
 
@@ -2225,9 +2284,7 @@ impl Renderer for VulkanRenderer {
     }
 
     fn read_pixels(&mut self) -> Result<FramePixels, RenderError> {
-        self.last_frame
-            .clone()
-            .ok_or(RenderError::Unsupported("no completed frame to read"))
+        self.capture_pixels()
     }
 }
 
