@@ -161,11 +161,10 @@ public final class GameTests {
             throw new AssertionError("Native Aquifer substance batch API is unavailable");
         }
         final int air = 0, water = 1, lava = 2;
-        int[] blockY = {10, 10, 10, 10};
-        double[] density = {0.25, -1.0, -1.0, -1.0};
-        float[] barrierNoise = {0.0F, 0.0F, 0.0F, 0.0F};
+        int[] blockY = {10, 10, 10};
+        double[] density = {0.25, -1.0, -1.0};
+        float[] barrierNoise = {0.0F, 0.0F, 0.0F};
         int[] distances = {
-                0, 1, 4, 9,
                 0, 1, 4, 9,
                 0, 1, 4, 9,
                 0, 1, 4, 9
@@ -173,41 +172,42 @@ public final class GameTests {
         int[] fluidLevels = {
                 20, 20, 20, 20,
                 20, 20, 20, 20,
-                20, 20, 20, 20,
                 20, 20, 20, 20
         };
         int[] fluidTypes = {
                 water, water, water, water,
                 water, water, water, water,
-                water, water, water, water,
                 water, water, water, water
         };
-        int[] globalBelowTypes = {air, air, lava, lava};
-        NativeRuntime.AquiferSubstanceBatch result = runtime.aquiferSubstanceBatch(
+        int[] globalBelowTypes = {air, air, lava};
+        // Debug suppression is a world setting, so keep it constant for this entire batch.
+        NativeRuntime.AquiferSubstanceBatch normal = runtime.aquiferSubstanceBatch(
                 blockY, density, barrierNoise, distances, fluidLevels, fluidTypes,
-                globalBelowTypes, air, water, lava, true);
+                globalBelowTypes, air, water, lava, false);
 
-        // Positive density keeps terrain. Equal water statuses return water without
-        // scheduling. Water above a global lava layer requests an update; debug mode
-        // suppresses the block fluid but preserves that scheduling decision.
-        if (result.hasBlockState()[0] || result.blockStateTypes()[0] != air
-                || result.shouldScheduleFluidUpdate()[0]) {
+        if (normal.hasBlockState()[0] || normal.shouldScheduleFluidUpdate()[0]) {
             throw new AssertionError("Aquifer batch positive-density decision mismatch");
         }
-        if (!result.hasBlockState()[1] || result.blockStateTypes()[1] != water
-                || result.shouldScheduleFluidUpdate()[1]) {
+        if (!normal.hasBlockState()[1] || normal.blockStateTypes()[1] != water
+                || normal.shouldScheduleFluidUpdate()[1]) {
             throw new AssertionError("Aquifer batch equal-water decision mismatch");
         }
-        if (!result.hasBlockState()[2] || result.blockStateTypes()[2] != water
-                || !result.shouldScheduleFluidUpdate()[2]) {
+        if (!normal.hasBlockState()[2] || normal.blockStateTypes()[2] != water
+                || !normal.shouldScheduleFluidUpdate()[2]) {
             throw new AssertionError("Aquifer batch global lava-adjacency decision mismatch");
         }
-        if (!result.hasBlockState()[3] || result.blockStateTypes()[3] != air
-                || !result.shouldScheduleFluidUpdate()[3]) {
+
+        NativeRuntime.AquiferSubstanceBatch debug = runtime.aquiferSubstanceBatch(
+                new int[]{10}, new double[]{-1.0}, new float[]{0.0F},
+                new int[]{0, 1, 4, 9}, new int[]{20, 20, 20, 20},
+                new int[]{water, water, water, water}, new int[]{lava},
+                air, water, lava, true);
+        if (!debug.hasBlockState()[0] || debug.blockStateTypes()[0] != air
+                || !debug.shouldScheduleFluidUpdate()[0]) {
             throw new AssertionError("Aquifer batch debug-fluid suppression mismatch");
         }
         JPEOptimizer.LOGGER.info(
-                "JPE_AQUIFER_SUBSTANCE_BATCH samples=4 singleFfmCall=true expectedDecisions=true");
+                "JPE_AQUIFER_SUBSTANCE_BATCH normalSamples=3 debugSamples=1 batchDowncalls=2 expectedDecisions=true");
     }
 
     private static void verifyAquiferNearestFour(NativeRuntime runtime, int mode,
