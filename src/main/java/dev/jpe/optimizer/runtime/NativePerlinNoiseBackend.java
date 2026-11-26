@@ -112,6 +112,22 @@ public final class NativePerlinNoiseBackend {
 
     private NativePerlinNoiseBackend() {}
 
+    /** Runtime access for the compiled density-graph path; separately opt-in from Perlin mixins. */
+    public static NativeRuntime runtimeForDensityGraph() {
+        if (!Boolean.getBoolean("jpe.nativeDensityGraphEnabled")) return null;
+        NativeRuntime current = runtime();
+        return current != null && current.supportsDensityGraphF32() ? current : null;
+    }
+
+    /** Converts a captured vanilla NoiseStack.Perlin into an immutable native plan handle. */
+    public static long preparedStackHandleForDensityGraph(Noise noise) {
+        if (!(noise instanceof NoiseStack stack)
+                || !stack.getClass().getName().endsWith("$Perlin")) return 0L;
+        NativeRuntime current = runtimeForDensityGraph();
+        if (current == null || !current.supportsPreparedPerlinStack()) return 0L;
+        return preparedStackHandle(current, stack);
+    }
+
     public static boolean enabled() {
         String path = System.getProperty("jpe.nativeLibraryPath");
         return Boolean.getBoolean("jpe.nativePerlinEnabled") && path != null && !path.isBlank();
