@@ -53,6 +53,11 @@ jobs:
           cargo test --manifest-path native/rust-runtime/Cargo.toml
           cargo build --release --manifest-path native/rust-runtime/Cargo.toml
 
+      - name: Full-chunk Native Blender benchmark
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          cargo test --manifest-path native/rust-runtime/Cargo.toml --features density-graph-benchmark blender_density_volume_full_chunk_microbenchmark -- --nocapture
+
       - name: Set up Gradle 9.2.1
         if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         uses: gradle/actions/setup-gradle@v4
