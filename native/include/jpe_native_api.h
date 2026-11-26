@@ -74,7 +74,7 @@ JPE_API int32_t jpe_runtime_cancel_job(uint64_t job_id);
 JPE_API int32_t jpe_runtime_release_job(uint64_t job_id);
 
 /*
- * Experimental density-graph IR v7. This additive API is not wired into Minecraft yet.
+ * Experimental density-graph IR v8. This additive API is not wired into Minecraft yet.
  * Nodes are topologically ordered; inputs must reference earlier nodes.
  * Volume output order is ((z * size_x + x) * size_y + y).
  */
@@ -100,7 +100,9 @@ enum {
     /* IEEE-754 float32 division; operands are evaluated in the encoded order. */
     JPE_DENSITY_DIV = 10,
     /* Exact Minecraft Mth.clamp(value,min,max); immediate packs two raw float32 bounds. */
-    JPE_DENSITY_CLAMP = 11
+    JPE_DENSITY_CLAMP = 11,
+    JPE_DENSITY_MIN = 12,
+    JPE_DENSITY_MAX = 13
 };
 /* Returns a retained compiled-plan handle, or zero for an invalid graph. */
 JPE_API uint64_t jpe_runtime_density_graph_compile(
