@@ -128,6 +128,16 @@ unsafe extern "C" {
         point_x: *const i32, point_y: *const i32, point_z: *const i32,
         point_count: u32, output: *mut f32, output_length: u64,
     ) -> i32;
+    fn jpe_cpp_density_graph_evaluate_multi_points(
+        graph_handles: *const u64, graph_count: u32,
+        point_x: *const i32, point_y: *const i32, point_z: *const i32,
+        points_per_graph: u32, output: *mut f64, output_length: u64,
+    ) -> i32;
+    fn jpe_cpp_density_graph_evaluate_multi_points_f32(
+        graph_handles: *const u64, graph_count: u32,
+        point_x: *const i32, point_y: *const i32, point_z: *const i32,
+        points_per_graph: u32, output: *mut f32, output_length: u64,
+    ) -> i32;
     fn jpe_cpp_aquifer_compute_substance_core(
         input: *const JpeAquiferCoreInput,
         output: *mut JpeAquiferCoreOutput,
@@ -342,6 +352,65 @@ pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate_points_f32(
     unsafe {
         jpe_cpp_density_graph_evaluate_points_f32(
             graph_handle, point_x, point_y, point_z, point_count, output, output_length,
+        )
+    }
+}
+
+/// Evaluates multiple immutable density graphs over independent arbitrary-point batches.
+/// Coordinates and outputs use sampler-major [graph][point] order.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate_multi_points(
+    graph_handles: *const u64,
+    graph_count: u32,
+    point_x: *const i32, point_y: *const i32, point_z: *const i32,
+    points_per_graph: u32,
+    output: *mut f64,
+    output_length: u64,
+) -> i32 {
+    if graph_handles.is_null() || point_x.is_null() || point_y.is_null()
+        || point_z.is_null() || output.is_null()
+        || graph_count == 0 || graph_count > 64 || points_per_graph == 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    let Some(total) = (graph_count as u64).checked_mul(points_per_graph as u64) else {
+        return STATUS_INVALID_ARGUMENT;
+    };
+    if total > MAX_VOLUME_ELEMENTS as u64 || output_length != total {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_density_graph_evaluate_multi_points(
+            graph_handles, graph_count, point_x, point_y, point_z,
+            points_per_graph, output, output_length,
+        )
+    }
+}
+
+/// f32 version used by the Minecraft 26.3 density pipeline.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate_multi_points_f32(
+    graph_handles: *const u64,
+    graph_count: u32,
+    point_x: *const i32, point_y: *const i32, point_z: *const i32,
+    points_per_graph: u32,
+    output: *mut f32,
+    output_length: u64,
+) -> i32 {
+    if graph_handles.is_null() || point_x.is_null() || point_y.is_null()
+        || point_z.is_null() || output.is_null()
+        || graph_count == 0 || graph_count > 64 || points_per_graph == 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    let Some(total) = (graph_count as u64).checked_mul(points_per_graph as u64) else {
+        return STATUS_INVALID_ARGUMENT;
+    };
+    if total > MAX_VOLUME_ELEMENTS as u64 || output_length != total {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_density_graph_evaluate_multi_points_f32(
+            graph_handles, graph_count, point_x, point_y, point_z,
+            points_per_graph, output, output_length,
         )
     }
 }
