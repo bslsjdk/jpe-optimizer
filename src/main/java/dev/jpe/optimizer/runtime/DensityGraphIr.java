@@ -9,7 +9,7 @@ public final class DensityGraphIr {
     public static final int MAX_NODES = 65_536;
     public static final int NO_INPUT = -1;
 
-    public static final int CONST = 1, X = 2, Y = 3, Z = 4, ADD = 5, MUL = 6, OPAQUE = 7, SUB = 8, INPUT = 9, DIV = 10, CLAMP = 11, MIN = 12, MAX = 13, NEGATE = 14, ABS = 15, SQUARE = 16, CUBE = 17, SQRT = 18, LOG = 19, RECIPROCAL = 20, SIGN = 21, SQUEEZE = 22;
+    public static final int CONST = 1, X = 2, Y = 3, Z = 4, ADD = 5, MUL = 6, OPAQUE = 7, SUB = 8, INPUT = 9, DIV = 10, CLAMP = 11, MIN = 12, MAX = 13, NEGATE = 14, ABS = 15, SQUARE = 16, CUBE = 17, SQRT = 18, LOG = 19, RECIPROCAL = 20, SIGN = 21, SQUEEZE = 22, LEAKY_RELU = 23;
 
     public record Node(int opcode, int inputA, int inputB, double immediate) {
         public static Node constant(double value) { return new Node(CONST, NO_INPUT, NO_INPUT, value); }
@@ -33,6 +33,9 @@ public final class DensityGraphIr {
         public static Node reciprocal(int input) { return new Node(RECIPROCAL, input, NO_INPUT, 0.0); }
         public static Node sign(int input) { return new Node(SIGN, input, NO_INPUT, 0.0); }
         public static Node squeeze(int input) { return new Node(SQUEEZE, input, NO_INPUT, 0.0); }
+        public static Node leakyRelu(int input, float negativeFactor) {
+            return new Node(LEAKY_RELU, input, NO_INPUT, negativeFactor);
+        }
         /** Encodes min/max as two raw float32 words in the immediate's 64-bit payload. */
         public static Node clamp(int input, float min, float max) {
             long bits = ((long) Float.floatToRawIntBits(min) << 32)
@@ -138,6 +141,13 @@ public final class DensityGraphIr {
                 case NEGATE, ABS, SQUARE, CUBE, SQRT, LOG, RECIPROCAL, SIGN, SQUEEZE -> {
                     if (node.inputA() < 0 || node.inputA() >= i || node.inputB() != NO_INPUT) {
                         throw new IllegalArgumentException("Unary node " + i + " must reference one earlier node");
+                    }
+                }
+                case LEAKY_RELU -> {
+                    if (node.inputA() < 0 || node.inputA() >= i || node.inputB() != NO_INPUT
+                            || !Double.isFinite(node.immediate())
+                            || node.immediate() != (double) (float) node.immediate()) {
+                        throw new IllegalArgumentException("LeakyReLU node " + i + " requires one input and a finite float32 factor");
                     }
                 }
                 case CLAMP -> {
