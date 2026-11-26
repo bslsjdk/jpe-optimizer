@@ -20,6 +20,7 @@ import net.minecraft.gametest.framework.TestEnvironmentDefinition;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.level.block.Rotation;
 import net.minecraft.util.RandomSource;
+import net.minecraft.world.level.levelgen.XoroshiroRandomSource;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
 import net.minecraft.world.level.levelgen.blending.Blender;
@@ -36,6 +37,7 @@ import net.neoforged.neoforge.registries.DeferredRegister;
 import dev.jpe.optimizer.mixin.DensityBufferAccessor;
 import dev.jpe.optimizer.mixin.BlendingDataAccessor;
 import dev.jpe.optimizer.mixin.GradientNoiseAccessor;
+import dev.jpe.optimizer.mixin.XoroshiroPositionalRandomFactoryAccessor;
 import dev.jpe.optimizer.runtime.NativeRuntime;
 import dev.jpe.optimizer.runtime.DensityGraphIr;
 import dev.jpe.optimizer.runtime.NativePerlinNoiseBackend;
@@ -72,6 +74,9 @@ public final class GameTests {
 
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> BLENDER_NATIVE_PARITY =
             TEST_FUNCTIONS.register("blender_native_parity", () -> GameTests::blenderNativeParity);
+
+    public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> AQUIFER_XOROSHIRO_NATIVE_PARITY =
+            TEST_FUNCTIONS.register("aquifer_xoroshiro_native_parity", () -> GameTests::aquiferXoroshiroNativeParity);
 
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> PALETTE_HASH_CONFIGURATION =
             TEST_FUNCTIONS.register("palette_hash_configuration", () -> GameTests::paletteHashConfiguration);
@@ -122,6 +127,10 @@ public final class GameTests {
         event.registerTest(
                 Identifier.parse("jpe_optimizer:blender_native_parity"),
                 new FunctionGameTestInstance(BLENDER_NATIVE_PARITY.getKey(), data)
+        );
+        event.registerTest(
+                Identifier.parse("jpe_optimizer:aquifer_xoroshiro_native_parity"),
+                new FunctionGameTestInstance(AQUIFER_XOROSHIRO_NATIVE_PARITY.getKey(), data)
         );
         event.registerTest(
                 Identifier.parse("jpe_optimizer:palette_hash_configuration"),
@@ -324,6 +333,64 @@ public final class GameTests {
         helper.succeed();
     }
 
+
+    /** Compares Native Aquifer cell-center offsets with Minecraft's actual XOROSHIRO factory. */
+    private static void aquiferXoroshiroNativeParity(GameTestHelper helper) {
+        String library = System.getProperty("jpe.nativeLibraryPath");
+        if (library == null || library.isBlank()) {
+            throw new AssertionError("Set -Djpe.nativeLibraryPath to the freshly built native runtime library");
+        }
+
+        long[][] sourceSeeds = {
+                {0x0123456789abcdefL, 0xfedcba9876543210L},
+                {0L, 0L},
+                {0x9e3779b97f4a7c15L, 0x6a09e667f3bcc909L},
+                {123456789L, 987654321L}
+        };
+        int[][] cells = {
+                {1, 2, 3},
+                {0, 0, 0},
+                {-17, -64, 33},
+                {-2, -1, -3},
+                {31, 7, -49},
+                {-128, -25, 96}
+        };
+
+        try (NativeRuntime runtime = NativeRuntime.load(java.nio.file.Path.of(library))) {
+            if (!runtime.supportsAquiferXoroshiroOffsets()) {
+                throw new AssertionError("Native library does not export Aquifer XOROSHIRO support");
+            }
+            int comparisons = 0;
+            for (long[] sourceSeed : sourceSeeds) {
+                var factory = new XoroshiroRandomSource(sourceSeed[0], sourceSeed[1]).forkPositional();
+                var accessor = (XoroshiroPositionalRandomFactoryAccessor) (Object) factory;
+                long factorySeedLo = accessor.jpe$seedLo();
+                long factorySeedHi = accessor.jpe$seedHi();
+
+                for (int[] cell : cells) {
+                    RandomSource vanilla = factory.at(cell[0], cell[1], cell[2]);
+                    int[] expected = {
+                            vanilla.nextInt(10),
+                            vanilla.nextInt(9),
+                            vanilla.nextInt(10)
+                    };
+                    int[] actual = runtime.aquiferXoroshiroOffsets(
+                            factorySeedLo, factorySeedHi, cell[0], cell[1], cell[2]);
+                    if (!java.util.Arrays.equals(expected, actual)) {
+                        throw new AssertionError("Aquifer RNG mismatch at cell=("
+                                + cell[0] + "," + cell[1] + "," + cell[2] + ")"
+                                + " expected=" + java.util.Arrays.toString(expected)
+                                + " actual=" + java.util.Arrays.toString(actual));
+                    }
+                    comparisons++;
+                }
+            }
+            JPEOptimizer.LOGGER.info("JPE_AQUIFER_XOROSHIRO_PARITY comparisons={} bitExact=true", comparisons);
+        } catch (Exception failure) {
+            throw new AssertionError("Native Aquifer XOROSHIRO parity failed", failure);
+        }
+        helper.succeed();
+    }
 
     /** Verifies the versioned Java FFM graph API against a known full-volume result. */
     private static void densityGraphNativeParity(GameTestHelper helper) {
