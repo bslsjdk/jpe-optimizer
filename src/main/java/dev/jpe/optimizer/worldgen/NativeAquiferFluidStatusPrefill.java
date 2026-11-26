@@ -18,7 +18,6 @@ import net.minecraft.world.level.levelgen.DimensionType;
 import net.minecraft.world.level.levelgen.NoiseChunk;
 import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
 import net.minecraft.world.level.levelgen.PositionalRandomFactory;
-import net.minecraft.world.level.levelgen.RandomState;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
 
 import java.nio.ByteBuffer;
@@ -167,7 +166,6 @@ public final class NativeAquiferFluidStatusPrefill {
             }
 
             if (verify) {
-                Aquifer.NoiseBasedAquifer vanillaAquifer = (Aquifer.NoiseBasedAquifer) (Object) aquifer;
                 for (int i = 0; i < missingCount; i++) {
                     Aquifer.FluidStatus expected =
                             aquifer.jpe$computeFluid(pointX[i], pointY[i], pointZ[i]);
@@ -182,7 +180,13 @@ public final class NativeAquiferFluidStatusPrefill {
                 }
             }
 
-            // Commit only after the complete native batch and optional oracle pass.
+            // Release the temporary native context before publishing any cache entry.
+            // A cleanup failure must not leave a half-committed Java cache.
+            runtime.destroyAquiferContext(contextHandle);
+            contextHandle = 0L;
+
+            // Commit only after the complete native batch, optional oracle pass,
+            // and native-context cleanup have all succeeded.
             for (int i = 0; i < missingCount; i++) {
                 statusCache[cacheIndices[i]] = new Aquifer.FluidStatus(fluidLevels[i], decodedStates[i]);
             }
@@ -265,7 +269,7 @@ public final class NativeAquiferFluidStatusPrefill {
         try {
             RandomState randomState = ((NoiseChunkAccessor) (Object) noiseChunk).jpe$getRandomState();
             DensityVolume volume = noiseChunk.volume();
-            ByteBuffer input = ByteBuffer.allocate(64);
+            ByteBuffer input = ByteBuffer.allocate(80);
             input.putLong(((RandomStateAccessor) (Object) randomState).jpe$getSeed());
             input.putLong(seedLo);
             input.putLong(seedHi);
