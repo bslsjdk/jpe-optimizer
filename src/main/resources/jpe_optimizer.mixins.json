@@ -7,6 +7,7 @@
     "NoiseBasedChunkGeneratorMixin",
     "AquiferNoiseBasedAccessor",
     "XoroshiroPositionalRandomFactoryAccessor",
+    "LegacyPositionalRandomFactoryAccessor",
     "BiomeManagerZoomMixin",
     "MultiNoiseBiomeSourceInvoker",
     "ClimateRTreeTargetArrayMixin",
