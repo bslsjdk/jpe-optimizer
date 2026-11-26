@@ -1596,10 +1596,14 @@ public final class NativeRuntime implements AutoCloseable {
             MemorySegment x = buffers[0], y = buffers[1], z = buffers[2], values = buffers[3];
             MemorySegment.copy(graphHandles, 0, handleBuffer, ValueLayout.JAVA_LONG, 0, graphCount);
             for (int graphIndex = 0; graphIndex < graphCount; graphIndex++) {
-                long base = (long) graphIndex * pointsPerGraph;
-                MemorySegment.copy(pointX[graphIndex], 0, x, ValueLayout.JAVA_INT, base, pointsPerGraph);
-                MemorySegment.copy(pointY[graphIndex], 0, y, ValueLayout.JAVA_INT, base, pointsPerGraph);
-                MemorySegment.copy(pointZ[graphIndex], 0, z, ValueLayout.JAVA_INT, base, pointsPerGraph);
+                // MemorySegment offsets are bytes, while the source offsets above are array elements.
+                // Keep every int row aligned even when pointsPerGraph is not a multiple of four.
+                long baseBytes = Math.multiplyExact(
+                        Math.multiplyExact((long) graphIndex, pointsPerGraph),
+                        ValueLayout.JAVA_INT.byteSize());
+                MemorySegment.copy(pointX[graphIndex], 0, x, ValueLayout.JAVA_INT, baseBytes, pointsPerGraph);
+                MemorySegment.copy(pointY[graphIndex], 0, y, ValueLayout.JAVA_INT, baseBytes, pointsPerGraph);
+                MemorySegment.copy(pointZ[graphIndex], 0, z, ValueLayout.JAVA_INT, baseBytes, pointsPerGraph);
             }
             int status = (int) densityGraphEvaluateMultiPointsF32.invokeExact(
                     handleBuffer, graphCount, x, y, z, pointsPerGraph, values, total);
