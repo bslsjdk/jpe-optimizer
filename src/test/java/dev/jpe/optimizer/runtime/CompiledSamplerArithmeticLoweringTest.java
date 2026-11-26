@@ -115,8 +115,8 @@ class CompiledSamplerArithmeticLoweringTest {
                 CompiledSamplerArithmeticLowering.lower(graph, plan.islands().get(0), 0xA85);
         assertEquals(List.of(5, 6), lowered.inputSourceNodeIds());
         assertEquals(DensityGraphIr.ABS, lowered.graph().nodes().get(2).opcode());
-        assertEquals(DensityGraphIr.SQUARE, lowered.graph().nodes().get(3).opcode());
-        assertEquals(DensityGraphIr.NEGATE, lowered.graph().nodes().get(4).opcode());
+        assertEquals(DensityGraphIr.NEGATE, lowered.graph().nodes().get(3).opcode());
+        assertEquals(DensityGraphIr.SQUARE, lowered.graph().nodes().get(4).opcode());
         assertEquals(DensityGraphIr.CUBE, lowered.graph().nodes().get(5).opcode());
         assertEquals(DensityGraphIr.ADD, lowered.graph().nodes().get(6).opcode());
     }
