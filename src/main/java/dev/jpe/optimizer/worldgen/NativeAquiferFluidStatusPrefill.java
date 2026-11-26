@@ -211,9 +211,8 @@ public final class NativeAquiferFluidStatusPrefill {
             return fail(strict, "Six native Aquifer sampler plans were not prepared for this runtime", null);
         }
 
-        // Vanilla allocates this location cache for the same [gridY][gridZ][gridX]
-        // domain that native nearest-four searches. Use only its capacity: C++ now
-        // generates center positions and computes/caches FluidStatus on demand.
+        // Keep the vanilla cache dimensions as a sanity check for the audited Aquifer
+        // grid. C++ derives cell centers itself and owns a separately bounded world cache.
         long[] vanillaLocationCache = aquifer.jpe$getAquiferLocationCache();
         if (vanillaLocationCache == null || vanillaLocationCache.length == 0
                 || vanillaLocationCache.length > 1_048_576) {
