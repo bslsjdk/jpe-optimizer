@@ -33,7 +33,7 @@ constexpr uint32_t kAbs = 12, kNegate = 13, kSquare = 14, kCube = 15;
 constexpr uint32_t kSqrt = 16, kHalfNegative = 17, kQuarterNegative = 18;
 constexpr uint32_t kReciprocal = 19, kSign = 20, kPow = 21, kClamp = 22;
 constexpr uint32_t kSqueeze = 23, kLerp = 24, kGradient = 25, kInterpolated = 26, kRangeChoice = 27;
-constexpr uint32_t kRound = 28, kLog = 29, kDistanceToPoint = 30, kPerlinStackWarp = 31;
+constexpr uint32_t kRound = 28, kLog = 29, kDistanceToPoint = 30, kPerlinStackWarp = 31, kSlice = 32;
 
 struct CompiledGraph {
     uint64_t fingerprint = 0;
@@ -220,6 +220,13 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                     || !std::isfinite(node.auxiliary) || !std::isfinite(node.tertiary)) return false;
                 break;
             }
+            case kSlice:
+                if (node.input_a >= i || node.input_b > 2 || node.reserved != 0
+                    || !std::isfinite(node.immediate) || std::floor(node.immediate) != node.immediate
+                    || node.immediate < static_cast<double>(INT32_MIN)
+                    || node.immediate > static_cast<double>(INT32_MAX)
+                    || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
+                break;
             default:
                 return false;
         }
@@ -237,8 +244,9 @@ int32_t wrapped_coordinate(int32_t minimum, uint32_t index, int32_t step) noexce
 
 bool valid_volume(uint32_t sx, uint32_t sy, uint32_t sz,
                   int32_t dx, int32_t dy, int32_t dz,
-                  uint64_t output_length) noexcept {
-    if (sx == 0 || sy == 0 || sz == 0 || dx == 0 || dy == 0 || dz == 0) return false;
+                  uint64_t output_length, bool allow_zero_steps = false) noexcept {
+    if (sx == 0 || sy == 0 || sz == 0
+        || (!allow_zero_steps && (dx == 0 || dy == 0 || dz == 0))) return false;
     const uint64_t xy = static_cast<uint64_t>(sx) * sy;
     if (xy > kMaxVolumeElements / sz) return false;
     return xy * sz == output_length && output_length <= kMaxVolumeElements;
@@ -299,6 +307,8 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
                 ++consumers[node.input_a]; ++consumers[node.input_b];
             } else if (node.opcode == kPerlinStackWarp) {
                 ++consumers[node.input_a]; ++consumers[node.input_b]; ++consumers[node.reserved];
+            } else if (node.opcode == kSlice) {
+                ++consumers[node.input_a];
             }
         }
         graph->node_slots.resize(node_count, kNoInput);
@@ -332,6 +342,8 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
                 release_input(node.input_a);
                 release_input(node.input_b);
                 release_input(node.reserved);
+            } else if (node.opcode == kSlice) {
+                release_input(node.input_a);
             }
             if (i != root_node && consumers[i] == 0) free_slots.push_back(slot);
         }
@@ -385,7 +397,7 @@ int32_t evaluate_density_graph_impl(
 ) {
     if (output == nullptr || root_node >= graph->nodes.size()
         || recursion_depth > 32
-        || !valid_volume(size_x, size_y, size_z, step_x, step_y, step_z, output_length)) return 1;
+        || !valid_volume(size_x, size_y, size_z, step_x, step_y, step_z, output_length, true)) return 1;
 
     try {
         const size_t volume = static_cast<size_t>(output_length);
@@ -697,6 +709,30 @@ int32_t evaluate_density_graph_impl(
                             }
                         }
                     }
+                    break;
+                }
+                case kSlice: {
+                    std::vector<Scalar> sliced_values(volume);
+                    int32_t sliced_min_x = min_x, sliced_min_y = min_y, sliced_min_z = min_z;
+                    int32_t sliced_step_x = step_x, sliced_step_y = step_y, sliced_step_z = step_z;
+                    const int32_t coordinate = static_cast<int32_t>(node.immediate);
+                    if (node.input_b == 0) {
+                        sliced_min_x = coordinate;
+                        sliced_step_x = 0;
+                    } else if (node.input_b == 1) {
+                        sliced_min_y = coordinate;
+                        sliced_step_y = 0;
+                    } else {
+                        sliced_min_z = coordinate;
+                        sliced_step_z = 0;
+                    }
+                    const int32_t status = evaluate_density_graph_impl<Scalar>(
+                        graph, node.input_a, size_x, size_y, size_z,
+                        sliced_min_x, sliced_min_y, sliced_min_z,
+                        sliced_step_x, sliced_step_y, sliced_step_z,
+                        sliced_values.data(), output_length, recursion_depth + 1);
+                    if (status != 0) return status;
+                    std::copy(sliced_values.begin(), sliced_values.end(), values.begin());
                     break;
                 }
                 case kPerlinStack: {
