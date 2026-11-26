@@ -139,7 +139,8 @@ public abstract class NoiseBasedChunkGeneratorMixin {
             // Normal runtime: evaluate finalDensity and Aquifer in one C++ call.
             // Verification mode deliberately retains the Java density view so the
             // independent vanilla oracle can compare every voxel.
-            if (nativeAquiferPrepared != null && !nativeAquiferVolumeVerify) {
+            if (nativeAquiferPrepared != null && !nativeAquiferVolumeVerify
+                    && nativeAquiferPrepared.supportsFusedDensityPath()) {
                 try {
                     long finalDensityGraphHandle =
                             NativeDensityGraphCompiler.prepareDensityGraphHandle(finalDensityFunction, noiseChunk);
