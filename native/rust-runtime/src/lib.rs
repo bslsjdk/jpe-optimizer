@@ -2069,8 +2069,8 @@ mod tests {
                 input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 5.5,
                 auxiliary: 0.0, tertiary: 0.0 },
             JpeDensityNode { opcode: 25, input_a: 0, input_b: 0,
-                reserved: 1.0_f32.to_bits(), immediate: 1.0,
-                auxiliary: 3.0, tertiary: 2.0 },
+                reserved: 1.0_f32.to_bits(), immediate: 0.0,
+                auxiliary: 2.0, tertiary: 2.0 },
             JpeDensityNode { opcode: 28, input_a: 0, input_b: 1,
                 reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
         ];
