@@ -3,6 +3,7 @@ package dev.jpe.optimizer.worldgen;
 import dev.jpe.optimizer.mixin.DensityBufferAccessor;
 import dev.jpe.optimizer.mixin.DensityFunctionCompilerAccessor;
 import dev.jpe.optimizer.mixin.RandomStateAccessor;
+import dev.jpe.optimizer.JPEOptimizer;
 import dev.jpe.optimizer.mixin.NoiseChunkAccessor;
 import dev.jpe.optimizer.runtime.NativePerlinNoiseBackend;
 import dev.jpe.optimizer.runtime.NativeRuntime;
@@ -12,6 +13,7 @@ import net.minecraft.world.level.levelgen.NoiseChunk;
 import net.minecraft.world.level.levelgen.RandomState;
 import net.minecraft.world.level.levelgen.Beardifier;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBufferPool;
+import net.minecraft.world.level.levelgen.densityfunction.DensitySampler;
 import net.minecraft.world.level.levelgen.densityfunction.DensityFunction;
 import net.minecraft.world.level.levelgen.densityfunction.DensityFunctions;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
@@ -95,7 +97,7 @@ public final class NativeDensityGraphCompiler {
      * null when the graph contains an unsupported node or native execution fails.
      */
     public static ScopedDensityBuffer trySampleVolume(
-            DensityFunction root, NoiseChunk noiseChunk, DensityVolume volume
+            DensityFunction root, DensitySampler.Bound vanillaSampler, NoiseChunk noiseChunk, DensityVolume volume
     ) {
         NativeRuntime runtime;
         try {
@@ -132,6 +134,30 @@ public final class NativeDensityGraphCompiler {
                     volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ(),
                     ((DensityBufferAccessor) output).jpe$values()
             );
+            if (Boolean.getBoolean("jpe.nativeDensityGraphVerify")) {
+                ScopedDensityBuffer vanilla = vanillaSampler.sampleVolume(volume);
+                float[] nativeValues = ((DensityBufferAccessor) output).jpe$values();
+                float[] vanillaValues = ((DensityBufferAccessor) vanilla).jpe$values();
+                int mismatch = -1;
+                for (int i = 0; i < volume.size(); i++) {
+                    if (Float.floatToRawIntBits(nativeValues[i]) != Float.floatToRawIntBits(vanillaValues[i])) {
+                        mismatch = i;
+                        break;
+                    }
+                }
+                if (mismatch >= 0) {
+                    float nativeValue = nativeValues[mismatch];
+                    float vanillaValue = vanillaValues[mismatch];
+                    output.close();
+                    disableGraph(root, randomState, runtime);
+                    JPEOptimizer.LOGGER.warn(
+                            "Native density graph parity mismatch at volume index {} (native={}, vanilla={}); disabling native graph for this RandomState",
+                            mismatch, nativeValue, vanillaValue
+                    );
+                    return vanilla;
+                }
+                vanilla.close();
+            }
             return output;
         } catch (RuntimeException | LinkageError failure) {
             output.close();
