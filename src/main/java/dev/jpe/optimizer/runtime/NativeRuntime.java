@@ -1061,7 +1061,7 @@ public final class NativeRuntime implements AutoCloseable {
                 Math.multiplyExact((long) volume.sizeX(), volume.sizeY()), volume.sizeZ());
         if (volume.sizeX() <= 0 || volume.sizeY() <= 0 || volume.sizeZ() <= 0
                 || volume.stepBlockX() <= 0 || volume.stepBlockY() <= 0 || volume.stepBlockZ() <= 0
-                || totalLong <= 0 || totalLong > 1_048_576L) {
+                || totalLong <= 0 || totalLong > 1_048_576L || density.size() != totalLong) {
             throw new IllegalArgumentException("Invalid native Aquifer DensityVolume geometry or buffer size");
         }
         int count = Math.toIntExact(totalLong);
