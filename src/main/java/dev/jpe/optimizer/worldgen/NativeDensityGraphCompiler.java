@@ -260,6 +260,16 @@ public final class NativeDensityGraphCompiler {
         throw new UnsupportedOperationException("Missing density component " + name);
     }
 
+    private static Object member(Object value, String name) {
+        if (value == null) throw new UnsupportedOperationException("Missing spline member " + name);
+        if (value.getClass().isRecord()) return component(value, name);
+        try {
+            return value.getClass().getMethod(name).invoke(value);
+        } catch (ReflectiveOperationException failure) {
+            throw new UnsupportedOperationException("Unable to read density member " + name, failure);
+        }
+    }
+
     private static final class Builder {
         private final DensityFunction.CompileContext context;
         private final boolean blenderEmpty;
@@ -267,11 +277,131 @@ public final class NativeDensityGraphCompiler {
         private final List<NativeRuntime.DensityNode> nodes = new ArrayList<>();
         private final IdentityHashMap<DensityFunction, Integer> indices = new IdentityHashMap<>();
         private final IdentityHashMap<DensityFunction, Boolean> active = new IdentityHashMap<>();
+        private final IdentityHashMap<Object, Integer> splineIndices = new IdentityHashMap<>();
+        private final IdentityHashMap<Object, Boolean> activeSplines = new IdentityHashMap<>();
+        private final Map<Integer, Integer> constantNodes = new HashMap<>();
 
         private Builder(DensityFunction.CompileContext context, boolean blenderEmpty, boolean beardifierEmpty) {
             this.context = context;
             this.blenderEmpty = blenderEmpty;
             this.beardifierEmpty = beardifierEmpty;
+        }
+
+        private int constant(float value) {
+            int bits = Float.floatToRawIntBits(value);
+            Integer existing = constantNodes.get(bits);
+            if (existing != null) return existing;
+            int index = append(NativeRuntime.DensityNode.constant(value));
+            constantNodes.put(bits, index);
+            return index;
+        }
+
+        private int add(int a, int b) {
+            return append(NativeRuntime.DensityNode.add(a, b));
+        }
+
+        private int subtract(int a, int b) {
+            return append(NativeRuntime.DensityNode.subtract(a, b));
+        }
+
+        private int multiply(int a, int b) {
+            return append(NativeRuntime.DensityNode.multiply(a, b));
+        }
+
+        private int divide(int a, int b) {
+            return append(NativeRuntime.DensityNode.divide(a, b));
+        }
+
+        private int linearExtend(int coordinate, int value, float location, float derivative) {
+            int delta = subtract(coordinate, constant(location));
+            int slope = constant(derivative);
+            return add(value, multiply(delta, slope));
+        }
+
+        private int hermiteSegment(
+                int coordinate, int firstValue, int secondValue,
+                float firstLocation, float secondLocation,
+                float firstDerivative, float secondDerivative
+        ) {
+            float spanValue = secondLocation - firstLocation;
+            if (!(spanValue > 0.0F) || !Float.isFinite(spanValue)) {
+                throw new UnsupportedOperationException("Invalid cubic spline interval");
+            }
+            int t = divide(subtract(coordinate, constant(firstLocation)), constant(spanValue));
+            int t2 = multiply(t, t);
+            int t3 = multiply(t2, t);
+
+            int h00 = add(subtract(multiply(constant(2.0F), t3),
+                    multiply(constant(3.0F), t2)), constant(1.0F));
+            int h10 = add(subtract(t3, multiply(constant(2.0F), t2)), t);
+            int h01 = add(multiply(constant(-2.0F), t3), multiply(constant(3.0F), t2));
+            int h11 = subtract(t3, t2);
+
+            int firstTangent = multiply(constant(firstDerivative * spanValue), h10);
+            int secondTangent = multiply(constant(secondDerivative * spanValue), h11);
+            int firstTerm = multiply(h00, firstValue);
+            int secondTerm = multiply(h01, secondValue);
+            return add(add(firstTerm, firstTangent), add(secondTerm, secondTangent));
+        }
+
+        private int lowerSpline(Object spline) {
+            Integer existing = splineIndices.get(spline);
+            if (existing != null) return existing;
+            if (activeSplines.put(spline, Boolean.TRUE) != null) {
+                throw new UnsupportedOperationException("Cyclic cubic spline");
+            }
+            try {
+                String kind = spline.getClass().getSimpleName();
+                if (kind.equals("Constant")) {
+                    int result = constant(((Number) member(spline, "value")).floatValue());
+                    splineIndices.put(spline, result);
+                    return result;
+                }
+                if (!kind.equals("Multipoint")) {
+                    throw new UnsupportedOperationException("Unsupported cubic spline " + kind);
+                }
+
+                Object coordinate = member(spline, "coordinate");
+                int coordinateIndex = lower((DensityFunction) member(coordinate, "function"));
+                float[] locations = (float[]) member(spline, "locations");
+                float[] derivatives = (float[]) member(spline, "derivatives");
+                List<?> values = (List<?>) member(spline, "values");
+                if (locations.length == 0 || locations.length != derivatives.length
+                        || locations.length != values.size()) {
+                    throw new UnsupportedOperationException("Malformed cubic spline point arrays");
+                }
+                for (int i = 0; i < locations.length; i++) {
+                    if (!Float.isFinite(locations[i]) || !Float.isFinite(derivatives[i])
+                            || (i > 0 && !(locations[i] > locations[i - 1]))) {
+                        throw new UnsupportedOperationException("Invalid cubic spline points");
+                    }
+                }
+
+                int[] valueIndices = new int[values.size()];
+                for (int i = 0; i < values.size(); i++) valueIndices[i] = lowerSpline(values.get(i));
+
+                int result;
+                if (locations.length == 1) {
+                    result = linearExtend(coordinateIndex, valueIndices[0], locations[0], derivatives[0]);
+                } else {
+                    int last = locations.length - 1;
+                    result = linearExtend(coordinateIndex, valueIndices[last], locations[last], derivatives[last]);
+                    for (int i = last - 1; i >= 0; i--) {
+                        int segment = hermiteSegment(
+                                coordinateIndex, valueIndices[i], valueIndices[i + 1],
+                                locations[i], locations[i + 1], derivatives[i], derivatives[i + 1]);
+                        result = append(NativeRuntime.DensityNode.rangeChoice(
+                                coordinateIndex, locations[i], locations[i + 1], segment, result));
+                    }
+                    int below = linearExtend(coordinateIndex, valueIndices[0], locations[0], derivatives[0]);
+                    result = append(NativeRuntime.DensityNode.rangeChoiceBelow(
+                            coordinateIndex, locations[0], below, result));
+                }
+                splineIndices.put(spline, result);
+                return result;
+            } finally {
+                activeSplines.remove(spline);
+            }
         }
 
         private int append(NativeRuntime.DensityNode node) {
@@ -325,8 +455,9 @@ public final class NativeDensityGraphCompiler {
                     }
                     case "ConstantFunction" -> {
                         Number value = (Number) component(function, "value");
-                        result = append(NativeRuntime.DensityNode.constant(value.floatValue()));
+                        result = constant(value.floatValue());
                     }
+                    case "Spline" -> result = lowerSpline(member(function, "spline"));
                     case "BinaryFunction" -> {
                         String operation = component(function, "type").toString();
                         int left = lower((DensityFunction) component(function, "left"));
