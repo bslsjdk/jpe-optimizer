@@ -4140,6 +4140,106 @@ mod tests {
     }
 
     #[test]
+    fn aquifer_fused_density_volume_matches_split_native_path() {
+        let sampler_nodes = [JpeDensityNode {
+            opcode: DENSITY_CONST,
+            input_a: DENSITY_NO_INPUT,
+            input_b: DENSITY_NO_INPUT,
+            reserved: 0,
+            immediate: 0.0,
+            auxiliary: 0.0,
+            tertiary: 0.0,
+        }];
+        let mut sampler_handles = [0_u64; 6];
+        for i in 0..6_u32 {
+            sampler_handles[i as usize] = unsafe {
+                jpe_runtime_density_graph_compile(
+                    sampler_nodes.as_ptr(), 1, 0, 0xF053_0000 + i as u64,
+                )
+            };
+            assert_ne!(sampler_handles[i as usize], 0);
+        }
+        let final_density_nodes = [JpeDensityNode {
+            opcode: DENSITY_CONST,
+            input_a: DENSITY_NO_INPUT,
+            input_b: DENSITY_NO_INPUT,
+            reserved: 0,
+            immediate: 1.0,
+            auxiliary: 0.0,
+            tertiary: 0.0,
+        }];
+        let final_density_graph = unsafe {
+            jpe_runtime_density_graph_compile(
+                final_density_nodes.as_ptr(), 1, 0, 0xF053_1000,
+            )
+        };
+        assert_ne!(final_density_graph, 0);
+
+        let fingerprint = [0xF0_u8; 32];
+        let info = JpeAquiferContextCreateInfo {
+            density_graph_handles: sampler_handles,
+            world_fingerprint: fingerprint,
+            semantic_fingerprint: 0xF053_2000,
+            seed_lo: 101,
+            seed_hi: 202,
+            random_mode: 0,
+            air_type: 100,
+            water_type: 200,
+            lava_type: 300,
+            max_status_cache_entries: 64,
+            reserved: 0,
+        };
+        let context = unsafe { jpe_runtime_aquifer_context_create(&info) };
+        assert_ne!(context, 0);
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_configure_global_fluid_picker(
+                context, fingerprint.as_ptr(), info.semantic_fingerprint,
+                63, -64, 200, 0, 0,
+            )
+        }, STATUS_OK);
+
+        let mut fused = [JpeAquiferCoreOutput::default(); 8];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_compute_density_and_substance_volume_f32(
+                context, fingerprint.as_ptr(), info.semantic_fingerprint,
+                final_density_graph, 0,
+                2, 2, 2, -16, -64, 32, 1, 1, 1,
+                fused.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+
+        let split_density = [1.0_f32; 8];
+        let mut split = [JpeAquiferCoreOutput::default(); 8];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_compute_substance_volume_f32(
+                context, fingerprint.as_ptr(), info.semantic_fingerprint,
+                0,
+                2, 2, 2, -16, -64, 32, 1, 1, 1,
+                split_density.as_ptr(), split_density.len() as u32,
+                split.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        for index in 0..8 {
+            assert_eq!(fused[index].has_block_state, split[index].has_block_state);
+            assert_eq!(fused[index].block_state_type, split[index].block_state_type);
+            assert_eq!(
+                fused[index].should_schedule_fluid_update,
+                split[index].should_schedule_fluid_update,
+            );
+        }
+
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_destroy(context)
+        }, STATUS_OK);
+        for handle in sampler_handles {
+            assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
+        }
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_release(final_density_graph)
+        }, STATUS_OK);
+    }
+
+    #[test]
     fn aquifer_nearest_four_matches_minecraft_tie_order_for_negative_coordinates() {
         let candidates = [
             JpeAquiferCellLocation { x: -95, y: 64, z: -100 }, // d2=25
