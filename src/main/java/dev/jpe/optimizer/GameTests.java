@@ -529,9 +529,11 @@ public final class GameTests {
                 else System.setProperty(propertyNames[i], previousProperties[i]);
             }
         }
-        if (!NativeBlenderDensityBackend.metrics().contains("completed=4")) {
+        String backendMetrics = NativeBlenderDensityBackend.metrics();
+        JPEOptimizer.LOGGER.info("JPE_NATIVE_BLENDER_BACKEND_SUMMARY {}", backendMetrics);
+        if (!backendMetrics.contains("attempts=4 completed=4 fallbacks=0 parityMismatches=0")) {
             throw new AssertionError("Production Native Blender backend did not complete all synthetic legacy cases: "
-                    + NativeBlenderDensityBackend.metrics());
+                    + backendMetrics);
         }
         helper.succeed();
     }
