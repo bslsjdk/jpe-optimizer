@@ -1,11 +1,14 @@
 package dev.jpe.optimizer.worldgen;
 
 import dev.jpe.optimizer.mixin.DensityBufferAccessor;
+import dev.jpe.optimizer.mixin.DensityFunctionCompilerAccessor;
+import dev.jpe.optimizer.mixin.RandomStateAccessor;
 import dev.jpe.optimizer.mixin.NoiseChunkAccessor;
 import dev.jpe.optimizer.runtime.NativePerlinNoiseBackend;
 import dev.jpe.optimizer.runtime.NativeRuntime;
 import net.minecraft.core.Holder;
 import net.minecraft.world.level.levelgen.NoiseChunk;
+import net.minecraft.world.level.levelgen.RandomState;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBufferPool;
 import net.minecraft.world.level.levelgen.densityfunction.DensityFunction;
 import net.minecraft.world.level.levelgen.densityfunction.DensityFunctions;
@@ -24,6 +27,8 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.Collections;
+import java.util.WeakHashMap;
 
 /**
  * Compiles the subset of the actual 26.3 final-density tree that has a verified
@@ -34,16 +39,21 @@ public final class NativeDensityGraphCompiler {
     private static final long CONFIGURATION_FINGERPRINT = 0x4A50452603000001L;
     private static final Object LOCK = new Object();
 
-    private static final ReferenceQueue<DensityFunction> NOISE_QUEUE = new ReferenceQueue<>();
-    private static final Map<IdentityWeakReference<DensityFunction>, Noise> CAPTURED_NOISE = new HashMap<>();
+    // The compiler context is owned by RandomState and remains stable across chunks.
+    // Weak keys prevent a closed world's captured samplers from being retained.
+    private static final Map<DensityFunction.CompileContext, IdentityHashMap<NoiseFunction, Noise>> CAPTURED_NOISE =
+            new WeakHashMap<>();
 
-    private static final ReferenceQueue<DensityFunction> GRAPH_QUEUE = new ReferenceQueue<>();
-    private static final Map<IdentityWeakReference<DensityFunction>, GraphHandle> GRAPHS = new HashMap<>();
-
-    private static final ReferenceQueue<DensityFunction> DISABLED_QUEUE = new ReferenceQueue<>();
-    private static final Set<IdentityWeakReference<DensityFunction>> DISABLED = new HashSet<>();
+    private static final ReferenceQueue<RandomState> RANDOM_STATE_QUEUE = new ReferenceQueue<>();
+    private static final Map<IdentityWeakReference<RandomState>, StateGraphs> GRAPHS = new HashMap<>();
 
     private record GraphHandle(NativeRuntime runtime, long handle) {}
+
+    private static final class StateGraphs {
+        private final IdentityHashMap<DensityFunction, GraphHandle> handles = new IdentityHashMap<>();
+        private final Set<DensityFunction> disabled =
+                Collections.newSetFromMap(new IdentityHashMap<>());
+    }
 
     private static final class IdentityWeakReference<T> extends WeakReference<T> {
         private final int identityHash;
@@ -70,10 +80,11 @@ public final class NativeDensityGraphCompiler {
     private NativeDensityGraphCompiler() {}
 
     /** Called from NoiseFunction.compileSampler after vanilla creates its seed-bound Noise. */
-    public static void captureNoise(NoiseFunction function, Noise noise) {
+    public static void captureNoise(
+            NoiseFunction function, DensityFunction.CompileContext context, Noise noise
+    ) {
         synchronized (LOCK) {
-            drainQueues();
-            CAPTURED_NOISE.put(new IdentityWeakReference<>(function, NOISE_QUEUE), noise);
+            CAPTURED_NOISE.computeIfAbsent(context, ignored -> new IdentityHashMap<>()).put(function, noise);
         }
     }
 
@@ -87,10 +98,15 @@ public final class NativeDensityGraphCompiler {
         NativeRuntime runtime = NativePerlinNoiseBackend.runtimeForDensityGraph();
         if (runtime == null) return null;
 
-        long handle = graphHandle(root, runtime);
+        NoiseChunkAccessor noiseChunkAccess = (NoiseChunkAccessor) (Object) noiseChunk;
+        RandomState randomState = noiseChunkAccess.jpe$getRandomState();
+        DensityFunction.CompileContext context = ((DensityFunctionCompilerAccessor)
+                (Object) ((RandomStateAccessor) (Object) randomState).jpe$getDensityFunctionCompiler())
+                .jpe$getContext();
+        long handle = graphHandle(root, randomState, context, runtime);
         if (handle == 0L) return null;
 
-        DensityBufferPool pool = ((NoiseChunkAccessor) (Object) noiseChunk).jpe$getBufferPool();
+        DensityBufferPool pool = noiseChunkAccess.jpe$getBufferPool();
         ScopedDensityBuffer output = pool.acquire(volume.size());
         try {
             runtime.evaluateDensityGraphF32(
@@ -103,70 +119,85 @@ public final class NativeDensityGraphCompiler {
             return output;
         } catch (RuntimeException | LinkageError failure) {
             output.close();
-            disableGraph(root, runtime);
+            disableGraph(root, randomState, runtime);
             return null;
         }
     }
 
-    private static long graphHandle(DensityFunction root, NativeRuntime runtime) {
+    private static long graphHandle(
+            DensityFunction root,
+            RandomState randomState,
+            DensityFunction.CompileContext context,
+            NativeRuntime runtime
+    ) {
         synchronized (LOCK) {
             drainQueues();
-            IdentityWeakReference<DensityFunction> lookup = new IdentityWeakReference<>(root, null);
-            if (DISABLED.contains(lookup)) return 0L;
+            IdentityWeakReference<RandomState> lookup = new IdentityWeakReference<>(randomState, null);
+            StateGraphs stateGraphs = GRAPHS.get(lookup);
+            if (stateGraphs == null) {
+                stateGraphs = new StateGraphs();
+                GRAPHS.put(new IdentityWeakReference<>(randomState, RANDOM_STATE_QUEUE), stateGraphs);
+            }
+            if (stateGraphs.disabled.contains(root)) return 0L;
 
-            GraphHandle existing = GRAPHS.get(lookup);
+            GraphHandle existing = stateGraphs.handles.get(root);
             if (existing != null) {
                 if (existing.runtime() == runtime) return existing.handle();
-                GRAPHS.remove(lookup);
+                stateGraphs.handles.remove(root);
                 existing.runtime().releaseDensityGraph(existing.handle());
             }
 
-            Builder builder = new Builder();
+            Builder builder = new Builder(context);
             int rootIndex;
             try {
                 rootIndex = builder.lower(root);
-            } catch (UnsupportedOperationException unsupported) {
-                DISABLED.add(new IdentityWeakReference<>(root, DISABLED_QUEUE));
+            } catch (RuntimeException unsupported) {
+                stateGraphs.disabled.add(root);
                 return 0L;
             }
 
             if (rootIndex < 0 || builder.nodes.isEmpty()) {
-                DISABLED.add(new IdentityWeakReference<>(root, DISABLED_QUEUE));
+                stateGraphs.disabled.add(root);
                 return 0L;
             }
 
             try {
                 long handle = runtime.compileDensityGraph(builder.nodes, rootIndex, CONFIGURATION_FINGERPRINT);
-                GRAPHS.put(new IdentityWeakReference<>(root, GRAPH_QUEUE), new GraphHandle(runtime, handle));
+                if (handle == 0L) {
+                    stateGraphs.disabled.add(root);
+                    return 0L;
+                }
+                stateGraphs.handles.put(root, new GraphHandle(runtime, handle));
                 return handle;
             } catch (RuntimeException rejected) {
-                DISABLED.add(new IdentityWeakReference<>(root, DISABLED_QUEUE));
+                stateGraphs.disabled.add(root);
                 return 0L;
             }
         }
     }
 
-    private static void disableGraph(DensityFunction root, NativeRuntime runtime) {
+    private static void disableGraph(DensityFunction root, RandomState randomState, NativeRuntime runtime) {
         synchronized (LOCK) {
-            IdentityWeakReference<DensityFunction> lookup = new IdentityWeakReference<>(root, null);
-            GraphHandle existing = GRAPHS.remove(lookup);
+            StateGraphs stateGraphs = GRAPHS.get(new IdentityWeakReference<>(randomState, null));
+            if (stateGraphs == null) return;
+            GraphHandle existing = stateGraphs.handles.remove(root);
             if (existing != null) existing.runtime().releaseDensityGraph(existing.handle());
-            DISABLED.add(new IdentityWeakReference<>(root, DISABLED_QUEUE));
+            stateGraphs.disabled.add(root);
         }
     }
 
     @SuppressWarnings("unchecked")
     private static void drainQueues() {
-        IdentityWeakReference<DensityFunction> expired;
-        while ((expired = (IdentityWeakReference<DensityFunction>) NOISE_QUEUE.poll()) != null) {
-            CAPTURED_NOISE.remove(expired);
-        }
-        while ((expired = (IdentityWeakReference<DensityFunction>) GRAPH_QUEUE.poll()) != null) {
-            GraphHandle graph = GRAPHS.remove(expired);
-            if (graph != null) graph.runtime().releaseDensityGraph(graph.handle());
-        }
-        while ((expired = (IdentityWeakReference<DensityFunction>) DISABLED_QUEUE.poll()) != null) {
-            DISABLED.remove(expired);
+        IdentityWeakReference<RandomState> expired;
+        while ((expired = (IdentityWeakReference<RandomState>) RANDOM_STATE_QUEUE.poll()) != null) {
+            StateGraphs stateGraphs = GRAPHS.remove(expired);
+            if (stateGraphs != null) {
+                for (GraphHandle graph : stateGraphs.handles.values()) {
+                    graph.runtime().releaseDensityGraph(graph.handle());
+                }
+                stateGraphs.handles.clear();
+                stateGraphs.disabled.clear();
+            }
         }
     }
 
@@ -186,9 +217,14 @@ public final class NativeDensityGraphCompiler {
     }
 
     private static final class Builder {
+        private final DensityFunction.CompileContext context;
         private final List<NativeRuntime.DensityNode> nodes = new ArrayList<>();
         private final IdentityHashMap<DensityFunction, Integer> indices = new IdentityHashMap<>();
         private final IdentityHashMap<DensityFunction, Boolean> active = new IdentityHashMap<>();
+
+        private Builder(DensityFunction.CompileContext context) {
+            this.context = context;
+        }
 
         private int append(NativeRuntime.DensityNode node) {
             if (nodes.size() >= 65_536) throw new UnsupportedOperationException("Density graph exceeds native node limit");
@@ -269,7 +305,8 @@ public final class NativeDensityGraphCompiler {
                         }
                         Noise noise;
                         synchronized (LOCK) {
-                            noise = CAPTURED_NOISE.get(new IdentityWeakReference<>(function, null));
+                            IdentityHashMap<NoiseFunction, Noise> captured = CAPTURED_NOISE.get(context);
+                            noise = captured == null ? null : captured.get((NoiseFunction) function);
                         }
                         long preparedHandle = NativePerlinNoiseBackend.preparedStackHandleForDensityGraph(noise);
                         if (preparedHandle == 0L) {
