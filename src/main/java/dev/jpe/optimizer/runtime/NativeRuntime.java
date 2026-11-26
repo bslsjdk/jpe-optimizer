@@ -731,14 +731,19 @@ public final class NativeRuntime implements AutoCloseable {
             }
             return new DensityNode(26, input, cellSizeXz, cellSizeY, 0.0, 0.0, 0.0);
         }
+        public static DensityNode gradient(int axis, int tiling, int fromCoordinate, int toCoordinate,
+                                            float fromValue, float toValue) {
+            if (axis < 0 || axis > 2 || tiling < 0 || tiling > 2
+                    || fromCoordinate == toCoordinate
+                    || !Float.isFinite(fromValue) || !Float.isFinite(toValue)) {
+                throw new IllegalArgumentException("Invalid density gradient");
+            }
+            return new DensityNode(25, axis, tiling, Float.floatToRawIntBits(fromValue),
+                    fromCoordinate, toCoordinate, toValue);
+        }
         public static DensityNode gradient(int axis, int fromCoordinate, int toCoordinate,
                                             float fromValue, float toValue) {
-            if (axis < 0 || axis > 2 || fromCoordinate == toCoordinate
-                    || !Float.isFinite(fromValue) || !Float.isFinite(toValue)) {
-                throw new IllegalArgumentException("Invalid clamped density gradient");
-            }
-            return new DensityNode(25, axis, 0, Float.floatToRawIntBits(fromValue),
-                    fromCoordinate, toCoordinate, toValue);
+            return gradient(axis, 0, fromCoordinate, toCoordinate, fromValue, toValue);
         }
         public static DensityNode pow(int a, int b) { return new DensityNode(21, a, b, 0, 0.0, 0.0, 0.0); }
         public static DensityNode clamp(int input, float minimum, float maximum) {
