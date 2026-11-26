@@ -106,7 +106,12 @@ enum {
     JPE_DENSITY_NEGATE = 14,
     JPE_DENSITY_ABS = 15,
     JPE_DENSITY_SQUARE = 16,
-    JPE_DENSITY_CUBE = 17
+    JPE_DENSITY_CUBE = 17,
+    JPE_DENSITY_SQRT = 18,
+    JPE_DENSITY_LOG = 19,
+    JPE_DENSITY_RECIPROCAL = 20,
+    JPE_DENSITY_SIGN = 21,
+    JPE_DENSITY_SQUEEZE = 22
 };
 /* Returns a retained compiled-plan handle, or zero for an invalid graph. */
 JPE_API uint64_t jpe_runtime_density_graph_compile(
