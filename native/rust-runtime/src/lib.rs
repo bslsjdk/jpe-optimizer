@@ -2789,6 +2789,54 @@ mod tests {
     }
 
     #[test]
+    fn blender_density_volume_sparse_spatial_fallback_matches_dense_local_result() {
+        let mut near_columns: Vec<Vec<f32>> = (0..16).map(|column| {
+            (0..16).map(|y| ((column * 17 + y * 13) % 101) as f32 - 37.0).collect()
+        }).collect();
+        let mut far_columns: Vec<Vec<f32>> = (0..16).map(|column| {
+            (0..16).map(|y| ((column * 29 + y * 7) % 89) as f32 + 11.0).collect()
+        }).collect();
+        let near_view = JpeBlendingDataView {
+            chunk_x: 0,
+            chunk_z: 0,
+            min_section_y: -4,
+            section_count: 8,
+            density_columns: std::array::from_fn(|column| near_columns[column].as_ptr()),
+        };
+        let far_view = JpeBlendingDataView {
+            chunk_x: 100_000,
+            chunk_z: -100_000,
+            min_section_y: -4,
+            section_count: 8,
+            density_columns: std::array::from_fn(|column| far_columns[column].as_ptr()),
+        };
+        let views = [near_view, far_view];
+        let noise = [0.375_f32];
+        let mut dense_output = [0.0_f32];
+        let mut sparse_output = [0.0_f32];
+
+        // The single local view fits the direct-address grid. Adding a very
+        // distant view forces the bounded sparse-hash fallback, but that view
+        // cannot contribute to this query's 5x5x2 neighborhood.
+        assert_eq!(unsafe {
+            jpe_runtime_blend_density_volume(
+                std::ptr::null(), 0, &near_view, 1,
+                1, 1, 1, 8, -32, 8, 1, 1, 1,
+                noise.as_ptr(), dense_output.as_mut_ptr(), 1,
+            )
+        }, STATUS_OK);
+        assert_eq!(unsafe {
+            jpe_runtime_blend_density_volume(
+                std::ptr::null(), 0, views.as_ptr(), views.len() as u32,
+                1, 1, 1, 8, -32, 8, 1, 1, 1,
+                noise.as_ptr(), sparse_output.as_mut_ptr(), 1,
+            )
+        }, STATUS_OK);
+        assert_eq!(sparse_output[0].to_bits(), dense_output[0].to_bits());
+        assert_ne!(sparse_output[0].to_bits(), noise[0].to_bits());
+    }
+
+    #[test]
     fn blender_density_volume_handles_negative_coordinates_and_boundary_fallback() {
         let mut column = vec![0.0_f32; 16];
         column[3] = 12.5;
