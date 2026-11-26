@@ -1065,7 +1065,8 @@ public final class NativeRuntime implements AutoCloseable {
         }
         int count = Math.toIntExact(totalLong);
 
-        lifecycle.readLock().lock();
+        ReentrantReadWriteLock.ReadLock volumeReadLock = lifecycle.readLock();
+        volumeReadLock.lock();
         AquiferScratch scratch = null;
         boolean transferred = false;
         try {
@@ -1090,14 +1091,17 @@ public final class NativeRuntime implements AutoCloseable {
                     volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ(),
                     densityValues, count, outputValues);
             checkStatus(status, "aquifer-context-compute-substance-volume-f32");
-            AquiferSubstanceVolumeResult result = new AquiferSubstanceVolumeResult(scratch, outputValues, count);
+            AquiferSubstanceVolumeResult result =
+                    new AquiferSubstanceVolumeResult(scratch, outputValues, count, volumeReadLock);
             transferred = true;
             return result;
         } catch (Throwable failure) {
             throw rethrow("Unable to compute native full-volume Aquifer decisions", failure);
         } finally {
-            if (scratch != null && !transferred) scratch.release();
-            lifecycle.readLock().unlock();
+            if (!transferred) {
+                if (scratch != null) scratch.release();
+                volumeReadLock.unlock();
+            }
         }
     }
 
@@ -1106,12 +1110,17 @@ public final class NativeRuntime implements AutoCloseable {
         private final AquiferScratch scratch;
         private final MemorySegment values;
         private final int count;
-        private boolean closed;
+        private final ReentrantReadWriteLock.ReadLock volumeReadLock;
+        private final AtomicBoolean closed = new AtomicBoolean();
 
-        private AquiferSubstanceVolumeResult(AquiferScratch scratch, MemorySegment values, int count) {
+        private AquiferSubstanceVolumeResult(
+                AquiferScratch scratch, MemorySegment values, int count,
+                ReentrantReadWriteLock.ReadLock volumeReadLock
+        ) {
             this.scratch = scratch;
             this.values = values;
             this.count = count;
+            this.volumeReadLock = volumeReadLock;
         }
 
         public int size() { ensureOpen(); return count; }
@@ -1137,14 +1146,17 @@ public final class NativeRuntime implements AutoCloseable {
         }
 
         private void ensureOpen() {
-            if (closed) throw new IllegalStateException("Native Aquifer volume result is already closed");
+            if (closed.get()) throw new IllegalStateException("Native Aquifer volume result is already closed");
         }
 
         @Override
         public void close() {
-            ensureOpen();
-            closed = true;
-            scratch.release();
+            if (!closed.compareAndSet(false, true)) return;
+            try {
+                scratch.release();
+            } finally {
+                volumeReadLock.unlock();
+            }
         }
     }
 
