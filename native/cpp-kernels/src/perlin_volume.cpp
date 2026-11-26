@@ -553,6 +553,77 @@ int32_t perlin_add_volume_impl(
 }
 } // namespace
 
+/* Point sampler used by domain-warped stacks. It mirrors the scalar operation
+ * order of the 1x1x1 volume path but avoids volume validation, thread-local
+ * scratch setup, and nested volume-loop dispatch for every voxel. */
+extern "C" int32_t jpe_cpp_perlin_sample_point(
+    const uint8_t* permutation,
+    int32_t x, int32_t y, int32_t z,
+    double offset_x, double offset_y, double offset_z,
+    double xz_scale, double y_scale, float amplitude,
+    float* output
+) noexcept {
+    if (permutation == nullptr || output == nullptr) return 1;
+    const double world_x = wrap_coordinate(static_cast<double>(x) * xz_scale, false) + offset_x;
+    const double world_y = wrap_coordinate(static_cast<double>(y) * y_scale, false) + offset_y;
+    const double world_z = wrap_coordinate(static_cast<double>(z) * xz_scale, false) + offset_z;
+    const int32_t floor_x = floor_to_i32(world_x);
+    const int32_t floor_y = floor_to_i32(world_y);
+    const int32_t floor_z = floor_to_i32(world_z);
+    const float relative_x = static_cast<float>(world_x - static_cast<double>(floor_x));
+    const float relative_y = static_cast<float>(world_y - static_cast<double>(floor_y));
+    const float relative_z = static_cast<float>(world_z - static_cast<double>(floor_z));
+    const float alpha_x = smoothstep(relative_x);
+    const float alpha_y = smoothstep(relative_y);
+    const float alpha_z = smoothstep(relative_z);
+
+    const int32_t x0 = static_cast<int32_t>(permute_sum(permutation, floor_x));
+    const int32_t x1 = static_cast<int32_t>(permute_sum(permutation, floor_x, 1));
+    const int32_t xy00 = static_cast<int32_t>(permute_sum(permutation, x0, floor_y));
+    const int32_t xy01 = static_cast<int32_t>(permute_sum(permutation, x0, floor_y, 1));
+    const int32_t xy10 = static_cast<int32_t>(permute_sum(permutation, x1, floor_y));
+    const int32_t xy11 = static_cast<int32_t>(permute_sum(permutation, x1, floor_y, 1));
+
+    float corner_xz[8];
+    float corner_y[8];
+    corner(permutation, static_cast<uint32_t>(xy00) + static_cast<uint32_t>(floor_z),
+        relative_x, relative_z, corner_xz[0], corner_y[0]);
+    corner(permutation, static_cast<uint32_t>(xy10) + static_cast<uint32_t>(floor_z),
+        relative_x - 1.0F, relative_z, corner_xz[1], corner_y[1]);
+    corner(permutation, static_cast<uint32_t>(xy01) + static_cast<uint32_t>(floor_z),
+        relative_x, relative_z, corner_xz[2], corner_y[2]);
+    corner(permutation, static_cast<uint32_t>(xy11) + static_cast<uint32_t>(floor_z),
+        relative_x - 1.0F, relative_z, corner_xz[3], corner_y[3]);
+    corner(permutation, static_cast<uint32_t>(xy00) + static_cast<uint32_t>(floor_z) + 1U,
+        relative_x, relative_z - 1.0F, corner_xz[4], corner_y[4]);
+    corner(permutation, static_cast<uint32_t>(xy10) + static_cast<uint32_t>(floor_z) + 1U,
+        relative_x - 1.0F, relative_z - 1.0F, corner_xz[5], corner_y[5]);
+    corner(permutation, static_cast<uint32_t>(xy01) + static_cast<uint32_t>(floor_z) + 1U,
+        relative_x, relative_z - 1.0F, corner_xz[6], corner_y[6]);
+    corner(permutation, static_cast<uint32_t>(xy11) + static_cast<uint32_t>(floor_z) + 1U,
+        relative_x - 1.0F, relative_z - 1.0F, corner_xz[7], corner_y[7]);
+
+    const float relative_y1 = relative_y - 1.0F;
+    const float x000 = corner_xz[0] + corner_y[0] * relative_y;
+    const float x100 = corner_xz[1] + corner_y[1] * relative_y;
+    const float x010 = corner_xz[2] + corner_y[2] * relative_y1;
+    const float x110 = corner_xz[3] + corner_y[3] * relative_y1;
+    const float x001 = corner_xz[4] + corner_y[4] * relative_y;
+    const float x101 = corner_xz[5] + corner_y[5] * relative_y;
+    const float x011 = corner_xz[6] + corner_y[6] * relative_y1;
+    const float x111 = corner_xz[7] + corner_y[7] * relative_y1;
+
+    const float lower = lerp(alpha_y,
+        lerp(alpha_x, x000, x100),
+        lerp(alpha_x, x010, x110));
+    const float upper = lerp(alpha_y,
+        lerp(alpha_x, x001, x101),
+        lerp(alpha_x, x011, x111));
+    const float sample = amplitude * lerp(alpha_z, lower, upper);
+    *output = *output + sample;
+    return 0;
+}
+
 extern "C" int32_t jpe_cpp_perlin_add_volume(
     const uint8_t* permutation,
     uint32_t size_x,
