@@ -167,8 +167,39 @@ public final class GameTests {
                             + ": expected=" + expected32 + ", actual=" + values32[i]);
                 }
             }
+            if (!runtime.supportsDensityGraphMultiPointsF32()) {
+                throw new AssertionError("Native multi-sampler density graph ABI is unavailable");
+            }
+            long addGraph = runtime.compileDensityGraph(List.of(
+                    NativeRuntime.DensityNode.x(),
+                    NativeRuntime.DensityNode.y(),
+                    NativeRuntime.DensityNode.add(0, 1)
+            ), 2, 0xA91F_264L);
+            long multiplyGraph = runtime.compileDensityGraph(List.of(
+                    NativeRuntime.DensityNode.x(),
+                    NativeRuntime.DensityNode.y(),
+                    NativeRuntime.DensityNode.multiply(0, 1)
+            ), 2, 0xA91F_265L);
+            long[] samplerHandles = {addGraph, multiplyGraph};
+            int[][] samplerX = {{2, -4}, {7, 8}};
+            int[][] samplerY = {{3, 5}, {6, -3}};
+            int[][] samplerZ = {{0, 0}, {0, 0}};
+            float[][] samplerValues = {new float[2], new float[2]};
+            runtime.evaluateDensityGraphMultiPointsF32(
+                    samplerHandles, samplerX, samplerY, samplerZ, samplerValues);
+            float[] expectedMulti = {5.0F, 1.0F, 42.0F, -24.0F};
+            for (int i = 0; i < expectedMulti.length; i++) {
+                int graphIndex = i / 2;
+                int pointIndex = i % 2;
+                if (Float.floatToRawIntBits(samplerValues[graphIndex][pointIndex])
+                        != Float.floatToRawIntBits(expectedMulti[i])) {
+                    throw new AssertionError("Native multi-sampler density mismatch at flat index " + i
+                            + ": expected=" + expectedMulti[i]
+                            + ", actual=" + samplerValues[graphIndex][pointIndex]);
+                }
+            }
             JPEOptimizer.LOGGER.info(
-                    "JPE_DENSITY_GRAPH_POINT_BATCH samples={} f64Exact=true f32Exact=true irregularCoordinates=true",
+                    "JPE_DENSITY_GRAPH_POINT_BATCH samples={} f64Exact=true f32Exact=true irregularCoordinates=true multiSamplerGraphs=2 multiSamplerExact=true",
                     xs.length);
         } catch (Exception failure) {
             throw new AssertionError("Native arbitrary-point density graph parity failed", failure);
