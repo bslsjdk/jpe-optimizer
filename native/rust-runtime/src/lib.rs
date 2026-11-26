@@ -2074,6 +2074,88 @@ mod tests {
     }
 
     #[test]
+    fn density_graph_distance_axis_hoist_preserves_all_metrics_and_volume_order() {
+        let xs = [-5.0_f32, -2.0, 1.0];
+        let ys = [-4.0_f32, -1.0];
+        let zs = [-6.0_f32, -2.0];
+        let point = (-2.0_f32, 1.0_f32, -1.0_f32);
+
+        for metric in 0..4_u32 {
+            let nodes = [JpeDensityNode {
+                opcode: 30,
+                input_a: metric,
+                input_b: DENSITY_NO_INPUT,
+                reserved: 0,
+                immediate: point.0 as f64,
+                auxiliary: point.1 as f64,
+                tertiary: point.2 as f64,
+            }];
+            let graph = unsafe {
+                jpe_runtime_density_graph_compile(
+                    nodes.as_ptr(), 1, 0, 0xD157_A120 + metric as u64,
+                )
+            };
+            assert_ne!(graph, 0, "distance metric {} graph rejected", metric);
+
+            let mut expected = Vec::with_capacity(12);
+            for z in zs {
+                let dz = z - point.2;
+                for x in xs {
+                    let dx = x - point.0;
+                    for y in ys {
+                        let dy = y - point.1;
+                        let ax = dx.abs();
+                        let ay = dy.abs();
+                        let az = dz.abs();
+                        let value = match metric {
+                            0 => ax.max(ay.max(az)),
+                            1 => (dx * dx + dy * dy + dz * dz).sqrt(),
+                            2 => dx * dx + dy * dy + dz * dz,
+                            _ => (ax + ay) + az,
+                        };
+                        expected.push(value);
+                    }
+                }
+            }
+
+            let mut output_f32 = [f32::NAN; 12];
+            assert_eq!(unsafe {
+                jpe_runtime_density_graph_evaluate_f32(
+                    graph, 3, 2, 2, -5, -4, -6, 3, 3, 4,
+                    output_f32.as_mut_ptr(), output_f32.len() as u64,
+                )
+            }, STATUS_OK);
+            for index in 0..expected.len() {
+                assert_eq!(
+                    output_f32[index].to_bits(),
+                    expected[index].to_bits(),
+                    "f32 distance metric {}, voxel {}",
+                    metric,
+                    index,
+                );
+            }
+
+            let mut output_f64 = [f64::NAN; 12];
+            assert_eq!(unsafe {
+                jpe_runtime_density_graph_evaluate_f64(
+                    graph, 3, 2, 2, -5, -4, -6, 3, 3, 4,
+                    output_f64.as_mut_ptr(), output_f64.len() as u64,
+                )
+            }, STATUS_OK);
+            for index in 0..expected.len() {
+                assert_eq!(
+                    output_f64[index].to_bits(),
+                    (expected[index] as f64).to_bits(),
+                    "f64 distance metric {}, voxel {}",
+                    metric,
+                    index,
+                );
+            }
+            assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+        }
+    }
+
+    #[test]
     fn density_graph_f32_executes_multi_threshold_interval_select() {
         let nodes = [
             JpeDensityNode { opcode: 2, input_a: DENSITY_NO_INPUT,
