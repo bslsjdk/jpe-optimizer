@@ -573,28 +573,16 @@ public final class NativeDensityGraphCompiler {
             if (rootIndex < 0 || builder.nodes.isEmpty()) {
                 throw new UnsupportedOperationException("Density graph lowered to an empty graph");
             }
-            PortableDensityGraphCache.Graph portableGraph = new PortableDensityGraphCache.Graph(
-                    builder.nodes, rootIndex, builder.perlinStacks);
-            List<NativeRuntime.DensityNode> materializedNodes = portableGraph.materialize(runtime);
-            long handle;
-            try {
-                handle = runtime.compileDensityGraph(
-                        materializedNodes, rootIndex, CONFIGURATION_FINGERPRINT);
-                if (handle == 0L) {
-                    throw new IllegalStateException("Native density graph compiler returned a null handle");
-                }
-            } finally {
-                // The compiled C++ graph retains its own references to prepared
-                // stacks. Release the temporary materialization references here.
-                Set<Long> temporaryStackHandles = new HashSet<>();
-                for (NativeRuntime.DensityNode node : materializedNodes) {
-                    if (node.opcode() == 7 || node.opcode() == 31) {
-                        temporaryStackHandles.add((long) node.immediate());
-                    }
-                }
-                for (long stackHandle : temporaryStackHandles) {
-                    runtime.releasePreparedPerlinStack(stackHandle);
-                }
+            // Keep the current native compilation path on the shared prepared-stack
+            // handles. In parallel, produce a handle-free portable IR snapshot for
+            // persistent-cache integration; never serialize process-local pointers.
+            PortableDensityGraphCache.Graph portableGraph = builder.portableGraph(rootIndex);
+            if (portableGraph.nodes().size() != builder.nodes.size()) {
+                throw new IllegalStateException("Portable density graph node count changed during lowering");
+            }
+            long handle = runtime.compileDensityGraph(builder.nodes, rootIndex, CONFIGURATION_FINGERPRINT);
+            if (handle == 0L) {
+                throw new IllegalStateException("Native density graph compiler returned a null handle");
             }
 
             GraphHandle compiled = new GraphHandle(runtime, handle);
@@ -720,8 +708,27 @@ public final class NativeDensityGraphCompiler {
         private final IdentityHashMap<Object, Integer> splineIndices = new IdentityHashMap<>();
         private final IdentityHashMap<Object, Boolean> activeSplines = new IdentityHashMap<>();
         private final IdentityHashMap<Noise, Integer> perlinStackSlots = new IdentityHashMap<>();
+        private final Map<Long, Integer> preparedHandleSlots = new HashMap<>();
         private final List<PortableDensityGraphCache.PerlinStack> perlinStacks = new ArrayList<>();
         private final Map<Integer, Integer> constantNodes = new HashMap<>();
+
+        private PortableDensityGraphCache.Graph portableGraph(int rootIndex) {
+            List<NativeRuntime.DensityNode> portableNodes = new ArrayList<>(nodes.size());
+            for (NativeRuntime.DensityNode node : nodes) {
+                if (node.opcode() == 7 || node.opcode() == 31) {
+                    Integer slot = preparedHandleSlots.get((long) node.immediate());
+                    if (slot == null) {
+                        throw new IllegalStateException("Native Perlin handle has no portable descriptor slot");
+                    }
+                    portableNodes.add(new NativeRuntime.DensityNode(
+                            node.opcode(), node.inputA(), node.inputB(), node.reserved(),
+                            slot.doubleValue(), node.auxiliary(), node.tertiary()));
+                } else {
+                    portableNodes.add(node);
+                }
+            }
+            return new PortableDensityGraphCache.Graph(portableNodes, rootIndex, perlinStacks);
+        }
 
         private Builder(DensityFunction.CompileContext context, boolean blenderEmpty, boolean beardifierEmpty) {
             this.context = context;
@@ -1061,17 +1068,22 @@ public final class NativeDensityGraphCompiler {
                         if (noise == null) {
                             throw new UnsupportedOperationException("Noise sampler was not captured by vanilla compilation");
                         }
+                        long preparedHandle = NativePerlinNoiseBackend.preparedStackHandleForDensityGraph(noise);
+                        if (preparedHandle == 0L) {
+                            throw new UnsupportedOperationException("Noise sampler is not a supported Perlin stack");
+                        }
                         Integer stackSlot = perlinStackSlots.get(noise);
                         if (stackSlot == null) {
                             PortableDensityGraphCache.PerlinStack descriptor =
                                     NativePerlinNoiseBackend.portableStackDescriptor(noise);
                             if (descriptor == null) {
-                                throw new UnsupportedOperationException("Noise sampler is not a supported portable Perlin stack");
+                                throw new UnsupportedOperationException("Noise sampler has no portable Perlin descriptor");
                             }
                             stackSlot = perlinStacks.size();
                             perlinStacks.add(descriptor);
                             perlinStackSlots.put(noise, stackSlot);
                         }
+                        preparedHandleSlots.putIfAbsent(preparedHandle, stackSlot);
                         double xzScale = ((Number) component(function, "xzScale")).doubleValue();
                         double yScale = ((Number) component(function, "yScale")).doubleValue();
                         DensityFunction shiftX = (DensityFunction) component(function, "shiftX");
@@ -1080,16 +1092,15 @@ public final class NativeDensityGraphCompiler {
                         if (DensityFunctions.zero().equals(shiftX)
                                 && DensityFunctions.zero().equals(shiftY)
                                 && DensityFunctions.zero().equals(shiftZ)) {
-                            result = append(new NativeRuntime.DensityNode(
-                                    7, -1, -1, Float.floatToRawIntBits(1.0F),
-                                    stackSlot.doubleValue(), xzScale, yScale));
+                            result = append(NativeRuntime.DensityNode.perlinStack(
+                                    preparedHandle, xzScale, yScale, 1.0F));
                         } else {
                             int shiftXIndex = lower(shiftX);
                             int shiftYIndex = lower(shiftY);
                             int shiftZIndex = lower(shiftZ);
-                            result = append(new NativeRuntime.DensityNode(
-                                    31, shiftXIndex, shiftYIndex, shiftZIndex,
-                                    stackSlot.doubleValue(), xzScale, yScale));
+                            result = append(NativeRuntime.DensityNode.perlinStackWarped(
+                                    preparedHandle, xzScale, yScale,
+                                    shiftXIndex, shiftYIndex, shiftZIndex));
                         }
                     }
                     default -> throw new UnsupportedOperationException("Unsupported density node " + kind);
