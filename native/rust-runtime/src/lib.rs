@@ -2136,7 +2136,7 @@ mod tests {
 
             let mut output_f64 = [f64::NAN; 12];
             assert_eq!(unsafe {
-                jpe_runtime_density_graph_evaluate_f64(
+                jpe_runtime_density_graph_evaluate(
                     graph, 3, 2, 2, -5, -4, -6, 3, 3, 4,
                     output_f64.as_mut_ptr(), output_f64.len() as u64,
                 )
