@@ -267,8 +267,13 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
                 || node.opcode == kSub || node.opcode == kDiv || node.opcode == kMin
                 || node.opcode == kMax || node.opcode == kPow) {
                 release_input(node.input_a); release_input(node.input_b);
-            } else if ((node.opcode >= kAbs && node.opcode <= kSign) || node.opcode == kClamp) {
+            } else if ((node.opcode >= kAbs && node.opcode <= kSign)
+                || node.opcode == kClamp || node.opcode == kSqueeze) {
                 release_input(node.input_a);
+            } else if (node.opcode == kLerp) {
+                release_input(node.input_a);
+                release_input(node.input_b);
+                release_input(node.reserved);
             }
             if (i != root_node && consumers[i] == 0) free_slots.push_back(slot);
         }
@@ -436,7 +441,8 @@ int32_t evaluate_density_graph(
                     const int32_t to_coordinate = static_cast<int32_t>(node.auxiliary);
                     const Scalar from_value = static_cast<Scalar>(decode_float(node.reserved));
                     const Scalar to_value = static_cast<Scalar>(node.tertiary);
-                    const Scalar inverse_range = Scalar(1) / static_cast<Scalar>(to_coordinate - from_coordinate);
+                    const int64_t coordinate_range = static_cast<int64_t>(to_coordinate) - from_coordinate;
+                    const Scalar inverse_range = Scalar(1) / static_cast<Scalar>(coordinate_range);
                     size_t out = 0;
                     for (uint32_t z = 0; z < size_z; ++z) {
                         const int32_t wz = wrapped_coordinate(min_z, z, step_z);
@@ -446,8 +452,8 @@ int32_t evaluate_density_graph(
                                 const int32_t wy = wrapped_coordinate(min_y, y, step_y);
                                 const int32_t coordinate = node.input_a == 0 ? wx
                                     : node.input_a == 1 ? wy : wz;
-                                const Scalar normalized = static_cast<Scalar>(coordinate - from_coordinate)
-                                    * inverse_range;
+                                const int64_t coordinate_delta = static_cast<int64_t>(coordinate) - from_coordinate;
+                                const Scalar normalized = static_cast<Scalar>(coordinate_delta) * inverse_range;
                                 const Scalar t = std::min(std::max(normalized, Scalar(0)), Scalar(1));
                                 const Scalar delta = to_value - from_value;
                                 volatile Scalar scaled = delta * t;
