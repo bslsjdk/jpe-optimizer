@@ -511,7 +511,7 @@ public final class GameTests {
                 noise[i] = (i % 31 - 15) * 0.0375F;
             }
             verifyBlenderCase(runtime, patternedBlender, volume, noise,
-                    "multi-sample-patterned-volume-225");
+                    "full-chunk-patterned-volume-1225");
 
             BlendingData boundaryData = createSyntheticBlendingData(11, 12.5F);
             Long2ObjectOpenHashMap<BlendingData> boundaryMap = new Long2ObjectOpenHashMap<>();
