@@ -6,6 +6,7 @@ import dev.jpe.optimizer.mixin.RandomStateAccessor;
 import dev.jpe.optimizer.mixin.NoiseChunkAccessor;
 import dev.jpe.optimizer.runtime.NativePerlinNoiseBackend;
 import dev.jpe.optimizer.runtime.NativeRuntime;
+import it.unimi.dsi.fastutil.floats.FloatList;
 import net.minecraft.core.Holder;
 import net.minecraft.world.level.levelgen.NoiseChunk;
 import net.minecraft.world.level.levelgen.RandomState;
@@ -298,6 +299,28 @@ public final class NativeDensityGraphCompiler {
                             default -> throw new UnsupportedOperationException("Unsupported unary density op " + operation);
                         };
                         result = append(node);
+                    }
+                    case "IntervalSelectFunction" -> {
+                        int input = lower((DensityFunction) component(function, "input"));
+                        FloatList thresholds = (FloatList) component(function, "thresholds");
+                        List<DensityFunction> functions = (List<DensityFunction>) component(function, "functions");
+                        if (functions.size() != thresholds.size() + 1) {
+                            throw new UnsupportedOperationException("Invalid interval-select branch count");
+                        }
+                        float previous = Float.NEGATIVE_INFINITY;
+                        for (int i = 0; i < thresholds.size(); i++) {
+                            float threshold = thresholds.getFloat(i);
+                            if (!Float.isFinite(threshold) || threshold <= previous) {
+                                throw new UnsupportedOperationException("Interval-select thresholds are not strictly increasing");
+                            }
+                            previous = threshold;
+                        }
+                        result = lower(functions.get(functions.size() - 1));
+                        for (int i = thresholds.size() - 1; i >= 0; i--) {
+                            int whenBelow = lower(functions.get(i));
+                            result = append(NativeRuntime.DensityNode.rangeChoiceBelow(
+                                    input, thresholds.getFloat(i), whenBelow, result));
+                        }
                     }
                     case "RangeChoiceFunction" -> {
                         int input = lower((DensityFunction) component(function, "input"));
