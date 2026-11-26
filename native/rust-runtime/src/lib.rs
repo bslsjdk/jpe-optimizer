@@ -1729,6 +1729,58 @@ mod tests {
     }
 
     #[test]
+    fn density_graph_f32_executes_lerp_and_squeeze() {
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.25 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.5 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: 24, input_a: 0, input_b: 1,
+                reserved: 2, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: 23, input_a: 3, input_b: DENSITY_NO_INPUT,
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 0xF32_265)
+        };
+        assert_ne!(graph, 0);
+        let mut output = [f32::NAN; 2];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph, 2, 1, 1, 0, 0, 0, 1, 1, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        let lerped = 0.5_f32 + 0.25_f32 * (1.0_f32 - 0.5_f32);
+        let expected = (lerped * 0.5_f32 - (lerped * lerped * lerped) / 24.0_f32).clamp(-1.0, 1.0);
+        assert_eq!(output, [expected; 2]);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
+    fn density_graph_f32_executes_clamped_axis_gradient() {
+        let nodes = [
+            JpeDensityNode { opcode: 25, input_a: 1, input_b: 0,
+                reserved: 0.0_f32.to_bits(), immediate: -64.0 , auxiliary: -40.0, tertiary: 1.0},
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 0, 0xF32_266)
+        };
+        assert_ne!(graph, 0);
+        let mut output = [f32::NAN; 3];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph, 1, 3, 1, 0, -64, 0, 1, 12, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(output, [0.0, 0.5, 1.0]);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
     fn density_graph_recycles_buffers_for_unary_binary_and_clamp_nodes() {
         let nodes = [
             // This value has no consumers and must release its slot immediately.
