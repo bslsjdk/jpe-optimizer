@@ -268,7 +268,7 @@ bool valid_volume(uint32_t sx, uint32_t sy, uint32_t sz,
 }
 } // namespace
 
-extern "C" uint64_t jpe_runtime_density_graph_compile(
+extern "C" uint64_t jpe_cpp_density_graph_compile(
     const JpeDensityNode* nodes, uint32_t node_count, uint32_t root_node,
     uint64_t configuration_fingerprint
 ) {
@@ -1131,7 +1131,7 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_points_f32(
         graph_handle, point_x, point_y, point_z, point_count, output, output_length);
 }
 
-extern "C" int32_t jpe_runtime_density_graph_evaluate(
+extern "C" int32_t jpe_cpp_density_graph_evaluate(
     uint64_t graph_handle,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
@@ -1142,7 +1142,7 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate(
         min_x, min_y, min_z, step_x, step_y, step_z, output, output_length);
 }
 
-extern "C" int32_t jpe_runtime_density_graph_evaluate_f32(
+extern "C" int32_t jpe_cpp_density_graph_evaluate_f32(
     uint64_t graph_handle,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
@@ -1153,7 +1153,7 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate_f32(
         min_x, min_y, min_z, step_x, step_y, step_z, output, output_length);
 }
 
-extern "C" int32_t jpe_runtime_density_graph_release(uint64_t graph_handle) {
+extern "C" int32_t jpe_cpp_density_graph_release(uint64_t graph_handle) {
     std::lock_guard<std::mutex> lock(g_mutex);
     const auto found = g_handles.find(graph_handle);
     if (found == g_handles.end()) return 2;
