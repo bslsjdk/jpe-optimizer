@@ -18,7 +18,9 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.world.level.block.Rotation;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
+import net.minecraft.world.level.levelgen.densityfunction.DensityBufferArena;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
+import net.minecraft.world.level.levelgen.densityfunction.ScopedDensityBuffer;
 import net.minecraft.world.level.levelgen.XoroshiroRandomSource;
 import net.minecraft.world.level.levelgen.LegacyRandomSource;
 import net.minecraft.world.level.levelgen.PositionalRandomFactory;
@@ -215,6 +217,36 @@ public final class GameTests {
             runtime.configureAquiferGlobalFluidPicker(
                     context, worldFingerprint, 0xA91F_2630_0001L,
                     63, -2032, 200, false, false);
+            // Exercise the actual Java -> Rust -> C++ full-volume ABI using
+            // Minecraft's own DensityVolume and ScopedDensityBuffer types.
+            DensityVolume testVolume = new DensityVolume(2, 1, 1, 64, 0, 0);
+            try (ScopedDensityBuffer testDensity = DensityBufferArena.GLOBAL.acquire(2)) {
+                testDensity.set(0, -1.0F);
+                testDensity.set(1, 1.0F);
+                try (NativeRuntime.AquiferSubstanceVolumeResult volumeResult =
+                             runtime.computeAquiferSubstanceVolumeF32(
+                                     context, worldFingerprint, 0xA91F_2630_0001L,
+                                     -1, testVolume, testDensity)) {
+                    if (volumeResult.size() != 2
+                            || !volumeResult.hasBlockState(0)
+                            || volumeResult.blockStateToken(0) != 200
+                            || volumeResult.shouldScheduleFluidUpdate(0)
+                            || volumeResult.hasBlockState(1)
+                            || volumeResult.blockStateToken(1) != 100
+                            || volumeResult.shouldScheduleFluidUpdate(1)) {
+                        throw new AssertionError(
+                                "Native full-volume Aquifer FFM mismatch: "
+                                        + "size=" + volumeResult.size()
+                                        + " first=(" + volumeResult.hasBlockState(0)
+                                        + "," + volumeResult.blockStateToken(0)
+                                        + "," + volumeResult.shouldScheduleFluidUpdate(0)
+                                        + ") second=(" + volumeResult.hasBlockState(1)
+                                        + "," + volumeResult.blockStateToken(1)
+                                        + "," + volumeResult.shouldScheduleFluidUpdate(1) + ")");
+                    }
+                }
+            }
+
             long[] nativeCellKeys = {64L << 38, 64L << 38};
             int[] nativeCellX = {64, 64};
             int[] nativeCellY = {0, 0};
