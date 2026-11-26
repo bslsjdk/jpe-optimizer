@@ -136,6 +136,29 @@ class CompiledSamplerArithmeticLoweringTest {
     }
 
     @Test
+    void lowersMinecraftMinMaxVolumeSamplersWithoutDiscardingOperandOrder() {
+        CompiledSamplerGraphIr.Graph graph = new CompiledSamplerGraphIr.Graph(List.of(
+                node(0, CompiledSamplerGraphIr.Op.MIN_RIGHT_BOUND, List.of(1, 2),
+                        Map.of("rightMinValue", "-100.0")),
+                node(1, CompiledSamplerGraphIr.Op.MAX_RIGHT_BOUND, List.of(3, 4),
+                        Map.of("rightMaxValue", "100.0")),
+                node(2, CompiledSamplerGraphIr.Op.OPAQUE, List.of(), Map.of()),
+                node(3, CompiledSamplerGraphIr.Op.OPAQUE, List.of(), Map.of()),
+                node(4, CompiledSamplerGraphIr.Op.OPAQUE, List.of(), Map.of())
+        ), 0, 0);
+        CompiledSamplerArithmeticIslands.Plan plan = CompiledSamplerArithmeticIslands.plan(graph);
+        assertEquals(1, plan.islands().size());
+        CompiledSamplerArithmeticLowering.LoweredIsland lowered =
+                CompiledSamplerArithmeticLowering.lower(graph, plan.islands().get(0), 0xA11);
+        assertEquals(DensityGraphIr.MIN, lowered.graph().nodes().get(3).opcode());
+        assertEquals(DensityGraphIr.MAX, lowered.graph().nodes().get(4).opcode());
+        assertEquals(1, lowered.graph().nodes().get(3).inputA());
+        assertEquals(2, lowered.graph().nodes().get(3).inputB());
+        assertEquals(0, lowered.graph().nodes().get(4).inputA());
+        assertEquals(1, lowered.graph().nodes().get(4).inputB());
+    }
+
+    @Test
     void lowersAllOutputsOfOneSharedArithmeticIsland() {
         CompiledSamplerGraphIr.Graph graph = new CompiledSamplerGraphIr.Graph(List.of(
                 node(0, CompiledSamplerGraphIr.Op.ADD, List.of(1, 2), Map.of()),
