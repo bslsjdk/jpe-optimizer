@@ -16,6 +16,7 @@ struct Entry {
     int32_t fluid_level = 0;
     uint32_t fluid_type = 0;
     bool occupied = false;
+    bool pending = false;
 };
 
 struct Cache {
