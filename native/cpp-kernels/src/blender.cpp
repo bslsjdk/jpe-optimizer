@@ -169,15 +169,17 @@ float blend_one(int32_t block_x, int32_t block_y, int32_t block_z, float noise,
         // the squared length in float32, then Math.sqrt(double) and casts
         // back to float32. Only after that is the distance widened to double
         // for the inverse-fourth-power weighting and accumulation.
-        const auto java_sub = [](int32_t left, int32_t right) noexcept {
-            const uint32_t bits = static_cast<uint32_t>(left) - static_cast<uint32_t>(right);
+        const auto java_sub_bits = [](int32_t left, int32_t right) noexcept {
+            return static_cast<uint32_t>(left) - static_cast<uint32_t>(right);
+        };
+        const auto java_int = [](uint32_t bits) noexcept {
             int32_t result;
             std::memcpy(&result, &bits, sizeof(result));
             return result;
         };
-        const float dx = static_cast<float>(java_sub(cell_x, point.coord.x));
-        const float dy = static_cast<float>(java_sub(cell_y, point.coord.y) * 2);
-        const float dz = static_cast<float>(java_sub(cell_z, point.coord.z));
+        const float dx = static_cast<float>(java_int(java_sub_bits(cell_x, point.coord.x)));
+        const float dy = static_cast<float>(java_int(java_sub_bits(cell_y, point.coord.y) * 2U));
+        const float dz = static_cast<float>(java_int(java_sub_bits(cell_z, point.coord.z)));
         const float squared = (dx * dx + dy * dy) + dz * dz;
         const float distance_f = static_cast<float>(std::sqrt(static_cast<double>(squared)));
         const double distance = static_cast<double>(distance_f);
