@@ -145,10 +145,99 @@ public final class GameTests {
             var legacyAccessor = (LegacyPositionalRandomFactoryAccessor) (Object) legacyFactory;
             verifyAquiferGridCache(runtime, 1,
                     legacyAccessor.jpe$seed(), 0L, legacyFactory, "legacy");
+            verifyAquiferNearestFour(runtime, 0,
+                    xorAccessor.jpe$seedLo(), xorAccessor.jpe$seedHi(), "xoroshiro");
+            verifyAquiferNearestFour(runtime, 1,
+                    legacyAccessor.jpe$seed(), 0L, "legacy");
         } catch (Exception failure) {
             throw new AssertionError("Native Aquifer grid-cache parity failed", failure);
         }
         helper.succeed();
+    }
+
+    private static void verifyAquiferNearestFour(NativeRuntime runtime, int mode,
+                                                     long seedLo, long seedHi, String label) {
+        if (!runtime.supportsAquiferNearestFour()) {
+            throw new AssertionError("Native Aquifer nearest-four API is unavailable");
+        }
+        int[] blockX = {0, 15, -1, -17, 1, 16, -16, Integer.MIN_VALUE, Integer.MAX_VALUE};
+        int[] blockY = {-64, -1, 0, 23, 2, -13, 25, Integer.MAX_VALUE, Integer.MIN_VALUE};
+        int[] blockZ = {0, 15, -1, -33, 3, -17, 31, Integer.MIN_VALUE, Integer.MAX_VALUE};
+        NativeRuntime.AquiferNearestFour actual =
+                runtime.aquiferNearestFour(mode, seedLo, seedHi, blockX, blockY, blockZ);
+
+        PositionalRandomFactory factory;
+        if (mode == 0) {
+            factory = new XoroshiroRandomSource(seedLo, seedHi).forkPositional();
+        } else {
+            factory = new LegacyRandomSource(seedLo).forkPositional();
+        }
+        for (int sample = 0; sample < blockX.length; sample++) {
+            int anchorX = (blockX[sample] - 5) >> 4;
+            int anchorY = Math.floorDiv(blockY[sample] + 1, 12);
+            int anchorZ = (blockZ[sample] - 5) >> 4;
+            int[] bestX = new int[4];
+            int[] bestY = new int[4];
+            int[] bestZ = new int[4];
+            int[] bestDistance = {Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE};
+
+            // Independent Java reference: exact vanilla candidate traversal and later-equal insertion.
+            for (int dx = 0; dx <= 1; dx++) {
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dz = 0; dz <= 1; dz++) {
+                        int gridX = anchorX + dx;
+                        int gridY = anchorY + dy;
+                        int gridZ = anchorZ + dz;
+                        RandomSource random = factory.at(gridX, gridY, gridZ);
+                        int centerX = gridX * 16 + random.nextInt(10);
+                        int centerY = gridY * 12 + random.nextInt(9);
+                        int centerZ = gridZ * 16 + random.nextInt(10);
+                        int deltaX = centerX - blockX[sample];
+                        int deltaY = centerY - blockY[sample];
+                        int deltaZ = centerZ - blockZ[sample];
+                        int distance = deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
+
+                        int insertion = 4;
+                        for (int rank = 0; rank < 4; rank++) {
+                            if (distance <= bestDistance[rank]) {
+                                insertion = rank;
+                                break;
+                            }
+                        }
+                        if (insertion < 4) {
+                            for (int rank = 3; rank > insertion; rank--) {
+                                bestX[rank] = bestX[rank - 1];
+                                bestY[rank] = bestY[rank - 1];
+                                bestZ[rank] = bestZ[rank - 1];
+                                bestDistance[rank] = bestDistance[rank - 1];
+                            }
+                            bestX[insertion] = centerX;
+                            bestY[insertion] = centerY;
+                            bestZ[insertion] = centerZ;
+                            bestDistance[insertion] = distance;
+                        }
+                    }
+                }
+            }
+
+            for (int rank = 0; rank < 4; rank++) {
+                int index = sample * 4 + rank;
+                if (actual.centerX()[index] != bestX[rank]
+                        || actual.centerY()[index] != bestY[rank]
+                        || actual.centerZ()[index] != bestZ[rank]
+                        || actual.squaredDistances()[index] != bestDistance[rank]) {
+                    throw new AssertionError("Aquifer " + label + " nearest-four mismatch sample="
+                            + sample + " rank=" + rank
+                            + " expected=(" + bestX[rank] + "," + bestY[rank] + "," + bestZ[rank]
+                            + ";" + bestDistance[rank] + ") actual=("
+                            + actual.centerX()[index] + "," + actual.centerY()[index] + ","
+                            + actual.centerZ()[index] + ";" + actual.squaredDistances()[index] + ")");
+                }
+            }
+        }
+        JPEOptimizer.LOGGER.info(
+                "JPE_AQUIFER_NEAREST_FOUR_PARITY mode={} samples={} neighborsPerSample=4 exact=true",
+                label, blockX.length);
     }
 
     private static void verifyAquiferGridCache(NativeRuntime runtime, int mode,
