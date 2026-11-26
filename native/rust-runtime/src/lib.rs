@@ -2510,6 +2510,73 @@ mod tests {
     }
 
     #[test]
+    fn density_graph_writes_reused_root_register_directly_to_output() {
+        // The register allocator reuses the first slot for the final ADD after
+        // two completed branches. The root slot is therefore also used by
+        // earlier nodes, and must still produce the final volume correctly.
+        let nodes = [
+            JpeDensityNode {
+                opcode: DENSITY_CONST,
+                input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT,
+                reserved: 0,
+                immediate: 1.0,
+                auxiliary: 0.0,
+                tertiary: 0.0,
+            },
+            JpeDensityNode {
+                opcode: DENSITY_ABS,
+                input_a: 0,
+                input_b: DENSITY_NO_INPUT,
+                reserved: 0,
+                immediate: 0.0,
+                auxiliary: 0.0,
+                tertiary: 0.0,
+            },
+            JpeDensityNode {
+                opcode: DENSITY_CONST,
+                input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT,
+                reserved: 0,
+                immediate: 2.0,
+                auxiliary: 0.0,
+                tertiary: 0.0,
+            },
+            JpeDensityNode {
+                opcode: DENSITY_ABS,
+                input_a: 2,
+                input_b: DENSITY_NO_INPUT,
+                reserved: 0,
+                immediate: 0.0,
+                auxiliary: 0.0,
+                tertiary: 0.0,
+            },
+            JpeDensityNode {
+                opcode: DENSITY_ADD,
+                input_a: 1,
+                input_b: 3,
+                reserved: 0,
+                immediate: 0.0,
+                auxiliary: 0.0,
+                tertiary: 0.0,
+            },
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 0xD1EC7_0001)
+        };
+        assert_ne!(graph, 0);
+        let mut output = [f32::NAN; 24];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph, 2, 3, 4, -3, -5, 7, 1, 2, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        assert!(output.iter().all(|value| *value == 3.0));
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
     fn density_graph_recycles_buffers_for_unary_binary_and_clamp_nodes() {
         let nodes = [
             // This value has no consumers and must release its slot immediately.
