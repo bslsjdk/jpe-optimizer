@@ -1,0 +1,21 @@
+[package]
+name = "jpe-world-engine"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "JPE native world engine: chunk lifecycle, scheduling and mesh construction. Renderer backends are not implemented yet."
+
+[lib]
+name = "jpe_world"
+crate-type = ["rlib"]
+
+[features]
+default = []
+# Link against the existing C++ terrain kernels (ABI v8) built by
+# native/rust-runtime. Never changes the C++ ABI; it only declares it.
+cpp-bridge = []
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

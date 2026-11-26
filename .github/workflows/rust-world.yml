@@ -1,0 +1,62 @@
+name: Rust World Engine
+
+on:
+  push:
+    branches: ["work/rust-world-engine"]
+    paths:
+      - "native/rust-world/**"
+      - ".github/workflows/rust-world.yml"
+  pull_request:
+    paths:
+      - "native/rust-world/**"
+      - ".github/workflows/rust-world.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-world-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: native/rust-world
+
+jobs:
+  test:
+    name: Build and test (no GPU required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/rust-world
+
+      - name: Build
+        run: cargo build --all-targets
+
+      - name: Unit tests
+        run: cargo test
+
+      - name: Release unit tests
+        run: cargo test --release
+
+      # Formatting and lint are advisory for now: the local sandbox used to
+      # develop this crate could not install rustfmt/clippy, so the first pass
+      # has not been auto-formatted. Remove continue-on-error once normalized.
+      - name: Format check (advisory)
+        continue-on-error: true
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (advisory)
+        continue-on-error: true
+        run: cargo clippy --all-targets -- -D warnings
