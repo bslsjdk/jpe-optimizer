@@ -4290,6 +4290,42 @@ mod tests {
             split_small[0].should_schedule_fluid_update,
         );
 
+        // The C++ volume scratch is thread-local, while the immutable world
+        // context and its bounded FluidStatus cache are shared. Run concurrent
+        // calls through the same context to catch accidental cross-worker
+        // scratch aliasing and cache races.
+        let mut workers = Vec::new();
+        for worker_index in 0..4 {
+            let worker_context = context;
+            let worker_fingerprint = fingerprint;
+            let worker_semantic = info.semantic_fingerprint;
+            let worker_graph = final_density_graph;
+            let expected = fused;
+            workers.push(std::thread::spawn(move || {
+                let mut outputs = [JpeAquiferCoreOutput::default(); 8];
+                let status = unsafe {
+                    jpe_runtime_aquifer_context_compute_density_and_substance_volume_f32(
+                        worker_context, worker_fingerprint.as_ptr(), worker_semantic,
+                        worker_graph, 0,
+                        2, 2, 2, -16, -64, 32, 1, 1, 1,
+                        outputs.as_mut_ptr(),
+                    )
+                };
+                assert_eq!(status, STATUS_OK, "concurrent worker {worker_index}");
+                for index in 0..8 {
+                    assert_eq!(outputs[index].has_block_state, expected[index].has_block_state);
+                    assert_eq!(outputs[index].block_state_type, expected[index].block_state_type);
+                    assert_eq!(
+                        outputs[index].should_schedule_fluid_update,
+                        expected[index].should_schedule_fluid_update,
+                    );
+                }
+            }));
+        }
+        for worker in workers {
+            worker.join().expect("concurrent Aquifer worker call panicked");
+        }
+
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_destroy(context)
         }, STATUS_OK);
