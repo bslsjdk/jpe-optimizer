@@ -3154,6 +3154,101 @@ mod tests {
     }
 
     #[test]
+    fn aquifer_context_retains_six_sampler_graphs_and_evaluates_one_batch() {
+        let mut graph_handles = [0_u64; 6];
+        for sampler in 0..6_u32 {
+            let nodes = [
+                JpeDensityNode {
+                    opcode: DENSITY_X,
+                    input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT,
+                    reserved: 0,
+                    immediate: 0.0,
+                    auxiliary: 0.0,
+                    tertiary: 0.0,
+                },
+                JpeDensityNode {
+                    opcode: DENSITY_CONST,
+                    input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT,
+                    reserved: 0,
+                    immediate: sampler as f64,
+                    auxiliary: 0.0,
+                    tertiary: 0.0,
+                },
+                JpeDensityNode {
+                    opcode: DENSITY_ADD,
+                    input_a: 0,
+                    input_b: 1,
+                    reserved: 0,
+                    immediate: 0.0,
+                    auxiliary: 0.0,
+                    tertiary: 0.0,
+                },
+            ];
+            graph_handles[sampler as usize] = unsafe {
+                jpe_runtime_density_graph_compile(
+                    nodes.as_ptr(), nodes.len() as u32, 2, 0xAQU1_FER0 + sampler as u64,
+                )
+            };
+            assert_ne!(graph_handles[sampler as usize], 0, "sampler {sampler} compile failed");
+        }
+
+        let info = JpeAquiferContextCreateInfo {
+            density_graph_handles: graph_handles,
+            world_fingerprint: [0x5A; 32],
+            semantic_fingerprint: 0xA91F_2630_0001,
+            seed_lo: 0x0123_4567_89ab_cdef,
+            seed_hi: 0xfedc_ba98_7654_3210,
+            random_mode: 0,
+            air_type: 100,
+            water_type: 200,
+            lava_type: 300,
+            max_status_cache_entries: 256,
+            reserved: 0,
+        };
+        let context = unsafe { jpe_runtime_aquifer_context_create(&info) };
+        assert_ne!(context, 0, "Aquifer context creation failed");
+
+        // Drop the caller's graph references. The context must keep each immutable
+        // sampler plan alive until its own destruction.
+        for graph in graph_handles {
+            assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+        }
+
+        let xs = [
+            1, 2, 3,
+            4, 5, 6,
+            7, 8, 9,
+            10, 11, 12,
+            13, 14, 15,
+            16, 17, 18,
+        ];
+        let ys = [0_i32; 18];
+        let zs = [0_i32; 18];
+        let mut output = [f32::NAN; 18];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_evaluate_samplers_f32(
+                context, xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
+                3, output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        for sampler in 0..6 {
+            for point in 0..3 {
+                let index = sampler * 3 + point;
+                let expected = xs[index] as f32 + sampler as f32;
+                assert_eq!(
+                    output[index].to_bits(), expected.to_bits(),
+                    "sampler {sampler} point {point}"
+                );
+            }
+        }
+
+        assert_eq!(unsafe { jpe_runtime_aquifer_context_destroy(context) }, STATUS_OK);
+        assert_eq!(unsafe { jpe_runtime_aquifer_context_destroy(context) }, STATUS_INVALID_ARGUMENT);
+    }
+
+    #[test]
     fn aquifer_nearest_four_matches_minecraft_tie_order_for_negative_coordinates() {
         let candidates = [
             JpeAquiferCellLocation { x: -95, y: 64, z: -100 }, // d2=25
