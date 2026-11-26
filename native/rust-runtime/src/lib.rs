@@ -794,6 +794,202 @@ mod tests {
     use super::*;
 
     #[test]
+    fn aquifer_xoroshiro_offsets_match_audited_reference_vectors() {
+        let cases = [
+            (0x0123_4567_89ab_cdef_u64, 0xfedc_ba98_7654_3210_u64, 1, 2, 3, [4, 0, 1]),
+            (0_u64, 0_u64, 0, 0, 0, [0, 2, 7]),
+            (0x9e37_79b9_7f4a_7c15_u64, 0x6a09_e667_f3bc_c909_u64, -17, -64, 33, [1, 1, 8]),
+            (123_456_789_u64, 987_654_321_u64, -2, -1, -3, [5, 7, 2]),
+        ];
+        for (seed_lo, seed_hi, x, y, z, expected) in cases {
+            let mut actual = [i32::MIN; 3];
+            assert_eq!(unsafe {
+                jpe_runtime_aquifer_xoroshiro_offsets(
+                    seed_lo, seed_hi, x, y, z,
+                    &mut actual[0], &mut actual[1], &mut actual[2],
+                )
+            }, STATUS_OK);
+            assert_eq!(actual, expected);
+        }
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_xoroshiro_offsets(
+                0, 0, 0, 0, 0,
+                std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            )
+        }, STATUS_INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn aquifer_legacy_offsets_match_audited_reference_vectors() {
+        let cases = [
+            (0x0123_4567_89ab_cdef_u64, 1, 2, 3, [3, 3, 1]),
+            (0_u64, 0, 0, 0, [0, 7, 9]),
+            (987_654_321_u64, -17, -64, 33, [0, 0, 3]),
+            (0x9e37_79b9_7f4a_7c15_u64, -2, -1, -3, [6, 1, 7]),
+        ];
+        for (seed, x, y, z, expected) in cases {
+            let mut actual = [i32::MIN; 3];
+            assert_eq!(unsafe {
+                jpe_runtime_aquifer_legacy_offsets(
+                    seed, x, y, z,
+                    &mut actual[0], &mut actual[1], &mut actual[2],
+                )
+            }, STATUS_OK);
+            assert_eq!(actual, expected);
+        }
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_legacy_offsets(
+                0, 0, 0, 0,
+                std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            )
+        }, STATUS_INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn aquifer_nearest_four_matches_independent_vanilla_candidate_order() {
+        let cases = [
+            (0_u32, 0x0123_4567_89ab_cdef_u64, 0xfedc_ba98_7654_3210_u64,
+                [0, 15, -1, -17], [-64, -1, 0, 23], [0, 15, -1, -33]),
+            (1_u32, 0x9e37_79b9_7f4a_7c15_u64, 0_u64,
+                [1, 16, -16, i32::MIN], [2, -13, 25, i32::MAX], [3, -17, 31, i32::MIN]),
+        ];
+        for (mode, seed_lo, seed_hi, xs, ys, zs) in cases {
+            let mut cx = [0_i32; 16];
+            let mut cy = [0_i32; 16];
+            let mut cz = [0_i32; 16];
+            let mut distances = [0_i32; 16];
+            assert_eq!(unsafe {
+                jpe_runtime_aquifer_nearest_four(
+                    mode, seed_lo, seed_hi,
+                    xs.as_ptr(), ys.as_ptr(), zs.as_ptr(), 4,
+                    cx.as_mut_ptr(), cy.as_mut_ptr(), cz.as_mut_ptr(), distances.as_mut_ptr(),
+                )
+            }, STATUS_OK);
+
+            for sample in 0..4 {
+                let anchor_x = xs[sample].wrapping_sub(5) >> 4;
+                let anchor_y = ys[sample].wrapping_add(1).div_euclid(12);
+                let anchor_z = zs[sample].wrapping_sub(5) >> 4;
+                let mut expected: Vec<(i32, i32, i32, i32)> = Vec::new();
+                for dx in 0..=1 {
+                    for dy in -1..=1 {
+                        for dz in 0..=1 {
+                            let gx = anchor_x.wrapping_add(dx);
+                            let gy = anchor_y.wrapping_add(dy);
+                            let gz = anchor_z.wrapping_add(dz);
+                            let mut offsets = [0_i32; 3];
+                            let status = unsafe {
+                                if mode == 0 {
+                                    jpe_runtime_aquifer_xoroshiro_offsets(
+                                        seed_lo, seed_hi, gx, gy, gz,
+                                        &mut offsets[0], &mut offsets[1], &mut offsets[2],
+                                    )
+                                } else {
+                                    jpe_runtime_aquifer_legacy_offsets(
+                                        seed_lo, gx, gy, gz,
+                                        &mut offsets[0], &mut offsets[1], &mut offsets[2],
+                                    )
+                                }
+                            };
+                            assert_eq!(status, STATUS_OK);
+                            let x = gx.wrapping_mul(16).wrapping_add(offsets[0]);
+                            let y = gy.wrapping_mul(12).wrapping_add(offsets[1]);
+                            let z = gz.wrapping_mul(16).wrapping_add(offsets[2]);
+                            let ddx = x.wrapping_sub(xs[sample]);
+                            let ddy = y.wrapping_sub(ys[sample]);
+                            let ddz = z.wrapping_sub(zs[sample]);
+                            let d = ddx.wrapping_mul(ddx)
+                                .wrapping_add(ddy.wrapping_mul(ddy))
+                                .wrapping_add(ddz.wrapping_mul(ddz));
+                            let at = expected.iter().position(|item| d <= item.3)
+                                .unwrap_or(expected.len());
+                            expected.insert(at, (x, y, z, d));
+                            if expected.len() > 4 { expected.pop(); }
+                        }
+                    }
+                }
+                for neighbor in 0..4 {
+                    let index = sample * 4 + neighbor;
+                    assert_eq!(
+                        (cx[index], cy[index], cz[index], distances[index]),
+                        expected[neighbor],
+                        "mode={mode} sample={sample} neighbor={neighbor}",
+                    );
+                }
+            }
+        }
+
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_nearest_four(
+                2, 0, 0, std::ptr::null(), std::ptr::null(), std::ptr::null(), 1,
+                std::ptr::null_mut(), std::ptr::null_mut(),
+                std::ptr::null_mut(), std::ptr::null_mut(),
+            )
+        }, STATUS_INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn aquifer_grid_center_cache_matches_random_offsets_and_vanilla_packing() {
+        const SIZE_X: u32 = 5;
+        const SIZE_Z: u32 = 5;
+        const SIZE_Y: u32 = 33;
+        const COUNT: usize = (SIZE_X * SIZE_Z * SIZE_Y) as usize;
+        for mode in 0..=1_u32 {
+            let seed_lo = 0x0123_4567_89ab_cdef_u64;
+            let seed_hi = 0xfedc_ba98_7654_3210_u64;
+            let min_x = -2;
+            let min_y = -17;
+            let min_z = 3;
+            let mut actual = vec![0_u64; COUNT];
+            assert_eq!(unsafe {
+                jpe_runtime_aquifer_grid_centers(
+                    mode, seed_lo, seed_hi, min_x, min_y, min_z,
+                    SIZE_X, SIZE_Z, COUNT as u32, actual.as_mut_ptr(),
+                )
+            }, STATUS_OK);
+
+            for index in 0..COUNT {
+                let x_index = (index as u32) % SIZE_X;
+                let z_index = ((index as u32) / SIZE_X) % SIZE_Z;
+                let y_index = (index as u32) / (SIZE_X * SIZE_Z);
+                let gx = min_x.wrapping_add(x_index as i32);
+                let gy = min_y.wrapping_add(y_index as i32);
+                let gz = min_z.wrapping_add(z_index as i32);
+                let mut offsets = [0_i32; 3];
+                let status = unsafe {
+                    if mode == 0 {
+                        jpe_runtime_aquifer_xoroshiro_offsets(
+                            seed_lo, seed_hi, gx, gy, gz,
+                            &mut offsets[0], &mut offsets[1], &mut offsets[2],
+                        )
+                    } else {
+                        jpe_runtime_aquifer_legacy_offsets(
+                            seed_lo, gx, gy, gz,
+                            &mut offsets[0], &mut offsets[1], &mut offsets[2],
+                        )
+                    }
+                };
+                assert_eq!(status, STATUS_OK);
+                let x = gx.wrapping_mul(16).wrapping_add(offsets[0]);
+                let y = gy.wrapping_mul(12).wrapping_add(offsets[1]);
+                let z = gz.wrapping_mul(16).wrapping_add(offsets[2]);
+                let expected = (((x as u32 as u64) & 0x3ff_ffff) << 38)
+                    | (((z as u32 as u64) & 0x3ff_ffff) << 12)
+                    | ((y as u32 as u64) & 0xfff);
+                assert_eq!(actual[index], expected, "mode={mode} cache_index={index}");
+            }
+        }
+
+        let mut untouched = [0xfeed_face_dead_beef_u64; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_grid_centers(
+                2, 0, 0, 0, 0, 0, 2, 2, 4, untouched.as_mut_ptr(),
+            )
+        }, STATUS_INVALID_ARGUMENT);
+        assert!(untouched.iter().all(|value| *value == 0xfeed_face_dead_beef));
+    }
+
+    #[test]
     fn density_graph_compiles_caches_and_evaluates_a_full_volume() {
         let nodes = [
             JpeDensityNode { opcode: DENSITY_X, input_a: DENSITY_NO_INPUT,
