@@ -173,6 +173,18 @@ JPE_API int32_t jpe_runtime_aquifer_legacy_offsets(
     int32_t *offset_x, int32_t *offset_y, int32_t *offset_z
 );
 
+/* Batch nearest-four Aquifer center search. random_mode: 0=XOROSHIRO, 1=LEGACY.
+ * Input coordinates are parallel arrays. Results are sample-major, four neighbors each.
+ * The exact center cache is scoped to this volume call.
+ */
+JPE_API int32_t jpe_runtime_aquifer_nearest_four(
+    uint32_t random_mode, uint64_t seed_lo, uint64_t seed_hi,
+    const int32_t *block_x, const int32_t *block_y, const int32_t *block_z,
+    uint32_t sample_count,
+    int32_t *center_x, int32_t *center_y, int32_t *center_z,
+    int32_t *squared_distances
+);
+
 /* Exact Minecraft 26.3 Blender density adapter.
  * Each view exposes raw BlendingData.densities columns. Column pointers may be null.
  * chunk_x/chunk_z are chunk coordinates; min_section_y is LevelHeightAccessor.getMinSectionY().
