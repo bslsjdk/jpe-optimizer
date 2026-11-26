@@ -132,6 +132,119 @@ unsafe extern "C" {
         candidates: *const JpeAquiferCellLocation, candidate_count: u32,
         output: *mut JpeAquiferNearestFour,
     ) -> i32;
+    fn jpe_cpp_aquifer_xoroshiro_offsets(
+        seed_lo: u64, seed_hi: u64,
+        grid_x: i32, grid_y: i32, grid_z: i32,
+        offset_x: *mut i32, offset_y: *mut i32, offset_z: *mut i32,
+    ) -> i32;
+    fn jpe_cpp_aquifer_legacy_offsets(
+        factory_seed: u64,
+        grid_x: i32, grid_y: i32, grid_z: i32,
+        offset_x: *mut i32, offset_y: *mut i32, offset_z: *mut i32,
+    ) -> i32;
+    fn jpe_cpp_aquifer_grid_centers(
+        random_mode: u32, seed_lo: u64, seed_hi: u64,
+        min_grid_x: i32, min_grid_y: i32, min_grid_z: i32,
+        grid_size_x: u32, grid_size_z: u32, cell_count: u32,
+        packed_locations: *mut u64,
+    ) -> i32;
+    fn jpe_cpp_aquifer_nearest_four(
+        random_mode: u32, seed_lo: u64, seed_hi: u64,
+        block_x: *const i32, block_y: *const i32, block_z: *const i32,
+        sample_count: u32,
+        center_x: *mut i32, center_y: *mut i32, center_z: *mut i32,
+        squared_distances: *mut i32,
+    ) -> i32;
+}
+
+/// Returns the exact Minecraft 26.3 Aquifer positional offsets for XOROSHIRO mode.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_xoroshiro_offsets(
+    seed_lo: u64, seed_hi: u64,
+    grid_x: i32, grid_y: i32, grid_z: i32,
+    offset_x: *mut i32, offset_y: *mut i32, offset_z: *mut i32,
+) -> i32 {
+    if offset_x.is_null() || offset_y.is_null() || offset_z.is_null() {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_aquifer_xoroshiro_offsets(
+            seed_lo, seed_hi, grid_x, grid_y, grid_z,
+            offset_x, offset_y, offset_z,
+        )
+    }
+}
+
+/// Returns the exact Minecraft 26.3 Aquifer positional offsets for Legacy mode.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_legacy_offsets(
+    factory_seed: u64,
+    grid_x: i32, grid_y: i32, grid_z: i32,
+    offset_x: *mut i32, offset_y: *mut i32, offset_z: *mut i32,
+) -> i32 {
+    if offset_x.is_null() || offset_y.is_null() || offset_z.is_null() {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_aquifer_legacy_offsets(
+            factory_seed, grid_x, grid_y, grid_z,
+            offset_x, offset_y, offset_z,
+        )
+    }
+}
+
+/// Precomputes a packed Aquifer cell-location cache in vanilla x-fast, then z, then y order.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_grid_centers(
+    random_mode: u32, seed_lo: u64, seed_hi: u64,
+    min_grid_x: i32, min_grid_y: i32, min_grid_z: i32,
+    grid_size_x: u32, grid_size_z: u32, cell_count: u32,
+    packed_locations: *mut u64,
+) -> i32 {
+    if random_mode > 1 || grid_size_x == 0 || grid_size_z == 0
+        || cell_count == 0 || cell_count as usize > MAX_VOLUME_ELEMENTS
+        || packed_locations.is_null() {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    let Some(layer_size) = (grid_size_x as u64).checked_mul(grid_size_z as u64) else {
+        return STATUS_INVALID_ARGUMENT;
+    };
+    if layer_size == 0 || layer_size > cell_count as u64
+        || (cell_count as u64) % layer_size != 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_aquifer_grid_centers(
+            random_mode, seed_lo, seed_hi,
+            min_grid_x, min_grid_y, min_grid_z,
+            grid_size_x, grid_size_z, cell_count, packed_locations,
+        )
+    }
+}
+
+/// Computes each voxel's four nearest Aquifer centers and Java-int squared distances.
+/// Output arrays each contain sample_count * 4 entries in sample-major order.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_nearest_four(
+    random_mode: u32, seed_lo: u64, seed_hi: u64,
+    block_x: *const i32, block_y: *const i32, block_z: *const i32,
+    sample_count: u32,
+    center_x: *mut i32, center_y: *mut i32, center_z: *mut i32,
+    squared_distances: *mut i32,
+) -> i32 {
+    if random_mode > 1 || sample_count == 0 || sample_count as usize > MAX_VOLUME_ELEMENTS
+        || block_x.is_null() || block_y.is_null() || block_z.is_null()
+        || center_x.is_null() || center_y.is_null() || center_z.is_null()
+        || squared_distances.is_null() {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_aquifer_nearest_four(
+            random_mode, seed_lo, seed_hi,
+            block_x, block_y, block_z, sample_count,
+            center_x, center_y, center_z, squared_distances,
+        )
+    }
 }
 
 #[repr(C)]
