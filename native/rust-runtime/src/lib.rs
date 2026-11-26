@@ -1588,9 +1588,9 @@ mod tests {
         let nodes = [
             JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
                 input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.125 , auxiliary: 0.0, tertiary: 0.0},
-            JpeDensityNode { opcode: 7, input_a: 1.0_f32.to_bits(),
-                input_b: 1.0_f32.to_bits(), reserved: 1.0_f32.to_bits(),
-                immediate: stack as f64 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: 7, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 1.0_f32.to_bits(),
+                immediate: stack as f64 , auxiliary: 1.0, tertiary: 1.0},
             JpeDensityNode { opcode: DENSITY_ADD, input_a: 0, input_b: 1,
                 reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
         ];
