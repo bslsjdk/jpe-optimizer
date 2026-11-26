@@ -297,6 +297,8 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
                 ++consumers[node.input_a]; ++consumers[node.input_b]; ++consumers[node.reserved];
             } else if (node.opcode == kRound) {
                 ++consumers[node.input_a]; ++consumers[node.input_b];
+            } else if (node.opcode == kPerlinStackWarp) {
+                ++consumers[node.input_a]; ++consumers[node.input_b]; ++consumers[node.reserved];
             }
         }
         graph->node_slots.resize(node_count, kNoInput);
