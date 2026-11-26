@@ -232,6 +232,7 @@ public final class NativeDensityGraphCompiler {
     ) {
         StateGraphs stateGraphs;
         CompletableFuture<GraphHandle> pending;
+        GraphHandle staleHandle = null;
         boolean compileOwner = false;
         synchronized (LOCK) {
             drainQueues();
@@ -253,7 +254,7 @@ public final class NativeDensityGraphCompiler {
             if (existing != null && existing.runtime() == runtime) return existing.handle();
             if (existing != null) {
                 stateGraphs.handles.remove(root);
-                existing.runtime().releaseDensityGraph(existing.handle());
+                staleHandle = existing;
             }
 
             pending = stateGraphs.compiling.get(root);
@@ -262,6 +263,12 @@ public final class NativeDensityGraphCompiler {
                 stateGraphs.compiling.put(root, pending);
                 compileOwner = true;
             }
+        }
+
+        // Native handle release may enter the runtime lifecycle lock. Keep it outside
+        // the compiler-wide monitor so unrelated graph lookups never wait on native work.
+        if (staleHandle != null) {
+            staleHandle.runtime().releaseDensityGraph(staleHandle.handle());
         }
 
         if (!compileOwner) {
@@ -293,6 +300,7 @@ public final class NativeDensityGraphCompiler {
             }
 
             GraphHandle compiled = new GraphHandle(runtime, handle);
+            boolean disabledDuringCompile;
             synchronized (LOCK) {
                 IdentityWeakReference<RandomState> lookup = new IdentityWeakReference<>(randomState, null);
                 StateGraphs current = GRAPHS.get(lookup);
@@ -300,12 +308,15 @@ public final class NativeDensityGraphCompiler {
                     current = stateGraphs;
                     GRAPHS.put(new IdentityWeakReference<>(randomState, RANDOM_STATE_QUEUE), current);
                 }
-                if (current.disabled.contains(root)) {
-                    runtime.releaseDensityGraph(handle);
-                    throw new IllegalStateException("Density graph was disabled while native compilation was in progress");
+                disabledDuringCompile = current.disabled.contains(root);
+                if (!disabledDuringCompile) {
+                    current.handles.put(root, compiled);
+                    current.compiling.remove(root, pending);
                 }
-                current.handles.put(root, compiled);
-                current.compiling.remove(root, pending);
+            }
+            if (disabledDuringCompile) {
+                runtime.releaseDensityGraph(handle);
+                throw new IllegalStateException("Density graph was disabled while native compilation was in progress");
             }
             pending.complete(compiled);
             JPEOptimizer.LOGGER.info(
@@ -334,12 +345,15 @@ public final class NativeDensityGraphCompiler {
     }
 
     private static void disableGraph(DensityFunction root, RandomState randomState, NativeRuntime runtime) {
+        GraphHandle existing;
         synchronized (LOCK) {
             StateGraphs stateGraphs = GRAPHS.get(new IdentityWeakReference<>(randomState, null));
             if (stateGraphs == null) return;
-            GraphHandle existing = stateGraphs.handles.remove(root);
-            if (existing != null) existing.runtime().releaseDensityGraph(existing.handle());
+            existing = stateGraphs.handles.remove(root);
             stateGraphs.disabled.add(root);
+        }
+        if (existing != null) {
+            existing.runtime().releaseDensityGraph(existing.handle());
         }
     }
 
