@@ -21,7 +21,6 @@ const QUEUE_CAPACITY: usize = 16;
 const MAX_TRACKED_JOBS: usize = 32;
 
 #[repr(C)]
-#[repr(C)]
 #[derive(Clone, Copy)]
 struct JpeDensityNode {
     opcode: u32,
@@ -1609,7 +1608,7 @@ mod tests {
         for (actual, expected) in actual.iter().zip(expected.iter()) {
             assert_eq!(*actual, (*expected as f64) + 0.125);
         }
-        assert_eq!(jpe_runtime_density_graph_release(graph), STATUS_OK);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
     }
 
     #[test]
