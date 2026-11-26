@@ -25,6 +25,7 @@ static_assert(sizeof(JpeDensityNode) == 40, "JpeDensityNode ABI layout mismatch"
 
 namespace {
 constexpr uint32_t kMaxNodes = 65536;
+constexpr uint32_t kAllowZeroPerlinSteps = 1U << 31;
 constexpr uint64_t kMaxVolumeElements = 1024ULL * 1024ULL;
 constexpr uint32_t kNoInput = UINT32_MAX;
 constexpr uint32_t kPerlinStack = 7;
@@ -741,7 +742,8 @@ int32_t evaluate_density_graph_impl(
                         graph->prepared_handles[i], node.auxiliary,
                         node.tertiary, decode_float(node.reserved),
                         size_x, size_y, size_z, min_x, min_y, min_z,
-                        step_x, step_y, step_z, perlin_scratch.data(), output_length, 0);
+                        step_x, step_y, step_z, perlin_scratch.data(), output_length,
+                        (step_x == 0 || step_y == 0 || step_z == 0) ? kAllowZeroPerlinSteps : 0U);
                     if (status != 0) return status;
                     for (size_t j = 0; j < volume; ++j) values[j] = static_cast<Scalar>(perlin_scratch[j]);
                     break;
