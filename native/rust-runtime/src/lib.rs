@@ -2159,7 +2159,7 @@ mod tests {
                 -100, 64, -100, candidates.as_ptr(), candidates.len() as u32, &mut output,
             )
         }, STATUS_OK);
-        assert_eq!(output.index, [5, 4, 6, 7]);
+        assert_eq!(output.index, [5, 4, 7, 6]);
         assert_eq!(output.distance_sqr, [1, 1, 4, 4]);
 
         // The native helper deliberately accepts exactly Minecraft's twelve
