@@ -19,6 +19,8 @@ public final class NativeBlenderDensityBackend {
     private NativeBlenderDensityBackend() {}
 
     public static boolean tryBlend(SamplerContext context, DensityVolume volume, DensityBuffer buffer) {
+        if (!Boolean.getBoolean("jpe.nativeBlenderEnabled")
+                && !Boolean.getBoolean("jpe.verifyNativeBlenderParity")) return false;
         Blender blender = context.getField(Blender.CONTEXT_KEY);
         if (blender == null) return false;
         float[] input = ((DensityBufferAccessor) buffer).jpe$values();
