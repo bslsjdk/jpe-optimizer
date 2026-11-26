@@ -132,6 +132,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
 
         try {
             boolean nativeAquiferVolumeVerify = Boolean.getBoolean("jpe.nativeAquiferSubstanceVerify")
+                    || Boolean.getBoolean("jpe.nativeDensityGraphVerify")
                     || nativeAquiferVolumeStrict;
             NativeRuntime.AquiferSubstanceVolumeResult precomputedNativeVolume = null;
 
