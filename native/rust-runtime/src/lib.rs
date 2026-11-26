@@ -924,8 +924,8 @@ mod tests {
     }
 
     #[test]
-    fn aquifer_status_cache_rejects_capacity_overflow_without_overwriting_entries() {
-        let handle = jpe_runtime_aquifer_status_cache_create(2);
+    fn aquifer_status_cache_rejects_capacity_overflow_transactionally() {
+        let handle = jpe_runtime_aquifer_status_cache_create(3);
         assert_ne!(handle, 0);
         let keys = [10_u64, 11];
         let statuses = [
@@ -938,23 +938,27 @@ mod tests {
             )
         }, STATUS_OK);
 
-        let overflow_key = [12_u64];
-        let overflow_status = [JpeAquiferFluidStatus { fluid_level: 96, fluid_type: 3 }];
+        // Only one free slot remains. The two-key batch must not partially commit key 12.
+        let overflow_keys = [12_u64, 13];
+        let overflow_statuses = [
+            JpeAquiferFluidStatus { fluid_level: 96, fluid_type: 3 },
+            JpeAquiferFluidStatus { fluid_level: 128, fluid_type: 4 },
+        ];
         assert_eq!(unsafe {
             jpe_runtime_aquifer_status_cache_insert_batch(
-                handle, overflow_key.as_ptr(), overflow_status.as_ptr(), 1,
+                handle, overflow_keys.as_ptr(), overflow_statuses.as_ptr(), 2,
             )
         }, STATUS_CPP_FAILURE);
 
-        let query_keys = [10_u64, 11, 12];
-        let mut output = [JpeAquiferFluidStatus::default(); 3];
-        let mut found = [0_u8; 3];
+        let query_keys = [10_u64, 11, 12, 13];
+        let mut output = [JpeAquiferFluidStatus::default(); 4];
+        let mut found = [0_u8; 4];
         assert_eq!(unsafe {
             jpe_runtime_aquifer_status_cache_lookup_batch(
-                handle, query_keys.as_ptr(), 3, output.as_mut_ptr(), found.as_mut_ptr(),
+                handle, query_keys.as_ptr(), 4, output.as_mut_ptr(), found.as_mut_ptr(),
             )
         }, STATUS_OK);
-        assert_eq!(found, [1, 1, 0]);
+        assert_eq!(found, [1, 1, 0, 0]);
         assert_eq!(jpe_runtime_aquifer_status_cache_destroy(handle), STATUS_OK);
     }
 
