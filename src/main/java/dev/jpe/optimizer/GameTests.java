@@ -215,8 +215,8 @@ public final class GameTests {
             runtime.configureAquiferGlobalFluidPicker(
                     context, worldFingerprint, 0xA91F_2630_0001L,
                     63, -2032, 200, false, false);
-            long[] nativeCellKeys = {0L, 0L};
-            int[] nativeCellX = {0, 0};
+            long[] nativeCellKeys = {64L << 38, 64L << 38};
+            int[] nativeCellX = {64, 64};
             int[] nativeCellY = {0, 0};
             int[] nativeCellZ = {0, 0};
             int[] nativeFluidLevels = {-777, -777};
