@@ -81,6 +81,8 @@ jobs:
             jpe_runtime_density_graph_compile \
             jpe_runtime_density_graph_evaluate_points \
             jpe_runtime_density_graph_evaluate_points_f32 \
+            jpe_runtime_density_graph_evaluate_multi_points \
+            jpe_runtime_density_graph_evaluate_multi_points_f32 \
             jpe_runtime_density_graph_evaluate \
             jpe_runtime_density_graph_evaluate_f32 \
             jpe_runtime_density_graph_release \
