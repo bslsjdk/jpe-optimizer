@@ -32,6 +32,36 @@ uint64_t minecraft_position_seed(int32_t x, int32_t y, int32_t z) noexcept {
     return shifted;
 }
 
+class LegacyRandomSource {
+public:
+    explicit LegacyRandomSource(uint64_t seed) noexcept
+        : state_((seed ^ 25214903917ULL) & ((1ULL << 48U) - 1ULL)) {}
+
+    uint32_t next_bits(unsigned bits) noexcept {
+        state_ = (state_ * 25214903917ULL + 11ULL) & ((1ULL << 48U) - 1ULL);
+        return static_cast<uint32_t>(state_ >> (48U - bits));
+    }
+
+    uint32_t next_int_bound(uint32_t bound) noexcept {
+        if ((bound & (bound - 1U)) == 0U) {
+            return static_cast<uint32_t>(
+                (static_cast<uint64_t>(bound) * next_bits(31U)) >> 31U);
+        }
+        for (;;) {
+            const uint32_t sample = next_bits(31U);
+            const uint32_t modulo = sample % bound;
+            // Java int32 expression: sample - modulo + (bound - 1) < 0.
+            const uint32_t signed_check = sample - modulo + (bound - 1U);
+            if ((signed_check & 0x80000000U) == 0U) {
+                return modulo;
+            }
+        }
+    }
+
+private:
+    uint64_t state_;
+};
+
 class Xoroshiro128PlusPlus {
 public:
     Xoroshiro128PlusPlus(uint64_t seed_lo, uint64_t seed_hi) noexcept
@@ -82,6 +112,22 @@ extern "C" int32_t jpe_cpp_aquifer_xoroshiro_offsets(
     const uint64_t positional_seed = minecraft_position_seed(grid_x, grid_y, grid_z);
     Xoroshiro128PlusPlus random(positional_seed ^ seed_lo, seed_hi);
 
+    *offset_x = static_cast<int32_t>(random.next_int_bound(10U));
+    *offset_y = static_cast<int32_t>(random.next_int_bound(9U));
+    *offset_z = static_cast<int32_t>(random.next_int_bound(10U));
+    return 0;
+}
+
+extern "C" int32_t jpe_cpp_aquifer_legacy_offsets(
+    uint64_t factory_seed,
+    int32_t grid_x, int32_t grid_y, int32_t grid_z,
+    int32_t *offset_x, int32_t *offset_y, int32_t *offset_z) {
+    if (offset_x == nullptr || offset_y == nullptr || offset_z == nullptr) {
+        return -1;
+    }
+
+    const uint64_t positional_seed = minecraft_position_seed(grid_x, grid_y, grid_z);
+    LegacyRandomSource random(positional_seed ^ factory_seed);
     *offset_x = static_cast<int32_t>(random.next_int_bound(10U));
     *offset_y = static_cast<int32_t>(random.next_int_bound(9U));
     *offset_z = static_cast<int32_t>(random.next_int_bound(10U));
