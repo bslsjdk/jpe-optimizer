@@ -418,10 +418,93 @@ public final class GameTests {
                 }
             }
             JPEOptimizer.LOGGER.info("JPE_AQUIFER_LEGACY_PARITY comparisons={} bitExact=true", legacyComparisons);
+
+            if (!runtime.supportsAquiferNearestFour()) {
+                throw new AssertionError("Native library does not export Aquifer nearest-four batch support");
+            }
+            var xorFactory = new XoroshiroRandomSource(sourceSeeds[0][0], sourceSeeds[0][1]).forkPositional();
+            var xorAccessor = (XoroshiroPositionalRandomFactoryAccessor) (Object) xorFactory;
+            assertAquiferNearestFourBatch(runtime, xorFactory, 0,
+                    xorAccessor.jpe$seedLo(), xorAccessor.jpe$seedHi());
+            var legacyFactory = new LegacyRandomSource(legacySourceSeeds[0]).forkPositional();
+            var legacyAccessor = (LegacyPositionalRandomFactoryAccessor) (Object) legacyFactory;
+            assertAquiferNearestFourBatch(runtime, legacyFactory, 1,
+                    legacyAccessor.jpe$seed(), 0L);
+            JPEOptimizer.LOGGER.info("JPE_AQUIFER_NEAREST_FOUR_BATCH modes=2 samples=9 neighbors=36 exact=true");
         } catch (Exception failure) {
             throw new AssertionError("Native Aquifer XOROSHIRO parity failed", failure);
         }
         helper.succeed();
+    }
+
+    /** Independently checks the Java FFM batch ABI against Minecraft's positional factories. */
+    private static void assertAquiferNearestFourBatch(
+            NativeRuntime runtime, RandomSource.PositionalRandomFactory factory,
+            int randomMode, long seedLo, long seedHi) {
+        int[] blockX = {0, -1, -17, 31, -128, Integer.MIN_VALUE, Integer.MAX_VALUE, 0x40000001, 245};
+        int[] blockY = {0, -1, -64, 7, -25, Integer.MAX_VALUE, Integer.MIN_VALUE, -0x40000001, 319};
+        int[] blockZ = {0, -3, 33, -49, 96, Integer.MIN_VALUE, Integer.MAX_VALUE, 0x7ffffffe, -511};
+        NativeRuntime.AquiferNearestFour actual = runtime.aquiferNearestFour(
+                randomMode, seedLo, seedHi, blockX, blockY, blockZ);
+        int[] actualX = actual.centerX();
+        int[] actualY = actual.centerY();
+        int[] actualZ = actual.centerZ();
+        int[] actualDistances = actual.squaredDistances();
+
+        for (int sample = 0; sample < blockX.length; ++sample) {
+            int anchorX = Math.floorDiv(blockX[sample] - 5, 16);
+            int anchorY = Math.floorDiv(blockY[sample] + 1, 12) - 1;
+            int anchorZ = Math.floorDiv(blockZ[sample] - 5, 16);
+            int[] candidateX = new int[12];
+            int[] candidateY = new int[12];
+            int[] candidateZ = new int[12];
+            int[] candidateDistances = new int[12];
+            int candidate = 0;
+            for (int dx = 0; dx <= 1; ++dx) {
+                for (int dy = -1; dy <= 1; ++dy) {
+                    for (int dz = 0; dz <= 1; ++dz) {
+                        int gridX = anchorX + dx;
+                        int gridY = anchorY + dy;
+                        int gridZ = anchorZ + dz;
+                        RandomSource random = factory.at(gridX, gridY, gridZ);
+                        int centerX = gridX * 16 + random.nextInt(10);
+                        int centerY = gridY * 12 + random.nextInt(9);
+                        int centerZ = gridZ * 16 + random.nextInt(10);
+                        int diffX = blockX[sample] - centerX;
+                        int diffY = blockY[sample] - centerY;
+                        int diffZ = blockZ[sample] - centerZ;
+                        candidateX[candidate] = centerX;
+                        candidateY[candidate] = centerY;
+                        candidateZ[candidate] = centerZ;
+                        candidateDistances[candidate] = diffX * diffX + diffY * diffY + diffZ * diffZ;
+                        candidate++;
+                    }
+                }
+            }
+            Integer[] order = new Integer[12];
+            for (int i = 0; i < order.length; ++i) order[i] = i;
+            java.util.Arrays.sort(order, (left, right) -> {
+                int byDistance = Integer.compare(candidateDistances[left], candidateDistances[right]);
+                return byDistance != 0 ? byDistance : Integer.compare(right, left);
+            });
+            for (int neighbor = 0; neighbor < 4; ++neighbor) {
+                int expectedIndex = order[neighbor];
+                int actualIndex = sample * 4 + neighbor;
+                if (actualX[actualIndex] != candidateX[expectedIndex]
+                        || actualY[actualIndex] != candidateY[expectedIndex]
+                        || actualZ[actualIndex] != candidateZ[expectedIndex]
+                        || actualDistances[actualIndex] != candidateDistances[expectedIndex]) {
+                    throw new AssertionError("Aquifer nearest-four batch mismatch mode=" + randomMode
+                            + " sample=" + sample + " neighbor=" + neighbor
+                            + " expectedCenter=(" + candidateX[expectedIndex] + ","
+                            + candidateY[expectedIndex] + "," + candidateZ[expectedIndex] + ")"
+                            + " expectedDistance=" + candidateDistances[expectedIndex]
+                            + " actualCenter=(" + actualX[actualIndex] + ","
+                            + actualY[actualIndex] + "," + actualZ[actualIndex] + ")"
+                            + " actualDistance=" + actualDistances[actualIndex]);
+                }
+            }
+        }
     }
 
     /** Verifies the versioned Java FFM graph API against a known full-volume result. */
