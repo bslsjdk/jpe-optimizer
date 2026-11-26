@@ -164,6 +164,12 @@ public final class CompiledSamplerArithmeticLowering {
                 case SUB -> lowered.add(DensityGraphIr.Node.subtract(
                         resolveChild(node.children().get(0), members, nativeIndex, inputSlot),
                         resolveChild(node.children().get(1), members, nativeIndex, inputSlot)));
+                case MIN_RIGHT_BOUND -> lowered.add(DensityGraphIr.Node.min(
+                        resolveChild(node.children().get(0), members, nativeIndex, inputSlot),
+                        resolveChild(node.children().get(1), members, nativeIndex, inputSlot)));
+                case MAX_RIGHT_BOUND -> lowered.add(DensityGraphIr.Node.max(
+                        resolveChild(node.children().get(0), members, nativeIndex, inputSlot),
+                        resolveChild(node.children().get(1), members, nativeIndex, inputSlot)));
                 case CONST_ADD_RIGHT -> {
                     int input = resolveOnlyChild(node, members, nativeIndex, inputSlot);
                     int constant = appendConstant(lowered, node, "right");
