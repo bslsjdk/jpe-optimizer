@@ -405,7 +405,7 @@ struct DensityEvaluationScratch {
 
     void prepare(uint32_t slot_count, size_t volume, bool has_perlin) {
         if (slots.size() < slot_count) slots.resize(slot_count);
-        for (auto& slot : slots) slot.resize(volume);
+        for (uint32_t i = 0; i < slot_count; ++i) slots[i].resize(volume);
         if (has_perlin) perlin.resize(volume);
     }
 };
