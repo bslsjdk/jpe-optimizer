@@ -3207,6 +3207,22 @@ mod tests {
             max_status_cache_entries: 256,
             reserved: 0,
         };
+        let mut invalid_info = info;
+        invalid_info.random_mode = 2;
+        assert_eq!(unsafe { jpe_runtime_aquifer_context_create(&invalid_info) }, 0);
+        invalid_info = info;
+        invalid_info.world_fingerprint = [0; 32];
+        assert_eq!(unsafe { jpe_runtime_aquifer_context_create(&invalid_info) }, 0);
+        invalid_info = info;
+        invalid_info.density_graph_handles[5] = 0;
+        assert_eq!(unsafe { jpe_runtime_aquifer_context_create(&invalid_info) }, 0);
+        invalid_info = info;
+        invalid_info.air_type = invalid_info.water_type;
+        assert_eq!(unsafe { jpe_runtime_aquifer_context_create(&invalid_info) }, 0);
+        invalid_info = info;
+        invalid_info.max_status_cache_entries = 0;
+        assert_eq!(unsafe { jpe_runtime_aquifer_context_create(&invalid_info) }, 0);
+
         let context = unsafe { jpe_runtime_aquifer_context_create(&info) };
         assert_ne!(context, 0, "Aquifer context creation failed");
 
@@ -3227,6 +3243,44 @@ mod tests {
         let ys = [0_i32; 18];
         let zs = [0_i32; 18];
         let mut output = [f32::NAN; 18];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_evaluate_samplers_f32(
+                context, xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
+                3, output.as_mut_ptr(), output.len() as u64 - 1,
+            )
+        }, STATUS_INVALID_ARGUMENT);
+        assert!(output.iter().all(|value| value.is_nan()));
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_evaluate_samplers_f32(
+                u64::MAX, xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
+                3, output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_INVALID_ARGUMENT);
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_evaluate_samplers_f32(
+                context, xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
+                0, output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_INVALID_ARGUMENT);
+
+        #[repr(C)]
+        union AquiferContextOverlap {
+            coordinates: [i32; 18],
+            values: [f32; 18],
+        }
+        let mut overlap = AquiferContextOverlap { coordinates: xs };
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_evaluate_samplers_f32(
+                context,
+                std::ptr::addr_of!(overlap.coordinates).cast::<i32>(),
+                ys.as_ptr(),
+                zs.as_ptr(),
+                3,
+                std::ptr::addr_of_mut!(overlap.values).cast::<f32>(),
+                18,
+            )
+        }, STATUS_INVALID_ARGUMENT);
+
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_evaluate_samplers_f32(
                 context, xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
