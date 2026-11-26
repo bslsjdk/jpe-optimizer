@@ -241,6 +241,8 @@ JPE_API int32_t jpe_runtime_density_graph_evaluate_points_f32(
 );
 /* Releases one retained handle. Active evaluations keep their immutable plan alive. */
 JPE_API int32_t jpe_runtime_density_graph_release(uint64_t graph_handle);
+/* Internal C++ retain used by longer-lived native execution contexts. */
+JPE_API int32_t jpe_cpp_density_graph_retain(uint64_t graph_handle);
 
 /*
  * Experimental Aquifer decision core. Fluid types are runtime registry IDs;
@@ -251,6 +253,101 @@ typedef struct JpeAquiferFluidStatus {
     int32_t fluid_level;
     uint32_t fluid_type;
 } JpeAquiferFluidStatus;
+
+/* A pre-sampled global FluidPicker result at one of the 13 ordered Aquifer
+ * surface probes. fluid_type_is_air describes the BlockState trait of the
+ * stored type; valid says the caller evaluated this probe because vanilla's
+ * early-exit order requires it. */
+typedef struct JpeAquiferFluidProbe {
+    JpeAquiferFluidStatus status;
+    uint32_t valid;
+    uint32_t fluid_type_is_air;
+} JpeAquiferFluidProbe;
+
+/* Inputs for the native equivalent of NoiseBasedAquifer.computeFluid.
+ * surface_level/global_fluid_at_surface use vanilla order:
+ * (0,0),(-2,-1),(-1,-1),(0,-1),(1,-1),(-3,0),(-2,0),(-1,0),
+ * (1,0),(-2,1),(-1,1),(0,1),(1,1).
+ * Density sampler values have already been evaluated by the native sampler
+ * plans; global FluidPicker results are opaque tokens, never Java pointers. */
+typedef struct JpeAquiferFluidStatusInput {
+    int32_t block_y;
+    JpeAquiferFluidStatus global_fluid;
+    int32_t surface_level[13];
+    JpeAquiferFluidProbe global_fluid_at_surface[13];
+    float exclusion_noise;
+    float floodedness_noise;
+    float fluid_level_spread_noise;
+    float lava_noise;
+    uint32_t lava_type;
+} JpeAquiferFluidStatusInput;
+
+/* One world-scoped native Aquifer context. Handles are borrowed at create-time
+ * and retained by C++; world_fingerprint is copied and never serialized.
+ * Sampler order: barrier, floodedness, spread, lava, exclusion, surface.
+ * Fluid type values are opaque per-context registry tokens, not global IDs. */
+typedef struct JpeAquiferContextCreateInfo {
+    uint64_t density_graph_handles[6];
+    uint8_t world_fingerprint[32];
+    uint64_t semantic_fingerprint;
+    uint64_t seed_lo;
+    uint64_t seed_hi;
+    uint32_t random_mode;
+    uint32_t air_type;
+    uint32_t water_type;
+    uint32_t lava_type;
+    uint32_t max_status_cache_entries;
+    uint32_t reserved;
+} JpeAquiferContextCreateInfo;
+
+/* Context owns graph-handle references and its FluidStatus cache until destroy.
+ * A stale, zero, unsupported, or fingerprint-incompatible context fails closed. */
+JPE_API uint64_t jpe_runtime_aquifer_context_create(const JpeAquiferContextCreateInfo* info);
+JPE_API int32_t jpe_runtime_aquifer_context_destroy(uint64_t context_handle);
+/* Evaluates all six immutable density samplers in one FFI call.
+ * Coordinates are sampler-major; each coordinate array has 6 * points_per_sampler
+ * entries and output has the same element count. */
+JPE_API int32_t jpe_runtime_aquifer_context_evaluate_samplers_f32(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
+    uint32_t points_per_sampler, float* output, uint64_t output_length
+);
+/* Computes/cache-fills cell-center FluidStatus values using opaque BlockPos.asLong keys.
+ * The full batch is transactional: cache-capacity or validation failure leaves outputs untouched. */
+JPE_API int32_t jpe_runtime_aquifer_context_compute_fluid_status_batch(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    const uint64_t* cache_keys,
+    const JpeAquiferFluidStatusInput* inputs,
+    uint32_t count,
+    JpeAquiferFluidStatus* outputs
+);
+/* Configure the immutable vanilla 26.3 global FluidPicker once per Aquifer context. */
+JPE_API int32_t jpe_runtime_aquifer_context_configure_global_fluid_picker(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    int32_t sea_level,
+    int32_t min_y,
+    uint32_t default_fluid_type,
+    uint32_t default_fluid_is_air,
+    uint32_t debug_disable_fluid_generation
+);
+/* Fully native FluidStatus generation from aquifer cell-center coordinates.
+ * C++ evaluates the required density graphs and global FluidPicker, then caches results.
+ * cache_keys must equal BlockPos.asLong(x,y,z). */
+JPE_API int32_t jpe_runtime_aquifer_context_compute_fluid_status_points_batch(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    const uint64_t* cache_keys,
+    const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
+    uint32_t count,
+    JpeAquiferFluidStatus* outputs
+);
 
 /* Per-Aquifer, fixed-capacity FluidStatus cache. Keys are packed BlockPos.asLong
  * values for aquifer cell centers. First insertion wins, matching compute-if-absent.
@@ -264,6 +361,12 @@ JPE_API int32_t jpe_runtime_aquifer_status_cache_lookup_batch(
 JPE_API int32_t jpe_runtime_aquifer_status_cache_insert_batch(
     uint64_t handle, const uint64_t* keys,
     const JpeAquiferFluidStatus* statuses, uint32_t count
+);
+/* Native computeFluid status-value kernel. Validates the whole batch before writes. */
+JPE_API int32_t jpe_runtime_aquifer_compute_fluid_status_batch(
+    const JpeAquiferFluidStatusInput* inputs,
+    uint32_t count,
+    JpeAquiferFluidStatus* outputs
 );
 
 typedef struct JpeAquiferCoreInput {
@@ -285,6 +388,34 @@ typedef struct JpeAquiferCoreOutput {
     uint32_t should_schedule_fluid_update;
 } JpeAquiferCoreOutput;
 
+/* Full-volume NoiseBasedAquifer.computeSubstance decision. Density and results use
+ * DensityVolume.indexUnchecked order (Y fastest, then X, then Z). C++ derives
+ * world coordinates from the volume descriptor and performs all Aquifer math. */
+JPE_API int32_t jpe_runtime_aquifer_context_compute_substance_volume_f32(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    int32_t skip_sampling_above_y,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    const float* density_values,
+    uint32_t density_count,
+    JpeAquiferCoreOutput* outputs
+);
+JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    int32_t skip_sampling_above_y,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    const float* density_values,
+    uint32_t density_count,
+    JpeAquiferCoreOutput* outputs
+);
+
 /* Returns 0 on success, 1 for invalid input. A false has_block_state means
  * computeSubstance returns null and density terrain should remain untouched. */
 JPE_API int32_t jpe_runtime_aquifer_compute_substance_core(
@@ -303,6 +434,55 @@ JPE_API int32_t jpe_runtime_aquifer_compute_substance_batch(
 JPE_API int32_t jpe_cpp_aquifer_compute_substance_core(
     const JpeAquiferCoreInput *input, JpeAquiferCoreOutput *output
 );
+JPE_API uint64_t jpe_cpp_aquifer_context_create(const JpeAquiferContextCreateInfo* info);
+JPE_API int32_t jpe_cpp_aquifer_context_destroy(uint64_t context_handle);
+JPE_API int32_t jpe_cpp_aquifer_context_evaluate_samplers_f32(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
+    uint32_t points_per_sampler, float* output, uint64_t output_length
+);
+JPE_API int32_t jpe_cpp_aquifer_context_compute_fluid_status_batch(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    const uint64_t* cache_keys,
+    const JpeAquiferFluidStatusInput* inputs,
+    uint32_t count,
+    JpeAquiferFluidStatus* outputs
+);
+JPE_API int32_t jpe_cpp_aquifer_context_configure_global_fluid_picker(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    int32_t sea_level,
+    int32_t min_y,
+    uint32_t default_fluid_type,
+    uint32_t default_fluid_is_air,
+    uint32_t debug_disable_fluid_generation
+);
+JPE_API int32_t jpe_cpp_aquifer_context_compute_fluid_status_points_batch(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    const uint64_t* cache_keys,
+    const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
+    uint32_t count,
+    JpeAquiferFluidStatus* outputs
+);
+JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    int32_t skip_sampling_above_y,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    const float* density_values,
+    uint32_t density_count,
+    JpeAquiferCoreOutput* outputs
+);
 JPE_API uint64_t jpe_cpp_aquifer_status_cache_create(uint32_t maximum_entries);
 JPE_API int32_t jpe_cpp_aquifer_status_cache_destroy(uint64_t handle);
 JPE_API int32_t jpe_cpp_aquifer_status_cache_lookup_batch(
@@ -316,6 +496,11 @@ JPE_API int32_t jpe_cpp_aquifer_status_cache_insert_batch(
 JPE_API int32_t jpe_cpp_aquifer_compute_substance_batch(
     const JpeAquiferCoreInput *inputs, uint32_t count,
     JpeAquiferCoreOutput *outputs
+);
+JPE_API int32_t jpe_cpp_aquifer_compute_fluid_status_batch(
+    const JpeAquiferFluidStatusInput* inputs,
+    uint32_t count,
+    JpeAquiferFluidStatus* outputs
 );
 
 typedef struct JpeAquiferCellLocation {
@@ -364,6 +549,14 @@ JPE_API int32_t jpe_runtime_aquifer_grid_centers(
  * Each output array needs sample_count * 4 entries; outputs are sample-major.
  * Input and output arrays must be non-overlapping. Distances preserve Java int32 wrap. */
 JPE_API int32_t jpe_runtime_aquifer_nearest_four(
+    uint32_t random_mode, uint64_t seed_lo, uint64_t seed_hi,
+    const int32_t *block_x, const int32_t *block_y, const int32_t *block_z,
+    uint32_t sample_count,
+    int32_t *center_x, int32_t *center_y, int32_t *center_z,
+    int32_t *squared_distances
+);
+/* Internal nearest-four helper used by the native full-volume Aquifer kernel. */
+JPE_API int32_t jpe_cpp_aquifer_nearest_four(
     uint32_t random_mode, uint64_t seed_lo, uint64_t seed_hi,
     const int32_t *block_x, const int32_t *block_y, const int32_t *block_z,
     uint32_t sample_count,

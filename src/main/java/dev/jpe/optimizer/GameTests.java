@@ -18,7 +18,9 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.world.level.block.Rotation;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
+import net.minecraft.world.level.levelgen.densityfunction.DensityBufferArena;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
+import net.minecraft.world.level.levelgen.densityfunction.ScopedDensityBuffer;
 import net.minecraft.world.level.levelgen.XoroshiroRandomSource;
 import net.minecraft.world.level.levelgen.LegacyRandomSource;
 import net.minecraft.world.level.levelgen.PositionalRandomFactory;
@@ -70,6 +72,8 @@ public final class GameTests {
             TEST_FUNCTIONS.register("aquifer_random_native_parity", () -> GameTests::aquiferRandomNativeParity);
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> DENSITY_GRAPH_POINT_BATCH =
             TEST_FUNCTIONS.register("density_graph_point_batch", () -> GameTests::densityGraphPointBatch);
+    public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> AQUIFER_CONTEXT_NATIVE_PARITY =
+            TEST_FUNCTIONS.register("aquifer_context_native_parity", () -> GameTests::aquiferContextNativeParity);
 
     public static void registerFunctions(net.neoforged.bus.api.IEventBus modEventBus) {
         TEST_FUNCTIONS.register(modEventBus);
@@ -122,6 +126,239 @@ public final class GameTests {
                 Identifier.parse("jpe_optimizer:density_graph_point_batch"),
                 new FunctionGameTestInstance(DENSITY_GRAPH_POINT_BATCH.getKey(), data)
         );
+        event.registerTest(
+                Identifier.parse("jpe_optimizer:aquifer_context_native_parity"),
+                new FunctionGameTestInstance(AQUIFER_CONTEXT_NATIVE_PARITY.getKey(), data)
+        );
+    }
+
+    /** Verifies the native Aquifer context retains six sampler plans and evaluates them in one FFM call. */
+    private static void aquiferContextNativeParity(GameTestHelper helper) {
+        String library = System.getProperty("jpe.nativeLibraryPath");
+        if (library == null || library.isBlank()) {
+            throw new AssertionError("Aquifer context parity requires jpe.nativeLibraryPath");
+        }
+        try (NativeRuntime runtime = NativeRuntime.load(java.nio.file.Path.of(library))) {
+            if (!runtime.supportsAquiferContext()) {
+                throw new AssertionError("Native Aquifer context ABI is unavailable");
+            }
+            long[] handles = new long[6];
+            for (int sampler = 0; sampler < handles.length; sampler++) {
+                handles[sampler] = runtime.compileDensityGraph(List.of(
+                        NativeRuntime.DensityNode.x(),
+                        NativeRuntime.DensityNode.constant(sampler),
+                        NativeRuntime.DensityNode.add(0, 1)
+                ), 2, 0xA91F_2631_0000L + sampler);
+            }
+
+            byte[] worldFingerprint = new byte[32];
+            java.util.Arrays.fill(worldFingerprint, (byte) 0x5A);
+            long context = runtime.createAquiferContext(
+                    handles, worldFingerprint, 0xA91F_2630_0001L,
+                    0x0123_4567_89ab_cdefL, 0xfedc_ba98_7654_3210L,
+                    0, 100, 200, 300, 256
+            );
+
+            // The context took independent native references, so release the
+            // Java-owned references before exercising the context.
+            for (long handle : handles) runtime.releaseDensityGraph(handle);
+
+            int[][] samplerX = {
+                    {1, 2, 3}, {4, 5, 6}, {7, 8, 9},
+                    {10, 11, 12}, {13, 14, 15}, {16, 17, 18}
+            };
+            int[][] samplerY = new int[6][3];
+            int[][] samplerZ = new int[6][3];
+            float[][] values = new float[6][3];
+            runtime.evaluateAquiferSamplersF32(
+                    context, worldFingerprint, 0xA91F_2630_0001L,
+                    samplerX, samplerY, samplerZ, values);
+
+            float[][] rejectedValues = new float[6][3];
+            for (float[] row : rejectedValues) java.util.Arrays.fill(row, -123.5F);
+            byte[] wrongWorldFingerprint = new byte[32];
+            java.util.Arrays.fill(wrongWorldFingerprint, (byte) 0xA5);
+            try {
+                runtime.evaluateAquiferSamplersF32(
+                        context, wrongWorldFingerprint, 0xA91F_2630_0001L,
+                        samplerX, samplerY, samplerZ, rejectedValues);
+                throw new AssertionError("Mismatched Aquifer world fingerprint was accepted");
+            } catch (IllegalStateException expected) {
+                // A stale or cross-world context must fail before publishing any output.
+            }
+            for (float[] row : rejectedValues) {
+                for (float value : row) {
+                    if (Float.floatToRawIntBits(value) != Float.floatToRawIntBits(-123.5F)) {
+                        throw new AssertionError("Rejected Aquifer context modified caller output");
+                    }
+                }
+            }
+            try {
+                runtime.evaluateAquiferSamplersF32(
+                        context, worldFingerprint, 0xA91F_2630_0002L,
+                        samplerX, samplerY, samplerZ, rejectedValues);
+                throw new AssertionError("Mismatched Aquifer semantic fingerprint was accepted");
+            } catch (IllegalStateException expected) {
+                // The execution contract version is checked with the world fingerprint.
+            }
+
+            for (int sampler = 0; sampler < 6; sampler++) {
+                for (int point = 0; point < 3; point++) {
+                    float expected = samplerX[sampler][point] + sampler;
+                    if (Float.floatToRawIntBits(values[sampler][point])
+                            != Float.floatToRawIntBits(expected)) {
+                        throw new AssertionError("Aquifer sampler context mismatch at sampler="
+                                + sampler + " point=" + point + ": expected=" + expected
+                                + ", actual=" + values[sampler][point]);
+                    }
+                }
+            }
+
+            runtime.configureAquiferGlobalFluidPicker(
+                    context, worldFingerprint, 0xA91F_2630_0001L,
+                    63, -2032, 200, false, false);
+            // Exercise the actual Java -> Rust -> C++ full-volume ABI using
+            // Minecraft's own DensityVolume and ScopedDensityBuffer types.
+            DensityVolume testVolume = new DensityVolume(2, 1, 1, 64, 0, 0);
+            try (ScopedDensityBuffer testDensity = DensityBufferArena.GLOBAL.acquire(2)) {
+                testDensity.set(0, -1.0F);
+                testDensity.set(1, 1.0F);
+                try (NativeRuntime.AquiferSubstanceVolumeResult volumeResult =
+                             runtime.computeAquiferSubstanceVolumeF32(
+                                     context, worldFingerprint, 0xA91F_2630_0001L,
+                                     -1, testVolume, testDensity)) {
+                    if (volumeResult.size() != 2
+                            || !volumeResult.hasBlockState(0)
+                            || volumeResult.blockStateToken(0) != 200
+                            || volumeResult.shouldScheduleFluidUpdate(0)
+                            || volumeResult.hasBlockState(1)
+                            || volumeResult.blockStateToken(1) != 100
+                            || volumeResult.shouldScheduleFluidUpdate(1)) {
+                        throw new AssertionError(
+                                "Native full-volume Aquifer FFM mismatch: "
+                                        + "size=" + volumeResult.size()
+                                        + " first=(" + volumeResult.hasBlockState(0)
+                                        + "," + volumeResult.blockStateToken(0)
+                                        + "," + volumeResult.shouldScheduleFluidUpdate(0)
+                                        + ") second=(" + volumeResult.hasBlockState(1)
+                                        + "," + volumeResult.blockStateToken(1)
+                                        + "," + volumeResult.shouldScheduleFluidUpdate(1) + ")");
+                    }
+                }
+            }
+
+            long[] nativeCellKeys = {64L << 38, 64L << 38};
+            int[] nativeCellX = {64, 64};
+            int[] nativeCellY = {0, 0};
+            int[] nativeCellZ = {0, 0};
+            int[] nativeFluidLevels = {-777, -777};
+            int[] nativeFluidTypes = {-777, -777};
+            runtime.computeAquiferFluidStatusPointsBatch(
+                    context, worldFingerprint, 0xA91F_2630_0001L,
+                    nativeCellKeys, nativeCellX, nativeCellY, nativeCellZ,
+                    nativeFluidLevels, nativeFluidTypes);
+            if (!java.util.Arrays.equals(nativeFluidLevels, new int[] {-32512, -32512})
+                    || !java.util.Arrays.equals(nativeFluidTypes, new int[] {200, 200})) {
+                throw new AssertionError("Native sampler-driven FluidStatus mismatch: levels="
+                        + java.util.Arrays.toString(nativeFluidLevels) + " types="
+                        + java.util.Arrays.toString(nativeFluidTypes));
+            }
+
+            int[] unchangedLevels = {12345, 12345};
+            int[] unchangedTypes = {54321, 54321};
+            try {
+                runtime.computeAquiferFluidStatusPointsBatch(
+                        context, wrongWorldFingerprint, 0xA91F_2630_0001L,
+                        nativeCellKeys, nativeCellX, nativeCellY, nativeCellZ,
+                        unchangedLevels, unchangedTypes);
+                throw new AssertionError("Native FluidStatus accepted a stale world fingerprint");
+            } catch (IllegalStateException expected) {
+                if (!java.util.Arrays.equals(unchangedLevels, new int[] {12345, 12345})
+                        || !java.util.Arrays.equals(unchangedTypes, new int[] {54321, 54321})) {
+                    throw new AssertionError("Rejected native FluidStatus request modified output arrays");
+                }
+            }
+
+            // One cache miss, duplicate keys in the same batch, and a later
+            // conflicting write must all preserve compute-if-absent semantics.
+            long[] statusKeys = {0x1122_3344_5566_7788L, 0x1122_3344_5566_7788L};
+            int[] blockY = {0, 0};
+            int[] globalLevels = {40, 90};
+            int[] globalTypes = {200, 300};
+            int[][] surfaces = {new int[13], new int[13]};
+            int[][] surfaceFluidLevels = {new int[13], new int[13]};
+            int[][] surfaceFluidTypes = {new int[13], new int[13]};
+            boolean[][] probeValid = {new boolean[13], new boolean[13]};
+            boolean[][] probeIsAir = {new boolean[13], new boolean[13]};
+            for (int i = 0; i < 2; i++) {
+                java.util.Arrays.fill(surfaces[i], -100);
+                java.util.Arrays.fill(surfaceFluidLevels[i], Integer.MIN_VALUE);
+                java.util.Arrays.fill(surfaceFluidTypes[i], 100);
+                java.util.Arrays.fill(probeIsAir[i], true);
+            }
+            float[] exclusion = {0.0F, 0.0F};
+            float[] floodedness = {0.0F, 0.0F};
+            float[] spread = {0.0F, 0.0F};
+            float[] lavaNoise = {0.0F, 0.0F};
+            int[] statusLevels = {-777, -777};
+            int[] statusTypes = {-777, -777};
+            runtime.computeAquiferFluidStatusBatch(
+                    context, worldFingerprint, 0xA91F_2630_0001L,
+                    statusKeys, blockY, globalLevels, globalTypes,
+                    surfaces, surfaceFluidLevels, surfaceFluidTypes, probeValid, probeIsAir,
+                    exclusion, floodedness, spread, lavaNoise, 300,
+                    statusLevels, statusTypes);
+            if (!java.util.Arrays.equals(statusLevels, new int[] {40, 40})
+                    || !java.util.Arrays.equals(statusTypes, new int[] {200, 200})) {
+                throw new AssertionError("Aquifer FluidStatus batch lost first-writer-wins semantics: levels="
+                        + java.util.Arrays.toString(statusLevels) + " types="
+                        + java.util.Arrays.toString(statusTypes));
+            }
+
+            long[] repeatedKey = {statusKeys[0]};
+            int[] conflictingLevel = {90};
+            int[] conflictingType = {300};
+            int[] cachedLevel = {-999};
+            int[] cachedType = {-999};
+            runtime.computeAquiferFluidStatusBatch(
+                    context, worldFingerprint, 0xA91F_2630_0001L,
+                    repeatedKey, new int[] {0}, conflictingLevel, conflictingType,
+                    new int[][] {surfaces[1]}, new int[][] {surfaceFluidLevels[1]},
+                    new int[][] {surfaceFluidTypes[1]}, new boolean[][] {probeValid[1]},
+                    new boolean[][] {probeIsAir[1]}, new float[] {0.0F},
+                    new float[] {0.0F}, new float[] {0.0F}, new float[] {0.0F},
+                    300, cachedLevel, cachedType);
+            if (cachedLevel[0] != 40 || cachedType[0] != 200) {
+                throw new AssertionError("Aquifer FluidStatus cache replaced the first writer");
+            }
+
+            int[] untouchedLevels = {12345};
+            int[] untouchedTypes = {54321};
+            try {
+                runtime.computeAquiferFluidStatusBatch(
+                        context, wrongWorldFingerprint, 0xA91F_2630_0001L,
+                        repeatedKey, new int[] {0}, conflictingLevel, conflictingType,
+                        new int[][] {surfaces[1]}, new int[][] {surfaceFluidLevels[1]},
+                        new int[][] {surfaceFluidTypes[1]}, new boolean[][] {probeValid[1]},
+                        new boolean[][] {probeIsAir[1]}, new float[] {0.0F},
+                        new float[] {0.0F}, new float[] {0.0F}, new float[] {0.0F},
+                        300, untouchedLevels, untouchedTypes);
+                throw new AssertionError("Mismatched Aquifer cache fingerprint was accepted");
+            } catch (IllegalStateException expected) {
+                if (untouchedLevels[0] != 12345 || untouchedTypes[0] != 54321) {
+                    throw new AssertionError("Rejected Aquifer status batch modified caller outputs");
+                }
+            }
+
+            runtime.destroyAquiferContext(context);
+            JPEOptimizer.LOGGER.info(
+                    "JPE_AQUIFER_CONTEXT_NATIVE_PARITY samplers=6 pointsPerSampler=3 "
+                            + "retainedHandles=true batchF32Exact=true statusCacheBatch=true "
+                            + "firstWriterWins=true contextDestroy=true");
+        } catch (Exception failure) {
+            throw new AssertionError("Native Aquifer context parity failed", failure);
+        }
+        helper.succeed();
     }
 
     /** Verifies sparse non-grid-aligned density sampling through one native FFM batch call. */
@@ -181,16 +418,18 @@ public final class GameTests {
                     NativeRuntime.DensityNode.multiply(0, 1)
             ), 2, 0xA91F_265L);
             long[] samplerHandles = {addGraph, multiplyGraph};
-            int[][] samplerX = {{2, -4}, {7, 8}};
-            int[][] samplerY = {{3, 5}, {6, -3}};
-            int[][] samplerZ = {{0, 0}, {0, 0}};
-            float[][] samplerValues = {new float[2], new float[2]};
+            // Three points per graph deliberately exercises non-16-byte row boundaries.
+            // FFM destination offsets are byte-based and must remain naturally aligned.
+            int[][] samplerX = {{2, -4, 6}, {7, 8, -2}};
+            int[][] samplerY = {{3, 5, -1}, {6, -3, 4}};
+            int[][] samplerZ = {{0, 0, 0}, {0, 0, 0}};
+            float[][] samplerValues = {new float[3], new float[3]};
             runtime.evaluateDensityGraphMultiPointsF32(
                     samplerHandles, samplerX, samplerY, samplerZ, samplerValues);
-            float[] expectedMulti = {5.0F, 1.0F, 42.0F, -24.0F};
+            float[] expectedMulti = {5.0F, 1.0F, 5.0F, 42.0F, -24.0F, -8.0F};
             for (int i = 0; i < expectedMulti.length; i++) {
-                int graphIndex = i / 2;
-                int pointIndex = i % 2;
+                int graphIndex = i / 3;
+                int pointIndex = i % 3;
                 if (Float.floatToRawIntBits(samplerValues[graphIndex][pointIndex])
                         != Float.floatToRawIntBits(expectedMulti[i])) {
                     throw new AssertionError("Native multi-sampler density mismatch at flat index " + i

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <limits>
 #include <stdexcept>
 #include <mutex>
 #include <unordered_map>
@@ -1232,6 +1233,16 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_f32(
 ) {
     return evaluate_density_graph<float>(graph_handle, size_x, size_y, size_z,
         min_x, min_y, min_z, step_x, step_y, step_z, output, output_length);
+}
+
+extern "C" int32_t jpe_cpp_density_graph_retain(uint64_t graph_handle) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    const auto found = g_handles.find(graph_handle);
+    if (found == g_handles.end()) return 2;
+    auto& references = found->second->references;
+    if (references == std::numeric_limits<uint32_t>::max()) return 3;
+    ++references;
+    return 0;
 }
 
 extern "C" int32_t jpe_cpp_density_graph_release(uint64_t graph_handle) {

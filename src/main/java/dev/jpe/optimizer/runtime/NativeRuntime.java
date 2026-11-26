@@ -18,6 +18,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import dev.jpe.optimizer.mixin.GradientNoiseAccessor;
+import dev.jpe.optimizer.mixin.DensityBufferAccessor;
 import dev.jpe.optimizer.mixin.NoiseStackLayerAccessor;
 import net.minecraft.world.level.levelgen.synth.Noise;
 import net.minecraft.world.level.levelgen.synth.PerlinNoise;
@@ -65,9 +66,17 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle aquiferStatusCacheDestroy;
     private final MethodHandle aquiferStatusCacheLookup;
     private final MethodHandle aquiferStatusCacheInsert;
+    private final MethodHandle aquiferContextCreate;
+    private final MethodHandle aquiferContextDestroy;
+    private final MethodHandle aquiferContextEvaluateSamplersF32;
+    private final MethodHandle aquiferContextComputeFluidStatusBatch;
+    private final MethodHandle aquiferContextConfigureGlobalFluidPicker;
+    private final MethodHandle aquiferContextComputeFluidStatusPointsBatch;
+    private final MethodHandle aquiferContextComputeSubstanceVolumeF32;
     private final ConcurrentHashMap<Long, java.util.concurrent.atomic.AtomicInteger> densityGraphHandles = new ConcurrentHashMap<>();
     private final java.util.Set<Long> preparedStackHandles = ConcurrentHashMap.newKeySet();
     private final java.util.Set<Long> aquiferStatusCacheHandles = ConcurrentHashMap.newKeySet();
+    private final java.util.Set<Long> aquiferContextHandles = ConcurrentHashMap.newKeySet();
     private final MethodHandle jobStatus;
     private final MethodHandle waitJob;
     private final MethodHandle cancelJob;
@@ -167,6 +176,12 @@ public final class NativeRuntime implements AutoCloseable {
         private int pointGraphHandleCapacity;
         private MemorySegment packedLocations;
         private int packedLocationCapacity;
+        private MemorySegment contextWorldFingerprint;
+        private MemorySegment contextStatusKeys, contextStatusInputs, contextStatusOutputs;
+        private int contextStatusCapacity;
+        private MemorySegment contextPointStatusKeys, contextPointX, contextPointY, contextPointZ;
+        private MemorySegment contextPointStatusOutputs;
+        private int contextPointStatusCapacity;
         private final AtomicBoolean leased = new AtomicBoolean();
 
         private boolean tryAcquire() { return leased.compareAndSet(false, true); }
@@ -264,6 +279,50 @@ public final class NativeRuntime implements AutoCloseable {
             }
             return packedLocations;
         }
+        private MemorySegment ensureContextWorldFingerprint() {
+            if (contextWorldFingerprint == null) {
+                contextWorldFingerprint = arena.allocate(32L, ValueLayout.JAVA_BYTE.byteAlignment());
+            }
+            return contextWorldFingerprint;
+        }
+        private MemorySegment[] ensureContextStatusCapacity(int count) {
+            if (count <= 0 || count > 65_536) {
+                throw new IllegalArgumentException("Aquifer FluidStatus batch must be in [1, 65536]");
+            }
+            if (contextStatusCapacity < count) {
+                int next = Math.max(64, contextStatusCapacity);
+                while (next < count) next = Math.min(65_536, Math.multiplyExact(next, 2));
+                long keyBytes = Math.multiplyExact((long) next, ValueLayout.JAVA_LONG.byteSize());
+                long inputBytes = Math.multiplyExact((long) next, 292L);
+                long outputBytes = Math.multiplyExact((long) next, 8L);
+                contextStatusKeys = arena.allocate(keyBytes, ValueLayout.JAVA_LONG.byteAlignment());
+                contextStatusInputs = arena.allocate(inputBytes, ValueLayout.JAVA_DOUBLE.byteAlignment());
+                contextStatusOutputs = arena.allocate(outputBytes, ValueLayout.JAVA_LONG.byteAlignment());
+                contextStatusCapacity = next;
+            }
+            return new MemorySegment[] {contextStatusKeys, contextStatusInputs, contextStatusOutputs};
+        }
+        private MemorySegment[] ensureContextPointStatusCapacity(int count) {
+            if (count <= 0 || count > 65_536) {
+                throw new IllegalArgumentException("Aquifer point-status batch must be in [1, 65536]");
+            }
+            if (contextPointStatusCapacity < count) {
+                int next = Math.max(64, contextPointStatusCapacity);
+                while (next < count) next = Math.min(65_536, Math.multiplyExact(next, 2));
+                long keyBytes = Math.multiplyExact((long) next, ValueLayout.JAVA_LONG.byteSize());
+                long coordinateBytes = Math.multiplyExact((long) next, ValueLayout.JAVA_INT.byteSize());
+                long outputBytes = Math.multiplyExact((long) next, 8L);
+                contextPointStatusKeys = arena.allocate(keyBytes, ValueLayout.JAVA_LONG.byteAlignment());
+                contextPointX = arena.allocate(coordinateBytes, ValueLayout.JAVA_INT.byteAlignment());
+                contextPointY = arena.allocate(coordinateBytes, ValueLayout.JAVA_INT.byteAlignment());
+                contextPointZ = arena.allocate(coordinateBytes, ValueLayout.JAVA_INT.byteAlignment());
+                contextPointStatusOutputs = arena.allocate(outputBytes, ValueLayout.JAVA_LONG.byteAlignment());
+                contextPointStatusCapacity = next;
+            }
+            return new MemorySegment[] {
+                    contextPointStatusKeys, contextPointX, contextPointY, contextPointZ, contextPointStatusOutputs
+            };
+        }
         @Override
         public void close() {
             if (leased.get()) throw new IllegalStateException("Cannot close a leased Aquifer scratch arena");
@@ -293,7 +352,13 @@ public final class NativeRuntime implements AutoCloseable {
                           MethodHandle aquiferGridCenters, MethodHandle aquiferNearestFour,
                           MethodHandle aquiferSubstanceBatch,
                           MethodHandle aquiferStatusCacheCreate, MethodHandle aquiferStatusCacheDestroy,
-                          MethodHandle aquiferStatusCacheLookup, MethodHandle aquiferStatusCacheInsert) {
+                          MethodHandle aquiferStatusCacheLookup, MethodHandle aquiferStatusCacheInsert,
+                          MethodHandle aquiferContextCreate, MethodHandle aquiferContextDestroy,
+                          MethodHandle aquiferContextEvaluateSamplersF32,
+                          MethodHandle aquiferContextComputeFluidStatusBatch,
+                          MethodHandle aquiferContextConfigureGlobalFluidPicker,
+                          MethodHandle aquiferContextComputeFluidStatusPointsBatch,
+                          MethodHandle aquiferContextComputeSubstanceVolumeF32) {
         this.configureWorkers = configureWorkers;
         this.workerCount = workerCount;
         this.addF32 = add;
@@ -318,6 +383,13 @@ public final class NativeRuntime implements AutoCloseable {
         this.aquiferStatusCacheDestroy = aquiferStatusCacheDestroy;
         this.aquiferStatusCacheLookup = aquiferStatusCacheLookup;
         this.aquiferStatusCacheInsert = aquiferStatusCacheInsert;
+        this.aquiferContextCreate = aquiferContextCreate;
+        this.aquiferContextDestroy = aquiferContextDestroy;
+        this.aquiferContextEvaluateSamplersF32 = aquiferContextEvaluateSamplersF32;
+        this.aquiferContextComputeFluidStatusBatch = aquiferContextComputeFluidStatusBatch;
+        this.aquiferContextConfigureGlobalFluidPicker = aquiferContextConfigureGlobalFluidPicker;
+        this.aquiferContextComputeFluidStatusPointsBatch = aquiferContextComputeFluidStatusPointsBatch;
+        this.aquiferContextComputeSubstanceVolumeF32 = aquiferContextComputeSubstanceVolumeF32;
         this.jobStatus = status;
         this.waitJob = wait;
         this.cancelJob = cancel;
@@ -493,6 +565,57 @@ public final class NativeRuntime implements AutoCloseable {
                                     ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
                                     ValueLayout.JAVA_INT)))
                     .orElse(null);
+            MethodHandle aquiferContextCreate = lookup.find("jpe_runtime_aquifer_context_create")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)))
+                    .orElse(null);
+            MethodHandle aquiferContextDestroy = lookup.find("jpe_runtime_aquifer_context_destroy")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG)))
+                    .orElse(null);
+            MethodHandle aquiferContextEvaluateSamplersF32 = lookup.find(
+                    "jpe_runtime_aquifer_context_evaluate_samplers_f32")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                                    ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)))
+                    .orElse(null);
+            MethodHandle aquiferContextComputeFluidStatusBatch = lookup.find(
+                    "jpe_runtime_aquifer_context_compute_fluid_status_batch")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                                    ValueLayout.ADDRESS)))
+                    .orElse(null);
+            MethodHandle aquiferContextConfigureGlobalFluidPicker = lookup.find(
+                    "jpe_runtime_aquifer_context_configure_global_fluid_picker")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT)))
+                    .orElse(null);
+            MethodHandle aquiferContextComputeFluidStatusPointsBatch = lookup.find(
+                    "jpe_runtime_aquifer_context_compute_fluid_status_points_batch")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                                    ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS)))
+                    .orElse(null);
+            MethodHandle aquiferContextComputeSubstanceVolumeF32 = lookup.find(
+                    "jpe_runtime_aquifer_context_compute_substance_volume_f32")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                                    ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS)))
+                    .orElse(null);
             if (graphCompile == null || graphEvaluate == null || graphRelease == null) {
                 graphCompile = null;
                 graphEvaluate = null;
@@ -523,7 +646,11 @@ public final class NativeRuntime implements AutoCloseable {
                     graphCompile, graphEvaluate, graphEvaluateF32, graphEvaluatePoints, graphEvaluatePointsF32,
                     graphEvaluateMultiPointsF32, graphRelease, aquiferGridCenters, aquiferNearestFour,
                     aquiferSubstanceBatch, aquiferStatusCacheCreate, aquiferStatusCacheDestroy,
-                    aquiferStatusCacheLookup, aquiferStatusCacheInsert);
+                    aquiferStatusCacheLookup, aquiferStatusCacheInsert,
+                    aquiferContextCreate, aquiferContextDestroy, aquiferContextEvaluateSamplersF32,
+                    aquiferContextComputeFluidStatusBatch, aquiferContextConfigureGlobalFluidPicker,
+                    aquiferContextComputeFluidStatusPointsBatch,
+                    aquiferContextComputeSubstanceVolumeF32);
         } catch (Throwable failure) {
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
         }
@@ -531,6 +658,531 @@ public final class NativeRuntime implements AutoCloseable {
 
     /** Number of native workers selected during runtime initialization. */
     public int workerCount() { return workerCount; }
+
+    /** True when the C++ runtime can own six world-scoped Aquifer sampler plans. */
+    public boolean supportsAquiferContext() {
+        return densityGraphCompile != null && densityGraphRelease != null
+                && aquiferContextCreate != null && aquiferContextDestroy != null
+                && aquiferContextEvaluateSamplersF32 != null
+                && aquiferContextComputeFluidStatusBatch != null
+                && aquiferContextConfigureGlobalFluidPicker != null
+                && aquiferContextComputeFluidStatusPointsBatch != null
+                && aquiferContextComputeSubstanceVolumeF32 != null;
+    }
+
+    /**
+     * Creates a native Aquifer context. The C++ side retains each density graph
+     * independently, so the caller may release its original graph references
+     * after this method returns.
+     */
+    public long createAquiferContext(
+            long[] graphHandles, byte[] worldFingerprint, long semanticFingerprint,
+            long seedLo, long seedHi, int randomMode,
+            int airToken, int waterToken, int lavaToken, int maxStatusCacheEntries
+    ) {
+        Objects.requireNonNull(graphHandles, "graphHandles");
+        Objects.requireNonNull(worldFingerprint, "worldFingerprint");
+        if (!supportsAquiferContext()) {
+            throw new IllegalStateException("Native Aquifer context ABI is unavailable");
+        }
+        if (graphHandles.length != 6 || worldFingerprint.length != 32
+                || semanticFingerprint == 0L || randomMode < 0 || randomMode > 1
+                || airToken == waterToken || airToken == lavaToken || waterToken == lavaToken
+                || maxStatusCacheEntries <= 0 || maxStatusCacheEntries > 1_048_576) {
+            throw new IllegalArgumentException("Invalid native Aquifer context descriptor");
+        }
+        boolean fingerprintIsZero = true;
+        for (byte value : worldFingerprint) fingerprintIsZero &= value == 0;
+        if (fingerprintIsZero) throw new IllegalArgumentException("World fingerprint must not be all zero");
+        for (long handle : graphHandles) {
+            if (handle == 0L) throw new IllegalArgumentException("Aquifer sampler graph handles must be non-zero");
+            if (!densityGraphHandles.containsKey(handle)) {
+                throw new IllegalArgumentException(
+                        "Aquifer sampler graph handle is not owned by this NativeRuntime: " + handle);
+            }
+        }
+
+        lifecycle.readLock().lock();
+        try {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment info = arena.allocate(128L, 8L);
+                for (int i = 0; i < 6; i++) {
+                    info.set(ValueLayout.JAVA_LONG, (long) i * 8L, graphHandles[i]);
+                }
+                MemorySegment.copy(worldFingerprint, 0, info, ValueLayout.JAVA_BYTE, 48L, 32);
+                info.set(ValueLayout.JAVA_LONG, 80L, semanticFingerprint);
+                info.set(ValueLayout.JAVA_LONG, 88L, seedLo);
+                info.set(ValueLayout.JAVA_LONG, 96L, seedHi);
+                info.set(ValueLayout.JAVA_INT, 104L, randomMode);
+                info.set(ValueLayout.JAVA_INT, 108L, airToken);
+                info.set(ValueLayout.JAVA_INT, 112L, waterToken);
+                info.set(ValueLayout.JAVA_INT, 116L, lavaToken);
+                info.set(ValueLayout.JAVA_INT, 120L, maxStatusCacheEntries);
+                info.set(ValueLayout.JAVA_INT, 124L, 0);
+                long handle = (long) aquiferContextCreate.invokeExact(info);
+                if (handle == 0L) {
+                    throw new IllegalStateException("Native Aquifer context creation was rejected");
+                }
+                aquiferContextHandles.add(handle);
+                return handle;
+            } catch (Throwable failure) {
+                throw rethrow("Unable to create native Aquifer context", failure);
+            }
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    /**
+     * Evaluates the six context-owned sampler graphs in one FFM call.
+     * Coordinates and outputs are sampler-major, with an independent point set
+     * for barrier, floodedness, spread, lava, exclusion, and surface.
+     */
+    public void evaluateAquiferSamplersF32(
+            long contextHandle, byte[] worldFingerprint, long semanticFingerprint,
+            int[][] pointX, int[][] pointY, int[][] pointZ, float[][] output
+    ) {
+        Objects.requireNonNull(worldFingerprint, "worldFingerprint");
+        Objects.requireNonNull(pointX, "pointX");
+        Objects.requireNonNull(pointY, "pointY");
+        Objects.requireNonNull(pointZ, "pointZ");
+        Objects.requireNonNull(output, "output");
+        if (!supportsAquiferContext()) throw new IllegalStateException("Native Aquifer context ABI is unavailable");
+        if (worldFingerprint.length != 32 || semanticFingerprint == 0L) {
+            throw new IllegalArgumentException("Aquifer world and semantic fingerprints must be valid");
+        }
+        if (contextHandle == 0L || !aquiferContextHandles.contains(contextHandle)
+                || pointX.length != 6 || pointY.length != 6 || pointZ.length != 6 || output.length != 6) {
+            throw new IllegalArgumentException("Invalid native Aquifer sampler batch");
+        }
+        int pointsPerSampler = Objects.requireNonNull(pointX[0], "pointX[0]").length;
+        long total = Math.multiplyExact(6L, pointsPerSampler);
+        if (pointsPerSampler == 0 || total > 1_048_576L) {
+            throw new IllegalArgumentException("Aquifer sampler point count must be in [1, 174762]");
+        }
+        for (int sampler = 0; sampler < 6; sampler++) {
+            if (Objects.requireNonNull(pointX[sampler], "pointX row").length != pointsPerSampler
+                    || Objects.requireNonNull(pointY[sampler], "pointY row").length != pointsPerSampler
+                    || Objects.requireNonNull(pointZ[sampler], "pointZ row").length != pointsPerSampler
+                    || Objects.requireNonNull(output[sampler], "output row").length < pointsPerSampler) {
+                throw new IllegalArgumentException("Aquifer sampler rows must have equal point counts");
+            }
+        }
+
+        lifecycle.readLock().lock();
+        AquiferScratch scratch = null;
+        try {
+            ensureOpen();
+            scratch = acquireAquiferScratch();
+            MemorySegment[] buffers = scratch.ensurePointCapacity(Math.toIntExact(total));
+            MemorySegment x = buffers[0], y = buffers[1], z = buffers[2], values = buffers[3];
+            MemorySegment expectedFingerprint = scratch.ensureContextWorldFingerprint();
+            MemorySegment.copy(worldFingerprint, 0, expectedFingerprint,
+                    ValueLayout.JAVA_BYTE, 0L, worldFingerprint.length);
+            for (int sampler = 0; sampler < 6; sampler++) {
+                long baseBytes = Math.multiplyExact(
+                        Math.multiplyExact((long) sampler, pointsPerSampler),
+                        ValueLayout.JAVA_INT.byteSize());
+                MemorySegment.copy(pointX[sampler], 0, x, ValueLayout.JAVA_INT, baseBytes, pointsPerSampler);
+                MemorySegment.copy(pointY[sampler], 0, y, ValueLayout.JAVA_INT, baseBytes, pointsPerSampler);
+                MemorySegment.copy(pointZ[sampler], 0, z, ValueLayout.JAVA_INT, baseBytes, pointsPerSampler);
+            }
+            int status = (int) aquiferContextEvaluateSamplersF32.invokeExact(
+                    contextHandle, expectedFingerprint, semanticFingerprint,
+                    x, y, z, pointsPerSampler, values, total);
+            checkStatus(status, "aquifer-context-evaluate-samplers-f32");
+            for (int sampler = 0; sampler < 6; sampler++) {
+                long baseBytes = Math.multiplyExact(
+                        Math.multiplyExact((long) sampler, pointsPerSampler),
+                        ValueLayout.JAVA_FLOAT.byteSize());
+                MemorySegment.copy(values, ValueLayout.JAVA_FLOAT, baseBytes,
+                        output[sampler], 0, pointsPerSampler);
+            }
+        } catch (Throwable failure) {
+            throw rethrow("Unable to evaluate native Aquifer sampler batch", failure);
+        } finally {
+            if (scratch != null) scratch.release();
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    /**
+     * Configures the world-specific vanilla 26.3 global FluidPicker once per context.
+     * Repeating the same configuration is idempotent; changing any value is rejected.
+     */
+    public void configureAquiferGlobalFluidPicker(
+            long contextHandle, byte[] worldFingerprint, long semanticFingerprint,
+            int seaLevel, int minY, int defaultFluidType,
+            boolean defaultFluidIsAir, boolean debugDisableFluidGeneration
+    ) {
+        Objects.requireNonNull(worldFingerprint, "worldFingerprint");
+        if (contextHandle == 0L || !aquiferContextHandles.contains(contextHandle)
+                || worldFingerprint.length != 32 || semanticFingerprint == 0L) {
+            throw new IllegalArgumentException("Invalid Aquifer global FluidPicker configuration");
+        }
+        lifecycle.readLock().lock();
+        try {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment fingerprint = arena.allocate(32L, ValueLayout.JAVA_BYTE.byteAlignment());
+                MemorySegment.copy(worldFingerprint, 0, fingerprint,
+                        ValueLayout.JAVA_BYTE, 0L, worldFingerprint.length);
+                int status = (int) aquiferContextConfigureGlobalFluidPicker.invokeExact(
+                        contextHandle, fingerprint, semanticFingerprint, seaLevel, minY,
+                        defaultFluidType, defaultFluidIsAir ? 1 : 0,
+                        debugDisableFluidGeneration ? 1 : 0);
+                checkStatus(status, "aquifer-context-configure-global-fluid-picker");
+            } catch (Throwable failure) {
+                throw rethrow("Unable to configure native Aquifer global FluidPicker", failure);
+            }
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    /**
+     * Computes cell-center FluidStatus using all six C++-owned sampler graphs and
+     * the world's vanilla global FluidPicker. Coordinates and packed BlockPos keys
+     * are sent in one FFM call; Java performs no per-cell noise or FluidStatus math.
+     */
+    public void computeAquiferFluidStatusPointsBatch(
+            long contextHandle, byte[] worldFingerprint, long semanticFingerprint,
+            long[] cacheKeys, int[] pointX, int[] pointY, int[] pointZ,
+            int[] outputFluidLevels, int[] outputFluidTypes
+    ) {
+        Objects.requireNonNull(worldFingerprint, "worldFingerprint");
+        Objects.requireNonNull(cacheKeys, "cacheKeys");
+        Objects.requireNonNull(pointX, "pointX");
+        Objects.requireNonNull(pointY, "pointY");
+        Objects.requireNonNull(pointZ, "pointZ");
+        Objects.requireNonNull(outputFluidLevels, "outputFluidLevels");
+        Objects.requireNonNull(outputFluidTypes, "outputFluidTypes");
+        int count = cacheKeys.length;
+        if (!supportsAquiferContext()) {
+            throw new IllegalStateException("Native Aquifer points API is unavailable");
+        }
+        if (contextHandle == 0L || !aquiferContextHandles.contains(contextHandle)
+                || worldFingerprint.length != 32 || semanticFingerprint == 0L
+                || count == 0 || count > 65_536
+                || pointX.length != count || pointY.length != count || pointZ.length != count
+                || outputFluidLevels.length < count || outputFluidTypes.length < count) {
+            throw new IllegalArgumentException("Invalid native Aquifer point-status dimensions");
+        }
+
+        lifecycle.readLock().lock();
+        AquiferScratch scratch = null;
+        try {
+            ensureOpen();
+            scratch = acquireAquiferScratch();
+            MemorySegment[] buffers = scratch.ensureContextPointStatusCapacity(count);
+            MemorySegment keys = buffers[0], x = buffers[1], y = buffers[2], z = buffers[3], output = buffers[4];
+            MemorySegment expectedFingerprint = scratch.ensureContextWorldFingerprint();
+            MemorySegment.copy(worldFingerprint, 0, expectedFingerprint,
+                    ValueLayout.JAVA_BYTE, 0L, worldFingerprint.length);
+            MemorySegment.copy(cacheKeys, 0, keys, ValueLayout.JAVA_LONG, 0L, count);
+            MemorySegment.copy(pointX, 0, x, ValueLayout.JAVA_INT, 0L, count);
+            MemorySegment.copy(pointY, 0, y, ValueLayout.JAVA_INT, 0L, count);
+            MemorySegment.copy(pointZ, 0, z, ValueLayout.JAVA_INT, 0L, count);
+            try {
+                int status = (int) aquiferContextComputeFluidStatusPointsBatch.invokeExact(
+                        contextHandle, expectedFingerprint, semanticFingerprint,
+                        keys, x, y, z, count, output);
+                checkStatus(status, "aquifer-context-compute-fluid-status-points-batch");
+                for (int i = 0; i < count; i++) {
+                    long offset = (long) i * 8L;
+                    outputFluidLevels[i] = output.get(ValueLayout.JAVA_INT, offset);
+                    outputFluidTypes[i] = output.get(ValueLayout.JAVA_INT, offset + 4L);
+                }
+            } catch (Throwable failure) {
+                throw rethrow("Unable to compute native Aquifer FluidStatus points", failure);
+            }
+        } finally {
+            if (scratch != null) scratch.release();
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    /**
+     * Computes or retrieves a batch of native FluidStatus values using BlockPos.asLong
+     * cache keys. Each FluidPicker probe is passed as a pre-resolved opaque token plus
+     * its isAir trait; Java does no per-voxel FluidStatus math in this bridge.
+     *
+     * The input is sampler-derived data in the exact 292-byte native ABI layout.
+     * All output arrays remain unchanged if validation, fingerprint checks, or cache
+     * insertion fails.
+     */
+    public void computeAquiferFluidStatusBatch(
+            long contextHandle,
+            byte[] worldFingerprint,
+            long semanticFingerprint,
+            long[] cacheKeys,
+            int[] blockY,
+            int[] globalFluidLevels,
+            int[] globalFluidTypes,
+            int[][] surfaceLevels,
+            int[][] globalFluidAtSurfaceLevels,
+            int[][] globalFluidAtSurfaceTypes,
+            boolean[][] globalFluidProbeValid,
+            boolean[][] globalFluidProbeIsAir,
+            float[] exclusionNoise,
+            float[] floodednessNoise,
+            float[] fluidLevelSpreadNoise,
+            float[] lavaNoise,
+            int lavaType,
+            int[] outputFluidLevels,
+            int[] outputFluidTypes
+    ) {
+        Objects.requireNonNull(worldFingerprint, "worldFingerprint");
+        Objects.requireNonNull(cacheKeys, "cacheKeys");
+        Objects.requireNonNull(blockY, "blockY");
+        Objects.requireNonNull(globalFluidLevels, "globalFluidLevels");
+        Objects.requireNonNull(globalFluidTypes, "globalFluidTypes");
+        Objects.requireNonNull(surfaceLevels, "surfaceLevels");
+        Objects.requireNonNull(globalFluidAtSurfaceLevels, "globalFluidAtSurfaceLevels");
+        Objects.requireNonNull(globalFluidAtSurfaceTypes, "globalFluidAtSurfaceTypes");
+        Objects.requireNonNull(globalFluidProbeValid, "globalFluidProbeValid");
+        Objects.requireNonNull(globalFluidProbeIsAir, "globalFluidProbeIsAir");
+        Objects.requireNonNull(exclusionNoise, "exclusionNoise");
+        Objects.requireNonNull(floodednessNoise, "floodednessNoise");
+        Objects.requireNonNull(fluidLevelSpreadNoise, "fluidLevelSpreadNoise");
+        Objects.requireNonNull(lavaNoise, "lavaNoise");
+        Objects.requireNonNull(outputFluidLevels, "outputFluidLevels");
+        Objects.requireNonNull(outputFluidTypes, "outputFluidTypes");
+
+        if (!supportsAquiferContext()) {
+            throw new IllegalStateException("Native Aquifer FluidStatus context ABI is unavailable");
+        }
+        int count = cacheKeys.length;
+        if (contextHandle == 0L || !aquiferContextHandles.contains(contextHandle)
+                || worldFingerprint.length != 32 || semanticFingerprint == 0L
+                || count == 0 || count > 65_536
+                || blockY.length != count || globalFluidLevels.length != count
+                || globalFluidTypes.length != count || surfaceLevels.length != count
+                || globalFluidAtSurfaceLevels.length != count
+                || globalFluidAtSurfaceTypes.length != count
+                || globalFluidProbeValid.length != count || globalFluidProbeIsAir.length != count
+                || exclusionNoise.length != count || floodednessNoise.length != count
+                || fluidLevelSpreadNoise.length != count || lavaNoise.length != count
+                || outputFluidLevels.length < count || outputFluidTypes.length < count) {
+            throw new IllegalArgumentException("Invalid native Aquifer FluidStatus batch dimensions");
+        }
+        for (int i = 0; i < count; i++) {
+            if (Objects.requireNonNull(surfaceLevels[i], "surfaceLevels row").length != 13
+                    || Objects.requireNonNull(globalFluidAtSurfaceLevels[i], "globalFluidAtSurfaceLevels row").length != 13
+                    || Objects.requireNonNull(globalFluidAtSurfaceTypes[i], "globalFluidAtSurfaceTypes row").length != 13
+                    || Objects.requireNonNull(globalFluidProbeValid[i], "globalFluidProbeValid row").length != 13
+                    || Objects.requireNonNull(globalFluidProbeIsAir[i], "globalFluidProbeIsAir row").length != 13) {
+                throw new IllegalArgumentException("Aquifer FluidStatus rows must contain exactly 13 surface probes");
+            }
+        }
+
+        lifecycle.readLock().lock();
+        AquiferScratch scratch = null;
+        try {
+            ensureOpen();
+            scratch = acquireAquiferScratch();
+            MemorySegment[] buffers = scratch.ensureContextStatusCapacity(count);
+            MemorySegment keys = buffers[0];
+            MemorySegment inputs = buffers[1];
+            MemorySegment outputs = buffers[2];
+            MemorySegment expectedFingerprint = scratch.ensureContextWorldFingerprint();
+            MemorySegment.copy(worldFingerprint, 0, expectedFingerprint,
+                    ValueLayout.JAVA_BYTE, 0L, worldFingerprint.length);
+
+            for (int i = 0; i < count; i++) {
+                long keyOffset = (long) i * 8L;
+                keys.set(ValueLayout.JAVA_LONG, keyOffset, cacheKeys[i]);
+
+                long base = (long) i * 292L;
+                inputs.set(ValueLayout.JAVA_INT, base, blockY[i]);
+                inputs.set(ValueLayout.JAVA_INT, base + 4L, globalFluidLevels[i]);
+                inputs.set(ValueLayout.JAVA_INT, base + 8L, globalFluidTypes[i]);
+                for (int probe = 0; probe < 13; probe++) {
+                    inputs.set(ValueLayout.JAVA_INT, base + 12L + (long) probe * 4L,
+                            surfaceLevels[i][probe]);
+                    long probeBase = base + 64L + (long) probe * 16L;
+                    inputs.set(ValueLayout.JAVA_INT, probeBase, globalFluidAtSurfaceLevels[i][probe]);
+                    inputs.set(ValueLayout.JAVA_INT, probeBase + 4L, globalFluidAtSurfaceTypes[i][probe]);
+                    inputs.set(ValueLayout.JAVA_INT, probeBase + 8L,
+                            globalFluidProbeValid[i][probe] ? 1 : 0);
+                    inputs.set(ValueLayout.JAVA_INT, probeBase + 12L,
+                            globalFluidProbeIsAir[i][probe] ? 1 : 0);
+                }
+                inputs.set(ValueLayout.JAVA_FLOAT, base + 272L, exclusionNoise[i]);
+                inputs.set(ValueLayout.JAVA_FLOAT, base + 276L, floodednessNoise[i]);
+                inputs.set(ValueLayout.JAVA_FLOAT, base + 280L, fluidLevelSpreadNoise[i]);
+                inputs.set(ValueLayout.JAVA_FLOAT, base + 284L, lavaNoise[i]);
+                inputs.set(ValueLayout.JAVA_INT, base + 288L, lavaType);
+            }
+
+            int status = (int) aquiferContextComputeFluidStatusBatch.invokeExact(
+                    contextHandle, expectedFingerprint, semanticFingerprint,
+                    keys, inputs, count, outputs);
+            checkStatus(status, "aquifer-context-compute-fluid-status-batch");
+
+            // Publish only after the complete native batch succeeds.
+            for (int i = 0; i < count; i++) {
+                long offset = (long) i * 8L;
+                outputFluidLevels[i] = outputs.get(ValueLayout.JAVA_INT, offset);
+                outputFluidTypes[i] = outputs.get(ValueLayout.JAVA_INT, offset + 4L);
+            }
+        } catch (Throwable failure) {
+            throw rethrow("Unable to compute native Aquifer FluidStatus batch", failure);
+        } finally {
+            if (scratch != null) scratch.release();
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    /**
+     * Runs the complete Aquifer decision kernel for one DensityVolume in a single
+     * native call. The returned view owns the leased worker scratch until close().
+     */
+    public AquiferSubstanceVolumeResult computeAquiferSubstanceVolumeF32(
+            long contextHandle,
+            byte[] worldFingerprint,
+            long semanticFingerprint,
+            int skipSamplingAboveY,
+            net.minecraft.world.level.levelgen.densityfunction.DensityVolume volume,
+            net.minecraft.world.level.levelgen.densityfunction.ScopedDensityBuffer density
+    ) {
+        Objects.requireNonNull(worldFingerprint, "worldFingerprint");
+        Objects.requireNonNull(volume, "volume");
+        Objects.requireNonNull(density, "density");
+        if (!supportsAquiferContext()) {
+            throw new IllegalStateException("Native full-volume Aquifer ABI is unavailable");
+        }
+        if (contextHandle == 0L || !aquiferContextHandles.contains(contextHandle)
+                || worldFingerprint.length != 32 || semanticFingerprint == 0L) {
+            throw new IllegalArgumentException("Invalid native Aquifer volume context");
+        }
+        long totalLong = Math.multiplyExact(
+                Math.multiplyExact((long) volume.sizeX(), volume.sizeY()), volume.sizeZ());
+        if (volume.sizeX() <= 0 || volume.sizeY() <= 0 || volume.sizeZ() <= 0
+                || volume.stepBlockX() <= 0 || volume.stepBlockY() <= 0 || volume.stepBlockZ() <= 0
+                || totalLong <= 0 || totalLong > 1_048_576L || density.size() != totalLong) {
+            throw new IllegalArgumentException("Invalid native Aquifer DensityVolume geometry or buffer size");
+        }
+        int count = Math.toIntExact(totalLong);
+
+        ReentrantReadWriteLock.ReadLock volumeReadLock = lifecycle.readLock();
+        volumeReadLock.lock();
+        AquiferScratch scratch = null;
+        boolean transferred = false;
+        try {
+            ensureOpen();
+            scratch = acquireAquiferScratch();
+            MemorySegment[] pointBuffers = scratch.ensurePointCapacity(count);
+            MemorySegment densityValues = pointBuffers[3];
+            MemorySegment outputValues = scratch.ensureSubstanceCapacity(count)[1];
+            MemorySegment expectedFingerprint = scratch.ensureContextWorldFingerprint();
+            MemorySegment.copy(worldFingerprint, 0, expectedFingerprint,
+                    ValueLayout.JAVA_BYTE, 0L, worldFingerprint.length);
+            float[] densitySamples = ((DensityBufferAccessor) (Object) density).jpe$values();
+            if (densitySamples.length < count) {
+                throw new IllegalArgumentException("Scoped density buffer backing array is smaller than the volume");
+            }
+            MemorySegment.copy(densitySamples, 0, densityValues,
+                    ValueLayout.JAVA_FLOAT, 0L, count);
+
+            int status = (int) aquiferContextComputeSubstanceVolumeF32.invokeExact(
+                    contextHandle, expectedFingerprint, semanticFingerprint,
+                    skipSamplingAboveY,
+                    volume.sizeX(), volume.sizeY(), volume.sizeZ(),
+                    volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
+                    volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ(),
+                    densityValues, count, outputValues);
+            checkStatus(status, "aquifer-context-compute-substance-volume-f32");
+            AquiferSubstanceVolumeResult result =
+                    new AquiferSubstanceVolumeResult(scratch, outputValues, count, volumeReadLock);
+            transferred = true;
+            return result;
+        } catch (Throwable failure) {
+            throw rethrow("Unable to compute native full-volume Aquifer decisions", failure);
+        } finally {
+            if (!transferred) {
+                if (scratch != null) scratch.release();
+                volumeReadLock.unlock();
+            }
+        }
+    }
+
+    /** A zero-allocation view over native volume results; must be closed before reuse. */
+    public static final class AquiferSubstanceVolumeResult implements AutoCloseable {
+        private final AquiferScratch scratch;
+        private final MemorySegment values;
+        private final int count;
+        private final ReentrantReadWriteLock.ReadLock volumeReadLock;
+        private final AtomicBoolean closed = new AtomicBoolean();
+
+        private AquiferSubstanceVolumeResult(
+                AquiferScratch scratch, MemorySegment values, int count,
+                ReentrantReadWriteLock.ReadLock volumeReadLock
+        ) {
+            this.scratch = scratch;
+            this.values = values;
+            this.count = count;
+            this.volumeReadLock = volumeReadLock;
+        }
+
+        public int size() { ensureOpen(); return count; }
+
+        public boolean hasBlockState(int index) {
+            ensureIndex(index);
+            return values.get(ValueLayout.JAVA_INT, (long) index * 12L) != 0;
+        }
+
+        public int blockStateToken(int index) {
+            ensureIndex(index);
+            return values.get(ValueLayout.JAVA_INT, (long) index * 12L + 4L);
+        }
+
+        public boolean shouldScheduleFluidUpdate(int index) {
+            ensureIndex(index);
+            return values.get(ValueLayout.JAVA_INT, (long) index * 12L + 8L) != 0;
+        }
+
+        private void ensureIndex(int index) {
+            ensureOpen();
+            if (index < 0 || index >= count) throw new IndexOutOfBoundsException(index);
+        }
+
+        private void ensureOpen() {
+            if (closed.get()) throw new IllegalStateException("Native Aquifer volume result is already closed");
+        }
+
+        @Override
+        public void close() {
+            if (!closed.compareAndSet(false, true)) return;
+            try {
+                scratch.release();
+            } finally {
+                volumeReadLock.unlock();
+            }
+        }
+    }
+
+    /** Releases the context, its FluidStatus cache, and its six retained graph references. */
+    public void destroyAquiferContext(long contextHandle) {
+        if (contextHandle == 0L) throw new IllegalArgumentException("Aquifer context handle must be non-zero");
+        lifecycle.writeLock().lock();
+        try {
+            ensureOpen();
+            if (!aquiferContextHandles.contains(contextHandle)) {
+                throw new IllegalArgumentException("Unknown or already destroyed Aquifer context");
+            }
+            try {
+                int status = (int) aquiferContextDestroy.invokeExact(contextHandle);
+                checkStatus(status, "aquifer-context-destroy");
+                aquiferContextHandles.remove(contextHandle);
+            } catch (Throwable failure) {
+                throw rethrow("Unable to destroy native Aquifer context", failure);
+            }
+        } finally {
+            lifecycle.writeLock().unlock();
+        }
+    }
 
     /** True when the loaded native runtime exposes the experimental Aquifer cache prefill kernel. */
     public boolean supportsAquiferGridCenters() {
@@ -1596,10 +2248,14 @@ public final class NativeRuntime implements AutoCloseable {
             MemorySegment x = buffers[0], y = buffers[1], z = buffers[2], values = buffers[3];
             MemorySegment.copy(graphHandles, 0, handleBuffer, ValueLayout.JAVA_LONG, 0, graphCount);
             for (int graphIndex = 0; graphIndex < graphCount; graphIndex++) {
-                long base = (long) graphIndex * pointsPerGraph;
-                MemorySegment.copy(pointX[graphIndex], 0, x, ValueLayout.JAVA_INT, base, pointsPerGraph);
-                MemorySegment.copy(pointY[graphIndex], 0, y, ValueLayout.JAVA_INT, base, pointsPerGraph);
-                MemorySegment.copy(pointZ[graphIndex], 0, z, ValueLayout.JAVA_INT, base, pointsPerGraph);
+                // MemorySegment offsets are bytes, while the source offsets above are array elements.
+                // Keep every int row aligned even when pointsPerGraph is not a multiple of four.
+                long baseBytes = Math.multiplyExact(
+                        Math.multiplyExact((long) graphIndex, pointsPerGraph),
+                        ValueLayout.JAVA_INT.byteSize());
+                MemorySegment.copy(pointX[graphIndex], 0, x, ValueLayout.JAVA_INT, baseBytes, pointsPerGraph);
+                MemorySegment.copy(pointY[graphIndex], 0, y, ValueLayout.JAVA_INT, baseBytes, pointsPerGraph);
+                MemorySegment.copy(pointZ[graphIndex], 0, z, ValueLayout.JAVA_INT, baseBytes, pointsPerGraph);
             }
             int status = (int) densityGraphEvaluateMultiPointsF32.invokeExact(
                     handleBuffer, graphCount, x, y, z, pointsPerGraph, values, total);
@@ -1772,6 +2428,17 @@ public final class NativeRuntime implements AutoCloseable {
         if (!jobs.isEmpty()) {
             throw new IllegalStateException("Cannot unload native library while " + jobs.size()
                     + " jobs are still owned; cancel, await completion, and release each job first");
+        }
+        if (aquiferContextDestroy != null) {
+            for (Long handle : aquiferContextHandles) {
+                try {
+                    int status = (int) aquiferContextDestroy.invokeExact(handle.longValue());
+                    if (status != 0) throw new IllegalStateException("Aquifer context destroy status=" + status);
+                } catch (Throwable failure) {
+                    throw rethrow("Unable to destroy Aquifer context during runtime close", failure);
+                }
+            }
+            aquiferContextHandles.clear();
         }
         closed = true;
         if (densityGraphRelease != null) {

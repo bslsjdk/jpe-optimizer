@@ -4,6 +4,7 @@ import net.minecraft.world.level.levelgen.Aquifer;
 import net.minecraft.world.level.levelgen.PositionalRandomFactory;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Accessor;
+import org.spongepowered.asm.mixin.gen.Invoker;
 
 /** Accesses vanilla Aquifer cache metadata and the fluid-update side-effect flag. */
 @Mixin(Aquifer.NoiseBasedAquifer.class)
@@ -13,6 +14,12 @@ public interface AquiferNoiseBasedAccessor {
 
     @Accessor("aquiferLocationCache")
     long[] jpe$getAquiferLocationCache();
+
+    @Accessor("aquiferCache")
+    Aquifer.FluidStatus[] jpe$getAquiferCache();
+
+    @Invoker("computeFluid")
+    Aquifer.FluidStatus jpe$computeFluid(int x, int y, int z);
 
     @Accessor("minGridX")
     int jpe$getMinGridX();
@@ -29,6 +36,12 @@ public interface AquiferNoiseBasedAccessor {
     @Accessor("gridSizeZ")
     int jpe$getGridSizeZ();
 
+    @Accessor("skipSamplingAboveY")
+    int jpe$getSkipSamplingAboveY();
+
     @Accessor("positionalRandomFactory")
     PositionalRandomFactory jpe$getPositionalRandomFactory();
+
+    @Accessor("globalFluidPicker")
+    Aquifer.FluidPicker jpe$getGlobalFluidPicker();
 }
