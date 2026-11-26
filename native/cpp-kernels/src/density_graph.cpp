@@ -292,9 +292,41 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
         graph->configuration_fingerprint = configuration_fingerprint;
         graph->root = root_node;
         graph->nodes.assign(nodes, nodes + node_count);
+
+        // Only nodes reachable from the requested root can affect the output.
+        // Mark the DAG backwards once so dead branches never retain Perlin
+        // handles, allocate scratch registers, or execute per voxel.
+        std::vector<uint8_t> reachable(node_count, 0);
+        reachable[root_node] = 1;
+        for (uint32_t cursor = root_node + 1; cursor-- > 0;) {
+            if (reachable[cursor] == 0) continue;
+            const JpeDensityNode& node = graph->nodes[cursor];
+            const auto mark = [&](uint32_t input) { reachable[input] = 1; };
+            switch (node.opcode) {
+                case JPE_DENSITY_ADD: case JPE_DENSITY_MUL:
+                case kSub: case kDiv: case kMin: case kMax: case kPow:
+                    mark(node.input_a); mark(node.input_b); break;
+                case kAbs: case kNegate: case kSquare: case kCube: case kSqrt:
+                case kHalfNegative: case kQuarterNegative: case kReciprocal: case kSign:
+                case kClamp: case kSqueeze: case kInterpolated: case kLog:
+                    mark(node.input_a); break;
+                case kLerp: case kRangeChoice:
+                    mark(node.input_a); mark(node.input_b); mark(node.reserved); break;
+                case kRound:
+                    mark(node.input_a); mark(node.input_b); break;
+                case kPerlinStackWarp:
+                    mark(node.input_a); mark(node.input_b); mark(node.reserved); break;
+                case kSlice:
+                    mark(node.input_a); break;
+                default:
+                    break;
+            }
+        }
+
         graph->prepared_handles.assign(node_count, 0);
         for (uint32_t i = 0; i < node_count; ++i) {
-            if (nodes[i].opcode != kPerlinStack && nodes[i].opcode != kPerlinStackWarp) continue;
+            if (reachable[i] == 0
+                || (nodes[i].opcode != kPerlinStack && nodes[i].opcode != kPerlinStackWarp)) continue;
             const uint64_t source_handle = static_cast<uint64_t>(nodes[i].immediate);
             const uint64_t retained = jpe_cpp_perlin_stack_retain(source_handle);
             if (retained == 0) return 0;
@@ -305,7 +337,9 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
         // Build a deterministic register-allocation schedule once. Evaluation
         // then needs no per-node liveness scan or free-list manipulation.
         std::vector<uint32_t> consumers(node_count, 0);
-        for (const auto& node : graph->nodes) {
+        for (uint32_t i = 0; i < node_count; ++i) {
+            if (reachable[i] == 0) continue;
+            const auto& node = graph->nodes[i];
             if (node.opcode == JPE_DENSITY_ADD || node.opcode == JPE_DENSITY_MUL
                 || node.opcode == kSub || node.opcode == kDiv || node.opcode == kMin
                 || node.opcode == kMax || node.opcode == kPow) {
@@ -326,6 +360,10 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
         graph->node_slots.resize(node_count, kNoInput);
         std::vector<uint32_t> free_slots;
         for (uint32_t i = 0; i < node_count; ++i) {
+            if (reachable[i] == 0) {
+                graph->node_slots[i] = kNoInput;
+                continue;
+            }
             uint32_t slot;
             if (free_slots.empty()) slot = graph->slot_count++;
             else { slot = free_slots.back(); free_slots.pop_back(); }
@@ -489,6 +527,7 @@ int32_t evaluate_density_graph_impl(
         for (uint32_t i = 0; i <= root_node; ++i) {
             const JpeDensityNode& node = graph->nodes[i];
             const uint32_t slot = graph->node_slots[i];
+            if (slot == kNoInput) continue;
             auto& values = slots[slot];
 
             switch (node.opcode) {

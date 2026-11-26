@@ -2363,6 +2363,33 @@ mod tests {
     }
 
     #[test]
+    fn density_graph_does_not_retain_unreachable_perlin_nodes() {
+        // A dead Perlin node with a deliberately invalid process-local handle
+        // must not prevent compiling or evaluating the reachable constant root.
+        let nodes = [
+            JpeDensityNode { opcode: 7, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 1.0_f32.to_bits(),
+                immediate: 0xBAD_u64 as f64, auxiliary: 1.0, tertiary: 1.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 2.5,
+                auxiliary: 0.0, tertiary: 0.0 },
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 1, 0xD35182)
+        };
+        assert_ne!(graph, 0);
+        let mut output = [0.0_f64; 1];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                graph, 1, 1, 1, 0, 0, 0, 1, 1, 1,
+                output.as_mut_ptr(), 1,
+            )
+        }, STATUS_OK);
+        assert_eq!(output, [2.5]);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
     fn density_graph_matches_java_nan_and_signed_zero_semantics() {
         let cases: [([JpeDensityNode; 3], u32, fn(f64) -> bool); 3] = [
             ([
