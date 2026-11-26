@@ -1091,6 +1091,93 @@ mod tests {
         assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
     }
 
+    #[cfg(feature = "density-graph-benchmark")]
+    #[test]
+    fn density_graph_representative_164_node_tile_size_abba_benchmark() {
+        use std::time::Instant;
+
+        // Match the captured vanilla Overworld graph's 164-node scale.
+        // A linear arithmetic chain deliberately stresses the per-node tile scratch.
+        let mut nodes = Vec::with_capacity(164);
+        nodes.push(JpeDensityNode {
+            opcode: DENSITY_X, input_a: DENSITY_NO_INPUT,
+            input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0,
+        });
+        nodes.push(JpeDensityNode {
+            opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+            input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0,
+        });
+        for index in 2..164 {
+            nodes.push(JpeDensityNode {
+                opcode: DENSITY_ADD,
+                input_a: if index == 2 { 0 } else { (index - 1) as u32 },
+                input_b: 1, reserved: 0, immediate: 0.0,
+            });
+        }
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32,
+                163, 8, 0x1640_1225)
+        };
+        assert_ne!(handle, 0);
+
+        const SX: usize = 5;
+        const SY: usize = 49;
+        const SZ: usize = 5;
+        let mut output = vec![0.0_f32; SX * SY * SZ];
+        let mut scalar = vec![0.0_f32; output.len()];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                handle, SX as u32, SY as u32, SZ as u32,
+                -16, -64, 32, 4, 8, 4, output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(unsafe {
+            jpe_cpp_density_graph_evaluate_scalar_reference(
+                handle, SX as u32, SY as u32, SZ as u32,
+                -16, -64, 32, 4, 8, 4, scalar.as_mut_ptr(), scalar.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(output, scalar);
+        for (index, value) in output.iter().enumerate() {
+            let x = (index / SY) % SX;
+            assert_eq!(*value, (-16 + x as i32 * 4) as f32 + 162.0);
+        }
+
+        let mut tile_512_ms = Vec::with_capacity(21);
+        let mut tile_1225_ms = Vec::with_capacity(21);
+        let mut tile_output = vec![0.0_f32; output.len()];
+        for round in 0..21 {
+            let order = if round % 2 == 0 { [512_u32, 1225_u32] } else { [1225_u32, 512_u32] };
+            for tile_limit in order {
+                unsafe { jpe_cpp_density_graph_set_test_tile_limit(tile_limit); }
+                let start = Instant::now();
+                for _ in 0..24 {
+                    assert_eq!(unsafe {
+                        jpe_runtime_density_graph_evaluate(
+                            handle, SX as u32, SY as u32, SZ as u32,
+                            -16, -64, 32, 4, 8, 4,
+                            tile_output.as_mut_ptr(), tile_output.len() as u64,
+                        )
+                    }, STATUS_OK);
+                }
+                let per_call_ms = start.elapsed().as_secs_f64() * 1000.0 / 24.0;
+                if tile_limit == 512 { tile_512_ms.push(per_call_ms); }
+                else { tile_1225_ms.push(per_call_ms); }
+                assert_eq!(tile_output, scalar, "tile limit {tile_limit} changed graph output");
+            }
+        }
+        unsafe { jpe_cpp_density_graph_set_test_tile_limit(0); }
+        tile_512_ms.sort_by(f64::total_cmp);
+        tile_1225_ms.sort_by(f64::total_cmp);
+        let median_512 = tile_512_ms[10];
+        let median_1225 = tile_1225_ms[10];
+        println!(
+            "JPE_DENSITY_GRAPH_TILE_SIZE_ABBA dims=5x49x5 nodes=164 tile512_median_ms={:.6} tile1225_median_ms={:.6} speedup_1225_over_512={:.3}x",
+            median_512, median_1225, median_512 / median_1225
+        );
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
+    }
+
     #[test]
     fn density_graph_full_chunk_respects_one_megabyte_scratch_budget() {
         // 600 nodes force the 1 MiB node-value budget to choose a tile smaller
