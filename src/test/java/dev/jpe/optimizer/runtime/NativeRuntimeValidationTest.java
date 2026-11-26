@@ -9,6 +9,31 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class NativeRuntimeValidationTest {
     @Test
+    void acceptsMatchingAquiferBatchCoordinatesForBothRandomModes() {
+        assertEquals(3, NativeRuntime.validateAquiferNearestFour(0,
+                new int[3], new int[3], new int[3]));
+        assertEquals(2, NativeRuntime.validateAquiferNearestFour(1,
+                new int[2], new int[2], new int[2]));
+    }
+
+    @Test
+    void rejectsMismatchedAquiferBatchCoordinates() {
+        assertThrows(IllegalArgumentException.class, () ->
+                NativeRuntime.validateAquiferNearestFour(0,
+                        new int[3], new int[2], new int[3]));
+    }
+
+    @Test
+    void rejectsInvalidAquiferBatchModeAndEmptyBatch() {
+        assertThrows(IllegalArgumentException.class, () ->
+                NativeRuntime.validateAquiferNearestFour(2,
+                        new int[1], new int[1], new int[1]));
+        assertThrows(IllegalArgumentException.class, () ->
+                NativeRuntime.validateAquiferNearestFour(0,
+                        new int[0], new int[0], new int[0]));
+    }
+
+    @Test
     void acceptsValidPerlinStackAndPooledOutputBuffer() {
         int length = NativeRuntime.validatePerlinStackInputs(List.of(
                 new NativeRuntime.PerlinLayer(new byte[256], 0, 0, 0, 1, 1, 0.5F),
