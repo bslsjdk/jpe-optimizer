@@ -169,7 +169,9 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                 break;
             case kRangeChoice:
                 if (node.input_a >= i || node.input_b >= i || node.reserved >= i
-                    || !std::isfinite(node.immediate) || !std::isfinite(node.auxiliary)
+                    || ( !std::isfinite(node.immediate)
+                         && node.immediate != -std::numeric_limits<double>::infinity())
+                    || !std::isfinite(node.auxiliary)
                     || node.immediate >= node.auxiliary || node.tertiary != 0.0) return false;
                 break;
             case kPerlinStack: {
