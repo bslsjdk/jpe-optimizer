@@ -1729,6 +1729,52 @@ mod tests {
     }
 
     #[test]
+    fn density_graph_f32_executes_round_floor_multiple_and_log() {
+        let round_nodes = [
+            JpeDensityNode { opcode: 2, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 2.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: 28, input_a: 0, input_b: 1,
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+        ];
+        let round_graph = unsafe {
+            jpe_runtime_density_graph_compile(round_nodes.as_ptr(), round_nodes.len() as u32, 2, 0xF32_270)
+        };
+        assert_ne!(round_graph, 0);
+        let mut rounded = [f32::NAN; 2];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                round_graph, 2, 1, 1, -1, 0, 0, 3, 1, 1,
+                rounded.as_mut_ptr(), rounded.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(rounded, [-2.0, 2.0]);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(round_graph) }, STATUS_OK);
+
+        let e = std::f32::consts::E;
+        let log_nodes = [
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: e as f64 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: 29, input_a: 0, input_b: DENSITY_NO_INPUT,
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+        ];
+        let log_graph = unsafe {
+            jpe_runtime_density_graph_compile(log_nodes.as_ptr(), log_nodes.len() as u32, 1, 0xF32_271)
+        };
+        assert_ne!(log_graph, 0);
+        let mut logged = [f32::NAN; 1];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                log_graph, 1, 1, 1, 0, 0, 0, 1, 1, 1,
+                logged.as_mut_ptr(), 1,
+            )
+        }, STATUS_OK);
+        assert_eq!(logged[0], (e as f64).ln() as f32);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(log_graph) }, STATUS_OK);
+    }
+
+    #[test]
     fn density_graph_f32_executes_multi_threshold_interval_select() {
         let nodes = [
             JpeDensityNode { opcode: 2, input_a: DENSITY_NO_INPUT,
