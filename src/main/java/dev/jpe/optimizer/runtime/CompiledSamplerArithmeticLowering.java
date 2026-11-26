@@ -206,6 +206,16 @@ public final class CompiledSamplerArithmeticLowering {
                         resolveOnlyChild(node, members, nativeIndex, inputSlot)));
                 case SQUARE -> lowered.add(DensityGraphIr.Node.square(
                         resolveOnlyChild(node, members, nativeIndex, inputSlot)));
+                case SQRT -> lowered.add(DensityGraphIr.Node.sqrt(
+                        resolveOnlyChild(node, members, nativeIndex, inputSlot)));
+                case LOG -> lowered.add(DensityGraphIr.Node.log(
+                        resolveOnlyChild(node, members, nativeIndex, inputSlot)));
+                case RECIPROCAL -> lowered.add(DensityGraphIr.Node.reciprocal(
+                        resolveOnlyChild(node, members, nativeIndex, inputSlot)));
+                case SIGN -> lowered.add(DensityGraphIr.Node.sign(
+                        resolveOnlyChild(node, members, nativeIndex, inputSlot)));
+                case SQUEEZE -> lowered.add(DensityGraphIr.Node.squeeze(
+                        resolveOnlyChild(node, members, nativeIndex, inputSlot)));
                 case CUBE -> lowered.add(DensityGraphIr.Node.cube(
                         resolveOnlyChild(node, members, nativeIndex, inputSlot)));
                 case CLAMP -> {
@@ -312,6 +322,11 @@ public final class CompiledSamplerArithmeticLowering {
                 || op == CompiledSamplerGraphIr.Op.ABS
                 || op == CompiledSamplerGraphIr.Op.SQUARE
                 || op == CompiledSamplerGraphIr.Op.CUBE
+                || op == CompiledSamplerGraphIr.Op.SQRT
+                || op == CompiledSamplerGraphIr.Op.LOG
+                || op == CompiledSamplerGraphIr.Op.RECIPROCAL
+                || op == CompiledSamplerGraphIr.Op.SIGN
+                || op == CompiledSamplerGraphIr.Op.SQUEEZE
                 || op == CompiledSamplerGraphIr.Op.MIN_RIGHT_BOUND
                 || op == CompiledSamplerGraphIr.Op.MAX_RIGHT_BOUND;
     }
