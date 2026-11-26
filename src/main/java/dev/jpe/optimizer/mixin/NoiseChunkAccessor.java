@@ -9,4 +9,7 @@ import org.spongepowered.asm.mixin.gen.Accessor;
 public interface NoiseChunkAccessor {
     @Accessor("bufferPool")
     DensityBufferPool jpe$getBufferPool();
+
+    @Accessor("randomState")
+    net.minecraft.world.level.levelgen.RandomState jpe$getRandomState();
 }
