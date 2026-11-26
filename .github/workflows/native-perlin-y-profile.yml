@@ -28,6 +28,26 @@ jobs:
       - name: Set up Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Record Rust toolchain version
+        id: rust-version
+        run: echo "version=$(rustc -V | tr ' ' '-')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore native Rust and C++ build cache
+        id: native-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/rust-runtime/target
+          key: ${{ runner.os }}-native-cargo-${{ steps.rust-version.outputs.version }}-${{ hashFiles('native/rust-runtime/Cargo.toml', 'native/rust-runtime/Cargo.lock') }}-${{ hashFiles('native/rust-runtime/build.rs', 'native/cpp-kernels/src/**', 'native/include/**') }}
+          restore-keys: |
+            ${{ runner.os }}-native-cargo-${{ steps.rust-version.outputs.version }}-${{ hashFiles('native/rust-runtime/Cargo.toml', 'native/rust-runtime/Cargo.lock') }}-
+            ${{ runner.os }}-native-cargo-${{ steps.rust-version.outputs.version }}-
+
+      - name: Report native build cache status
+        run: echo "JPE_NATIVE_BUILD_CACHE_HIT=${{ steps.native-cache.outputs.cache-hit }}"
+
       - name: Set up Gradle 9.2.1
         uses: gradle/actions/setup-gradle@v4
         with:
