@@ -135,9 +135,12 @@ void append_points(const JpeBlendingDataView* views, uint32_t count,
         }
     }
 }
+constexpr uint32_t kNoPoint = std::numeric_limits<uint32_t>::max();
+struct SpatialBucket {
+    uint32_t head;
+    uint32_t tail;
+};
 struct CandidateCursor {
-    const std::vector<uint32_t>* indices;
-    size_t offset;
     uint32_t value;
 };
 struct CandidateCursorGreater {
@@ -148,7 +151,8 @@ struct CandidateCursorGreater {
 
 float blend_one(int32_t block_x, int32_t block_y, int32_t block_z, float noise,
                 const std::unordered_map<uint64_t, const JpeBlendingDataView*>& height_index,
-                const std::unordered_map<Coord, std::vector<uint32_t>, CoordHash>& spatial,
+                const std::unordered_map<Coord, SpatialBucket, CoordHash>& spatial,
+                const std::vector<uint32_t>& next_point,
                 const std::vector<DensityPoint>& points) {
     const int32_t cell_x = floor_div4(block_x);
     const int32_t cell_y = java_div8(block_y);
@@ -168,9 +172,8 @@ float blend_one(int32_t block_x, int32_t block_y, int32_t block_z, float noise,
             for (int32_t dz = -2; dz <= 2; ++dz) {
                 const Coord key{cell_x + dx, y, cell_z + dz};
                 const auto it = spatial.find(key);
-                if (it == spatial.end() || it->second.empty()) continue;
-                const auto* indices = &it->second;
-                heap[heap_size++] = CandidateCursor{indices, 0, (*indices)[0]};
+                if (it == spatial.end()) continue;
+                heap[heap_size++] = CandidateCursor{it->second.head};
                 std::push_heap(heap.begin(), heap.begin() + heap_size, greater);
             }
         }
@@ -209,10 +212,9 @@ float blend_one(int32_t block_x, int32_t block_y, int32_t block_z, float noise,
             total_weight += weight;
         }
 
-        ++cursor.offset;
-        if (cursor.offset < cursor.indices->size()) {
-            cursor.value = (*cursor.indices)[cursor.offset];
-            heap[heap_size++] = cursor;
+        const uint32_t next = next_point[cursor.value];
+        if (next != kNoPoint) {
+            heap[heap_size++] = CandidateCursor{next};
             std::push_heap(heap.begin(), heap.begin() + heap_size, greater);
         }
     }
@@ -271,9 +273,20 @@ extern "C" int32_t jpe_cpp_blend_density_volume(
         if (estimate > 2'000'000ULL) return 1;
         points.reserve(static_cast<size_t>(estimate));
         append_points(density_data, density_data_count, points);
-        std::unordered_map<Coord, std::vector<uint32_t>, CoordHash> spatial;
+        // Store each coordinate's original-order point IDs as an intrusive chain.
+        // This avoids one separately allocated std::vector per occupied coordinate.
+        // next_point is indexed by the stable point ID, so each bucket remains
+        // sorted by vanilla callback order without copying or sorting its members.
+        std::unordered_map<Coord, SpatialBucket, CoordHash> spatial;
         spatial.reserve(points.size() * 2U + 1U);
-        for (uint32_t i = 0; i < points.size(); ++i) spatial[points[i].coord].push_back(i);
+        std::vector<uint32_t> next_point(points.size(), kNoPoint);
+        for (uint32_t i = 0; i < points.size(); ++i) {
+            const auto [it, inserted] = spatial.try_emplace(points[i].coord, SpatialBucket{i, i});
+            if (!inserted) {
+                next_point[it->second.tail] = i;
+                it->second.tail = i;
+            }
+        }
         // Match DensityVolume.indexUnchecked: ((z * sizeX + x) * sizeY + y).
         // All coordinate arithmetic is performed here, with Java int wrap semantics.
         for (uint32_t z = 0; z < size_z; ++z) {
@@ -284,7 +297,7 @@ extern "C" int32_t jpe_cpp_blend_density_volume(
                 for (uint32_t y = 0; y < size_y; ++y, ++index) {
                     const int32_t block_y = wrapped_coordinate(min_y, y, step_y);
                     outputs[index] = blend_one(block_x, block_y, block_z, noise_values[index],
-                                                height_index, spatial, points);
+                                                height_index, spatial, next_point, points);
                 }
             }
         }
