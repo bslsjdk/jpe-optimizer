@@ -1113,7 +1113,7 @@ int32_t evaluate_density_graph_points(
     }
 }
 
-extern "C" int32_t jpe_runtime_density_graph_evaluate_points(
+extern "C" int32_t jpe_cpp_density_graph_evaluate_points(
     uint64_t graph_handle,
     const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
     uint32_t point_count, double* output, uint64_t output_length
@@ -1122,7 +1122,7 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate_points(
         graph_handle, point_x, point_y, point_z, point_count, output, output_length);
 }
 
-extern "C" int32_t jpe_runtime_density_graph_evaluate_points_f32(
+extern "C" int32_t jpe_cpp_density_graph_evaluate_points_f32(
     uint64_t graph_handle,
     const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
     uint32_t point_count, float* output, uint64_t output_length
