@@ -64,6 +64,21 @@ struct JpeAquiferCoreOutput {
     should_schedule_fluid_update: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct JpeAquiferCellLocation {
+    x: i32,
+    y: i32,
+    z: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+struct JpeAquiferNearestFour {
+    index: [u32; 4],
+    distance_sqr: [i32; 4],
+}
+
 const DENSITY_NO_INPUT: u32 = u32::MAX;
 const DENSITY_CONST: u32 = 1;
 const DENSITY_X: u32 = 2;
@@ -100,6 +115,11 @@ unsafe extern "C" {
     fn jpe_runtime_aquifer_compute_substance_core(
         input: *const JpeAquiferCoreInput,
         output: *mut JpeAquiferCoreOutput,
+    ) -> i32;
+    fn jpe_runtime_aquifer_find_nearest_four(
+        block_x: i32, block_y: i32, block_z: i32,
+        candidates: *const JpeAquiferCellLocation, candidate_count: u32,
+        output: *mut JpeAquiferNearestFour,
     ) -> i32;
 }
 
@@ -2115,6 +2135,40 @@ mod tests {
 
         // Keep a non-fluid status fixture available to guard at(y) semantics.
         assert_eq!(air.fluid_type, WATER);
+    }
+
+    #[test]
+    fn aquifer_nearest_four_matches_minecraft_tie_order_for_negative_coordinates() {
+        let candidates = [
+            JpeAquiferCellLocation { x: -95, y: 64, z: -100 }, // d2=25
+            JpeAquiferCellLocation { x: -105, y: 64, z: -100 }, // d2=25, later tie wins
+            JpeAquiferCellLocation { x: -100, y: 67, z: -100 }, // d2=9
+            JpeAquiferCellLocation { x: -100, y: 64, z: -96 }, // d2=16
+            JpeAquiferCellLocation { x: -99, y: 64, z: -100 }, // d2=1
+            JpeAquiferCellLocation { x: -100, y: 65, z: -100 }, // d2=1, later tie wins
+            JpeAquiferCellLocation { x: -98, y: 64, z: -100 }, // d2=4
+            JpeAquiferCellLocation { x: -100, y: 64, z: -98 }, // d2=4, later tie wins
+            JpeAquiferCellLocation { x: -90, y: 64, z: -100 },
+            JpeAquiferCellLocation { x: -100, y: 74, z: -100 },
+            JpeAquiferCellLocation { x: -100, y: 64, z: -90 },
+            JpeAquiferCellLocation { x: -110, y: 64, z: -100 },
+        ];
+        let mut output = JpeAquiferNearestFour::default();
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_find_nearest_four(
+                -100, 64, -100, candidates.as_ptr(), candidates.len() as u32, &mut output,
+            )
+        }, STATUS_OK);
+        assert_eq!(output.index, [5, 4, 7, 6]);
+        assert_eq!(output.distance_sqr, [1, 1, 4, 4]);
+
+        // The native helper deliberately accepts exactly Minecraft's twelve
+        // candidate cells; partial neighborhoods are not silently accepted.
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_find_nearest_four(
+                -100, 64, -100, candidates.as_ptr(), 11, &mut output,
+            )
+        }, STATUS_INVALID_ARGUMENT);
     }
 
     #[test]
