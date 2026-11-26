@@ -2149,6 +2149,87 @@ mod tests {
     }
 
     #[test]
+    fn aquifer_batch_matches_scalar_and_rejects_invalid_batches_transactionally() {
+        const AIR: u32 = 0;
+        const WATER: u32 = 1;
+        const LAVA: u32 = 2;
+        let water = JpeAquiferFluidStatus { fluid_level: 20, fluid_type: WATER };
+        let lava = JpeAquiferFluidStatus { fluid_level: 20, fluid_type: LAVA };
+        let base = JpeAquiferCoreInput {
+            block_y: 10,
+            density: -1.0,
+            barrier_noise: 0.0,
+            distance_sqr: [0, 1, 4, 9],
+            closest: [water, water, water, water],
+            global_fluid_below_type: AIR,
+            air_type: AIR,
+            water_type: WATER,
+            lava_type: LAVA,
+            debug_disable_fluid_generation: 0,
+        };
+        let inputs = [
+            base,
+            JpeAquiferCoreInput { density: 0.25, ..base },
+            JpeAquiferCoreInput {
+                closest: [water, lava, water, water],
+                global_fluid_below_type: LAVA,
+                ..base
+            },
+            JpeAquiferCoreInput {
+                debug_disable_fluid_generation: 1,
+                ..base
+            },
+        ];
+        let mut batch = [JpeAquiferCoreOutput::default(); 4];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_compute_substance_batch(
+                inputs.as_ptr(), inputs.len() as u32, batch.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+
+        for index in 0..inputs.len() {
+            let mut scalar = JpeAquiferCoreOutput::default();
+            assert_eq!(unsafe {
+                jpe_runtime_aquifer_compute_substance_core(&inputs[index], &mut scalar)
+            }, STATUS_OK);
+            assert_eq!(batch[index].has_block_state, scalar.has_block_state, "voxel {index}");
+            assert_eq!(batch[index].block_state_type, scalar.block_state_type, "voxel {index}");
+            assert_eq!(
+                batch[index].should_schedule_fluid_update,
+                scalar.should_schedule_fluid_update,
+                "voxel {index}",
+            );
+        }
+
+        // Invalid data anywhere in a batch must not leave earlier output slots
+        // partially overwritten.
+        let mut invalid = inputs;
+        invalid[3].distance_sqr[2] = -1;
+        let sentinel = JpeAquiferCoreOutput {
+            has_block_state: 77,
+            block_state_type: 88,
+            should_schedule_fluid_update: 99,
+        };
+        let mut untouched = [sentinel; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_compute_substance_batch(
+                invalid.as_ptr(), invalid.len() as u32, untouched.as_mut_ptr(),
+            )
+        }, STATUS_INVALID_ARGUMENT);
+        assert!(untouched.iter().all(|value| {
+            value.has_block_state == 77
+                && value.block_state_type == 88
+                && value.should_schedule_fluid_update == 99
+        }));
+
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_compute_substance_batch(
+                inputs.as_ptr(), 0, batch.as_mut_ptr(),
+            )
+        }, STATUS_INVALID_ARGUMENT);
+    }
+
+    #[test]
     fn aquifer_nearest_four_matches_minecraft_tie_order_for_negative_coordinates() {
         let candidates = [
             JpeAquiferCellLocation { x: -95, y: 64, z: -100 }, // d2=25
