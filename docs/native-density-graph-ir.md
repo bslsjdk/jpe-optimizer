@@ -100,10 +100,9 @@ The following still require dedicated semantic work and must not be approximated
 - spline and context-dependent nodes
 - shifted noise and shared shift buffers
 - non-empty blend alpha/offset and beardifier
-- non-clamped gradient tiling
 - registry-backed or mod-provided custom density functions
 
-Range-choice, interval-select, interpolation, clamped gradients, and empty blender/beardifier cases have initial native lowering, but remain gated by exact vanilla parity.
+Range-choice, interval-select, interpolation, all three gradient tiling modes, and empty blender/beardifier cases have initial native lowering, but remain gated by exact vanilla parity.
 
 Unknown nodes make the graph unsupported as a whole for that execution path unless a future explicit hybrid plan proves that a whole batch can safely cross back to Java. The first implementation should prefer full Java fallback over per-voxel Java callbacks.
 
