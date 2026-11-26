@@ -39,7 +39,7 @@ std::unordered_map<uint64_t, std::shared_ptr<const PreparedStack>> g_prepared_st
 bool valid_prepared_volume(uint32_t sx, uint32_t sy, uint32_t sz,
                            int32_t dx, int32_t dy, int32_t dz,
                            uint64_t output_length) noexcept {
-    if (sx == 0 || sy == 0 || sz == 0 || dx == 0 || dy == 0 || dz == 0) return false;
+    if (sx == 0 || sy == 0 || sz == 0) return false;
     const uint64_t xy = static_cast<uint64_t>(sx) * sy;
     if (xy > 1'048'576ULL / sz) return false;
     return xy * sz == output_length && output_length <= 1'048'576ULL;
