@@ -19,6 +19,11 @@ import net.minecraft.world.level.block.Rotation;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
+import net.minecraft.world.level.levelgen.XoroshiroRandomSource;
+import net.minecraft.world.level.levelgen.LegacyRandomSource;
+import net.minecraft.world.level.levelgen.PositionalRandomFactory;
+import dev.jpe.optimizer.mixin.XoroshiroPositionalRandomFactoryAccessor;
+import dev.jpe.optimizer.mixin.LegacyPositionalRandomFactoryAccessor;
 import net.minecraft.world.level.levelgen.synth.PerlinNoise;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.StructurePiece;
@@ -60,6 +65,9 @@ public final class GameTests {
 
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> PALETTE_HASH_CONFIGURATION =
             TEST_FUNCTIONS.register("palette_hash_configuration", () -> GameTests::paletteHashConfiguration);
+    
+    public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> AQUIFER_RANDOM_NATIVE_PARITY =
+            TEST_FUNCTIONS.register("aquifer_random_native_parity", () -> GameTests::aquiferRandomNativeParity);
 
     public static void registerFunctions(net.neoforged.bus.api.IEventBus modEventBus) {
         TEST_FUNCTIONS.register(modEventBus);
@@ -104,6 +112,80 @@ public final class GameTests {
                 Identifier.parse("jpe_optimizer:palette_hash_configuration"),
                 new FunctionGameTestInstance(PALETTE_HASH_CONFIGURATION.getKey(), data)
         );
+        event.registerTest(
+                Identifier.parse("jpe_optimizer:aquifer_random_native_parity"),
+                new FunctionGameTestInstance(AQUIFER_RANDOM_NATIVE_PARITY.getKey(), data)
+        );
+    }
+
+    /**
+     * Compares complete native Aquifer grid-cache generation against the real
+     * Minecraft positional factories for both supported random algorithms.
+     */
+    private static void aquiferRandomNativeParity(GameTestHelper helper) {
+        String library = System.getProperty("jpe.nativeLibraryPath");
+        if (library == null || library.isBlank()) {
+            throw new AssertionError("Aquifer parity requires jpe.nativeLibraryPath");
+        }
+        try (NativeRuntime runtime = NativeRuntime.load(java.nio.file.Path.of(library))) {
+            if (!runtime.supportsAquiferGridCenters()) {
+                throw new AssertionError("Native Aquifer grid-center ABI is unavailable");
+            }
+            long xorLo = 0x0123456789abcdefL;
+            long xorHi = 0xfedcba9876543210L;
+            PositionalRandomFactory xorFactory =
+                    new XoroshiroRandomSource(xorLo, xorHi).forkPositional();
+            var xorAccessor = (XoroshiroPositionalRandomFactoryAccessor) (Object) xorFactory;
+            verifyAquiferGridCache(runtime, 0,
+                    xorAccessor.jpe$seedLo(), xorAccessor.jpe$seedHi(), xorFactory, "xoroshiro");
+
+            long legacySeed = 0x9e3779b97f4a7c15L;
+            PositionalRandomFactory legacyFactory =
+                    new LegacyRandomSource(legacySeed).forkPositional();
+            var legacyAccessor = (LegacyPositionalRandomFactoryAccessor) (Object) legacyFactory;
+            verifyAquiferGridCache(runtime, 1,
+                    legacyAccessor.jpe$seed(), 0L, legacyFactory, "legacy");
+        } catch (Exception failure) {
+            throw new AssertionError("Native Aquifer grid-cache parity failed", failure);
+        }
+        helper.succeed();
+    }
+
+    private static void verifyAquiferGridCache(NativeRuntime runtime, int mode,
+                                                long seedLo, long seedHi,
+                                                PositionalRandomFactory factory, String label) {
+        final int minGridX = -2;
+        final int minGridY = -17;
+        final int minGridZ = 3;
+        final int sizeX = 5;
+        final int sizeY = 33;
+        final int sizeZ = 5;
+        final int count = sizeX * sizeY * sizeZ;
+        long[] actual = new long[count];
+        runtime.aquiferGridCenters(mode, seedLo, seedHi,
+                minGridX, minGridY, minGridZ, sizeX, sizeZ, actual);
+
+        for (int index = 0; index < count; index++) {
+            int xIndex = index % sizeX;
+            int zIndex = (index / sizeX) % sizeZ;
+            int yIndex = index / (sizeX * sizeZ);
+            int gridX = minGridX + xIndex;
+            int gridY = minGridY + yIndex;
+            int gridZ = minGridZ + zIndex;
+            RandomSource random = factory.at(gridX, gridY, gridZ);
+            int x = gridX * 16 + random.nextInt(10);
+            int y = gridY * 12 + random.nextInt(9);
+            int z = gridZ * 16 + random.nextInt(10);
+            long expected = BlockPos.asLong(x, y, z);
+            if (actual[index] != expected) {
+                throw new AssertionError("Aquifer " + label + " cache mismatch at flat index " + index
+                        + " grid=(" + gridX + "," + gridY + "," + gridZ + ")"
+                        + " expected=" + expected + " actual=" + actual[index]);
+            }
+        }
+        JPEOptimizer.LOGGER.info(
+                "JPE_AQUIFER_GRID_CACHE_PARITY mode={} cells={} cacheOrder=x-fast,z,y packedBlockPos=true exact=true",
+                label, count);
     }
 
     private static void paletteHashConfiguration(GameTestHelper helper) {
