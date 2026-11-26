@@ -717,11 +717,11 @@ int32_t evaluate_density_graph_impl(
                     const float point_z = static_cast<float>(node.tertiary);
                     size_t out = 0;
                     for (uint32_t z = 0; z < size_z; ++z) {
-                        const float dz = static_cast<float>(wrapped_coordinate(min_z, z, step_z)) - point_z;
+                        const float dz = static_cast<float>(scratch.z_coordinates[z]) - point_z;
                         for (uint32_t x = 0; x < size_x; ++x) {
-                            const float dx = static_cast<float>(wrapped_coordinate(min_x, x, step_x)) - point_x;
+                            const float dx = static_cast<float>(scratch.x_coordinates[x]) - point_x;
                             for (uint32_t y = 0; y < size_y; ++y) {
-                                const float dy = static_cast<float>(wrapped_coordinate(min_y, y, step_y)) - point_y;
+                                const float dy = static_cast<float>(scratch.y_coordinates[y]) - point_y;
                                 const float ax = std::abs(dx), ay = std::abs(dy), az = std::abs(dz);
                                 float distance;
                                 switch (node.input_a) {
