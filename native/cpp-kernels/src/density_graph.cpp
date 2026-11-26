@@ -17,6 +17,9 @@ extern "C" int32_t jpe_cpp_perlin_stack_evaluate(
     uint32_t, uint32_t, uint32_t,
     int32_t, int32_t, int32_t, int32_t, int32_t, int32_t,
     float*, uint64_t, uint32_t) noexcept;
+extern "C" int32_t jpe_cpp_perlin_stack_sample_warped(
+    uint64_t, int32_t, int32_t, int32_t, double, double, double,
+    double, double, float*) noexcept;
 
 static_assert(sizeof(JpeDensityNode) == 40, "JpeDensityNode ABI layout mismatch");
 
@@ -30,7 +33,7 @@ constexpr uint32_t kAbs = 12, kNegate = 13, kSquare = 14, kCube = 15;
 constexpr uint32_t kSqrt = 16, kHalfNegative = 17, kQuarterNegative = 18;
 constexpr uint32_t kReciprocal = 19, kSign = 20, kPow = 21, kClamp = 22;
 constexpr uint32_t kSqueeze = 23, kLerp = 24, kGradient = 25, kInterpolated = 26, kRangeChoice = 27;
-constexpr uint32_t kRound = 28, kLog = 29, kDistanceToPoint = 30;
+constexpr uint32_t kRound = 28, kLog = 29, kDistanceToPoint = 30, kPerlinStackWarp = 31;
 
 struct CompiledGraph {
     uint64_t fingerprint = 0;
@@ -209,6 +212,14 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                     || !std::isfinite(amplitude)) return false;
                 break;
             }
+            case kPerlinStackWarp: {
+                const double handle = node.immediate;
+                if (node.input_a >= i || node.input_b >= i || node.reserved >= i
+                    || !std::isfinite(handle) || handle < 1.0 || handle > 9007199254740991.0
+                    || std::floor(handle) != handle
+                    || !std::isfinite(node.auxiliary) || !std::isfinite(node.tertiary)) return false;
+                break;
+            }
             default:
                 return false;
         }
@@ -263,7 +274,7 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
         graph->nodes.assign(nodes, nodes + node_count);
         graph->prepared_handles.assign(node_count, 0);
         for (uint32_t i = 0; i < node_count; ++i) {
-            if (nodes[i].opcode != kPerlinStack) continue;
+            if (nodes[i].opcode != kPerlinStack && nodes[i].opcode != kPerlinStackWarp) continue;
             const uint64_t source_handle = static_cast<uint64_t>(nodes[i].immediate);
             const uint64_t retained = jpe_cpp_perlin_stack_retain(source_handle);
             if (retained == 0) return 0;
@@ -286,6 +297,8 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
                 ++consumers[node.input_a]; ++consumers[node.input_b]; ++consumers[node.reserved];
             } else if (node.opcode == kRound) {
                 ++consumers[node.input_a]; ++consumers[node.input_b];
+            } else if (node.opcode == kPerlinStackWarp) {
+                ++consumers[node.input_a]; ++consumers[node.input_b]; ++consumers[node.reserved];
             }
         }
         graph->node_slots.resize(node_count, kNoInput);
@@ -315,6 +328,10 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
             } else if (node.opcode == kRound) {
                 release_input(node.input_a);
                 release_input(node.input_b);
+            } else if (node.opcode == kPerlinStackWarp) {
+                release_input(node.input_a);
+                release_input(node.input_b);
+                release_input(node.reserved);
             }
             if (i != root_node && consumers[i] == 0) free_slots.push_back(slot);
         }
@@ -691,6 +708,31 @@ int32_t evaluate_density_graph_impl(
                         step_x, step_y, step_z, perlin_scratch.data(), output_length, 0);
                     if (status != 0) return status;
                     for (size_t j = 0; j < volume; ++j) values[j] = static_cast<Scalar>(perlin_scratch[j]);
+                    break;
+                }
+                case kPerlinStackWarp: {
+                    const auto& shift_x = slots[graph->node_slots[node.input_a]];
+                    const auto& shift_y = slots[graph->node_slots[node.input_b]];
+                    const auto& shift_z = slots[graph->node_slots[node.reserved]];
+                    size_t out = 0;
+                    for (uint32_t z = 0; z < size_z; ++z) {
+                        const int32_t world_z = wrapped_coordinate(min_z, z, step_z);
+                        for (uint32_t x = 0; x < size_x; ++x) {
+                            const int32_t world_x = wrapped_coordinate(min_x, x, step_x);
+                            for (uint32_t y = 0; y < size_y; ++y) {
+                                const int32_t world_y = wrapped_coordinate(min_y, y, step_y);
+                                float sample = 0.0F;
+                                const int32_t status = jpe_cpp_perlin_stack_sample_warped(
+                                    graph->prepared_handles[i], world_x, world_y, world_z,
+                                    static_cast<double>(shift_x[out]),
+                                    static_cast<double>(shift_y[out]),
+                                    static_cast<double>(shift_z[out]),
+                                    node.auxiliary, node.tertiary, &sample);
+                                if (status != 0) return status;
+                                values[out++] = static_cast<Scalar>(sample);
+                            }
+                        }
+                    }
                     break;
                 }
                 default:
