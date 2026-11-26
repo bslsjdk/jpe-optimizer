@@ -4164,7 +4164,7 @@ mod tests {
             input_a: DENSITY_NO_INPUT,
             input_b: DENSITY_NO_INPUT,
             reserved: 0,
-            immediate: 1.0,
+            immediate: -0.2,
             auxiliary: 0.0,
             tertiary: 0.0,
         }];
@@ -4208,7 +4208,7 @@ mod tests {
             )
         }, STATUS_OK);
 
-        let split_density = [1.0_f32; 8];
+        let split_density = [-0.2_f32; 8];
         let mut split = [JpeAquiferCoreOutput::default(); 8];
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_compute_substance_volume_f32(
