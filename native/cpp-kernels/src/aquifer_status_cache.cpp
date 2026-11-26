@@ -1,5 +1,6 @@
 #include "jpe_native_api.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -125,15 +126,28 @@ extern "C" int32_t jpe_cpp_aquifer_status_cache_insert_batch(
     if (!cache) return 1;
 
     std::lock_guard<std::mutex> lock(cache->mutex);
+
+    // Preflight the whole batch before mutating the cache. Duplicate missing keys
+    // count once, and keys already present are first-writer-wins.
+    std::vector<uint64_t> missing_keys;
+    missing_keys.reserve(count);
     for (uint32_t i = 0; i < count; ++i) {
         Entry* entry = find_slot(*cache, keys[i]);
         if (entry == nullptr) return 2;
-        if (entry->occupied) {
-            // Vanilla's compute-if-absent cache is first-writer-wins.
-            continue;
-        }
-        if (cache->size >= cache->max_entries) return 2;
+        if (!entry->occupied) missing_keys.push_back(keys[i]);
+    }
+    std::sort(missing_keys.begin(), missing_keys.end());
+    missing_keys.erase(std::unique(missing_keys.begin(), missing_keys.end()), missing_keys.end());
+    if (missing_keys.size() > static_cast<size_t>(cache->max_entries - cache->size)) {
+        return 2;
+    }
 
+    // Capacity is now guaranteed for every unique new key. A rejected batch
+    // therefore leaves the cache unchanged rather than partially committing.
+    for (uint32_t i = 0; i < count; ++i) {
+        Entry* entry = find_slot(*cache, keys[i]);
+        if (entry == nullptr) return 2; // Defensive: impossible below the 50% load cap.
+        if (entry->occupied) continue;
         entry->key = keys[i];
         entry->fluid_level = statuses[i].fluid_level;
         entry->fluid_type = statuses[i].fluid_type;
