@@ -171,6 +171,19 @@ JPE_API int32_t jpe_runtime_density_graph_evaluate_f32(
     int32_t step_x, int32_t step_y, int32_t step_z,
     float *output, uint64_t output_length
 );
+
+/* Evaluate arbitrary non-grid-aligned points in input order. Output length must
+ * equal point_count; each output maps to the coordinate triple at the same index. */
+JPE_API int32_t jpe_runtime_density_graph_evaluate_points(
+    uint64_t graph_handle,
+    const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
+    uint32_t point_count, double *output, uint64_t output_length
+);
+JPE_API int32_t jpe_runtime_density_graph_evaluate_points_f32(
+    uint64_t graph_handle,
+    const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
+    uint32_t point_count, float *output, uint64_t output_length
+);
 /* Releases one retained handle. Active evaluations keep their immutable plan alive. */
 JPE_API int32_t jpe_runtime_density_graph_release(uint64_t graph_handle);
 
