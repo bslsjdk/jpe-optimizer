@@ -14,6 +14,12 @@ public interface AquiferNoiseBasedAccessor {
     @Accessor("aquiferLocationCache")
     long[] jpe$getAquiferLocationCache();
 
+    @Accessor("aquiferCache")
+    Aquifer.FluidStatus[] jpe$getAquiferCache();
+
+    @Invoker("computeFluid")
+    Aquifer.FluidStatus jpe$computeFluid(int x, int y, int z);
+
     @Accessor("minGridX")
     int jpe$getMinGridX();
 
