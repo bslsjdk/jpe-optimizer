@@ -478,6 +478,11 @@ struct DensitySlotView {
     const Scalar* end() const noexcept { return pointer + length; }
 };
 
+struct DistanceAxisSample {
+    float delta = 0.0F;
+    float absolute = 0.0F;
+};
+
 template <typename Scalar>
 struct DensityEvaluationScratch {
     // All DAG registers live in one contiguous allocation. Per-register vectors
@@ -490,6 +495,9 @@ struct DensityEvaluationScratch {
     std::vector<int32_t> x_coordinates;
     std::vector<int32_t> y_coordinates;
     std::vector<int32_t> z_coordinates;
+    std::vector<DistanceAxisSample> distance_x;
+    std::vector<DistanceAxisSample> distance_y;
+    std::vector<DistanceAxisSample> distance_z;
     std::vector<uint64_t> interpolation_x_indices;
     std::vector<uint64_t> interpolation_y_indices;
     std::vector<uint64_t> interpolation_z_indices;
@@ -800,20 +808,54 @@ int32_t evaluate_density_graph_impl(
                     const float point_x = static_cast<float>(node.immediate);
                     const float point_y = static_cast<float>(node.auxiliary);
                     const float point_z = static_cast<float>(node.tertiary);
+
+                    // DistanceToPoint uses the same X/Y/Z coordinate for many
+                    // voxels. Convert and subtract each axis once, then reuse
+                    // both the signed and absolute delta in the Z/X/Y volume loop.
+                    scratch.distance_x.resize(size_x);
+                    scratch.distance_y.resize(size_y);
+                    scratch.distance_z.resize(size_z);
+                    for (uint32_t x = 0; x < size_x; ++x) {
+                        const float delta = static_cast<float>(scratch.x_coordinates[x]) - point_x;
+                        scratch.distance_x[x] = DistanceAxisSample{delta, std::abs(delta)};
+                    }
+                    for (uint32_t y = 0; y < size_y; ++y) {
+                        const float delta = static_cast<float>(scratch.y_coordinates[y]) - point_y;
+                        scratch.distance_y[y] = DistanceAxisSample{delta, std::abs(delta)};
+                    }
+                    for (uint32_t z = 0; z < size_z; ++z) {
+                        const float delta = static_cast<float>(scratch.z_coordinates[z]) - point_z;
+                        scratch.distance_z[z] = DistanceAxisSample{delta, std::abs(delta)};
+                    }
+
                     size_t out = 0;
                     for (uint32_t z = 0; z < size_z; ++z) {
-                        const float dz = static_cast<float>(scratch.z_coordinates[z]) - point_z;
+                        const DistanceAxisSample& z_sample = scratch.distance_z[z];
                         for (uint32_t x = 0; x < size_x; ++x) {
-                            const float dx = static_cast<float>(scratch.x_coordinates[x]) - point_x;
+                            const DistanceAxisSample& x_sample = scratch.distance_x[x];
                             for (uint32_t y = 0; y < size_y; ++y) {
-                                const float dy = static_cast<float>(scratch.y_coordinates[y]) - point_y;
-                                const float ax = std::abs(dx), ay = std::abs(dy), az = std::abs(dz);
+                                const DistanceAxisSample& y_sample = scratch.distance_y[y];
                                 float distance;
                                 switch (node.input_a) {
-                                    case 0: distance = std::max(ax, std::max(ay, az)); break; // CHEBYSHEV
-                                    case 1: distance = std::sqrt(dx * dx + dy * dy + dz * dz); break; // EUCLIDEAN
-                                    case 2: distance = dx * dx + dy * dy + dz * dz; break; // EUCLIDEAN_SQUARED
-                                    case 3: distance = (ax + ay) + az; break; // MANHATTAN
+                                    case 0:
+                                        distance = std::max(x_sample.absolute,
+                                            std::max(y_sample.absolute, z_sample.absolute));
+                                        break; // CHEBYSHEV
+                                    case 1:
+                                        distance = std::sqrt(
+                                            x_sample.delta * x_sample.delta
+                                            + y_sample.delta * y_sample.delta
+                                            + z_sample.delta * z_sample.delta);
+                                        break; // EUCLIDEAN
+                                    case 2:
+                                        distance = x_sample.delta * x_sample.delta
+                                            + y_sample.delta * y_sample.delta
+                                            + z_sample.delta * z_sample.delta;
+                                        break; // EUCLIDEAN_SQUARED
+                                    case 3:
+                                        distance = (x_sample.absolute + y_sample.absolute)
+                                            + z_sample.absolute;
+                                        break; // MANHATTAN
                                     default: return 1;
                                 }
                                 values[out++] = static_cast<Scalar>(distance);
