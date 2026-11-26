@@ -211,10 +211,83 @@ public final class GameTests {
                     }
                 }
             }
+
+            // One cache miss, duplicate keys in the same batch, and a later
+            // conflicting write must all preserve compute-if-absent semantics.
+            long[] statusKeys = {0x1122_3344_5566_7788L, 0x1122_3344_5566_7788L};
+            int[] blockY = {0, 0};
+            int[] globalLevels = {40, 90};
+            int[] globalTypes = {200, 300};
+            int[][] surfaces = {new int[13], new int[13]};
+            int[][] surfaceFluidLevels = {new int[13], new int[13]};
+            int[][] surfaceFluidTypes = {new int[13], new int[13]};
+            boolean[][] probeValid = {new boolean[13], new boolean[13]};
+            boolean[][] probeIsAir = {new boolean[13], new boolean[13]};
+            for (int i = 0; i < 2; i++) {
+                java.util.Arrays.fill(surfaces[i], -100);
+                java.util.Arrays.fill(surfaceFluidLevels[i], Integer.MIN_VALUE);
+                java.util.Arrays.fill(surfaceFluidTypes[i], 100);
+                java.util.Arrays.fill(probeIsAir[i], true);
+            }
+            float[] exclusion = {0.0F, 0.0F};
+            float[] floodedness = {0.0F, 0.0F};
+            float[] spread = {0.0F, 0.0F};
+            float[] lavaNoise = {0.0F, 0.0F};
+            int[] statusLevels = {-777, -777};
+            int[] statusTypes = {-777, -777};
+            runtime.computeAquiferFluidStatusBatch(
+                    context, worldFingerprint, 0xA91F_2630_0001L,
+                    statusKeys, blockY, globalLevels, globalTypes,
+                    surfaces, surfaceFluidLevels, surfaceFluidTypes, probeValid, probeIsAir,
+                    exclusion, floodedness, spread, lavaNoise, 300,
+                    statusLevels, statusTypes);
+            if (!java.util.Arrays.equals(statusLevels, new int[] {40, 40})
+                    || !java.util.Arrays.equals(statusTypes, new int[] {200, 200})) {
+                throw new AssertionError("Aquifer FluidStatus batch lost first-writer-wins semantics: levels="
+                        + java.util.Arrays.toString(statusLevels) + " types="
+                        + java.util.Arrays.toString(statusTypes));
+            }
+
+            long[] repeatedKey = {statusKeys[0]};
+            int[] conflictingLevel = {90};
+            int[] conflictingType = {300};
+            int[] cachedLevel = {-999};
+            int[] cachedType = {-999};
+            runtime.computeAquiferFluidStatusBatch(
+                    context, worldFingerprint, 0xA91F_2630_0001L,
+                    repeatedKey, new int[] {0}, conflictingLevel, conflictingType,
+                    new int[][] {surfaces[1]}, new int[][] {surfaceFluidLevels[1]},
+                    new int[][] {surfaceFluidTypes[1]}, new boolean[][] {probeValid[1]},
+                    new boolean[][] {probeIsAir[1]}, new float[] {0.0F},
+                    new float[] {0.0F}, new float[] {0.0F}, new float[] {0.0F},
+                    300, cachedLevel, cachedType);
+            if (cachedLevel[0] != 40 || cachedType[0] != 200) {
+                throw new AssertionError("Aquifer FluidStatus cache replaced the first writer");
+            }
+
+            int[] untouchedLevels = {12345};
+            int[] untouchedTypes = {54321};
+            try {
+                runtime.computeAquiferFluidStatusBatch(
+                        context, wrongWorldFingerprint, 0xA91F_2630_0001L,
+                        repeatedKey, new int[] {0}, conflictingLevel, conflictingType,
+                        new int[][] {surfaces[1]}, new int[][] {surfaceFluidLevels[1]},
+                        new int[][] {surfaceFluidTypes[1]}, new boolean[][] {probeValid[1]},
+                        new boolean[][] {probeIsAir[1]}, new float[] {0.0F},
+                        new float[] {0.0F}, new float[] {0.0F}, new float[] {0.0F},
+                        300, untouchedLevels, untouchedTypes);
+                throw new AssertionError("Mismatched Aquifer cache fingerprint was accepted");
+            } catch (IllegalStateException expected) {
+                if (untouchedLevels[0] != 12345 || untouchedTypes[0] != 54321) {
+                    throw new AssertionError("Rejected Aquifer status batch modified caller outputs");
+                }
+            }
+
             runtime.destroyAquiferContext(context);
             JPEOptimizer.LOGGER.info(
                     "JPE_AQUIFER_CONTEXT_NATIVE_PARITY samplers=6 pointsPerSampler=3 "
-                            + "retainedHandles=true batchF32Exact=true contextDestroy=true");
+                            + "retainedHandles=true batchF32Exact=true statusCacheBatch=true "
+                            + "firstWriterWins=true contextDestroy=true");
         } catch (Exception failure) {
             throw new AssertionError("Native Aquifer context parity failed", failure);
         }
