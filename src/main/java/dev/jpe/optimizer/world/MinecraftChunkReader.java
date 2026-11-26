@@ -139,24 +139,22 @@ public final class MinecraftChunkReader {
             }
             int offset = i * SECTION_VOLUME;
             int local = 0;
+            int sectionNonAir = 0;
             for (int y = 0; y < 16; ++y) {
                 for (int z = 0; z < 16; ++z) {
                     for (int x = 0; x < 16; ++x) {
                         int id = idOf(section.getBlockState(x, y, z));
                         if (id != 0) {
                             nonAirBlocks++;
+                            sectionNonAir++;
                         }
                         blocksScanned++;
                         out[offset + local++] = (short) id;
                     }
                 }
             }
-            int sectionNonAir = 0;
-            for (int j = 0; j < SECTION_VOLUME; ++j) {
-                if (out[offset + j] != 0) {
-                    sectionNonAir++;
-                }
-            }
+            // Counted inline during the fill loop above, so no second pass over
+            // the whole section is needed just for the parity check.
             if (sectionNonAir != palette) {
                 throw new IllegalStateException("block hand-off mismatch in section y="
                         + (baseSectionY + i) + ": scanned=" + sectionNonAir + ", palette=" + palette);
