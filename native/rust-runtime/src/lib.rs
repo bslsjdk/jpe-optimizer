@@ -109,6 +109,12 @@ unsafe extern "C" {
         grid_x: i32, grid_y: i32, grid_z: i32,
         offset_x: *mut i32, offset_y: *mut i32, offset_z: *mut i32,
     ) -> i32;
+    fn jpe_cpp_aquifer_grid_centers(
+        random_mode: u32, seed_lo: u64, seed_hi: u64,
+        min_grid_x: i32, min_grid_y: i32, min_grid_z: i32,
+        grid_size_x: u32, grid_size_z: u32, cell_count: u32,
+        packed_locations: *mut u64,
+    ) -> i32;
     fn jpe_cpp_aquifer_nearest_four(
         random_mode:u32, seed_lo:u64, seed_hi:u64,
         block_x:*const i32, block_y:*const i32, block_z:*const i32, sample_count:u32,
@@ -146,6 +152,30 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_legacy_offsets(
     }
 }
 
+
+
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_grid_centers(
+    random_mode: u32, seed_lo: u64, seed_hi: u64,
+    min_grid_x: i32, min_grid_y: i32, min_grid_z: i32,
+    grid_size_x: u32, grid_size_z: u32, cell_count: u32,
+    packed_locations: *mut u64,
+) -> i32 {
+    if random_mode > 1 || grid_size_x == 0 || grid_size_z == 0
+        || cell_count == 0 || cell_count as usize > MAX_VOLUME_ELEMENTS
+        || packed_locations.is_null()
+        || (grid_size_x as u64) * (grid_size_z as u64) > cell_count as u64
+        || (cell_count as u64) % ((grid_size_x as u64) * (grid_size_z as u64)) != 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_aquifer_grid_centers(
+            random_mode, seed_lo, seed_hi,
+            min_grid_x, min_grid_y, min_grid_z,
+            grid_size_x, grid_size_z, cell_count, packed_locations,
+        )
+    }
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn jpe_runtime_aquifer_nearest_four(
