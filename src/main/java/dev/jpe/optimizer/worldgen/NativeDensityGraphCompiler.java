@@ -103,8 +103,10 @@ public final class NativeDensityGraphCompiler {
         DensityFunction.CompileContext context = ((DensityFunctionCompilerAccessor)
                 (Object) ((RandomStateAccessor) (Object) randomState).jpe$getDensityFunctionCompiler())
                 .jpe$getContext();
-        boolean blenderEmpty = noiseChunkAccess.jpe$getBlender().isEmpty();
-        long handle = graphHandle(root, randomState, context, blenderEmpty, runtime);
+        // BlendDensityFunction is a pass-through only for a genuinely empty Blender.
+        // Non-empty legacy chunks must use vanilla's context-bound blend sampler.
+        if (!noiseChunkAccess.jpe$getBlender().isEmpty()) return null;
+        long handle = graphHandle(root, randomState, context, true, runtime);
         if (handle == 0L) return null;
 
         DensityBufferPool pool = noiseChunkAccess.jpe$getBufferPool();
