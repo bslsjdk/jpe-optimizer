@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Supplier;
 import dev.jpe.optimizer.mixin.GradientNoiseAccessor;
@@ -100,6 +101,24 @@ public final class NativeRuntime implements AutoCloseable {
         perlinScratchArenas.add(scratch);
         return scratch;
     });
+    private static final LongAdder BLENDER_TIMED_CALLS = new LongAdder();
+    private static final LongAdder BLENDER_CAPTURE_NANOS = new LongAdder();
+    private static final LongAdder BLENDER_ENCODE_NANOS = new LongAdder();
+    private static final LongAdder BLENDER_INPUT_COPY_NANOS = new LongAdder();
+    private static final LongAdder BLENDER_NATIVE_NANOS = new LongAdder();
+    private static final LongAdder BLENDER_OUTPUT_COPY_NANOS = new LongAdder();
+
+    public static String blenderDensityMetrics() {
+        return "timedCalls=" + BLENDER_TIMED_CALLS.sum()
+                + " captureMs=" + nanosToMillis(BLENDER_CAPTURE_NANOS.sum())
+                + " encodeMs=" + nanosToMillis(BLENDER_ENCODE_NANOS.sum())
+                + " inputCopyMs=" + nanosToMillis(BLENDER_INPUT_COPY_NANOS.sum())
+                + " nativeMs=" + nanosToMillis(BLENDER_NATIVE_NANOS.sum())
+                + " outputCopyMs=" + nanosToMillis(BLENDER_OUTPUT_COPY_NANOS.sum());
+    }
+
+    private static double nanosToMillis(long nanos) { return nanos / 1_000_000.0; }
+
     private volatile boolean closed;
 
     private static final class DensityScratch implements AutoCloseable {
@@ -476,20 +495,34 @@ public final class NativeRuntime implements AutoCloseable {
                     || noiseValues.length < length || outputValues.length < length) {
                 throw new IllegalArgumentException("Invalid Blender density volume buffers or dimensions");
             }
+            boolean measure = Boolean.getBoolean("jpe.nativeBlenderTiming");
+            long stageStarted = measure ? System.nanoTime() : 0L;
             BlenderAccessor blenderAccessor = (BlenderAccessor) blender;
             List<RawBlendingDataView> heightViews = captureRawBlendingData(
                     blenderAccessor.jpe$heightAndBiomeBlendingData());
             List<RawBlendingDataView> densityViews = captureRawBlendingData(
                     blenderAccessor.jpe$densityBlendingData());
+            if (measure) {
+                BLENDER_CAPTURE_NANOS.add(System.nanoTime() - stageStarted);
+                stageStarted = System.nanoTime();
+            }
             try (Arena arena = Arena.ofConfined()) {
                 MemorySegment nativeHeightViews = encodeRawBlendingData(arena, heightViews);
                 MemorySegment nativeDensityViews = encodeRawBlendingData(arena, densityViews);
+                if (measure) {
+                    BLENDER_ENCODE_NANOS.add(System.nanoTime() - stageStarted);
+                    stageStarted = System.nanoTime();
+                }
                 long floatBytes = Math.multiplyExact((long) length, ValueLayout.JAVA_FLOAT.byteSize());
                 MemorySegment nativeNoise = arena.allocate(floatBytes, ValueLayout.JAVA_FLOAT.byteAlignment());
                 boolean inPlace = noiseValues == outputValues;
                 MemorySegment nativeOutput = inPlace ? nativeNoise
                         : arena.allocate(floatBytes, ValueLayout.JAVA_FLOAT.byteAlignment());
                 MemorySegment.copy(noiseValues, 0, nativeNoise, ValueLayout.JAVA_FLOAT, 0, length);
+                if (measure) {
+                    BLENDER_INPUT_COPY_NANOS.add(System.nanoTime() - stageStarted);
+                    stageStarted = System.nanoTime();
+                }
                 int minX = volume.minBlockX(), minY = volume.minBlockY(), minZ = volume.minBlockZ();
                 int stepX = sizeX > 1 ? volume.blockX(1) - minX : 1;
                 int stepY = sizeY > 1 ? volume.blockY(1) - minY : 1;
@@ -498,9 +531,17 @@ public final class NativeRuntime implements AutoCloseable {
                         nativeHeightViews, heightViews.size(), nativeDensityViews, densityViews.size(),
                         sizeX, sizeY, sizeZ, minX, minY, minZ, stepX, stepY, stepZ,
                         nativeNoise, nativeOutput, (long) length);
+                if (measure) {
+                    BLENDER_NATIVE_NANOS.add(System.nanoTime() - stageStarted);
+                    stageStarted = System.nanoTime();
+                }
                 checkStatus(status, "blend-density-volume");
                 MemorySegment.copy(nativeOutput, ValueLayout.JAVA_FLOAT, 0L,
                         outputValues, 0, length);
+                if (measure) {
+                    BLENDER_OUTPUT_COPY_NANOS.add(System.nanoTime() - stageStarted);
+                    BLENDER_TIMED_CALLS.increment();
+                }
             } catch (Throwable failure) {
                 throw rethrow("Native Blender density volume call failed", failure);
             }
