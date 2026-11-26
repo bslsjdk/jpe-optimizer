@@ -202,11 +202,12 @@ float blend_one(int32_t block_x, int32_t block_y, int32_t block_z, float noise,
         const float squared = (dx * dx + dy * dy) + dz * dz;
         const float distance_f = static_cast<float>(std::sqrt(static_cast<double>(squared)));
         const double distance = static_cast<double>(distance_f);
-        if (distance > 2.0) continue;
-        if (distance < closest_distance) closest_distance = distance;
-        const double weight = 1.0 / (distance * distance * distance * distance);
-        weighted_density += static_cast<double>(point.density) * weight;
-        total_weight += weight;
+        if (distance <= 2.0) {
+            if (distance < closest_distance) closest_distance = distance;
+            const double weight = 1.0 / (distance * distance * distance * distance);
+            weighted_density += static_cast<double>(point.density) * weight;
+            total_weight += weight;
+        }
 
         ++cursor.offset;
         if (cursor.offset < cursor.indices->size()) {
