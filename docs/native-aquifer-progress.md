@@ -15,7 +15,7 @@ The C++ runtime currently contains:
 - Scalar Aquifer pressure/substance decision logic and a batch wrapper that validates the full batch before writing outputs.
 - A per-Aquifer native `FluidStatus` cache keyed by packed `BlockPos.asLong` cell-center keys. It has fixed capacity, open-address lookup, per-cache locking, batch lookup/insert, first-writer-wins insertion semantics matching `computeIfAbsent`, and all-or-nothing capacity rejection for inserts.
 
-The Rust runtime exposes those APIs, including native `FluidStatus` cache create/destroy/lookup/insert handles. Java's `NativeRuntime` has FFM entry points for grid-center cache prefill, nearest-four search, substance decisions, and `FluidStatus` cache operations. Per-worker FFM scratch buffers are reused for nearest-four, substance, and status-cache batches.
+The Rust runtime exposes those APIs, including native `FluidStatus` cache create/destroy/lookup/insert handles. The density-graph runtime also exposes arbitrary non-grid-aligned point batches in `f64` and `f32`: it currently reuses the complete single-point graph evaluator once per input point inside one C ABI call, preserving existing interpolation, range-choice, warped-Perlin, and numeric behavior while avoiding Java sampling per point. Java's `NativeRuntime` has FFM entry points for grid-center cache prefill, nearest-four search, substance decisions, `FluidStatus` cache operations, and arbitrary-point density graph evaluation. Per-worker FFM scratch buffers are reused for nearest-four, substance, status-cache, and point-coordinate batches.
 
 ## Source-audit coverage
 
@@ -51,14 +51,14 @@ This is not a complete native Aquifer or native chunk-fill implementation.
 - The constructor still creates the Aquifer object and Java only hands the cache array and factory seed state to the bridge.
 - The production per-voxel Aquifer `computeSubstance` path still runs in Java. The new FFM nearest-four method is currently a validated runtime API and GameTest target, not yet called from the production chunk-fill path.
 - The FluidStatus **storage/cache infrastructure** now exists in C++, but Java has not yet been removed from producing FluidStatus values. The cache FFM API and Rust tests validate storage, first-writer-wins, missing-key lookup, and capacity behavior; the 13-surface-sample FluidStatus computation itself is not yet native.
-- The 13 surface-level samples per cell and the surface, exclusion, floodedness, spread, and lava sampler evaluations are not yet moved into the native Aquifer volume pipeline.
+- The arbitrary-point density API is foundational plumbing only. The 13 surface-level sample schedule and the surface, exclusion, floodedness, spread, and lava sampler handles have not yet been bound into the Aquifer C++ context, so those values are not yet being produced by the native Aquifer path.
 - Global FluidPicker behavior, barrier-noise sampling, block-state selection, update scheduling, and modded fluid-state tokens are not yet fully integrated into a native full-volume contract.
 - No full Aquifer speedup, reduction in total world-generation Java allocations, or complete world-generation parity is claimed.
 
 ## Required next implementation stages
 
 1. Compile the six Aquifer density samplers into immutable native plans during world startup and retain their handles with the same world/RandomState fingerprint discipline as density graphs.
-2. Add a native arbitrary-point/batch density evaluation path so C++ can sample the 13 surface positions and six FluidStatus inputs without Java producing per-block samples.
+2. Bind the new native arbitrary-point density API to the six audited Aquifer sampler plans. The current point implementation is correctness-first and evaluates one point at a time inside a single native call; optimize across points only after parity is established.
 3. Implement per-volume Aquifer context preparation in C++: fill the native per-cell FluidStatus cache from native sampler evaluations, add the quart-surface cache, lazy barrier-noise values, and global-fluid lookup tokens.
 4. Add a complete full-volume API returning parallel outputs: keep-terrain/null marker, opaque block-state token, and fluid-update flag. Preserve the exact early-exit order and Java float/double conversion behavior.
 5. Connect that output to the chunk fill once per volume. Java should only map opaque tokens to BlockState and commit block/heightmap writes; it must not run per-voxel nearest-neighbor search, status generation, pressure, or density sampling.
