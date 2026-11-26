@@ -699,6 +699,15 @@ public final class NativeRuntime implements AutoCloseable {
         public static DensityNode lerp(int alpha, int first, int second) {
             return new DensityNode(24, alpha, first, second, 0.0, 0.0, 0.0);
         }
+        public static DensityNode rangeChoice(int input, float minimumInclusive, float maximumExclusive,
+                                                  int whenInRange, int whenOutOfRange) {
+            if (!Float.isFinite(minimumInclusive) || !Float.isFinite(maximumExclusive)
+                    || minimumInclusive >= maximumExclusive) {
+                throw new IllegalArgumentException("Invalid density range choice");
+            }
+            return new DensityNode(27, input, whenInRange, whenOutOfRange,
+                    minimumInclusive, maximumExclusive, 0.0);
+        }
         public static DensityNode interpolated(int input, int cellSizeXz, int cellSizeY) {
             if (input < 0 || cellSizeXz <= 0 || cellSizeY <= 0) {
                 throw new IllegalArgumentException("Invalid interpolated density node");
