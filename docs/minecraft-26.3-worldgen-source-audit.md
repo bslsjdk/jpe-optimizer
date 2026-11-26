@@ -130,3 +130,23 @@ Density values and noise outputs are floats, but coordinates and frequency/scale
 6. Measure sustained throughput and thermal behavior on the target device separately from cloud CI.
 
 No speedup is claimed by this audit. It identifies the real implementation and the first measurements needed to choose a safe optimization.
+
+## Verified bytecode facts from the exact 26.3 artifacts
+
+The CI source-audit artifact for Mojang's official 26.3 server JAR and NeoForge 26.3.0.115 patched JAR recorded these identities:
+
+- Mojang server JAR SHA-1: `33680f5f2ac32864d6d7cf5e56a705fdb3e05f4c` (matched the version manifest).
+- NeoForge patched JAR SHA-256: `8ba1bd3c9b13264c55167bbe6819e790eef08814de5b7cd673b8a79d36f8052c`.
+- 657 targeted worldgen classes were present in both artifacts; 29 were bytecode-identical and 628 differed after NeoForge patching. This is why implementation decisions must be checked against the patched artifact, not just a third-party source dump.
+
+The captured `javap -p -c` output from both vanilla and patched artifacts confirms the following for `NoiseFunction$Sampler`:
+
+- It is a record with exactly three components: `Noise noise`, `double xzScale`, and `double yScale`.
+- `sampleVolume(context, buffer, volume)` first fills the output buffer with float zero, then invokes `noise.addToVolume(buffer, volume, xzScale, yScale, 1.0F)`.
+- Point sampling computes X and Z as integer-to-double multiplied by `xzScale`, Y as integer-to-double multiplied by `yScale`, then calls `noise.get(x, y, z)`.
+
+The exact `NoiseStack.addToVolume` bytecode iterates its ordered `Layer[]` in Java. For each layer it computes `xzScale * frequency`, `yScale * frequency`, and `amplitude * layer.amplitude`, then calls that layer's `Noise.addToVolume`. The existing `NoiseStack$Perlin` and `NoiseStack$SmearedPerlin` Mixin hooks intercept this method and can route the whole stack to the C++ Perlin kernel. However, the bridge still reads the layer array, checks types, writes per-layer descriptors into FFM scratch, and dispatches from Java on each volume call. It is a useful exact native kernel, but it is not a world-prepared C++ density plan.
+
+This yields a concrete next compiler boundary: a native density graph needs a typed noise-stack payload, not an opaque sampler input volume. At world preparation, the compiler must capture the immutable ordered layer data (noise kind, permutation/gradient state, offsets, frequencies, amplitudes, and smeared-Y parameters) and bind it to a native plan/handle. At chunk execution, only volume coordinates and genuinely chunk-local dynamic inputs should be passed. The full `NoiseFunction$Sampler` node then executes inside the C++ density graph, so Java does not call `sampleVolume` to stage it as an external input.
+
+These bytecode facts are verified against the exact release and patched artifacts. The native closed-graph compiler described above is still not implemented; the current sampler parity workflow remains shadow-only.

@@ -20,6 +20,8 @@ public final class MathBenchmark {
         System.out.printf("JPE_BENCH samples=%d warmup=%d iterations=%d%n", samples, warmup, iterations);
         run("reference", DensityMath::syntheticGraph, input, warmup, iterations);
         run("shared_cse", DensityMath::syntheticGraphShared, input, warmup, iterations);
+        BiomeZoomBenchmark.run(warmup, iterations, samples);
+        ClimateRTreeBenchmark.run(warmup, iterations, samples);
     }
 
     private static void run(String name, Fn fn, float[] input, int warmup, int iterations) {

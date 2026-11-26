@@ -12,6 +12,8 @@ import json
 import os
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -21,33 +23,98 @@ NEOFORGE_VERSION = "26.3.0.115"
 MANIFEST_URL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
 VINEFLOWER_VERSION = "1.12.0"
 VINEFLOWER_URL = (
-    "https://repo.maven.apache.org/maven2/org/vineflower/vineflower/"
+    "https://github.com/Vineflower/vineflower/releases/download/"
     f"{VINEFLOWER_VERSION}/vineflower-{VINEFLOWER_VERSION}.jar"
 )
+VINEFLOWER_SHA256 = "1dfcfe974395734fa467ce620661c7623d05ba83670de0529b1fbd63ff548b9d"
 PATCHED_JAR = Path("build/moddev/artifacts") / f"minecraft-patched-{NEOFORGE_VERSION}.jar"
 NESTED_SERVER_JAR = f"META-INF/versions/{VERSION}/server-{VERSION}.jar"
 TARGET_CLASSES = (
     "net/minecraft/world/level/levelgen/NoiseBasedChunkGenerator",
+    "net/minecraft/world/level/chunk/ChunkGenerator",
+    "net/minecraft/world/level/levelgen/material/MaterialSystem",
+    "net/minecraft/world/level/levelgen/material/MaterialRuleContext",
+    "net/minecraft/world/level/levelgen/material/MaterialRules",
+    "net/minecraft/world/level/biome/BiomeManager",
+    "net/minecraft/world/level/biome/BiomeSource",
+    "net/minecraft/server/level/WorldGenRegion",
+    "net/minecraft/world/level/chunk/ChunkAccess",
+    "net/minecraft/world/level/chunk/ProtoChunk",
+    "net/minecraft/world/level/chunk/ChunkGeneratorStructureState",
     "net/minecraft/world/level/levelgen/NoiseChunk",
+    "net/minecraft/world/level/levelgen/Aquifer",
+    "net/minecraft/world/level/levelgen/RandomState",
+    "net/minecraft/world/level/levelgen/PositionalRandomFactory",
+    "net/minecraft/world/level/levelgen/XoroshiroRandomSource",
+    "net/minecraft/world/level/levelgen/Xoroshiro128PlusPlus",
+    "net/minecraft/world/level/levelgen/LegacyRandomSource",
+    "net/minecraft/world/level/levelgen/BitRandomSource",
+    "net/minecraft/world/level/levelgen/RandomSupport",
+    "net/minecraft/util/RandomSource",
+    "net/minecraft/util/Mth",
+    "net/minecraft/world/level/levelgen/NoiseRouter",
     "net/minecraft/world/level/levelgen/densityfunction/DensitySampler",
     "net/minecraft/world/level/levelgen/densityfunction/DensityFunctionCompiler",
     "net/minecraft/world/level/levelgen/densityfunction/SamplerContext",
     "net/minecraft/world/level/levelgen/densityfunction/DensityBufferPool",
+    "net/minecraft/world/level/levelgen/densityfunction/DensityFunction",
+    "net/minecraft/world/level/levelgen/densityfunction/DensityVolume",
+    "net/minecraft/world/level/levelgen/densityfunction/op/RangeChoiceFunction",
+    "net/minecraft/util/Mth",
+    "net/minecraft/world/level/levelgen/densityfunction/op/BinaryFunction",
     "net/minecraft/world/level/levelgen/densityfunction/generator/NoiseFunction",
     "net/minecraft/world/level/levelgen/synth/NoiseStack",
     "net/minecraft/world/level/levelgen/synth/PerlinNoise",
+    "net/minecraft/world/level/levelgen/synth/SmearedPerlinNoise",
+    "net/minecraft/world/level/levelgen/synth/GradientNoise",
+    "net/minecraft/world/level/levelgen/synth/Noise",
+)
+
+TARGET_CLASS_PREFIXES = (
+    "net/minecraft/world/level/levelgen/densityfunction/",
+    "net/minecraft/world/level/levelgen/blending/",
+    "net/minecraft/world/level/levelgen/carver/",
+    "net/minecraft/world/level/levelgen/feature/",
+    "net/minecraft/world/level/levelgen/placement/",
+    "net/minecraft/world/level/levelgen/structure/",
+    "net/minecraft/world/level/levelgen/material/",
 )
 
 
-def fetch(url: str, destination: Path) -> None:
+def fetch(url: str, destination: Path, retries: int = 5) -> None:
+    """Download atomically with bounded retries for transient rate limits and network errors."""
     destination.parent.mkdir(parents=True, exist_ok=True)
-    request = urllib.request.Request(url, headers={"User-Agent": "JPE-Optimizer-source-audit/1.0"})
-    with urllib.request.urlopen(request, timeout=90) as response, destination.open("wb") as output:
-        while True:
-            chunk = response.read(1024 * 1024)
-            if not chunk:
-                break
-            output.write(chunk)
+    temporary = destination.with_suffix(destination.suffix + ".part")
+    for attempt in range(retries):
+        request = urllib.request.Request(url, headers={"User-Agent": "JPE-Optimizer-source-audit/1.1"})
+        try:
+            with urllib.request.urlopen(request, timeout=90) as response, temporary.open("wb") as output:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+            os.replace(temporary, destination)
+            return
+        except urllib.error.HTTPError as exc:
+            temporary.unlink(missing_ok=True)
+            if exc.code not in (408, 425, 429, 500, 502, 503, 504) or attempt + 1 >= retries:
+                raise
+            retry_after = exc.headers.get("Retry-After")
+            try:
+                delay = min(30.0, max(1.0, float(retry_after))) if retry_after else min(30.0, 2.0 ** attempt)
+            except ValueError:
+                delay = min(30.0, 2.0 ** attempt)
+            print(f"HTTP {exc.code} while downloading {url}; retry {attempt + 1}/{retries} in {delay:.0f}s")
+            time.sleep(delay)
+        except (urllib.error.URLError, TimeoutError) as exc:
+            temporary.unlink(missing_ok=True)
+            if attempt + 1 >= retries:
+                raise
+            delay = min(30.0, 2.0 ** attempt)
+            print(f"Network error while downloading {url}: {exc}; retry {attempt + 1}/{retries} in {delay:.0f}s")
+            time.sleep(delay)
+    raise RuntimeError(f"Failed to download {url} after {retries} attempts")
 
 
 def sha1_file(path: Path) -> str:
@@ -66,7 +133,9 @@ def selected_class(name: str) -> bool:
     if not name.endswith(".class"):
         return False
     return any(name == prefix + ".class" or name.startswith(prefix + "$") and name.endswith(".class")
-               for prefix in TARGET_CLASSES)
+               for prefix in TARGET_CLASSES) or any(
+        name.startswith(prefix) and name.endswith(".class") for prefix in TARGET_CLASS_PREFIXES
+    )
 
 
 def make_subset(source_jar: Path, subset_jar: Path) -> dict[str, str]:
@@ -191,6 +260,14 @@ def compare_method_inventories(
         for class_name in class_names:
             old = class_method_inventory(vanilla.read(class_name))
             new = class_method_inventory(patched.read(class_name))
+            if class_name == "net/minecraft/world/level/biome/BiomeManager.class":
+                expected = ("getFiddledDistance", "(JIIIDDD)D")
+                for label, methods in (("vanilla", old), ("NeoForge-patched", new)):
+                    if expected not in methods:
+                        raise RuntimeError(f"{label} BiomeManager is missing expected method {expected}")
+                    if methods[expected]["access"] & 0x000A != 0x000A:
+                        raise RuntimeError(f"{label} BiomeManager.getFiddledDistance is not private static")
+                lines.append("  verified exact private static target getFiddledDistance(JIIIDDD)D")
             added = sorted(set(new) - set(old))
             removed = sorted(set(old) - set(new))
             common = sorted(set(old) & set(new))
@@ -206,6 +283,19 @@ def compare_method_inventories(
             lines.append(f"{class_name}: methods vanilla={len(old)}, patched={len(new)}")
             lines.append(f"  added signatures: {len(added)}; removed signatures: {len(removed)}")
             lines.append(f"  changed Code lengths: {len(length_changed)}; raw Code hashes differ: {len(raw_code_changed)}")
+            if class_name in {
+                "net/minecraft/world/level/levelgen/NoiseBasedChunkGenerator.class",
+                "net/minecraft/world/level/levelgen/NoiseChunk.class",
+                "net/minecraft/world/level/levelgen/RandomState.class",
+                "net/minecraft/world/level/levelgen/NoiseRouter.class",
+                "net/minecraft/world/level/levelgen/densityfunction/DensityFunctionCompiler.class",
+                "net/minecraft/world/level/levelgen/densityfunction/DensityBufferArena.class",
+                "net/minecraft/world/level/levelgen/densityfunction/DensityBuffer.class",
+                "net/minecraft/world/level/levelgen/densityfunction/DensityVolume.class",
+                "net/minecraft/world/level/levelgen/densityfunction/SamplerContext.class",
+            }:
+                for method_name, descriptor in common:
+                    lines.append(f"  = {method_name}{descriptor}")
             for name, descriptor in added:
                 lines.append(f"  + {name}{descriptor}")
             for name, descriptor in removed:
@@ -214,7 +304,400 @@ def compare_method_inventories(
                 lines.append(f"  * {name}{descriptor}: Code bytes {before} -> {after}")
     return lines
 
+def extract_method_blocks(source: str, method_names: set[str]) -> list[str]:
+    """Extract method/constructor bodies using balanced delimiters, not line-shaped signatures."""
+    import re
+
+    if not method_names:
+        return []
+    names = "|".join(map(re.escape, sorted(method_names, key=len, reverse=True)))
+    candidates = re.compile(r"\b(" + names + r")\s*\(")
+    results: list[str] = []
+    seen: set[tuple[int, int]] = set()
+
+    def skip_space(index: int) -> int:
+        while index < len(source) and source[index].isspace():
+            index += 1
+        return index
+
+    def matching_paren(opening: int) -> int | None:
+        depth = 0
+        state = "code"
+        i = opening
+        while i < len(source):
+            ch = source[i]
+            nxt = source[i + 1] if i + 1 < len(source) else ""
+            if state == "code":
+                if ch == '"': state = "string"
+                elif ch == "'": state = "char"
+                elif ch == "/" and nxt == "*": state = "block"; i += 1
+                elif ch == "/" and nxt == "/": state = "line"; i += 1
+                elif ch == "(": depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0:
+                        return i
+            elif state == "string":
+                if ch == "\\": i += 1
+                elif ch == '"': state = "code"
+            elif state == "char":
+                if ch == "\\": i += 1
+                elif ch == "'": state = "code"
+            elif state == "block":
+                if ch == "*" and nxt == "/": state = "code"; i += 1
+            elif state == "line":
+                if ch == "\n": state = "code"
+            i += 1
+        return None
+
+    def matching_body(opening: int) -> int | None:
+        depth = 0
+        state = "code"
+        i = opening
+        while i < len(source):
+            ch = source[i]
+            nxt = source[i + 1] if i + 1 < len(source) else ""
+            if state == "code":
+                if ch == '"': state = "string"
+                elif ch == "'": state = "char"
+                elif ch == "/" and nxt == "*": state = "block"; i += 1
+                elif ch == "/" and nxt == "/": state = "line"; i += 1
+                elif ch == "{": depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return i
+            elif state == "string":
+                if ch == "\\": i += 1
+                elif ch == '"': state = "code"
+            elif state == "char":
+                if ch == "\\": i += 1
+                elif ch == "'": state = "code"
+            elif state == "block":
+                if ch == "*" and nxt == "/": state = "code"; i += 1
+            elif state == "line":
+                if ch == "\n": state = "code"
+            i += 1
+        return None
+
+    for match in candidates.finditer(source):
+        # A qualified invocation (object.method(...)) is not a declaration.
+        if match.start() > 0 and source[match.start() - 1] in ".@":
+            continue
+        close = matching_paren(match.end() - 1)
+        if close is None:
+            continue
+        cursor = skip_space(close + 1)
+        if source.startswith("throws", cursor):
+            cursor += len("throws")
+            while cursor < len(source) and source[cursor] != "{":
+                if source[cursor] == ";":
+                    break
+                cursor += 1
+            cursor = skip_space(cursor)
+        if cursor >= len(source) or source[cursor] != "{":
+            continue
+        line_start = source.rfind("\n", 0, match.start()) + 1
+        prefix = source[line_start:match.start()]
+        # Reject expression/call sites while allowing package-private methods,
+        # constructors, annotations, and modifiers split over multiple lines.
+        if any(token in prefix for token in ("=", "->", "return ", "new ")):
+            continue
+        body_end = matching_body(cursor)
+        if body_end is None:
+            continue
+        span = (line_start, body_end + 1)
+        if span in seen:
+            continue
+        seen.add(span)
+        results.append(source[line_start:body_end + 1].strip())
+    return results
+
+
+def _self_test_method_extractor() -> None:
+    sample = '''
+class Example {
+    Example(
+        int value
+    ) {
+        if (value > 0) { call(); }
+    }
+    float sampleVolume(
+        int x,
+        int y
+    ) throws IllegalStateException {
+        String text = "}";
+        return x + y;
+    }
+    void caller() { this.sampleVolume(1, 2); }
+}
+'''
+    extracted = extract_method_blocks(sample, {"Example", "sampleVolume"})
+    if len(extracted) != 2 or not any("String text" in body for body in extracted):
+        raise RuntimeError("Method extractor self-test failed for multiline signatures/brace literals")
+
+def source_inspection(vanilla_root: Path, patched_root: Path) -> list[str]:
+    """Emit selected exact 26.3 method bodies from both vanilla and patched sources."""
+    selected = {
+        "ChunkGenerator.java": {"createBiomes", "applyCarvers", "buildSurface", "applyBiomeDecoration", "createStructures", "createReferences"},
+        "NoiseBasedChunkGenerator.java": {"buildTerrain", "doFill", "createNoiseChunk"},
+        "BiomeSource.java": {"getNoiseBiome", "possibleBiomes", "findBiomeHorizontal"},
+        "WorldGenRegion.java": {"getBlockState", "setBlock", "getChunk"},
+        "ChunkAccess.java": {"setBlockState", "getOrCreateHeightmapUnprimed", "markPosForPostProcessing", "getOrCreateHeightmap"},
+        "ProtoChunk.java": {"setBlockState", "getOrCreateHeightmapUnprimed"},
+        "ChunkGeneratorStructureState.java": {"createForNormal", "hasStructureChunkInRange", "getPlacements"},
+        "ConfiguredWorldCarver.java": {"carve"},
+        "WorldCarver.java": {"carve", "isStartChunk", "carveBlock"},
+        "MaterialSystem.java": {"buildSurface", "getSurfaceDepth", "getSurfaceSecondary", "getBand", "preliminarySurfaceFunction", "topMaterial", "erodedBadlandsExtension", "frozenOceanExtension", "generateBands"},
+        "MaterialRule.java": {"compile"},
+        "RuleEvaluator.java": {"tryApply"},
+        "MaterialCondition.java": {"apply"},
+        "ConditionEvaluator.java": {"test"},
+        "SequenceRule.java": {"apply"},
+        "ConditionRule.java": {"apply"},
+        "BlockRule.java": {"apply"},
+        "OreVeinRule.java": {"apply"},
+        "BandlandsRule.java": {"apply"},
+        "MaterialRuleContext.java": {"updateXZ", "updateY", "getMinSurfaceLevel", "getNoiseSampler", "getDensitiesInChunk", "getBand"},
+        "MaterialRules.java": {"bootstrapRules", "bootstrapConditions", "sequence", "ifTrue", "state"},
+        "Structure.java": {"findValidGenerationPoint", "generate", "afterPlace"},
+        "StructureStart.java": {"placeInChunk", "generatePieces"},
+        "StructurePlacement.java": {"isStructureChunk", "getPotentialStructureChunk", "getLocatePos"},
+        "Feature.java": {"place"},
+        "ConfiguredFeature.java": {"place"},
+        "PlacedFeature.java": {"place", "placeWithContext"},
+        "PlacementModifier.java": {"getPositions"},
+        "NoiseChunk.java": {"NoiseChunk", "cachingSamplers", "volume", "close"},
+        "RandomState.java": {"RandomState", "create", "getSampler", "samplersWithContext",
+                             "getOrCreateRandomFactory", "lambda$getOrCreateRandomFactory$0",
+                             "sampleBlockValueUncached", "acquireDensityBufferPool"},
+        "PositionalRandomFactory.java": {"at", "fromHashOf"},
+        "XoroshiroRandomSource.java": {"XoroshiroRandomSource", "XoroshiroPositionalRandomFactory",
+                                      "at", "fromHashOf", "hashOf", "fork", "forkPositional",
+                                      "nextInt", "nextLong", "nextBoolean"},
+        "Xoroshiro128PlusPlus.java": {"Xoroshiro128PlusPlus", "nextLong"},
+        "LegacyRandomSource.java": {"LegacyRandomSource", "LegacyPositionalRandomFactory",
+                                    "at", "fromHashOf", "fork", "forkPositional",
+                                    "setSeed", "next", "nextInt", "nextLong"},
+        "BitRandomSource.java": {"nextInt", "nextLong", "nextBoolean", "nextFloat",
+                                 "nextDouble", "nextBits"},
+        "RandomSupport.java": {"upgradeSeedTo128bit", "upgradeSeedTo128bitUnmixed",
+                               "seedFromHashOf", "mixStafford13", "mixLea64",
+                               "Seed128bit", "mixed", "xor", "seedLo", "seedHi"},
+        "RandomSource.java": {"Algorithm", "newInstance", "fork", "forkPositional", "nextInt"},
+        "Mth.java": {"getSeed", "quantize", "clampedMap", "map", "clamp"},
+        "NoiseRouter.java": {"finalDensity", "createClimateSampler"},
+        "DensityFunctionCompiler.java": {"DensityFunctionCompiler", "getSampler",
+                                         "optimizeAndCompile", "compileSampler",
+                                         "prepareCache", "reuseOrPrepareCache"},
+        "DensitySampler.java": {"sampleVolume", "sampleValue", "bind"},
+        "DensityBufferArena.java": {"acquire", "release"},
+        "DensityBufferPool.java": {"tryTakeBest", "acquire", "release"},
+        "DensityBuffer.java": {"addTo", "get", "set", "setRange", "copyFrom", "fill"},
+        "DensityVolume.java": {"DensityVolume", "indexUnchecked", "sizeX", "sizeY", "sizeZ",
+                               "blockX", "blockY", "blockZ"},
+        "SamplerContext.java": {"SamplerContext", "acquireBuffer", "getCacheCell",
+                                "sampleValueCached", "sampleVolumeCached"},
+        "CachingDensitySampler.java": {"sampleVolume", "sampleValue", "bind"},
+        "ContextBoundSampler.java": {"sampleVolume", "sampleValue", "bind"},
+        "ScopedDensityBuffer.java": {"close"},
+        "ClampFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
+        "BlendDensityFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
+        "LerpFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
+        "NoiseFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
+        "UnaryFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
+        "GradientFunction.java": {"compileSampler", "range", "validate"},
+        "RangeChoiceFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
+        "InterpolatedFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
+        "IntervalSelectFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
+        "PowFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
+        "RoundFunction.java": {"compileSampler", "sampleVolume", "sampleValue"},
+        "SplineFunction.java": {"compileSampler", "sampleVolume", "sampleValue", "compute"},
+        "Blender.java": {"blendDensity", "isEmpty", "getBlendingData", "getBlendingDataValue",
+                         "lambda$blendDensity$1"},
+        "Aquifer.java": {"create", "computeSubstance", "shouldScheduleFluidUpdate",
+                         "NoiseBasedAquifer", "getAquiferStatus", "getIndex",
+                         "calculatePressure", "computeSurfaceLevel", "computeFluid",
+                         "computeRandomizedFluidSurfaceLevel", "computeFluidType",
+                         "surfaceLevel", "maxSurfaceLevel", "adjustSurfaceLevel",
+                         "gridX", "gridY", "gridZ", "fromGridX", "fromGridY", "fromGridZ",
+                         "similarity", "getBlockState", "getFluidLevel",
+                         "isLava", "getLocation"},
+        "BlendingData.java": {"BlendingData", "calculateData", "addValuesForColumn",
+                              "getDensity", "getHeight", "getAlpha", "getOffset",
+                              "iterateDensities", "getCellYIndex", "getMinY"},
+        "NoiseStack.java": {"addToVolume", "get", "NoiseStack", "build"},
+        "PerlinNoise.java": {"get", "noiseWithDerivative", "sampleAndLerp", "addToVolume", "PerlinNoise"},
+        "SmearedPerlinNoise.java": {"get", "computeFudgeY", "addToVolume", "range", "SmearedPerlinNoise"},
+        "GradientNoise.java": {"get", "gradDot", "permute", "wrap", "GradientNoise"},
+        "Noise.java": {"addToVolume", "get"},
+    }
+    lines: list[str] = []
+    for label, root in (("MOJANG_VANILLA", vanilla_root), ("NEOFORGE_PATCHED", patched_root)):
+        lines.append(f"===== {label} =====")
+        for filename, methods in selected.items():
+            matches = list(root.rglob(filename))
+            if not matches:
+                lines.append(f"--- {filename}: NOT FOUND ---")
+                continue
+            for path in matches:
+                source = path.read_text(encoding="utf-8", errors="replace")
+                blocks = extract_method_blocks(source, methods)
+                lines.append(f"--- {filename}: {len(blocks)} selected methods ---")
+                if not blocks:
+                    lines.append("(no selected declarations matched)")
+                    # Decompiler method matching is advisory only. Exact javap
+                    # disassembly below remains authoritative and must still be emitted.
+                else:
+                    lines.extend(blocks)
+    return lines
+
+
+def bytecode_inspection(vanilla_jar: Path, patched_jar: Path) -> list[str]:
+    """Disassemble exact critical classes from both official and NeoForge-patched jars."""
+    classes = [
+        "net.minecraft.world.level.chunk.ChunkGenerator",
+        "net.minecraft.world.level.levelgen.material.MaterialSystem",
+        "net.minecraft.world.level.levelgen.material.MaterialRuleContext",
+        "net.minecraft.world.level.levelgen.material.MaterialRules",
+        "net.minecraft.world.level.levelgen.material.rule.MaterialRule",
+        "net.minecraft.world.level.levelgen.material.rule.RuleEvaluator",
+        "net.minecraft.world.level.levelgen.material.rule.SequenceRule",
+        "net.minecraft.world.level.levelgen.material.rule.ConditionRule",
+        "net.minecraft.world.level.levelgen.material.rule.BlockRule",
+        "net.minecraft.world.level.levelgen.material.rule.OreVeinRule",
+        "net.minecraft.world.level.levelgen.material.rule.BandlandsRule",
+        "net.minecraft.world.level.levelgen.material.condition.MaterialCondition",
+        "net.minecraft.world.level.levelgen.material.condition.ConditionEvaluator",
+        "net.minecraft.world.level.biome.BiomeSource",
+        "net.minecraft.world.level.chunk.ChunkAccess",
+        "net.minecraft.world.level.chunk.ProtoChunk",
+        "net.minecraft.world.level.chunk.ChunkGeneratorStructureState",
+        "net.minecraft.world.level.levelgen.carver.ConfiguredWorldCarver",
+        "net.minecraft.world.level.levelgen.carver.WorldCarver",
+        "net.minecraft.world.level.levelgen.structure.Structure",
+        "net.minecraft.world.level.levelgen.structure.StructureStart",
+        "net.minecraft.world.level.levelgen.structure.placement.StructurePlacement",
+        "net.minecraft.world.level.levelgen.feature.Feature",
+        "net.minecraft.world.level.levelgen.feature.ConfiguredFeature",
+        "net.minecraft.world.level.levelgen.placement.PlacedFeature",
+        "net.minecraft.world.level.levelgen.placement.PlacementModifier",
+        "net.minecraft.util.Mth",
+        "net.minecraft.world.level.levelgen.NoiseChunk",
+        "net.minecraft.world.level.levelgen.Aquifer",
+        "net.minecraft.world.level.levelgen.Aquifer$NoiseBasedAquifer",
+        "net.minecraft.world.level.levelgen.Aquifer$FluidStatus",
+        "net.minecraft.world.level.levelgen.Aquifer$FluidPicker",
+        "net.minecraft.world.level.levelgen.RandomState",
+        "net.minecraft.world.level.levelgen.RandomState$2",
+        "net.minecraft.world.level.levelgen.PositionalRandomFactory",
+        "net.minecraft.world.level.levelgen.LegacyRandomSource",
+        "net.minecraft.world.level.levelgen.BitRandomSource",
+        "net.minecraft.world.level.levelgen.XoroshiroRandomSource",
+        "net.minecraft.world.level.levelgen.Xoroshiro128PlusPlus",
+        "net.minecraft.world.level.levelgen.RandomSupport",
+        "net.minecraft.util.RandomSource",
+        "net.minecraft.world.level.levelgen.densityfunction.DensityVolume",
+        "net.minecraft.world.level.levelgen.densityfunction.SamplerContext",
+        "net.minecraft.world.level.levelgen.densityfunction.DensityBufferArena",
+        "net.minecraft.world.level.levelgen.densityfunction.DensityBufferPool",
+        "net.minecraft.world.level.levelgen.densityfunction.DensityBuffer",
+        "net.minecraft.world.level.levelgen.densityfunction.ScopedDensityBuffer",
+        "net.minecraft.world.level.levelgen.densityfunction.DensitySamplerSet",
+        "net.minecraft.world.level.levelgen.densityfunction.DensityFunctionCompiler",
+        "net.minecraft.world.level.levelgen.densityfunction.DensitySampler",
+        "net.minecraft.world.level.levelgen.densityfunction.DensitySampler$Bound",
+        "net.minecraft.world.level.levelgen.densityfunction.ContextBoundSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.CachingDensitySampler",
+        "net.minecraft.world.level.levelgen.densityfunction.DensityFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.DensityFunctions",
+        "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$Type",
+        "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$AbsSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$CubeSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$LeakyReLUSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$LogSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$NegateSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$ReciprocalSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$SignSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$SqrtSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$SquareSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$SqueezeSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.generator.GradientFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.generator.GradientFunction$ClampedSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.generator.GradientFunction$GradientSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.generator.GradientFunction$RepeatSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.generator.GradientFunction$MirroredRepeatSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.RangeChoiceFunction$Sampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.RangeChoiceFunction$ConstSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.LerpFunction$Sampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.InterpolatedFunction$Sampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.IntervalSelectFunction$Sampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.IntervalSelectFunction$SingleThresholdSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.PowFunction$Sampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.PowFunction$ConstBaseSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.PowFunction$ConstExponentSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.RoundFunction$Sampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.RoundFunction$IntegerMultipleSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.SplineFunction$Sampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$AddSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$SubSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$MulSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$DivSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$MinSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$MaxSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$ConstAddSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$ConstSubSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$ConstMulSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$ConstDivSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$ConstMinSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$ConstMaxSampler",
+        "net.minecraft.world.level.levelgen.densityfunction.DensitySampler$Naive",
+        "net.minecraft.world.level.levelgen.densityfunction.generator.SimpleDensityFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.op.CacheFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.op.ClampFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.op.ClampFunction$Sampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.LerpFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.op.LerpFunction$Sampler",
+        "net.minecraft.world.level.levelgen.densityfunction.op.RangeChoiceFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.op.InterpolatedFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.op.BlendDensityFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.op.BlendDensityFunction$Sampler",
+        "net.minecraft.world.level.levelgen.blending.Blender",
+        "net.minecraft.world.level.levelgen.blending.BlendingData",
+        "net.minecraft.world.level.levelgen.densityfunction.generator.ConstantFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.generator.NoiseFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.generator.NoiseFunction$Sampler",
+        "net.minecraft.world.level.levelgen.densityfunction.generator.ShiftNoiseFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.generator.DistanceToPointFunction",
+        "net.minecraft.world.level.levelgen.densityfunction.generator.GradientFunction",
+        "net.minecraft.world.level.levelgen.synth.NoiseStack",
+        "net.minecraft.world.level.levelgen.synth.NoiseStack$Layer",
+        "net.minecraft.world.level.levelgen.synth.NoiseStack$Perlin",
+        "net.minecraft.world.level.levelgen.synth.NoiseStack$SmearedPerlin",
+        "net.minecraft.world.level.levelgen.synth.Noise",
+        "net.minecraft.world.level.levelgen.synth.PerlinNoise",
+        "net.minecraft.world.level.levelgen.synth.SmearedPerlinNoise",
+        "net.minecraft.world.level.levelgen.synth.GradientNoise",
+    ]
+    lines: list[str] = []
+    for label, archive in (("MOJANG_VANILLA", vanilla_jar), ("NEOFORGE_PATCHED", patched_jar)):
+        lines.append(f"===== JAVAP {label} =====")
+        for class_name in classes:
+            result = subprocess.run(
+                ["javap", "-classpath", str(archive), "-p", "-c", "-s", class_name],
+                text=True, capture_output=True,
+            )
+            lines.append(f"--- {class_name} (exit={result.returncode}) ---")
+            if result.returncode != 0:
+                lines.append("CLASS_NOT_FOUND_OR_NOT_LOADABLE: " + result.stderr.strip())
+                continue
+            lines.append(result.stdout.rstrip())
+    return lines
+
+
 def main() -> int:
+    _self_test_method_extractor()
     root = Path("build/source-audit")
     root.mkdir(parents=True, exist_ok=True)
     manifest_path = root / "version_manifest_v2.json"
@@ -265,9 +748,16 @@ def main() -> int:
     patched_subset = root / "neoforge-target-classes.jar"
     vanilla_hashes = make_subset(vanilla_inner, vanilla_subset)
     patched_hashes = make_subset(PATCHED_JAR, patched_subset)
+    bytecode_report = bytecode_inspection(vanilla_subset, patched_subset)
 
     vineflower = root / f"vineflower-{VINEFLOWER_VERSION}.jar"
-    fetch(VINEFLOWER_URL, vineflower)
+    if not vineflower.is_file() or hashlib.sha256(vineflower.read_bytes()).hexdigest() != VINEFLOWER_SHA256:
+        fetch(VINEFLOWER_URL, vineflower)
+    actual_vineflower_sha256 = hashlib.sha256(vineflower.read_bytes()).hexdigest()
+    if actual_vineflower_sha256 != VINEFLOWER_SHA256:
+        raise RuntimeError(
+            f"Vineflower SHA-256 mismatch: {actual_vineflower_sha256} != {VINEFLOWER_SHA256}"
+        )
     decompile_root = root / "decompiled"
     vanilla_out = decompile_root / "vanilla"
     patched_out = decompile_root / "neoforge"
@@ -281,9 +771,13 @@ def main() -> int:
         if not list(output.rglob("*.java")):
             raise RuntimeError(f"Vineflower produced no Java source for {subset}")
 
-    all_names = sorted(set(vanilla_hashes) | set(patched_hashes))
-    method_report = compare_method_inventories(vanilla_inner, PATCHED_JAR, all_names)
-    changed = [name for name in all_names if vanilla_hashes.get(name) != patched_hashes.get(name)]
+    vanilla_names = set(vanilla_hashes)
+    patched_names = set(patched_hashes)
+    common_names = sorted(vanilla_names & patched_names)
+    vanilla_only = sorted(vanilla_names - patched_names)
+    patched_only = sorted(patched_names - vanilla_names)
+    method_report = compare_method_inventories(vanilla_inner, PATCHED_JAR, common_names)
+    changed = [name for name in common_names if vanilla_hashes[name] != patched_hashes[name]]
     report = [
         f"Minecraft version: {VERSION} ({version_data['type']})",
         f"Mojang version metadata URL: {version_entry['url']}",
@@ -295,17 +789,32 @@ def main() -> int:
         f"NeoForge patched jar: {PATCHED_JAR}",
         f"NeoForge patched jar SHA-256: {hashlib.sha256(PATCHED_JAR.read_bytes()).hexdigest()}",
         f"Vineflower: {VINEFLOWER_VERSION}",
-        f"Target classes present in both jars: {len(all_names)}",
-        f"Target class bytecode identical: {len(all_names) - len(changed)}",
+        f"Target classes present in both jars: {len(common_names)}",
+        f"Vanilla-only target classes: {len(vanilla_only)}",
+        f"NeoForge-only target classes: {len(patched_only)}",
+        f"Target class bytecode identical: {len(common_names) - len(changed)}",
         f"Target class bytecode changed by NeoForge patching: {len(changed)}",
+        "",
+        "Vanilla-only target class entries:",
+        *(vanilla_only or ["(none)"]),
+        "",
+        "NeoForge-only target class entries:",
+        *(patched_only or ["(none)"]),
         "",
         "Changed target class entries:",
         *(changed or ["(none)"]),
         "",
+        "DensityFunction package class inventory:",
+        *(name for name in common_names if name.startswith("net/minecraft/world/level/levelgen/densityfunction/")),
+        "",
         "Method-level inventory (raw Code hashes may differ when constant-pool indices are remapped):",
         *method_report,
         "",
-        "Decompiled source generated locally in build/source-audit/decompiled/ (not committed or uploaded).",
+        "Exact javap bytecode for critical runtime classes (authoritative when decompiler names differ):",
+        *bytecode_report,
+        "",
+        "Selected decompiled method bodies (for lifecycle and batch-boundary inspection):",
+        *source_inspection(vanilla_out, patched_out),
     ]
     report_path = root / "report.txt"
     report_path.write_text("\n".join(report) + "\n", encoding="utf-8")

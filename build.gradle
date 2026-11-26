@@ -49,6 +49,8 @@ dependencies {
     testImplementation platform('org.junit:junit-bom:5.12.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    // NeoForge supplies FastUtil to the game runtime; plain Gradle tests need it explicitly.
+    testRuntimeOnly 'it.unimi.dsi:fastutil:8.5.15'
 }
 tasks.withType(Test).configureEach {
     useJUnitPlatform()
@@ -61,6 +63,54 @@ tasks.register('benchmark', JavaExec) {
     mainClass = 'dev.jpe.optimizer.benchmark.MathBenchmark'
     args = ['--warmup', '5', '--iterations', '20', '--samples', '262144']
 }
+
+// The optional Vector API implementation is loaded reflectively only after
+// the runtime module probe succeeds; all startup-path classes stay scalar-safe.
+tasks.named('compileJava', JavaCompile) {
+    options.compilerArgs += ['--add-modules', 'jdk.incubator.vector']
+}
+
+sourceSets {
+    vectorBenchmark {
+        java.srcDir 'src/vectorBenchmark/java'
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += output + compileClasspath
+    }
+}
+tasks.named('compileVectorBenchmarkJava', JavaCompile) {
+    options.compilerArgs += ['--add-modules', 'jdk.incubator.vector']
+}
+
+def vectorProbeJar = tasks.register('vectorProbeJar', Jar) {
+    group = 'build'
+    description = 'Packages the standalone Java 25 arithmetic and density-kernel probe.'
+    dependsOn tasks.named('vectorBenchmarkClasses')
+    archiveFileName = 'jpe-vector-probe.jar'
+    destinationDirectory = layout.buildDirectory.dir('vector-probe')
+    from sourceSets.vectorBenchmark.output
+    from(sourceSets.main.output) {
+        include 'dev/jpe/optimizer/vector/DensityVectorKernel.class'
+        include 'dev/jpe/optimizer/vector/DensityVectorKernel$BinaryOp.class'
+        include 'dev/jpe/optimizer/vector/ScalarDensityKernel$1.class'
+        include 'dev/jpe/optimizer/vector/VectorApiDensityKernel$1.class'
+        include 'dev/jpe/optimizer/vector/ScalarDensityKernel.class'
+        include 'dev/jpe/optimizer/vector/VectorApiDensityKernel.class'
+    }
+    manifest {
+        attributes('Main-Class': 'dev.jpe.optimizer.benchmark.VectorApiBenchmark')
+    }
+}
+
+tasks.register('vectorBenchmark', JavaExec) {
+    group = 'verification'
+    description = 'Runs arithmetic and branch-heavy density-kernel probes; requires the incubator module.'
+    dependsOn vectorProbeJar
+    classpath = files(vectorProbeJar.flatMap { it.archiveFile })
+    mainClass = 'dev.jpe.optimizer.benchmark.VectorApiBenchmark'
+    jvmArgs '--add-modules=jdk.incubator.vector'
+    args = ['--warmup', '5', '--iterations', '20', '--samples', '262144']
+}
+
 tasks.named('check') { dependsOn tasks.named('benchmark') }
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
