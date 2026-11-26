@@ -302,8 +302,8 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate(
                 }
                 case JPE_DENSITY_ADD: case JPE_DENSITY_MUL:
                 case kSub: case kDiv: case kMin: case kMax: case kPow: {
-                    const auto& a = slots[node_slots[node.input_a]];
-                    const auto& b = slots[node_slots[node.input_b]];
+                    const auto& a = slots[graph->node_slots[node.input_a]];
+                    const auto& b = slots[graph->node_slots[node.input_b]];
                     for (size_t j = 0; j < volume; ++j) {
                         switch (node.opcode) {
                             case JPE_DENSITY_ADD: values[j] = a[j] + b[j]; break;
@@ -319,7 +319,7 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate(
                 }
                 case kAbs: case kNegate: case kSquare: case kCube: case kSqrt:
                 case kHalfNegative: case kQuarterNegative: case kReciprocal: case kSign: {
-                    const auto& a = slots[node_slots[node.input_a]];
+                    const auto& a = slots[graph->node_slots[node.input_a]];
                     for (size_t j = 0; j < volume; ++j) {
                         const double v = a[j];
                         switch (node.opcode) {
@@ -337,7 +337,7 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate(
                     break;
                 }
                 case kClamp: {
-                    const auto& a = slots[node_slots[node.input_a]];
+                    const auto& a = slots[graph->node_slots[node.input_a]];
                     const double lo = decode_float(node.input_b), hi = decode_float(node.reserved);
                     for (size_t j = 0; j < volume; ++j) values[j] = std::clamp(a[j], lo, hi);
                     break;
