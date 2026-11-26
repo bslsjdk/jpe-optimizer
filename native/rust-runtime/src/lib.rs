@@ -1264,6 +1264,10 @@ mod tests {
         const SY: usize = 49;
         const SZ: usize = 5;
         let mut output = vec![0.0_f32; SX * SY * SZ];
+        // In benchmark builds, override the production ceiling so the 1 MiB
+        // node-value budget itself must reduce 1,225 requested samples to 436.
+        #[cfg(feature = "density-graph-benchmark")]
+        unsafe { jpe_cpp_density_graph_set_test_tile_limit(1225); }
         assert_eq!(unsafe {
             jpe_runtime_density_graph_evaluate(
                 handle, SX as u32, SY as u32, SZ as u32,
@@ -1271,6 +1275,8 @@ mod tests {
                 output.as_mut_ptr(), output.len() as u64,
             )
         }, STATUS_OK);
+        #[cfg(feature = "density-graph-benchmark")]
+        unsafe { jpe_cpp_density_graph_set_test_tile_limit(0); }
 
         for z in 0..SZ {
             for x in 0..SX {
