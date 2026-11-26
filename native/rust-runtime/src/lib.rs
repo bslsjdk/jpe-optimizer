@@ -168,6 +168,8 @@ unsafe extern "C" {
     fn jpe_cpp_aquifer_context_destroy(context_handle: u64) -> i32;
     fn jpe_cpp_aquifer_context_evaluate_samplers_f32(
         context_handle: u64,
+        expected_world_fingerprint: *const u8,
+        expected_semantic_fingerprint: u64,
         point_x: *const i32, point_y: *const i32, point_z: *const i32,
         points_per_sampler: u32, output: *mut f32, output_length: u64,
     ) -> i32;
@@ -480,10 +482,13 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_context_destroy(context_handle: u64
 #[no_mangle]
 pub unsafe extern "C" fn jpe_runtime_aquifer_context_evaluate_samplers_f32(
     context_handle: u64,
+    expected_world_fingerprint: *const u8,
+    expected_semantic_fingerprint: u64,
     point_x: *const i32, point_y: *const i32, point_z: *const i32,
     points_per_sampler: u32, output: *mut f32, output_length: u64,
 ) -> i32 {
-    if context_handle == 0 || point_x.is_null() || point_y.is_null()
+    if context_handle == 0 || expected_world_fingerprint.is_null()
+        || expected_semantic_fingerprint == 0 || point_x.is_null() || point_y.is_null()
         || point_z.is_null() || output.is_null() || points_per_sampler == 0 {
         return STATUS_INVALID_ARGUMENT;
     }
@@ -495,8 +500,8 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_context_evaluate_samplers_f32(
     }
     match catch_unwind(AssertUnwindSafe(|| unsafe {
         jpe_cpp_aquifer_context_evaluate_samplers_f32(
-            context_handle, point_x, point_y, point_z,
-            points_per_sampler, output, output_length,
+            context_handle, expected_world_fingerprint, expected_semantic_fingerprint,
+            point_x, point_y, point_z, points_per_sampler, output, output_length,
         )
     })) {
         Ok(STATUS_OK) => STATUS_OK,
