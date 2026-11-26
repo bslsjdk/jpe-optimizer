@@ -42,6 +42,7 @@ public final class CompiledSamplerGraphIr {
         RECIPROCAL,
         SIGN,
         SQUEEZE,
+        LEAKY_RELU,
         CACHE_BOUNDARY,
         CONTEXT_BOUNDARY,
         OPAQUE
@@ -101,6 +102,7 @@ public final class CompiledSamplerGraphIr {
                 case RECIPROCAL -> "IEEE-754 float32 1.0f / input";
                 case SIGN -> "Java Math.signum(float), preserving NaN and signed zero";
                 case SQUEEZE -> "Minecraft squeeze: clamp to [-1,1], then x/2 - cube(x)/24 in float32 order";
+                case LEAKY_RELU -> "input > 0 ? input : negativeFactor * input, using the captured float32 factor";
                 case CACHE_BOUNDARY -> "Do not inline across Minecraft cache identity or volume lifetime";
                 case CONTEXT_BOUNDARY -> "Resolve through SamplerContext; fallback is not an unconditional child";
                 case OPAQUE -> source.limitation().isEmpty()
@@ -220,6 +222,7 @@ public final class CompiledSamplerGraphIr {
             case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$ReciprocalSampler" -> Op.RECIPROCAL;
             case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$SignSampler" -> Op.SIGN;
             case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$SqueezeSampler" -> Op.SQUEEZE;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$LeakyReLUSampler" -> Op.LEAKY_RELU;
             case "net.minecraft.world.level.levelgen.densityfunction.CachingDensitySampler" ->
                     Op.CACHE_BOUNDARY;
             case "net.minecraft.world.level.levelgen.densityfunction.ContextBoundSampler" ->
