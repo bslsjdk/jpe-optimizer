@@ -547,7 +547,7 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
 ) try {
     constexpr uint32_t kMaxVolumeVoxels = 1024U * 1024U;
     constexpr uint32_t kNeighbors = 4U;
-    constexpr uint32_t kStatusBatchMax = 65_536U;
+    constexpr uint32_t kStatusBatchMax = 65536U;
 
     if (context_handle == 0 || expected_world_fingerprint == nullptr
         || expected_semantic_fingerprint == 0 || size_x == 0 || size_y == 0 || size_z == 0
