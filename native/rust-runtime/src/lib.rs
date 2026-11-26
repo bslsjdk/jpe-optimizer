@@ -1195,9 +1195,9 @@ mod tests {
 
         let tile_limits = [256_u32, 384, 512, 768, 1024, 1225];
         let mut measurements: [Vec<f64>; 6] =
-            std::array::from_fn(|_| Vec::with_capacity(51));
+            std::array::from_fn(|_| Vec::with_capacity(101));
         let mut tile_output = vec![0.0_f32; output.len()];
-        for round in 0..51 {
+        for round in 0..101 {
             // Rotate the order each round to balance thermal / frequency drift.
             for step in 0..tile_limits.len() {
                 let index = (step + round) % tile_limits.len();
@@ -1224,11 +1224,11 @@ mod tests {
         let mut report = String::new();
         for (index, tile_limit) in tile_limits.iter().enumerate() {
             measurements[index].sort_by(f64::total_cmp);
-            let median = measurements[index][25];
+            let median = measurements[index][50];
             report.push_str(&format!(" tile{tile_limit}={median:.6}ms"));
         }
         println!(
-            "JPE_DENSITY_GRAPH_TILE_SWEEP dims=5x49x5 nodes=164 samples=1225 rounds=51 mix=vanilla-inventory{report}"
+            "JPE_DENSITY_GRAPH_TILE_SWEEP dims=5x49x5 nodes=164 samples=1225 rounds=101 mix=vanilla-inventory{report}"
         );
         assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
     }
