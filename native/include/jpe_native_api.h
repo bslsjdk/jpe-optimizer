@@ -164,6 +164,25 @@ JPE_API int32_t jpe_runtime_density_graph_evaluate_points_f32(
     uint32_t point_count, float *output, uint64_t output_length
 );
 /* Internal C++ helpers; Rust publishes the stable jpe_runtime_* exports. */
+JPE_API uint64_t jpe_cpp_density_graph_compile(
+    const JpeDensityNode *nodes, uint32_t node_count, uint32_t root_node,
+    uint64_t configuration_fingerprint
+);
+JPE_API int32_t jpe_cpp_density_graph_evaluate(
+    uint64_t graph_handle,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    double *output, uint64_t output_length
+);
+JPE_API int32_t jpe_cpp_density_graph_evaluate_f32(
+    uint64_t graph_handle,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    float *output, uint64_t output_length
+);
+JPE_API int32_t jpe_cpp_density_graph_release(uint64_t graph_handle);
 JPE_API int32_t jpe_cpp_density_graph_evaluate_points(
     uint64_t graph_handle,
     const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
