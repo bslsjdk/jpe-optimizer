@@ -121,6 +121,37 @@ extern "C" int32_t jpe_cpp_perlin_stack_evaluate(
     }
 }
 
+inline int32_t sample_warped_prepared(
+    const PreparedStack& prepared, int32_t x, int32_t y, int32_t z,
+    double shift_x, double shift_y, double shift_z,
+    double xz_scale, double y_scale, float* output
+) noexcept {
+    if (output == nullptr || !std::isfinite(shift_x) || !std::isfinite(shift_y)
+        || !std::isfinite(shift_z) || !std::isfinite(xz_scale) || !std::isfinite(y_scale)) return 1;
+    float result = 0.0F;
+    for (const PreparedLayer& layer : prepared.layers) {
+        const double frequency_xz = xz_scale * layer.base_xz_frequency;
+        const double frequency_y = y_scale * layer.base_y_frequency;
+        const int32_t status = jpe_cpp_perlin_add_volume(
+            layer.permutation.data(), 1, 1, 1, x, y, z, 1, 1, 1,
+            layer.offset_x + shift_x * layer.base_xz_frequency,
+            layer.offset_y + shift_y * layer.base_y_frequency,
+            layer.offset_z + shift_z * layer.base_xz_frequency,
+            frequency_xz, frequency_y, layer.base_amplitude,
+            &result, 1, 0);
+        if (status != 0) return status;
+    }
+    *output = result;
+    return 0;
+}
+
+inline int32_t wrapped_axis_coordinate(int32_t minimum, uint32_t index, int32_t step) noexcept {
+    const uint32_t bits = static_cast<uint32_t>(minimum) + index * static_cast<uint32_t>(step);
+    int32_t coordinate;
+    std::memcpy(&coordinate, &bits, sizeof(coordinate));
+    return coordinate;
+}
+
 /* Correctness-first scalar sampler for domain-warped NoiseFunction nodes.
  * Shift values are applied before each octave's immutable frequency, matching
  * the NoiseFunction coordinate transform. This bypasses regular-grid caches
@@ -139,20 +170,44 @@ extern "C" int32_t jpe_cpp_perlin_stack_sample_warped(
         if (found == g_prepared_stacks.end()) return 2;
         prepared = found->second;
     }
-    float result = 0.0F;
-    for (const PreparedLayer& layer : prepared->layers) {
-        const double frequency_xz = xz_scale * layer.base_xz_frequency;
-        const double frequency_y = y_scale * layer.base_y_frequency;
-        const int32_t status = jpe_cpp_perlin_add_volume(
-            layer.permutation.data(), 1, 1, 1, x, y, z, 1, 1, 1,
-            layer.offset_x + shift_x * layer.base_xz_frequency,
-            layer.offset_y + shift_y * layer.base_y_frequency,
-            layer.offset_z + shift_z * layer.base_xz_frequency,
-            frequency_xz, frequency_y, layer.base_amplitude,
-            &result, 1, 0);
-        if (status != 0) return status;
+    return sample_warped_prepared(*prepared, x, y, z,
+        shift_x, shift_y, shift_z, xz_scale, y_scale, output);
+}
+
+extern "C" int32_t jpe_cpp_perlin_stack_sample_warped_batch(
+    uint64_t handle, uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    const double* shift_x, const double* shift_y, const double* shift_z,
+    double xz_scale, double y_scale, float* output, uint64_t output_length
+) noexcept {
+    if (shift_x == nullptr || shift_y == nullptr || shift_z == nullptr || output == nullptr
+        || size_x == 0 || size_y == 0 || size_z == 0
+        || !std::isfinite(xz_scale) || !std::isfinite(y_scale)) return 1;
+    const uint64_t xy = static_cast<uint64_t>(size_x) * size_y;
+    if (xy > 1'048'576ULL / size_z || xy * size_z != output_length) return 1;
+    std::shared_ptr<const PreparedStack> prepared;
+    {
+        std::lock_guard<std::mutex> lock(g_prepared_mutex);
+        const auto found = g_prepared_stacks.find(handle);
+        if (found == g_prepared_stacks.end()) return 2;
+        prepared = found->second;
     }
-    *output = result;
+    size_t out = 0;
+    for (uint32_t z = 0; z < size_z; ++z) {
+        const int32_t world_z = wrapped_axis_coordinate(min_z, z, step_z);
+        for (uint32_t x = 0; x < size_x; ++x) {
+            const int32_t world_x = wrapped_axis_coordinate(min_x, x, step_x);
+            for (uint32_t y = 0; y < size_y; ++y) {
+                const int32_t world_y = wrapped_axis_coordinate(min_y, y, step_y);
+                const int32_t status = sample_warped_prepared(*prepared,
+                    world_x, world_y, world_z, shift_x[out], shift_y[out], shift_z[out],
+                    xz_scale, y_scale, &output[out]);
+                if (status != 0) return status;
+                ++out;
+            }
+        }
+    }
     return 0;
 }
 
