@@ -22,6 +22,7 @@ import net.minecraft.world.level.block.Rotation;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.levelgen.XoroshiroRandomSource;
 import net.minecraft.world.level.levelgen.LegacyRandomSource;
+import net.minecraft.world.level.levelgen.PositionalRandomFactory;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
 import net.minecraft.world.level.levelgen.blending.Blender;
@@ -439,7 +440,7 @@ public final class GameTests {
 
     /** Independently checks the Java FFM batch ABI against Minecraft's positional factories. */
     private static void assertAquiferNearestFourBatch(
-            NativeRuntime runtime, RandomSource.PositionalRandomFactory factory,
+            NativeRuntime runtime, PositionalRandomFactory factory,
             int randomMode, long seedLo, long seedHi) {
         int[] blockX = {0, -1, -17, 31, -128, Integer.MIN_VALUE, Integer.MAX_VALUE, 0x40000001, 245};
         int[] blockY = {0, -1, -64, 7, -25, Integer.MAX_VALUE, Integer.MIN_VALUE, -0x40000001, 319};
