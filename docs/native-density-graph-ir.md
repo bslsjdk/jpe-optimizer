@@ -22,7 +22,10 @@ The current branch has an executable C ABI/Rust/C++/Java path for a topologicall
 
 Execution is node-major over the complete requested volume. The C++ compiler precomputes a liveness-based slot assignment once, so each evaluation allocates only the maximum simultaneously-live volume buffers; dead nodes and nodes after their final consumer reuse slots. Compiled graphs retain prepared Perlin handles independently of their source handles.
 
-The graph API currently returns a double volume. This is an intermediate representation contract, not proof of final Minecraft float-buffer parity. The Java FFM wrapper is exposed but no Minecraft DensityFunctionCompiler or NoiseBasedChunkGenerator path calls it yet. The current C++ cache is process-local and has no persistent on-disk generator cache.
+The original graph API returns a double volume and remains available for compatibility/testing. A separate `jpe_runtime_density_graph_evaluate_f32` path now executes every graph node in `float`, including intermediate arithmetic, and writes directly to a float output buffer. Rust FFI tests distinguish the two modes with a value that rounds differently after an intermediate addition. This is necessary for Minecraft 26.3, whose density functions and noises use single-precision intermediates; it is not yet proof of parity for every operator or real worldgen. The Java FFM wrapper is exposed but no Minecraft DensityFunctionCompiler or NoiseBasedChunkGenerator path calls it yet. The current C++ cache is process-local and has no persistent on-disk generator cache.
+
+
+Java FFM now exposes `supportsDensityGraphF32()` and `evaluateDensityGraphF32(...)`. This is a native API surface only: `NoiseBasedChunkGeneratorMixin` has not yet been switched to it.
 
 The implemented operator list is an execution substrate, not a claim that every 26.3 density function has been lowered. In particular, noise nodes other than prepared Perlin stacks, spline, gradients, shifted noise, range-choice, cache/context semantics, blending, beardifier, interpolation, and mod-defined functions are not represented.
 
