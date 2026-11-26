@@ -46,6 +46,14 @@ classes in both vanilla and
 `minecraft-patched-26.3.0.115.jar`. It then runs Vineflower 1.12.0 over those
 selected classes from both artifacts.
 
+The target-class inventory also includes the Aquifer implementation and the random/coordinate
+primitives it depends on: `Aquifer` (including nested `NoiseBasedAquifer` classes),
+`RandomState`, `NoiseGeneratorSettings`, `PositionalRandomFactory`,
+`LegacyRandomSource`, `XoroshiroRandomSource`, `RandomSource`, and `Mth`.
+This is required before treating the Aquifer/FluidStatus migration notes as source-verified:
+the generated vanilla and NeoForge-patched decompilations must both be inspected, not only
+the older third-party CFR snapshot.
+
 The generated JARs and decompiled source stay in the CI build directory and are
 not committed or uploaded. The CI artifact contains only a metadata/hash report.
 The report's class hashes distinguish byte-for-byte unchanged classes from classes
