@@ -200,6 +200,14 @@ public final class CompiledSamplerArithmeticLowering {
                     int constant = appendConstant(lowered, node, "right");
                     lowered.add(DensityGraphIr.Node.max(input, constant));
                 }
+                case NEGATE -> lowered.add(DensityGraphIr.Node.negate(
+                        resolveOnlyChild(node, members, nativeIndex, inputSlot)));
+                case ABS -> lowered.add(DensityGraphIr.Node.abs(
+                        resolveOnlyChild(node, members, nativeIndex, inputSlot)));
+                case SQUARE -> lowered.add(DensityGraphIr.Node.square(
+                        resolveOnlyChild(node, members, nativeIndex, inputSlot)));
+                case CUBE -> lowered.add(DensityGraphIr.Node.cube(
+                        resolveOnlyChild(node, members, nativeIndex, inputSlot)));
                 case CLAMP -> {
                     int input = resolveOnlyChild(node, members, nativeIndex, inputSlot);
                     float min = readFloatComponent(node, "min");
@@ -300,6 +308,10 @@ public final class CompiledSamplerArithmeticLowering {
                 || op == CompiledSamplerGraphIr.Op.CONST_MIN_RIGHT
                 || op == CompiledSamplerGraphIr.Op.CONST_MAX_RIGHT
                 || op == CompiledSamplerGraphIr.Op.CLAMP
+                || op == CompiledSamplerGraphIr.Op.NEGATE
+                || op == CompiledSamplerGraphIr.Op.ABS
+                || op == CompiledSamplerGraphIr.Op.SQUARE
+                || op == CompiledSamplerGraphIr.Op.CUBE
                 || op == CompiledSamplerGraphIr.Op.MIN_RIGHT_BOUND
                 || op == CompiledSamplerGraphIr.Op.MAX_RIGHT_BOUND;
     }
