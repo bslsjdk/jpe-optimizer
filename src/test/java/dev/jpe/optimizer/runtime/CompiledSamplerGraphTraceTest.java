@@ -74,6 +74,31 @@ class CompiledSamplerGraphTraceTest {
                         0, 0)).nodes().get(0).op());
     }
 
+
+    @Test
+    void classifiesMinecraftMinAndMaxSamplersWithTheirRuntimeBounds() {
+        CompiledSamplerGraphTrace.Snapshot snapshot = new CompiledSamplerGraphTrace.Snapshot(
+                java.util.List.of(
+                        new CompiledSamplerGraphTrace.NodeInfo(0,
+                                "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$MinSampler",
+                                java.util.List.of(1, 2), java.util.List.of(
+                                        new CompiledSamplerGraphTrace.ComponentValue("rightMinValue", "float", "-0.25")), ""),
+                        new CompiledSamplerGraphTrace.NodeInfo(1,
+                                "net.minecraft.world.level.levelgen.densityfunction.op.BinaryFunction$MaxSampler",
+                                java.util.List.of(3, 4), java.util.List.of(
+                                        new CompiledSamplerGraphTrace.ComponentValue("rightMaxValue", "float", "0.5")), ""),
+                        new CompiledSamplerGraphTrace.NodeInfo(2, "custom.Left", java.util.List.of(), java.util.List.of(), ""),
+                        new CompiledSamplerGraphTrace.NodeInfo(3, "custom.Left2", java.util.List.of(), java.util.List.of(), ""),
+                        new CompiledSamplerGraphTrace.NodeInfo(4, "custom.Right2", java.util.List.of(), java.util.List.of(), "")
+                ), 0, 0);
+
+        CompiledSamplerGraphIr.Graph graph = CompiledSamplerGraphIr.lower(snapshot);
+        assertEquals(CompiledSamplerGraphIr.Op.MIN_RIGHT_BOUND, graph.nodes().get(0).op());
+        assertEquals(CompiledSamplerGraphIr.Op.MAX_RIGHT_BOUND, graph.nodes().get(1).op());
+        assertEquals("-0.25", graph.nodes().get(0).scalarValues().get("rightMinValue"));
+        assertEquals("0.5", graph.nodes().get(1).scalarValues().get("rightMaxValue"));
+    }
+
     @Test
     void readsPrivateNestedSamplerRecordAccessors() {
         HiddenSampler root = new HiddenSampler(new LeafSampler(4.0F));
