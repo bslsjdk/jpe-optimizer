@@ -14,6 +14,7 @@ import java.nio.file.Path;
 import java.util.Objects;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -114,6 +115,9 @@ public final class NativeRuntime implements AutoCloseable {
     private static final LongAdder BLENDER_INPUT_COPY_NANOS = new LongAdder();
     private static final LongAdder BLENDER_NATIVE_NANOS = new LongAdder();
     private static final LongAdder BLENDER_OUTPUT_COPY_NANOS = new LongAdder();
+    private static final LongAdder BLENDER_SNAPSHOT_CACHE_HITS = new LongAdder();
+    private static final LongAdder BLENDER_SNAPSHOT_CACHE_MISSES = new LongAdder();
+    private static final LongAdder BLENDER_SNAPSHOT_BYTES = new LongAdder();
 
     public static String blenderDensityMetrics() {
         return "timedCalls=" + BLENDER_TIMED_CALLS.sum()
@@ -121,7 +125,10 @@ public final class NativeRuntime implements AutoCloseable {
                 + " encodeMs=" + nanosToMillis(BLENDER_ENCODE_NANOS.sum())
                 + " inputCopyMs=" + nanosToMillis(BLENDER_INPUT_COPY_NANOS.sum())
                 + " nativeMs=" + nanosToMillis(BLENDER_NATIVE_NANOS.sum())
-                + " outputCopyMs=" + nanosToMillis(BLENDER_OUTPUT_COPY_NANOS.sum());
+                + " outputCopyMs=" + nanosToMillis(BLENDER_OUTPUT_COPY_NANOS.sum())
+                + " snapshotCacheHits=" + BLENDER_SNAPSHOT_CACHE_HITS.sum()
+                + " snapshotCacheMisses=" + BLENDER_SNAPSHOT_CACHE_MISSES.sum()
+                + " snapshotBytes=" + BLENDER_SNAPSHOT_BYTES.sum();
     }
 
     private static double nanosToMillis(long nanos) { return nanos / 1_000_000.0; }
@@ -222,8 +229,23 @@ public final class NativeRuntime implements AutoCloseable {
         }
     }
 
+    private static final class NativeBlendingSnapshot {
+        private final int minSectionY;
+        private final int sectionCount;
+        private final MemorySegment[] columns;
+
+        private NativeBlendingSnapshot(int minSectionY, int sectionCount, MemorySegment[] columns) {
+            this.minSectionY = minSectionY;
+            this.sectionCount = sectionCount;
+            this.columns = columns;
+        }
+    }
+
     private static final class BlenderScratch implements AutoCloseable {
+        private static final int MAX_CACHED_BLENDING_DATA = 64;
         private final Arena arena = Arena.ofShared();
+        private Arena snapshotArena = Arena.ofShared();
+        private final IdentityHashMap<BlendingData, NativeBlendingSnapshot> snapshots = new IdentityHashMap<>();
         private final RawBlendingScratch height = new RawBlendingScratch();
         private final RawBlendingScratch density = new RawBlendingScratch();
         private MemorySegment noise;
@@ -237,6 +259,59 @@ public final class NativeRuntime implements AutoCloseable {
                 throw new IllegalStateException("Blender scratch lease was not active");
             }
         }
+        private NativeBlendingSnapshot snapshot(BlendingData data, int minSectionY, int sectionCount) {
+            NativeBlendingSnapshot cached = snapshots.get(data);
+            if (cached != null) {
+                BLENDER_SNAPSHOT_CACHE_HITS.increment();
+                return cached;
+            }
+            if (snapshots.size() >= MAX_CACHED_BLENDING_DATA) {
+                snapshots.clear();
+                snapshotArena.close();
+                snapshotArena = Arena.ofShared();
+            }
+
+            float[][] sourceColumns = ((BlendingDataAccessor) data).jpe$densities();
+            int requiredColumnLength = Math.multiplyExact(sectionCount, 2);
+            long totalFloats = 0L;
+            for (int column = 0; column < 16; ++column) {
+                float[] values = sourceColumns != null && column < sourceColumns.length
+                        ? sourceColumns[column] : null;
+                if (values == null || values.length == 0) continue;
+                if (values.length < requiredColumnLength) {
+                    throw new IllegalArgumentException("Calculated BlendingData density column is shorter than its section range");
+                }
+                totalFloats = Math.addExact(totalFloats, requiredColumnLength);
+            }
+
+            MemorySegment slab = totalFloats == 0L ? MemorySegment.NULL
+                    : snapshotArena.allocate(Math.multiplyExact(totalFloats, ValueLayout.JAVA_FLOAT.byteSize()),
+                            ValueLayout.JAVA_FLOAT.byteAlignment());
+            MemorySegment[] columns = new MemorySegment[16];
+            long offsetFloats = 0L;
+            for (int column = 0; column < 16; ++column) {
+                float[] values = sourceColumns != null && column < sourceColumns.length
+                        ? sourceColumns[column] : null;
+                if (values == null || values.length == 0) {
+                    columns[column] = MemorySegment.NULL;
+                    continue;
+                }
+                long byteOffset = Math.multiplyExact(offsetFloats, ValueLayout.JAVA_FLOAT.byteSize());
+                long byteLength = Math.multiplyExact((long) requiredColumnLength, ValueLayout.JAVA_FLOAT.byteSize());
+                MemorySegment target = slab.asSlice(byteOffset, byteLength);
+                MemorySegment.copy(values, 0, target, ValueLayout.JAVA_FLOAT, 0, requiredColumnLength);
+                columns[column] = target;
+                offsetFloats = Math.addExact(offsetFloats, requiredColumnLength);
+            }
+            if (offsetFloats != totalFloats) {
+                throw new IllegalStateException("Calculated BlendingData snapshot size changed while copying");
+            }
+            NativeBlendingSnapshot result = new NativeBlendingSnapshot(minSectionY, sectionCount, columns);
+            snapshots.put(data, result);
+            BLENDER_SNAPSHOT_CACHE_MISSES.increment();
+            BLENDER_SNAPSHOT_BYTES.add(Math.multiplyExact(totalFloats, ValueLayout.JAVA_FLOAT.byteSize()));
+            return result;
+        }
         private void ensureVolumeCapacity(int requiredFloats) {
             if (volumeCapacity < requiredFloats) {
                 int next = Math.max(1024, volumeCapacity);
@@ -249,6 +324,8 @@ public final class NativeRuntime implements AutoCloseable {
         }
         @Override public void close() {
             if (leased.get()) throw new IllegalStateException("Cannot close a leased Blender scratch arena");
+            snapshots.clear();
+            snapshotArena.close();
             arena.close();
         }
     }
@@ -525,6 +602,8 @@ public final class NativeRuntime implements AutoCloseable {
         });
 
         MemorySegment encoded = target.ensureViews(scratch.arena, viewCount);
+        // Worst-case capacity is retained for uncached/uninitialized entries. Calculated
+        // vanilla BlendingData objects use stable per-worker snapshots instead.
         MemorySegment densitySlab = target.ensureDensity(scratch.arena, totalFloats[0]);
         long[] densityOffsetFloats = {0L};
         int[] viewIndex = {0};
@@ -534,16 +613,24 @@ public final class NativeRuntime implements AutoCloseable {
             BlendingDataAccessor accessor = (BlendingDataAccessor) data;
             LevelHeightAccessor height = accessor.jpe$areaWithOldGeneration();
             int sectionCount = height.getSectionsCount();
+            NativeBlendingSnapshot snapshot = accessor.jpe$hasCalculatedData()
+                    ? scratch.snapshot(data, height.getMinSectionY(), sectionCount) : null;
             encoded.set(ValueLayout.JAVA_INT, base, ChunkPos.getX(packedChunk));
             encoded.set(ValueLayout.JAVA_INT, base + 4L, ChunkPos.getZ(packedChunk));
-            encoded.set(ValueLayout.JAVA_INT, base + 8L, height.getMinSectionY());
-            encoded.set(ValueLayout.JAVA_INT, base + 12L, sectionCount);
+            encoded.set(ValueLayout.JAVA_INT, base + 8L,
+                    snapshot == null ? height.getMinSectionY() : snapshot.minSectionY);
+            encoded.set(ValueLayout.JAVA_INT, base + 12L,
+                    snapshot == null ? sectionCount : snapshot.sectionCount);
 
-            float[][] columns = accessor.jpe$densities();
+            float[][] columns = snapshot == null ? accessor.jpe$densities() : null;
             int requiredColumnLength = Math.multiplyExact(sectionCount, 2);
             for (int column = 0; column < 16; ++column) {
                 long pointerOffset = base + BLENDING_DATA_POINTERS_OFFSET
                         + (long) column * ValueLayout.ADDRESS.byteSize();
+                if (snapshot != null) {
+                    encoded.set(ValueLayout.ADDRESS, pointerOffset, snapshot.columns[column]);
+                    continue;
+                }
                 float[] values = columns != null && column < columns.length ? columns[column] : null;
                 if (values == null || values.length == 0) {
                     encoded.set(ValueLayout.ADDRESS, pointerOffset, MemorySegment.NULL);
@@ -563,8 +650,8 @@ public final class NativeRuntime implements AutoCloseable {
             }
         });
 
-        if (viewIndex[0] != viewCount || densityOffsetFloats[0] != totalFloats[0]) {
-            throw new IllegalStateException("BlendingData changed during two-pass native encoding");
+        if (viewIndex[0] != viewCount || densityOffsetFloats[0] > totalFloats[0]) {
+            throw new IllegalStateException("BlendingData changed during native encoding");
         }
         return encoded;
     }
