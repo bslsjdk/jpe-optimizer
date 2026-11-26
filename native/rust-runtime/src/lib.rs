@@ -1730,14 +1730,14 @@ mod tests {
                 input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 },
         ];
         assert_eq!(unsafe {
-            jpe_runtime_density_graph_compile(invalid.as_ptr(), 2, 0 , 9, 7)
+            jpe_runtime_density_graph_compile(invalid.as_ptr(), 2, 0 , 10, 7)
         }, 0);
 
         let valid = [JpeDensityNode { opcode: DENSITY_CONST,
             input_a: DENSITY_NO_INPUT, input_b: DENSITY_NO_INPUT,
             reserved: 0, immediate: 1.0 }];
         let handle = unsafe {
-            jpe_runtime_density_graph_compile(valid.as_ptr(), 1, 0 , 9, 7)
+            jpe_runtime_density_graph_compile(valid.as_ptr(), 1, 0 , 10, 7)
         };
         assert_ne!(handle, 0);
         let mut output = [0.0_f32; 1];
