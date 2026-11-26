@@ -223,6 +223,64 @@ float blend_one(int32_t block_x, int32_t block_y, int32_t block_z, float noise,
     const double alpha = std::clamp(closest_distance / 3.0, 0.0, 1.0);
     return static_cast<float>(average + alpha * (static_cast<double>(noise) - average));
 }
+
+float blend_one_vector_sort(
+    int32_t block_x, int32_t block_y, int32_t block_z, float noise,
+    const std::unordered_map<uint64_t, const JpeBlendingDataView*>& height_index,
+    const std::unordered_map<Coord, std::vector<uint32_t>, CoordHash>& spatial,
+    const std::vector<DensityPoint>& points) {
+    const int32_t cell_x = floor_div4(block_x);
+    const int32_t cell_y = java_div8(block_y);
+    const int32_t cell_z = floor_div4(block_z);
+    const float fixed = fixed_density(height_index, cell_x, cell_y, cell_z);
+    if (fixed != kNoValue) return fixed;
+
+    // Benchmark-only baseline: concatenate the same neighboring coordinate
+    // buckets and sort point IDs into vanilla callback order, as before the
+    // fixed-heap merge implementation.
+    std::vector<uint32_t> candidates;
+    for (int32_t y = cell_y - 1; y < cell_y + 1; ++y) {
+        for (int32_t dx = -2; dx <= 2; ++dx) {
+            for (int32_t dz = -2; dz <= 2; ++dz) {
+                const auto it = spatial.find(Coord{cell_x + dx, y, cell_z + dz});
+                if (it == spatial.end()) continue;
+                candidates.insert(candidates.end(), it->second.begin(), it->second.end());
+            }
+        }
+    }
+    std::sort(candidates.begin(), candidates.end());
+
+    double total_weight = 0.0;
+    double weighted_density = 0.0;
+    double closest_distance = std::numeric_limits<double>::infinity();
+    const auto java_sub_bits = [](int32_t left, int32_t right) noexcept {
+        return static_cast<uint32_t>(left) - static_cast<uint32_t>(right);
+    };
+    const auto java_int = [](uint32_t bits) noexcept {
+        int32_t result;
+        std::memcpy(&result, &bits, sizeof(result));
+        return result;
+    };
+    for (uint32_t point_index : candidates) {
+        const DensityPoint& point = points[point_index];
+        const float dx = static_cast<float>(java_int(java_sub_bits(cell_x, point.coord.x)));
+        const float dy = static_cast<float>(java_int(java_sub_bits(cell_y, point.coord.y) * 2U));
+        const float dz = static_cast<float>(java_int(java_sub_bits(cell_z, point.coord.z)));
+        const float squared = (dx * dx + dy * dy) + dz * dz;
+        const float distance_f = static_cast<float>(std::sqrt(static_cast<double>(squared)));
+        const double distance = static_cast<double>(distance_f);
+        if (distance <= 2.0) {
+            if (distance < closest_distance) closest_distance = distance;
+            const double weight = 1.0 / (distance * distance * distance * distance);
+            weighted_density += static_cast<double>(point.density) * weight;
+            total_weight += weight;
+        }
+    }
+    if (closest_distance == std::numeric_limits<double>::infinity()) return noise;
+    const double average = weighted_density / total_weight;
+    const double alpha = std::clamp(closest_distance / 3.0, 0.0, 1.0);
+    return static_cast<float>(average + alpha * (static_cast<double>(noise) - average));
+}
 } // namespace
 
 static int32_t wrapped_coordinate(int32_t minimum, uint32_t index, int32_t step) noexcept {
@@ -306,3 +364,69 @@ extern "C" int32_t jpe_cpp_blend_density_volume(
         return 2;
     }
 }
+
+#ifdef JPE_DENSITY_GRAPH_TEST_REFERENCE
+// Old gather-and-sort implementation retained only for apples-to-apples
+// benchmark builds. It is excluded from normal runtime binaries.
+extern "C" int32_t jpe_cpp_blend_density_volume_vector_sort_reference(
+    const JpeBlendingDataView* height_data, uint32_t height_data_count,
+    const JpeBlendingDataView* density_data, uint32_t density_data_count,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    const float* noise_values, float* outputs, uint64_t output_count
+) noexcept {
+    if (height_data_count > kMaxDataViews || density_data_count > kMaxDataViews
+        || size_x == 0 || size_y == 0 || size_z == 0
+        || step_x == 0 || step_y == 0 || step_z == 0) return 1;
+    const uint64_t xy = static_cast<uint64_t>(size_x) * size_y;
+    if (xy > kMaxQueries / size_z) return 1;
+    const uint64_t volume_count = xy * size_z;
+    if (volume_count != output_count || volume_count > kMaxQueries
+        || (height_data_count > 0 && height_data == nullptr)
+        || (density_data_count > 0 && density_data == nullptr)
+        || (volume_count > 0 && (noise_values == nullptr || outputs == nullptr))) return 1;
+    const auto valid_views = [](const JpeBlendingDataView* views, uint32_t count) noexcept {
+        for (uint32_t i = 0; i < count; ++i) {
+            if (views[i].section_count == 0 || views[i].section_count > kMaxSections) return false;
+        }
+        return true;
+    };
+    if (!valid_views(height_data, height_data_count)
+        || !valid_views(density_data, density_data_count)) return 1;
+    try {
+        std::unordered_map<uint64_t, const JpeBlendingDataView*> height_index;
+        height_index.reserve(height_data_count * 2U + 1U);
+        for (uint32_t i = 0; i < height_data_count; ++i) {
+            height_index.emplace(chunk_key(height_data[i].chunk_x, height_data[i].chunk_z), &height_data[i]);
+        }
+        std::vector<DensityPoint> points;
+        uint64_t estimate = 0;
+        for (uint32_t i = 0; i < density_data_count; ++i) {
+            estimate += static_cast<uint64_t>(density_data[i].section_count) * 2U * kColumnCount;
+        }
+        if (estimate > 2'000'000ULL) return 1;
+        points.reserve(static_cast<size_t>(estimate));
+        append_points(density_data, density_data_count, points);
+        std::unordered_map<Coord, std::vector<uint32_t>, CoordHash> spatial;
+        spatial.reserve(points.size() * 2U + 1U);
+        for (uint32_t i = 0; i < points.size(); ++i) spatial[points[i].coord].push_back(i);
+        for (uint32_t z = 0; z < size_z; ++z) {
+            const int32_t block_z = wrapped_coordinate(min_z, z, step_z);
+            for (uint32_t x = 0; x < size_x; ++x) {
+                const int32_t block_x = wrapped_coordinate(min_x, x, step_x);
+                uint64_t index = (static_cast<uint64_t>(z) * size_x + x) * size_y;
+                for (uint32_t y = 0; y < size_y; ++y, ++index) {
+                    const int32_t block_y = wrapped_coordinate(min_y, y, step_y);
+                    outputs[index] = blend_one_vector_sort(
+                        block_x, block_y, block_z, noise_values[index],
+                        height_index, spatial, points);
+                }
+            }
+        }
+        return 0;
+    } catch (...) {
+        return 2;
+    }
+}
+#endif
