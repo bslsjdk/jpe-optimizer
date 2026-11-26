@@ -45,6 +45,7 @@ const DENSITY_SUB: u32 = 8;
 const DENSITY_ABS: u32 = 12;
 const DENSITY_CLAMP: u32 = 22;
 const DENSITY_PERLIN_STACK_WARP: u32 = 31;
+const DENSITY_SLICE: u32 = 32;
 
 unsafe extern "C" {
     fn jpe_runtime_density_graph_compile(
@@ -1575,6 +1576,97 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn density_graph_slice_fixes_axis_and_supports_nested_slices() {
+        let nodes = [
+            JpeDensityNode { opcode: 30, input_a: 2, input_b: DENSITY_NO_INPUT,
+                reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_SLICE, input_a: 0,
+                input_b: 1, reserved: 0, immediate: 5.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_SLICE, input_a: 1,
+                input_b: 0, reserved: 0, immediate: 11.0, auxiliary: 0.0, tertiary: 0.0 },
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 2, 0x51_1CE)
+        };
+        assert_ne!(graph, 0);
+        let mut actual = [0.0_f32; 24];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph, 2, 3, 4, -3, -5, 7, 1, 2, 1,
+                actual.as_mut_ptr(), actual.len() as u64,
+            )
+        }, STATUS_OK);
+        let mut out = 0usize;
+        for z in 7..11 {
+            let expected = (11 * 11 + 5 * 5 + z * z) as f32;
+            for _x in 0..2 {
+                for _y in 0..3 {
+                    assert_eq!(actual[out], expected);
+                    out += 1;
+                }
+            }
+        }
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
+    fn density_graph_slice_runs_prepared_perlin_at_a_fixed_axis_coordinate() {
+        let permutation: [u8; 256] = std::array::from_fn(|i| ((i * 31 + 13) & 255) as u8);
+        let layer = JpePerlinLayer {
+            permutation: permutation.as_ptr(),
+            offset_x: 0.17, offset_y: -0.11, offset_z: 0.29,
+            xz_scale: 0.5, y_scale: 0.75, amplitude: 0.8,
+        };
+        let stack = unsafe { jpe_runtime_prepare_perlin_stack(&layer, 1) };
+        assert_ne!(stack, 0);
+        let plain_nodes = [JpeDensityNode {
+            opcode: 7, input_a: DENSITY_NO_INPUT, input_b: DENSITY_NO_INPUT,
+            reserved: 1.0_f32.to_bits(), immediate: stack as f64,
+            auxiliary: 0.8, tertiary: 1.1,
+        }];
+        let sliced_nodes = [
+            plain_nodes[0],
+            JpeDensityNode { opcode: DENSITY_SLICE, input_a: 0,
+                input_b: 1, reserved: 0, immediate: 5.0, auxiliary: 0.0, tertiary: 0.0 },
+        ];
+        let plain = unsafe {
+            jpe_runtime_density_graph_compile(plain_nodes.as_ptr(), 1, 0, 0x51_1CE_2)
+        };
+        let sliced = unsafe {
+            jpe_runtime_density_graph_compile(sliced_nodes.as_ptr(), 2, 1, 0x51_1CE_2)
+        };
+        assert_ne!(plain, 0);
+        assert_ne!(sliced, 0);
+        assert_eq!(jpe_runtime_release_prepared_perlin_stack(stack), STATUS_OK);
+
+        let mut reference = [0.0_f32; 24];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                plain, 2, 3, 4, -3, 5, 7, 1, 1, 1,
+                reference.as_mut_ptr(), reference.len() as u64,
+            )
+        }, STATUS_OK);
+        let mut actual = [0.0_f32; 24];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                sliced, 2, 3, 4, -3, -5, 7, 1, 2, 1,
+                actual.as_mut_ptr(), actual.len() as u64,
+            )
+        }, STATUS_OK);
+        for z in 0..4 {
+            for x in 0..2 {
+                for y in 0..3 {
+                    let sliced_index = (z * 2 + x) * 3 + y;
+                    let reference_index = (z * 2 + x) * 3;
+                    assert_eq!(actual[sliced_index].to_bits(), reference[reference_index].to_bits());
+                }
+            }
+        }
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(plain) }, STATUS_OK);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(sliced) }, STATUS_OK);
     }
 
     #[test]
