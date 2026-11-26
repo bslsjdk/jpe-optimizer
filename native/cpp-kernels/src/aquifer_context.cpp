@@ -331,7 +331,7 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_fluid_status_points_b
     uint32_t count,
     JpeAquiferFluidStatus* outputs
 ) try {
-    constexpr uint32_t kMaxStatusBatch = 65_536U;
+    constexpr uint32_t kMaxStatusBatch = 65536U;
     constexpr uint32_t kSurfaceProbeCount = 13U;
     constexpr uint32_t kNoiseSamplerCount = 4U;
     constexpr int32_t surface_offset_x[kSurfaceProbeCount] = {
