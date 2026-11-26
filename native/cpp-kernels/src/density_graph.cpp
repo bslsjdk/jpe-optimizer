@@ -323,6 +323,11 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate(
             } else if ((node.opcode >= kAbs && node.opcode <= kSign) || node.opcode == kClamp) {
                 release_input(node.input_a);
             }
+            // Nodes with no consumers are dead as soon as they finish. Recycle
+            // their slot immediately instead of retaining one volume per dead node.
+            if (i != graph->root && consumers[i] == 0) {
+                free_slots.push_back(slot);
+            }
         }
 
         const auto& root_values = slots[node_slots[graph->root]];
