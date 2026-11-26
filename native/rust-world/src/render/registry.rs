@@ -169,22 +169,21 @@ impl SectionRegistry {
     }
 
     /// Snapshot for [`super::plan::plan_draws`], rebuilt only when the contents
-    /// changed so a per-frame call is just a borrow.
+    /// changed so a per-frame call is just a borrow. The record vector keeps its
+    /// capacity between rebuilds (clear + push) instead of allocating a fresh one
+    /// every time the registry mutates.
     pub fn records(&mut self) -> &[SectionRecord] {
         if self.dirty {
-            self.cached = self
-                .sections
-                .values()
-                .map(|s| {
-                    let (x, y, z) = s.pos.origin_block();
-                    SectionRecord {
-                        key: record_key(s.pos),
-                        origin: [x, y, z],
-                        mesh: s.mesh,
-                        index_count: s.index_count,
-                    }
-                })
-                .collect();
+            self.cached.clear();
+            for s in self.sections.values() {
+                let (x, y, z) = s.pos.origin_block();
+                self.cached.push(SectionRecord {
+                    key: record_key(s.pos),
+                    origin: [x, y, z],
+                    mesh: s.mesh,
+                    index_count: s.index_count,
+                });
+            }
             self.dirty = false;
         }
         &self.cached

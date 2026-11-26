@@ -29,6 +29,22 @@ use crate::render::{MeshHandle, RenderError, Renderer};
 use crate::scheduler::{parallel_map, Completion, SchedulerCore};
 use crate::task::{ChunkJob, JobKind};
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
+
+/// Per-frame phase timings, in nanoseconds, accumulated across the pipeline's
+/// lifetime. This is deliberately **not** part of the Java ABI (`JpePipelineStats`
+/// keeps its frozen 128-byte layout); it exists so every optimization can be
+/// measured at the Rust level before it is exposed or relied upon.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct PhaseTiming {
+    /// Frames sampled into these accumulators.
+    pub samples: u64,
+    pub pump_ns: u64,
+    pub targets_ns: u64,
+    pub build_ns: u64,
+    pub publish_ns: u64,
+    pub draw_ns: u64,
+}
 
 /// Where the pipeline gets block data for a section.
 ///
@@ -292,6 +308,8 @@ pub struct WorldPipeline<S: BlockSource> {
     pending_mesh: BTreeSet<ChunkPos>,
     config: PipelineConfig,
     stats: PipelineStats,
+    /// Rust-only per-phase timing accumulators (not exposed over the Java ABI).
+    timing: PhaseTiming,
 }
 
 impl<S: BlockSource> WorldPipeline<S> {
@@ -310,7 +328,13 @@ impl<S: BlockSource> WorldPipeline<S> {
             pending_mesh: BTreeSet::new(),
             config,
             stats: PipelineStats::default(),
+            timing: PhaseTiming::default(),
         }
+    }
+
+    /// Accumulated Rust-only per-phase timings. Not part of the Java ABI.
+    pub fn timing(&self) -> PhaseTiming {
+        self.timing
     }
 
     pub fn config(&self) -> PipelineConfig {
@@ -411,6 +435,17 @@ impl<S: BlockSource> WorldPipeline<S> {
     /// Build geometry for `targets` on `threads` workers. Only reads cached
     /// block data, so it needs no renderer and no render thread.
     fn build_geometry(&self, targets: &[Target]) -> Vec<MeshData> {
+        // One reusable scratch buffer per worker thread, so `build_section_mesh_into`
+        // keeps its capacity warm across sections instead of growing from zero on
+        // every target (the contract `MeshScratch` documents, mesh.rs:172). The
+        // produced vertices/indices are cloned into owned `MeshData`; the clone costs
+        // a single copy of the final buffers, which is strictly cheaper than the
+        // geometric re-growth (and repeated reallocation) the old per-target
+        // `MeshScratch::new()` paid for each section.
+        std::thread_local! {
+            static SCRATCH: std::cell::RefCell<MeshScratch> =
+                const { std::cell::RefCell::new(MeshScratch { vertices: Vec::new(), indices: Vec::new() }) };
+        }
         let blocks = &self.blocks;
         parallel_map(targets, self.config.threads, |_index, target| {
             let Some(section) = blocks.get(&target.pos) else {
@@ -430,15 +465,19 @@ impl<S: BlockSource> WorldPipeline<S> {
                 pos_z: blocks.get(&SectionPos::new(x, y, z + 1)),
                 neg_z: blocks.get(&SectionPos::new(x, y, z - 1)),
             };
-            let mut scratch = MeshScratch::new();
-            let quad_count =
-                build_section_mesh_with_neighbors(section, &neighbors, target.origin, &mut scratch);
-            MeshData {
-                vertices: scratch.vertices,
-                indices: scratch.indices,
-                quad_count,
-                origin: target.origin,
-            }
+            SCRATCH.with(|cell| {
+                let mut scratch = cell.borrow_mut();
+                // build_section_mesh_into clears the scratch itself (mesh.rs:225), so
+                // the reused buffers start empty for this section.
+                let quad_count =
+                    build_section_mesh_with_neighbors(section, &neighbors, target.origin, &mut scratch);
+                MeshData {
+                    vertices: scratch.vertices.clone(),
+                    indices: scratch.indices.clone(),
+                    quad_count,
+                    origin: target.origin,
+                }
+            })
         })
     }
 
@@ -570,8 +609,13 @@ impl<S: BlockSource> WorldPipeline<S> {
         // Phases 1+2: one pump over both budgets. Terrain completions enqueue mesh
         // work, so mesh jobs have to be taken in the same pass — a separate terrain
         // loop would let that newly queued work bypass the mesh budget.
-        let mut mesh_jobs: Vec<ChunkJob> = Vec::new();
-        let mut remesh_seen = 0usize;
+        // NOTE: `remesh_budget` is still not enforced here (remeshes consume the
+        // mesh budget). Enforcing it requires the queue to be able to defer an
+        // already-dequeued remesh without a spurious state transition, which is a
+        // separate scheduler change; until then this stays an honest TODO and the
+        // doc comment on the field must not be read as a guarantee.
+        let pump_start = Instant::now();
+        let mut mesh_jobs: Vec<(ChunkJob, bool)> = Vec::new();
         let terrain_budget = self.config.terrain_budget;
         let mesh_budget = self.config.mesh_budget;
         let mut terrain_done = 0usize;
@@ -590,10 +634,8 @@ impl<S: BlockSource> WorldPipeline<S> {
                     }
                 }
                 JobKind::BuildMesh | JobKind::RemeshMesh => {
-                    if job.kind == JobKind::RemeshMesh {
-                        remesh_seen += 1;
-                    }
-                    mesh_jobs.push(job);
+                    let is_remesh = job.kind == JobKind::RemeshMesh;
+                    mesh_jobs.push((job, is_remesh));
                     mesh_taken += 1;
                 }
                 _ => {
@@ -601,34 +643,49 @@ impl<S: BlockSource> WorldPipeline<S> {
                 }
             }
         }
+        let pump_ns = pump_start.elapsed().as_nanos() as u64;
 
         // Phase 3: build everything in parallel, then upload on this thread.
+        let targets_start = Instant::now();
         let mut targets: Vec<Target> = Vec::new();
-        let mut accepted: Vec<ChunkJob> = Vec::new();
-        for job in mesh_jobs {
+        let mut accepted: Vec<(ChunkJob, bool)> = Vec::new();
+        for (job, is_remesh) in mesh_jobs {
             let chunk_targets = self.targets_for(job.pos);
             if chunk_targets.is_empty() {
                 self.scheduler.complete(job);
                 continue;
             }
             targets.extend(chunk_targets);
-            accepted.push(job);
+            accepted.push((job, is_remesh));
         }
-        let meshes = self.build_geometry(&targets);
-        self.publish_geometry(renderer, &targets, meshes, &mut outcome)?;
+        let targets_ns = targets_start.elapsed().as_nanos() as u64;
 
-        // Only counted once the frame's uploads are committed, so an Err return
-        // cannot leave inflated counters behind.
-        outcome.mesh_jobs = accepted.len();
-        outcome.remesh_chunks = remesh_seen;
-        self.stats.mesh_jobs += (accepted.len() - remesh_seen) as u64;
-        self.stats.remesh_chunks += remesh_seen as u64;
-        for job in accepted {
+        let build_start = Instant::now();
+        let meshes = self.build_geometry(&targets);
+        let build_ns = build_start.elapsed().as_nanos() as u64;
+
+        let publish_start = Instant::now();
+        self.publish_geometry(renderer, &targets, meshes, &mut outcome)?;
+        let publish_ns = publish_start.elapsed().as_nanos() as u64;
+
+        // Counters are derived from the jobs actually accepted (a job whose chunk
+        // produced no targets was completed and excluded above), split by kind, so
+        // `mesh_jobs + remesh_chunks` equals the accepted job count exactly. The old
+        // `accepted.len() - remesh_seen` form could underflow because `remesh_seen`
+        // counted dequeued remeshes, including ones dropped for having no targets.
+        let remesh_accepted = accepted.iter().filter(|(_, r)| *r).count();
+        let mesh_accepted = accepted.len() - remesh_accepted;
+        outcome.mesh_jobs = mesh_accepted;
+        outcome.remesh_chunks = remesh_accepted;
+        self.stats.mesh_jobs += mesh_accepted as u64;
+        self.stats.remesh_chunks += remesh_accepted as u64;
+        for (job, _) in accepted {
             let _ = self.scheduler.complete(job);
             let _ = self.scheduler.mark_uploaded(job.pos);
         }
 
         // Phase 4: cull and submit.
+        let draw_start = Instant::now();
         renderer.set_view_proj(view_proj)?;
         renderer.begin_frame(self.config.extent)?;
         let (batches, plan) = plan_draws(self.registry.records(), &view_proj, eye);
@@ -636,10 +693,19 @@ impl<S: BlockSource> WorldPipeline<S> {
             renderer.draw(*batch)?;
         }
         renderer.end_frame()?;
+        let draw_ns = draw_start.elapsed().as_nanos() as u64;
 
         outcome.plan = plan;
         outcome.batches = batches.len();
         outcome.resident = self.registry.len();
+
+        self.timing.samples += 1;
+        self.timing.pump_ns += pump_ns;
+        self.timing.targets_ns += targets_ns;
+        self.timing.build_ns += build_ns;
+        self.timing.publish_ns += publish_ns;
+        self.timing.draw_ns += draw_ns;
+
         Ok(outcome)
     }
 
@@ -1100,6 +1166,62 @@ mod tests {
         assert_eq!(frame.mesh_jobs, 1, "mesh budget respected");
         assert!(world.scheduler().queue_len() > 0, "the rest stays queued");
         assert_eq!(world.stats().terrain_jobs, 2);
+    }
+
+    #[test]
+    fn per_phase_timing_is_recorded_for_every_frame() {
+        let config = PipelineConfig {
+            section_y: (0, 2),
+            mesh_budget: 4,
+            terrain_budget: 8,
+            ..PipelineConfig::default()
+        };
+        let mut world = pipeline(63, config);
+        let mut renderer = HeadlessRenderer::new();
+        world.load_area(ChunkPos::ZERO, 0);
+        world.frame(&mut renderer, camera()).expect("frame");
+        let timing = world.timing();
+        assert_eq!(timing.samples, 1, "one frame sampled");
+        let total = timing.pump_ns
+            + timing.targets_ns
+            + timing.build_ns
+            + timing.publish_ns
+            + timing.draw_ns;
+        assert!(total > 0, "a frame must record non-zero phase time: {timing:?}");
+    }
+
+    #[test]
+    fn counters_split_accepted_jobs_without_underflow() {
+        // The neighbour remesh path previously computed `mesh_jobs` by subtracting
+        // the count of *dequeued* remeshes from the count of *accepted* jobs, which
+        // could underflow when a dequeued job produced no targets. With the split by
+        // accepted kind the two counters must stay small, correct, and never wrap.
+        let config = PipelineConfig {
+            section_y: (1, 1),
+            mesh_budget: 4,
+            terrain_budget: 4,
+            ..PipelineConfig::default()
+        };
+        let mut world = pipeline(17, config);
+        let mut renderer = HeadlessRenderer::new();
+        world.load_area(ChunkPos::ZERO, 0);
+        let first = world.frame(&mut renderer, camera()).expect("frame 1");
+        assert_eq!(first.mesh_jobs, 1, "the first chunk builds a fresh mesh");
+        assert_eq!(first.remesh_chunks, 0, "nothing to re-mesh yet");
+
+        world.load_area(ChunkPos::new(1, 0), 0);
+        let second = world.frame(&mut renderer, camera()).expect("frame 2");
+        assert!(
+            second.remesh_chunks >= 1,
+            "neighbour terrain must re-mesh the uploaded chunk: {second:?}"
+        );
+        let stats = world.stats();
+        assert!(stats.mesh_jobs >= 1 && stats.remesh_chunks >= 1, "{stats:?}");
+        // No u64 underflow: a wrapped counter would be astronomically large.
+        assert!(
+            stats.mesh_jobs < 1_000_000 && stats.remesh_chunks < 1_000_000,
+            "counters must not wrap: {stats:?}"
+        );
     }
 
     #[test]
