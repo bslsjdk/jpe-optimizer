@@ -58,6 +58,8 @@ JPE_API int32_t jpe_runtime_evaluate_prepared_perlin_stack(
     float *output, uint64_t output_length, uint32_t flags
 );
 JPE_API int32_t jpe_runtime_release_prepared_perlin_stack(uint64_t handle);
+/* Retains a prepared stack under an independent handle for compiled graph ownership. */
+JPE_API uint64_t jpe_runtime_retain_prepared_perlin_stack(uint64_t handle);
 JPE_API uint64_t jpe_runtime_submit_perlin_stack(
     const JpePerlinLayer *layers, uint32_t layer_count,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
@@ -99,7 +101,9 @@ enum {
     JPE_DENSITY_Y = 3,
     JPE_DENSITY_Z = 4,
     JPE_DENSITY_ADD = 5,
-    JPE_DENSITY_MUL = 6
+    JPE_DENSITY_MUL = 6,
+    /* PERLIN_STACK: immediate=prepared handle; input_a/input_b/reserved=f32 bits for xz/y/amplitude. */
+    JPE_DENSITY_PERLIN_STACK = 7
 };
 /* Returns a retained compiled-plan handle, or zero for an invalid graph. */
 JPE_API uint64_t jpe_runtime_density_graph_compile(
