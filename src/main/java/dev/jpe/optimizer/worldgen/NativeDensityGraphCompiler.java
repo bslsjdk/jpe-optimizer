@@ -106,9 +106,9 @@ public final class NativeDensityGraphCompiler {
         try {
             runtime = NativePerlinNoiseBackend.runtimeForDensityGraph();
         } catch (RuntimeException | LinkageError unavailable) {
-            return null;
+            return fallback("Native runtime unavailable: " + describe(unavailable));
         }
-        if (runtime == null) return null;
+        if (runtime == null) return fallback("Native runtime is disabled or unavailable");
 
         NoiseChunkAccessor noiseChunkAccess = (NoiseChunkAccessor) (Object) noiseChunk;
         RandomState randomState = noiseChunkAccess.jpe$getRandomState();
@@ -117,15 +117,17 @@ public final class NativeDensityGraphCompiler {
                 .jpe$getContext();
         // BlendDensityFunction is a pass-through only for a genuinely empty Blender.
         // Non-empty legacy chunks must use vanilla's context-bound blend sampler.
-        if (!noiseChunkAccess.jpe$getBlender().isEmpty()) return null;
+        if (!noiseChunkAccess.jpe$getBlender().isEmpty()) {
+            return fallback("Non-empty Blender requires vanilla density evaluation");
+        }
         boolean beardifierEmpty = noiseChunkAccess.jpe$getBeardifier() == Beardifier.EMPTY;
         long handle;
         try {
             handle = graphHandle(root, randomState, context, true, beardifierEmpty, runtime);
         } catch (RuntimeException | LinkageError unavailable) {
-            return null;
+            return fallback("Density graph compilation failed: " + describe(unavailable));
         }
-        if (handle == 0L) return null;
+        if (handle == 0L) return fallback("Density graph was rejected or disabled for " + root.getClass().getName());
 
         DensityBufferPool pool = noiseChunkAccess.jpe$getBufferPool();
         ScopedDensityBuffer output = pool.acquire(volume.size());
@@ -153,11 +155,17 @@ public final class NativeDensityGraphCompiler {
                     float nativeValue = nativeValues[mismatch];
                     float vanillaValue = vanillaValues[mismatch];
                     output.close();
-                    disableGraph(root, randomState, runtime);
-                    JPEOptimizer.LOGGER.warn(
-                            "Native density graph parity mismatch at volume index {} (native={}, vanilla={}); disabling native graph for this RandomState",
+                    JPEOptimizer.LOGGER.error(
+                            "Native density graph parity mismatch at volume index {} (native={}, vanilla={})",
                             mismatch, nativeValue, vanillaValue
                     );
+                    if (strictMode()) {
+                        vanilla.close();
+                        throw new IllegalStateException(
+                                "Strict native density graph parity failure at volume index " + mismatch
+                        );
+                    }
+                    disableGraph(root, randomState, runtime);
                     return vanilla;
                 }
                 vanilla.close();
@@ -170,9 +178,29 @@ public final class NativeDensityGraphCompiler {
                     root.getClass().getName(),
                     failure.getMessage() == null ? failure.getClass().getName() : failure.getMessage()
             );
+            if (strictMode()) {
+                throw new IllegalStateException("Strict native density graph execution failure", failure);
+            }
             disableGraph(root, randomState, runtime);
             return null;
         }
+    }
+
+    private static boolean strictMode() {
+        return Boolean.getBoolean("jpe.nativeDensityGraphStrict");
+    }
+
+    private static String describe(Throwable failure) {
+        String message = failure.getMessage();
+        return message == null ? failure.getClass().getName() : message;
+    }
+
+    private static ScopedDensityBuffer fallback(String reason) {
+        if (strictMode()) {
+            JPEOptimizer.LOGGER.error("Strict native density graph mode forbids Java fallback: {}", reason);
+            throw new IllegalStateException("Strict native density graph mode: " + reason);
+        }
+        return null;
     }
 
     private static void recordSuccessfulEvaluation(
@@ -206,7 +234,13 @@ public final class NativeDensityGraphCompiler {
                 stateGraphs = new StateGraphs();
                 GRAPHS.put(new IdentityWeakReference<>(randomState, RANDOM_STATE_QUEUE), stateGraphs);
             }
-            if (stateGraphs.disabled.contains(root)) return 0L;
+            if (stateGraphs.disabled.contains(root)) {
+                if (strictMode()) {
+                    throw new IllegalStateException("Density graph was previously rejected/disabled: "
+                            + root.getClass().getName());
+                }
+                return 0L;
+            }
 
             GraphHandle existing = stateGraphs.handles.get(root);
             if (existing != null) {
@@ -249,6 +283,12 @@ public final class NativeDensityGraphCompiler {
                 return handle;
             } catch (RuntimeException | LinkageError rejected) {
                 stateGraphs.disabled.add(root);
+                if (strictMode()) {
+                    throw new IllegalStateException(
+                            "Native density graph compilation failed for " + root.getClass().getName()
+                                    + ": " + describe(rejected), rejected
+                    );
+                }
                 return 0L;
             }
         }
