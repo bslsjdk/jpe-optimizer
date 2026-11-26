@@ -19,10 +19,25 @@ public final class NativeBlenderDensityBackend {
     private NativeBlenderDensityBackend() {}
 
     public static boolean tryBlend(SamplerContext context, DensityVolume volume, DensityBuffer buffer) {
+        Blender blender = context.getField(Blender.CONTEXT_KEY);
+        if (blender == null) return false;
+        float[] input = ((DensityBufferAccessor) buffer).jpe$values();
+        return tryBlend(blender, volume, input);
+    }
+
+    /**
+     * Exercises the exact production backend with a synthetic legacy Blender fixture.
+     * The GameTest uses this because a newly generated Overworld has no legacy blending
+     * data and therefore correctly skips the production Blender hook.
+     */
+    public static boolean tryBlendForDiagnostics(Blender blender, DensityVolume volume, float[] input) {
+        return tryBlend(blender, volume, input);
+    }
+
+    private static boolean tryBlend(Blender blender, DensityVolume volume, float[] input) {
         boolean enabled = Boolean.getBoolean("jpe.nativeBlenderEnabled");
         boolean verify = Boolean.getBoolean("jpe.verifyNativeBlenderParity");
         if (!enabled && !verify) return false;
-        Blender blender = context.getField(Blender.CONTEXT_KEY);
         if (blender == null || blender.isEmpty()) return false;
         if (((dev.jpe.optimizer.mixin.BlenderAccessor) blender).jpe$heightAndBiomeBlendingData().isEmpty()
                 && ((dev.jpe.optimizer.mixin.BlenderAccessor) blender).jpe$densityBlendingData().isEmpty()) {
@@ -34,7 +49,6 @@ public final class NativeBlenderDensityBackend {
             FALLBACKS.increment();
             return false;
         }
-        float[] input = ((DensityBufferAccessor) buffer).jpe$values();
         int length = volume.size();
         if (length <= 0 || length > input.length) {
             FALLBACKS.increment();
@@ -43,7 +57,8 @@ public final class NativeBlenderDensityBackend {
         float[] nativeOutput = verify ? new float[length] : input;
         try {
             runtime.blendDensityVolume(blender, volume, input, nativeOutput);
-            if (Boolean.getBoolean("jpe.nativeBlenderTiming") && ((ATTEMPTS.sum() & 63L) == 0L || ATTEMPTS.sum() == 1L)) {
+            if (Boolean.getBoolean("jpe.nativeBlenderTiming")
+                    && ((ATTEMPTS.sum() & 63L) == 0L || ATTEMPTS.sum() == 1L)) {
                 JPEOptimizer.LOGGER.info("JPE_NATIVE_BLENDER_STAGES {}", NativeRuntime.blenderDensityMetrics());
             }
         } catch (RuntimeException | LinkageError failure) {
