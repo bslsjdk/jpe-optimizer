@@ -131,3 +131,7 @@ extern "C" int32_t jpe_cpp_perlin_stack_release(uint64_t handle) noexcept {
     std::lock_guard<std::mutex> lock(g_prepared_mutex);
     return g_prepared_stacks.erase(handle) == 1 ? 0 : 2;
 }
+
+extern "C" uint64_t jpe_runtime_retain_prepared_perlin_stack(uint64_t handle) {
+    return jpe_cpp_perlin_stack_retain(handle);
+}
