@@ -3735,8 +3735,11 @@ mod tests {
         // The six compiled graphs are now sampled entirely inside C++:
         // graph 4 (exclusion) is positive, so the status is the vanilla
         // WAY_BELOW_MIN_Y sentinel while preserving the global water type.
-        let point_keys = [0_u64, 0_u64];
-        let point_x = [0_i32, 0_i32];
+        // Keep every 13-probe surface above the cell top so the test reaches
+        // the positive exclusion-noise branch instead of vanilla's earlier
+        // global-FluidPicker surface shortcut. BlockPos.asLong(64, 0, 0).
+        let point_keys = [64_u64 << 38, 64_u64 << 38];
+        let point_x = [64_i32, 64_i32];
         let point_y = [0_i32, 0_i32];
         let point_z = [0_i32, 0_i32];
         let mut point_statuses = [JpeAquiferFluidStatus::default(); 2];
