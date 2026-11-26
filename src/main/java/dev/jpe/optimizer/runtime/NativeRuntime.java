@@ -414,85 +414,82 @@ public final class NativeRuntime implements AutoCloseable {
     }
 
 
-    private record RawBlendingDataView(int chunkX, int chunkZ, int minSectionY,
-                                       int sectionCount, float[][] densityColumns) {}
+    /**
+     * Encodes a Blender map directly into one native descriptor array and density slab.
+     * Two ordered fastutil passes avoid allocating an intermediate List plus one record
+     * per legacy chunk on every density volume call. The source map's iteration order is
+     * preserved because C++ accumulation must match vanilla floating-point order.
+     */
+    private static MemorySegment encodeRawBlendingData(
+            Arena arena, Long2ObjectOpenHashMap<BlendingData> source) {
+        if (source.isEmpty()) return MemorySegment.NULL;
 
-    private static List<RawBlendingDataView> captureRawBlendingData(
-            Long2ObjectOpenHashMap<BlendingData> source) {
-        ArrayList<RawBlendingDataView> views = new ArrayList<>(source.size());
-        // Match Blender's own fastutil forEach iteration order. Native preserves this
-        // ordinal when accumulating weighted densities, so floating-point sums remain stable.
+        long[] totalFloats = {0L};
         source.forEach((long packedChunk, BlendingData data) -> {
             BlendingDataAccessor accessor = (BlendingDataAccessor) data;
-            LevelHeightAccessor height = accessor.jpe$areaWithOldGeneration();
-            views.add(new RawBlendingDataView(
-                    ChunkPos.getX(packedChunk), ChunkPos.getZ(packedChunk),
-                    height.getMinSectionY(), height.getSectionsCount(),
-                    accessor.jpe$densities()));
-        });
-        return views;
-    }
-
-    private static MemorySegment encodeRawBlendingData(Arena arena, List<RawBlendingDataView> views) {
-        if (views.isEmpty()) return MemorySegment.NULL;
-
-        // First size one contiguous density slab. The previous implementation allocated
-        // up to 16 native segments per legacy chunk column, creating allocator overhead
-        // before C++ could even build its spatial index.
-        long totalFloats = 0L;
-        for (RawBlendingDataView view : views) {
-            if (view.sectionCount() <= 0 || view.sectionCount() > 128) {
+            int sectionCount = accessor.jpe$areaWithOldGeneration().getSectionsCount();
+            if (sectionCount <= 0 || sectionCount > 128) {
                 throw new IllegalArgumentException("BlendingData section count is outside the native limit");
             }
-            float[][] columns = view.densityColumns();
-            int requiredColumnLength = Math.multiplyExact(view.sectionCount(), 2);
+            float[][] columns = accessor.jpe$densities();
+            int requiredColumnLength = Math.multiplyExact(sectionCount, 2);
             for (int column = 0; column < 16; ++column) {
-                float[] source = columns != null && column < columns.length ? columns[column] : null;
-                if (source == null || source.length == 0) continue;
-                if (source.length < requiredColumnLength) {
+                float[] values = columns != null && column < columns.length ? columns[column] : null;
+                if (values == null || values.length == 0) continue;
+                if (values.length < requiredColumnLength) {
                     throw new IllegalArgumentException("BlendingData density column is shorter than its section range");
                 }
-                totalFloats = Math.addExact(totalFloats, requiredColumnLength);
+                totalFloats[0] = Math.addExact(totalFloats[0], requiredColumnLength);
             }
-        }
+        });
 
+        int viewCount = source.size();
         MemorySegment encoded = arena.allocate(
-                Math.multiplyExact(BLENDING_DATA_VIEW_SIZE, views.size()),
+                Math.multiplyExact(BLENDING_DATA_VIEW_SIZE, viewCount),
                 BLENDING_DATA_VIEW_LAYOUT.byteAlignment());
-        MemorySegment densitySlab = totalFloats == 0L ? MemorySegment.NULL
-                : arena.allocate(Math.multiplyExact(totalFloats, ValueLayout.JAVA_FLOAT.byteSize()),
+        MemorySegment densitySlab = totalFloats[0] == 0L ? MemorySegment.NULL
+                : arena.allocate(Math.multiplyExact(totalFloats[0], ValueLayout.JAVA_FLOAT.byteSize()),
                         ValueLayout.JAVA_FLOAT.byteAlignment());
-        long densityOffsetFloats = 0L;
+        long[] densityOffsetFloats = {0L};
+        int[] viewIndex = {0};
 
-        for (int i = 0; i < views.size(); ++i) {
-            RawBlendingDataView view = views.get(i);
-            long base = Math.multiplyExact((long) i, BLENDING_DATA_VIEW_SIZE);
-            encoded.set(ValueLayout.JAVA_INT, base, view.chunkX());
-            encoded.set(ValueLayout.JAVA_INT, base + 4L, view.chunkZ());
-            encoded.set(ValueLayout.JAVA_INT, base + 8L, view.minSectionY());
-            encoded.set(ValueLayout.JAVA_INT, base + 12L, view.sectionCount());
-            float[][] columns = view.densityColumns();
-            int requiredColumnLength = Math.multiplyExact(view.sectionCount(), 2);
+        source.forEach((long packedChunk, BlendingData data) -> {
+            int index = viewIndex[0]++;
+            long base = Math.multiplyExact((long) index, BLENDING_DATA_VIEW_SIZE);
+            BlendingDataAccessor accessor = (BlendingDataAccessor) data;
+            LevelHeightAccessor height = accessor.jpe$areaWithOldGeneration();
+            int sectionCount = height.getSectionsCount();
+            encoded.set(ValueLayout.JAVA_INT, base, ChunkPos.getX(packedChunk));
+            encoded.set(ValueLayout.JAVA_INT, base + 4L, ChunkPos.getZ(packedChunk));
+            encoded.set(ValueLayout.JAVA_INT, base + 8L, height.getMinSectionY());
+            encoded.set(ValueLayout.JAVA_INT, base + 12L, sectionCount);
+
+            float[][] columns = accessor.jpe$densities();
+            int requiredColumnLength = Math.multiplyExact(sectionCount, 2);
             for (int column = 0; column < 16; ++column) {
                 long pointerOffset = base + BLENDING_DATA_POINTERS_OFFSET
                         + (long) column * ValueLayout.ADDRESS.byteSize();
-                float[] source = columns != null && column < columns.length ? columns[column] : null;
-                if (source == null || source.length == 0) {
+                float[] values = columns != null && column < columns.length ? columns[column] : null;
+                if (values == null || values.length == 0) {
                     encoded.set(ValueLayout.ADDRESS, pointerOffset, MemorySegment.NULL);
                     continue;
                 }
+                if (values.length < requiredColumnLength) {
+                    throw new IllegalArgumentException("BlendingData density column changed during native encoding");
+                }
                 long columnBytes = Math.multiplyExact((long) requiredColumnLength,
                         ValueLayout.JAVA_FLOAT.byteSize());
-                long byteOffset = Math.multiplyExact(densityOffsetFloats,
+                long byteOffset = Math.multiplyExact(densityOffsetFloats[0],
                         ValueLayout.JAVA_FLOAT.byteSize());
                 MemorySegment rawColumn = densitySlab.asSlice(byteOffset, columnBytes);
-                MemorySegment.copy(source, 0, rawColumn, ValueLayout.JAVA_FLOAT, 0, requiredColumnLength);
+                MemorySegment.copy(values, 0, rawColumn, ValueLayout.JAVA_FLOAT, 0, requiredColumnLength);
                 encoded.set(ValueLayout.ADDRESS, pointerOffset, rawColumn);
-                densityOffsetFloats = Math.addExact(densityOffsetFloats, requiredColumnLength);
+                densityOffsetFloats[0] = Math.addExact(densityOffsetFloats[0], requiredColumnLength);
             }
-        }
-        if (densityOffsetFloats != totalFloats) {
-            throw new IllegalStateException("BlendingData density slab sizing changed during encoding");
+        });
+
+        if (viewIndex[0] != viewCount || densityOffsetFloats[0] != totalFloats[0]) {
+            throw new IllegalStateException("BlendingData changed during two-pass native encoding");
         }
         return encoded;
     }
@@ -524,17 +521,17 @@ public final class NativeRuntime implements AutoCloseable {
             boolean measure = Boolean.getBoolean("jpe.nativeBlenderTiming");
             long stageStarted = measure ? System.nanoTime() : 0L;
             BlenderAccessor blenderAccessor = (BlenderAccessor) blender;
-            List<RawBlendingDataView> heightViews = captureRawBlendingData(
-                    blenderAccessor.jpe$heightAndBiomeBlendingData());
-            List<RawBlendingDataView> densityViews = captureRawBlendingData(
-                    blenderAccessor.jpe$densityBlendingData());
+            Long2ObjectOpenHashMap<BlendingData> heightData =
+                    blenderAccessor.jpe$heightAndBiomeBlendingData();
+            Long2ObjectOpenHashMap<BlendingData> densityData =
+                    blenderAccessor.jpe$densityBlendingData();
             if (measure) {
                 BLENDER_CAPTURE_NANOS.add(System.nanoTime() - stageStarted);
                 stageStarted = System.nanoTime();
             }
             try (Arena arena = Arena.ofConfined()) {
-                MemorySegment nativeHeightViews = encodeRawBlendingData(arena, heightViews);
-                MemorySegment nativeDensityViews = encodeRawBlendingData(arena, densityViews);
+                MemorySegment nativeHeightViews = encodeRawBlendingData(arena, heightData);
+                MemorySegment nativeDensityViews = encodeRawBlendingData(arena, densityData);
                 if (measure) {
                     BLENDER_ENCODE_NANOS.add(System.nanoTime() - stageStarted);
                     stageStarted = System.nanoTime();
@@ -554,7 +551,7 @@ public final class NativeRuntime implements AutoCloseable {
                 int stepY = sizeY > 1 ? volume.blockY(1) - minY : 1;
                 int stepZ = sizeZ > 1 ? volume.blockZ(1) - minZ : 1;
                 int status = (int) blendDensityVolume.invokeExact(
-                        nativeHeightViews, heightViews.size(), nativeDensityViews, densityViews.size(),
+                        nativeHeightViews, heightData.size(), nativeDensityViews, densityData.size(),
                         sizeX, sizeY, sizeZ, minX, minY, minZ, stepX, stepY, stepZ,
                         nativeNoise, nativeOutput, (long) length);
                 if (measure) {
