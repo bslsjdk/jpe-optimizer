@@ -1729,6 +1729,53 @@ mod tests {
     }
 
     #[test]
+    fn density_graph_f32_interpolates_corner_volume_across_exact_cell_boundary() {
+        let nodes = [
+            JpeDensityNode { opcode: 2, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: 3, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: 4, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 2.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 3.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_MUL, input_a: 1, input_b: 3,
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_MUL, input_a: 2, input_b: 4,
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 0, input_b: 5,
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 7, input_b: 6,
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: 26, input_a: 8, input_b: 4,
+                reserved: 4, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 9, 0xF32_267)
+        };
+        assert_ne!(graph, 0);
+        let mut output = [f32::NAN; 75];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph, 5, 3, 5, 0, 0, 0, 1, 1, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        let mut index = 0;
+        for z in 0..5 {
+            for x in 0..5 {
+                for y in 0..3 {
+                    assert_eq!(output[index], (x + 2 * y + 3 * z) as f32);
+                    index += 1;
+                }
+            }
+        }
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
     fn density_graph_f32_executes_lerp_and_squeeze() {
         let nodes = [
             JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
