@@ -164,13 +164,23 @@ float blend_one(int32_t block_x, int32_t block_y, int32_t block_z, float noise,
     double closest_distance = std::numeric_limits<double>::infinity();
     for (uint32_t index : candidates) {
         const DensityPoint& point = points[index];
-        // Mojang's Mth.length receives double operands here. Keep every
-        // distance operation in binary64; a float sqrt changes blend weights
-        // and can alter the final density's raw float bits.
-        const double dx = static_cast<double>(static_cast<int64_t>(cell_x) - point.coord.x);
-        const double dy = static_cast<double>((static_cast<int64_t>(cell_y) - point.coord.y) * 2);
-        const double dz = static_cast<double>(static_cast<int64_t>(cell_z) - point.coord.z);
-        const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        // Minecraft calls Mth.length(float,float,float) here. Java performs
+        // wrapped int subtraction, converts each delta to float32, evaluates
+        // the squared length in float32, then Math.sqrt(double) and casts
+        // back to float32. Only after that is the distance widened to double
+        // for the inverse-fourth-power weighting and accumulation.
+        const auto java_sub = [](int32_t left, int32_t right) noexcept {
+            const uint32_t bits = static_cast<uint32_t>(left) - static_cast<uint32_t>(right);
+            int32_t result;
+            std::memcpy(&result, &bits, sizeof(result));
+            return result;
+        };
+        const float dx = static_cast<float>(java_sub(cell_x, point.coord.x));
+        const float dy = static_cast<float>(java_sub(cell_y, point.coord.y) * 2);
+        const float dz = static_cast<float>(java_sub(cell_z, point.coord.z));
+        const float squared = (dx * dx + dy * dy) + dz * dz;
+        const float distance_f = static_cast<float>(std::sqrt(static_cast<double>(squared)));
+        const double distance = static_cast<double>(distance_f);
         if (distance > 2.0) continue;
         if (distance < closest_distance) closest_distance = distance;
         const double weight = 1.0 / (distance * distance * distance * distance);
