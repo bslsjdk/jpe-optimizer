@@ -60,7 +60,7 @@ double calculate_pressure(const JpeAquiferCoreInput& in,
 }
 }
 
-extern "C" JPE_API int32_t jpe_runtime_aquifer_compute_substance_core(
+extern "C" JPE_API int32_t jpe_cpp_aquifer_compute_substance_core(
     const JpeAquiferCoreInput* in, JpeAquiferCoreOutput* out) {
     if (in == nullptr || out == nullptr
         || in->air_type == in->water_type || in->air_type == in->lava_type
@@ -120,7 +120,7 @@ extern "C" JPE_API int32_t jpe_runtime_aquifer_compute_substance_core(
 }
 
 
-extern "C" JPE_API int32_t jpe_runtime_aquifer_compute_substance_batch(
+extern "C" JPE_API int32_t jpe_cpp_aquifer_compute_substance_batch(
     const JpeAquiferCoreInput* inputs, uint32_t count,
     JpeAquiferCoreOutput* outputs
 ) {
@@ -138,7 +138,7 @@ extern "C" JPE_API int32_t jpe_runtime_aquifer_compute_substance_batch(
     }
 
     for (uint32_t i = 0; i < count; ++i) {
-        if (jpe_runtime_aquifer_compute_substance_core(&inputs[i], &outputs[i]) != 0) return 1;
+        if (jpe_cpp_aquifer_compute_substance_core(&inputs[i], &outputs[i]) != 0) return 1;
     }
     return 0;
 }
