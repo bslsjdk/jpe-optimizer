@@ -90,21 +90,40 @@ required backends unavailable: ["vulkan", "gl", "gles"]
 
 and `java-bridge` failed with `render backend required but none available`.
 The runner image is `ubuntu-26.04` (Mesa 26.0.8-1ubuntu0.3), which the original
-apt list did not fully cover. The `gpu-backends` job now carries an advisory
-(`continue-on-error`) diagnostics step printing the installed packages, the `.so`
-files and ICD manifests each provides, the ICD search directories, and any
-`VK_*`/`GALLIUM_*`/`LIBGL_*` variables preset by the image, plus a
-`VK_LOADER_DEBUG=all` run of the Vulkan tests, so the next such break reads as a
-missing file rather than an error code.
+apt list did not fully cover. Both causes were then confirmed from the green run
+(`9cbfcd8`):
+
+- `libEGL.so.1` simply was not installed, because `libegl1` was missing from the
+  apt list — `libegl-mesa0` installs the Mesa EGL driver, not the loader SONAME.
+- the log line `vulkan-icd: using packaged manifest
+  /usr/share/vulkan/icd.d/lvp_icd.json` shows Ubuntu 26.04 ships the manifest
+  **without the architecture suffix**, so the hard-coded
+  `lvp_icd.x86_64.json` path did not exist and the loader answered
+  `VK_ERROR_INCOMPATIBLE_DRIVER`.
+
+After the fix the same job runs with `JPE_REQUIRE_RENDER_BACKENDS=1` and reports
+`test result: ok. 68 passed; 0 failed`, and `java-bridge` reports
+`renderer backend=1 api=1.4 maxTex=16384` (lavapipe on Mesa 26),
+`frame: 8626 lit pixels, 4 tones` and
+`visibility: 2/6 visible -> 1024 lit pixels, 0/6 visible -> 0 lit pixels` —
+the same measured numbers the development sandbox produces.
+
+The `gpu-backends` job also carries an advisory (`continue-on-error`) diagnostics
+step printing the installed packages, the `.so` files and ICD manifests each one
+provides, the ICD search directories, and any `VK_*`/`GALLIUM_*`/`LIBGL_*`
+variables preset by the image, followed by a `VK_LOADER_DEBUG=all` run of the
+Vulkan tests, so the next such break reads as a missing file rather than an
+opaque error code. The advisory `Format check` and `Clippy` steps both reported
+success on `9cbfcd8`, though they remain non-blocking.
 
 ## Not claimed
 
 - CI runs on **software** drivers. It shows the API usage is correct and
   deterministic; it is not evidence about real GPU performance or vendor driver
   behaviour.
-- Whether the loader-name fallbacks are *needed* on any specific distribution was
-  not verified package-by-package; only that `libegl1` was genuinely absent on the
-  Actions runner (`libEGL.so.1 not loadable`).
+- The unversioned-name fallbacks are defensive: what CI actually needed was the
+  missing `libegl1` package, and the versioned SONAME names are what both the
+  sandbox and the runner resolve.
 - `rustfmt` and `clippy` steps are still `continue-on-error`, because the sandbox
   used for this crate cannot install those components.
 - No presentation path exists yet: every frame in CI is an offscreen buffer, and
