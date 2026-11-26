@@ -72,6 +72,8 @@ uint64_t hash_graph(const JpeDensityNode* nodes, uint32_t count,
         uint64_t bits;
         std::memcpy(&bits, &nodes[i].immediate, sizeof(bits));
         mix(reinterpret_cast<const uint8_t*>(&bits), sizeof(bits));
+        mix(reinterpret_cast<const uint8_t*>(&nodes[i].auxiliary), sizeof(nodes[i].auxiliary));
+        mix(reinterpret_cast<const uint8_t*>(&nodes[i].tertiary), sizeof(nodes[i].tertiary));
     }
     return hash;
 }
@@ -133,10 +135,11 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                 break;
             case kPerlinStack: {
                 const double handle = node.immediate;
-                const float xz_scale = decode_float(node.input_a);
-                const float y_scale = decode_float(node.input_b);
+                const double xz_scale = node.auxiliary;
+                const double y_scale = node.tertiary;
                 const float amplitude = decode_float(node.reserved);
-                if (!std::isfinite(handle) || handle < 1.0 || handle > 9007199254740991.0
+                if (node.input_a != kNoInput || node.input_b != kNoInput
+                    || !std::isfinite(handle) || handle < 1.0 || handle > 9007199254740991.0
                     || std::floor(handle) != handle
                     || !std::isfinite(xz_scale) || !std::isfinite(y_scale)
                     || !std::isfinite(amplitude)) return false;
@@ -376,8 +379,8 @@ int32_t evaluate_density_graph(
                 case kPerlinStack: {
                     std::fill(perlin_scratch.begin(), perlin_scratch.end(), 0.0F);
                     const int32_t status = jpe_cpp_perlin_stack_evaluate(
-                        graph->prepared_handles[i], decode_float(node.input_a),
-                        decode_float(node.input_b), decode_float(node.reserved),
+                        graph->prepared_handles[i], node.auxiliary,
+                        node.tertiary, decode_float(node.reserved),
                         size_x, size_y, size_z, min_x, min_y, min_z,
                         step_x, step_y, step_z, perlin_scratch.data(), output_length, 0);
                     if (status != 0) return status;
