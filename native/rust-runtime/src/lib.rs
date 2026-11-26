@@ -55,6 +55,7 @@ unsafe extern "C" {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct JpePerlinLayer {
     pub permutation: *const u8,
     pub offset_x: f64,
