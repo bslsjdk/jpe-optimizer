@@ -157,9 +157,11 @@ jobs:
           sync-chunk-writes=false
           PROPERTIES
           set -o pipefail
-          env JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector -XX:ErrorFile=${{ github.workspace }}/build/sampler-parity/hs_err_pid%p.log -Djpe.forceScalar=true -Djpe.benchmark.ticksPerColumn=22 -Djpe.continuousWorldgenBenchmark=true -Djpe.worldgenMetrics=true -Djpe.verifyCompiledSamplerParity=true -Djpe.nativeBlenderEnabled=true -Djpe.verifyNativeBlenderParity=true -Djpe.nativeBlenderTiming=true -Djpe.nativeAquiferGridCentersEnabled=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so -Djpe.perlinVectorEnabled=false" \
+          env JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector -XX:ErrorFile=${{ github.workspace }}/build/sampler-parity/hs_err_pid%p.log -Djpe.forceScalar=true -Djpe.benchmark.ticksPerColumn=22 -Djpe.continuousWorldgenBenchmark=true -Djpe.worldgenMetrics=true -Djpe.traceCompiledSamplers=true -Djpe.verifyCompiledSamplerParity=true -Djpe.nativeBlenderEnabled=true -Djpe.verifyNativeBlenderParity=true -Djpe.nativeBlenderTiming=true -Djpe.nativeAquiferGridCentersEnabled=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so -Djpe.perlinVectorEnabled=false" \
             gradle runServer --no-daemon --stacktrace 2>&1 | tee build/sampler-parity/overworld.log
           grep -E 'JPE_NATIVE_SAMPLER_PARITY_BATCH .*exact=true|JPE_NATIVE_SAMPLER_PARITY_ISLAND .*exact=true' build/sampler-parity/overworld.log
+          grep -F 'Compiled sampler graph inventory:' build/sampler-parity/overworld.log
+          grep -F 'JPE_NATIVE_OPAQUE_NODE' build/sampler-parity/overworld.log
           grep -E 'JPE_NATIVE_SAMPLER_PARITY_SUMMARY testedIslands=[1-9][0-9]* failedIslands=0 compared=[1-9][0-9]* mismatches=0' build/sampler-parity/overworld.log
           grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*completedChunks=340.*failedChunks=0.*doFillCalls=[1-9][0-9]*.*doFillSamples=[1-9][0-9]*' build/sampler-parity/overworld.log
           grep -E 'JPE_AQUIFER_GRID_PREFILL_METRICS attempts=[1-9][0-9]* successes=[1-9][0-9]* failures=0 cells=[1-9][0-9]* nativeMs=' build/sampler-parity/overworld.log
