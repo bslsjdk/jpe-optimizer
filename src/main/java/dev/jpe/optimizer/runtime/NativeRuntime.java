@@ -409,6 +409,31 @@ public final class NativeRuntime implements AutoCloseable {
         }
     }
 
+    /** Rehydrates a portable Perlin descriptor stack without Minecraft object references. */
+    public long preparePerlinStack(List<PerlinLayer> sourceLayers) {
+        if (!supportsPreparedPerlinStack()) return 0L;
+        lifecycle.readLock().lock();
+        PerlinScratch scratch = null;
+        try {
+            ensureOpen();
+            Objects.requireNonNull(sourceLayers, "sourceLayers");
+            if (sourceLayers.isEmpty() || sourceLayers.size() > 64) {
+                throw new IllegalArgumentException("Perlin stack must contain between 1 and 64 layers");
+            }
+            scratch = acquirePerlinScratch();
+            scratch.ensureStackCapacity(sourceLayers.size(), 1);
+            writePerlinLayers(sourceLayers, scratch);
+            long handle = (long) preparePerlinStack.invokeExact(scratch.layerDescriptors, sourceLayers.size());
+            if (handle != 0L) preparedStackHandles.add(handle);
+            return handle;
+        } catch (Throwable failure) {
+            throw rethrow("Unable to rehydrate portable native Perlin stack", failure);
+        } finally {
+            if (scratch != null) scratch.release();
+            lifecycle.readLock().unlock();
+        }
+    }
+
     /** Evaluates a prepared C++ NoiseStack without resending layer descriptors or permutations. */
     public void evaluatePreparedPerlinStack(long handle,
                                             double xzScale, double yScale, float amplitude,
