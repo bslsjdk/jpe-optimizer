@@ -1,6 +1,7 @@
 package dev.jpe.optimizer.benchmark;
 
 import dev.jpe.optimizer.JPEOptimizer;
+import dev.jpe.optimizer.runtime.AquiferGridCenterMetrics;
 import dev.jpe.optimizer.runtime.NativePerlinNoiseBackend;
 import dev.jpe.optimizer.worldgen.DensityBufferMetrics;
 import dev.jpe.optimizer.vector.DensityVectorRuntime;
@@ -113,6 +114,7 @@ public final class ContinuousWorldgenBenchmark {
         private long requestSubmissionCount;
         private WorldgenMetrics.Snapshot worldgenBefore;
         private NativePerlinNoiseBackend.Metrics nativeBefore;
+        private AquiferGridCenterMetrics.Snapshot aquiferBefore;
         private DensityBufferMetrics.Snapshot densityBuffersBefore;
         private StructureSpatialIndex.Metrics structureBefore;
         private volatile boolean finished;
@@ -269,6 +271,7 @@ public final class ContinuousWorldgenBenchmark {
             WorldgenMetrics.resetConcurrentPeak();
             worldgenBefore = WorldgenMetrics.snapshot();
             nativeBefore = NativePerlinNoiseBackend.metricsSnapshot();
+            aquiferBefore = AquiferGridCenterMetrics.snapshot();
             densityBuffersBefore = DensityBufferMetrics.snapshot();
             structureBefore = StructureSpatialIndex.metricsSnapshot();
             serverCpuBefore = currentThreadCpuTime();
@@ -299,6 +302,7 @@ public final class ContinuousWorldgenBenchmark {
 
             WorldgenMetrics.Snapshot worldgenAfter = WorldgenMetrics.snapshot();
             NativePerlinNoiseBackend.Metrics nativeAfter = NativePerlinNoiseBackend.metricsSnapshot();
+            AquiferGridCenterMetrics.Snapshot aquiferAfter = AquiferGridCenterMetrics.snapshot();
             DensityBufferMetrics.Snapshot densityBufferDelta = DensityBufferMetrics.delta(
                     DensityBufferMetrics.snapshot(), densityBuffersBefore);
             StructureSpatialIndex.Metrics structureAfter = StructureSpatialIndex.metricsSnapshot();
@@ -320,6 +324,11 @@ public final class ContinuousWorldgenBenchmark {
             long nativeQueueRejections = nativeAfter.asyncQueueRejections() - nativeBefore.asyncQueueRejections();
             long nativeJobFailures = nativeAfter.nativeJobFailures() - nativeBefore.nativeJobFailures();
             long nativeExceptions = nativeAfter.nativeExceptions() - nativeBefore.nativeExceptions();
+            long aquiferAttempts = aquiferAfter.attempts() - aquiferBefore.attempts();
+            long aquiferSuccesses = aquiferAfter.successes() - aquiferBefore.successes();
+            long aquiferFailures = aquiferAfter.failures() - aquiferBefore.failures();
+            long aquiferCells = aquiferAfter.cells() - aquiferBefore.cells();
+            long aquiferNativeNanos = aquiferAfter.nativeNanos() - aquiferBefore.nativeNanos();
             long requested = (long) MEASURED_ROWS * FRONTIER_WIDTH;
             int completed = measuredCompleted.get();
             int failed = measuredFailed.get();
@@ -383,6 +392,11 @@ public final class ContinuousWorldgenBenchmark {
                     nativeInvalidDimensions, nativeAxisMismatches, nativeBufferMismatches,
                     nativeOversizedVolumes, nativeRuntimeUnavailable, nativeQueueRejections,
                     nativeJobFailures, nativeExceptions
+            );
+            JPEOptimizer.LOGGER.info(
+                    "JPE_AQUIFER_GRID_PREFILL_METRICS attempts={} successes={} failures={} cells={} nativeMs={}",
+                    aquiferAttempts, aquiferSuccesses, aquiferFailures, aquiferCells,
+                    format(aquiferNativeNanos / 1_000_000.0)
             );
 
             if (completed != requested || failed != 0 || inFlight.get() != 0 || doFillCalls < requested) {

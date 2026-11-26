@@ -1,6 +1,7 @@
 package dev.jpe.optimizer.mixin;
 
 import dev.jpe.optimizer.JPEOptimizer;
+import dev.jpe.optimizer.runtime.AquiferGridCenterMetrics;
 import dev.jpe.optimizer.runtime.NativePerlinNoiseBackend;
 import dev.jpe.optimizer.runtime.NativeRuntime;
 import net.minecraft.world.level.levelgen.Aquifer;
@@ -64,10 +65,13 @@ public abstract class AquiferNoiseBasedMixin {
             runtime.aquiferGridCenters(randomMode, seedLo, seedHi,
                     aquifer.jpe$getMinGridX(), aquifer.jpe$getMinGridY(), aquifer.jpe$getMinGridZ(),
                     sizeX, sizeZ, cache);
+            long elapsed = System.nanoTime() - started;
+            AquiferGridCenterMetrics.recordSuccess(cache.length, elapsed);
             JPEOptimizer.LOGGER.debug(
                     "Native Aquifer grid cache populated: mode={} cells={} elapsedUs={}",
-                    randomMode, cache.length, (System.nanoTime() - started) / 1_000.0);
+                    randomMode, cache.length, elapsed / 1_000.0);
         } catch (RuntimeException | LinkageError failure) {
+            AquiferGridCenterMetrics.recordFailure(cache.length, System.nanoTime() - started);
             if (REPORTED_FAILURE.compareAndSet(false, true)) {
                 JPEOptimizer.LOGGER.warn(
                         "Experimental Native Aquifer cache prefill failed; leaving vanilla cache untouched: {}",
