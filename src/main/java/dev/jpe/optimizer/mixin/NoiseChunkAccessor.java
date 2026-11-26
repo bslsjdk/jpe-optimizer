@@ -15,4 +15,7 @@ public interface NoiseChunkAccessor {
 
     @Accessor("blender")
     net.minecraft.world.level.levelgen.blending.Blender jpe$getBlender();
+
+    @Accessor("beardifier")
+    net.minecraft.world.level.levelgen.Beardifier jpe$getBeardifier();
 }
