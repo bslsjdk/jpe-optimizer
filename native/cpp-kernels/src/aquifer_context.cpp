@@ -533,6 +533,206 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_fluid_status_points_b
     return 2;
 }
 
+extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    int32_t skip_sampling_above_y,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    const float* density_values,
+    uint32_t density_count,
+    JpeAquiferCoreOutput* outputs
+) try {
+    constexpr uint32_t kMaxVolumeVoxels = 1024U * 1024U;
+    constexpr uint32_t kNeighbors = 4U;
+    constexpr uint32_t kStatusBatchMax = 65_536U;
+
+    if (context_handle == 0 || expected_world_fingerprint == nullptr
+        || expected_semantic_fingerprint == 0 || size_x == 0 || size_y == 0 || size_z == 0
+        || step_x <= 0 || step_y <= 0 || step_z <= 0
+        || density_values == nullptr || outputs == nullptr) return 1;
+
+    const uint64_t plane = static_cast<uint64_t>(size_x) * size_y;
+    const uint64_t total64 = plane * size_z;
+    if (plane == 0 || total64 == 0 || total64 > kMaxVolumeVoxels
+        || density_count != total64) return 1;
+    const size_t total = static_cast<size_t>(total64);
+    const size_t density_bytes = total * sizeof(*density_values);
+    const size_t output_bytes = total * sizeof(*outputs);
+    if (ranges_overlap(outputs, output_bytes, density_values, density_bytes)
+        || ranges_overlap(outputs, output_bytes, expected_world_fingerprint, 32U)) return 1;
+
+    const auto context = acquire_context(context_handle);
+    if (!context) return 1;
+    if (context->semantic_fingerprint != expected_semantic_fingerprint
+        || std::memcmp(context->world_fingerprint.data(), expected_world_fingerprint,
+                       context->world_fingerprint.size()) != 0) return 1;
+
+    uint32_t random_mode = 0;
+    uint64_t seed_lo = 0;
+    uint64_t seed_hi = 0;
+    int32_t sea_level = 0;
+    int32_t min_y = 0;
+    uint32_t default_fluid_type = 0;
+    uint32_t default_fluid_is_air = 0;
+    uint32_t debug_disable_fluid_generation = 0;
+    {
+        std::shared_lock<std::shared_mutex> lock(context->picker_mutex);
+        if (!context->picker_configured) return 1;
+        random_mode = context->random_mode;
+        seed_lo = context->seed_lo;
+        seed_hi = context->seed_hi;
+        sea_level = context->sea_level;
+        min_y = context->min_y;
+        default_fluid_type = context->default_fluid_type;
+        default_fluid_is_air = context->default_fluid_is_air;
+        debug_disable_fluid_generation = context->debug_disable_fluid_generation;
+    }
+
+    auto global_picker = [&](int32_t y) noexcept -> JpeAquiferFluidStatus {
+        if (debug_disable_fluid_generation != 0) {
+            const int32_t empty_level = static_cast<int32_t>(
+                static_cast<uint32_t>(min_y) * 2U);
+            return JpeAquiferFluidStatus{empty_level, context->air_type};
+        }
+        if (y < std::min(-54, sea_level)) {
+            return JpeAquiferFluidStatus{-54, context->lava_type};
+        }
+        return JpeAquiferFluidStatus{sea_level, default_fluid_type};
+    };
+    auto fluid_at = [&](const JpeAquiferFluidStatus& status, int32_t y) noexcept -> uint32_t {
+        return y < status.fluid_level ? status.fluid_type : context->air_type;
+    };
+
+    // Stage every result first. The caller's output array is committed only after
+    // nearest-cell selection, FluidStatus lookup, barrier sampling and core math succeed.
+    std::vector<JpeAquiferCoreOutput> staged(total);
+    std::vector<uint32_t> active_indices;
+    std::vector<int32_t> active_x, active_y, active_z;
+    active_indices.reserve(total);
+    active_x.reserve(total);
+    active_y.reserve(total);
+    active_z.reserve(total);
+
+    for (uint32_t index = 0; index < density_count; ++index) {
+        const float density = density_values[index];
+        if (density > 0.0F) {
+            staged[index] = JpeAquiferCoreOutput{0U, context->air_type, 0U};
+            continue;
+        }
+
+        // DensityVolume.indexUnchecked is y + (x + z * sizeX) * sizeY.
+        const uint32_t y_index = static_cast<uint32_t>(index % size_y);
+        const uint32_t x_index = static_cast<uint32_t>((index / size_y) % size_x);
+        const uint32_t z_index = static_cast<uint32_t>(index / plane);
+        const int32_t x = static_cast<int32_t>(
+            static_cast<uint32_t>(min_x) + static_cast<uint32_t>(x_index) * static_cast<uint32_t>(step_x));
+        const int32_t y = static_cast<int32_t>(
+            static_cast<uint32_t>(min_y) + static_cast<uint32_t>(y_index) * static_cast<uint32_t>(step_y));
+        const int32_t z = static_cast<int32_t>(
+            static_cast<uint32_t>(min_z) + static_cast<uint32_t>(z_index) * static_cast<uint32_t>(step_z));
+
+        const JpeAquiferFluidStatus global = global_picker(y);
+        const uint32_t global_state = fluid_at(global, y);
+        if (y > skip_sampling_above_y) {
+            staged[index] = JpeAquiferCoreOutput{1U, global_state, 0U};
+            continue;
+        }
+        if (global_state == context->lava_type) {
+            staged[index] = JpeAquiferCoreOutput{
+                1U,
+                debug_disable_fluid_generation != 0 ? context->air_type : context->lava_type,
+                0U
+            };
+            continue;
+        }
+
+        active_indices.push_back(index);
+        active_x.push_back(x);
+        active_y.push_back(y);
+        active_z.push_back(z);
+    }
+
+    if (!active_indices.empty()) {
+        const uint32_t active_count = static_cast<uint32_t>(active_indices.size());
+        const size_t neighbor_count = static_cast<size_t>(active_count) * kNeighbors;
+        std::vector<int32_t> center_x(neighbor_count), center_y(neighbor_count);
+        std::vector<int32_t> center_z(neighbor_count), distances(neighbor_count);
+        if (jpe_cpp_aquifer_nearest_four(
+                random_mode, seed_lo, seed_hi,
+                active_x.data(), active_y.data(), active_z.data(), active_count,
+                center_x.data(), center_y.data(), center_z.data(), distances.data()) != 0) {
+            return 2;
+        }
+
+        std::vector<uint64_t> status_keys(neighbor_count);
+        for (size_t i = 0; i < neighbor_count; ++i) {
+            status_keys[i] = block_pos_as_long(center_x[i], center_y[i], center_z[i]);
+        }
+        std::vector<JpeAquiferFluidStatus> closest_statuses(neighbor_count);
+        // Status point API has a bounded per-call batch. Four neighbours per
+        // voxel means at most 16,384 voxels are sent in one status batch.
+        constexpr uint32_t kVoxelsPerStatusBatch = kStatusBatchMax / kNeighbors;
+        for (uint32_t start = 0; start < active_count; start += kVoxelsPerStatusBatch) {
+            const uint32_t voxels = std::min(kVoxelsPerStatusBatch, active_count - start);
+            const size_t offset = static_cast<size_t>(start) * kNeighbors;
+            const uint32_t statuses = voxels * kNeighbors;
+            if (jpe_cpp_aquifer_context_compute_fluid_status_points_batch(
+                    context_handle, expected_world_fingerprint, expected_semantic_fingerprint,
+                    status_keys.data() + offset,
+                    center_x.data() + offset, center_y.data() + offset, center_z.data() + offset,
+                    statuses, closest_statuses.data() + offset) != 0) {
+                return 2;
+            }
+        }
+
+        std::vector<float> barrier_values(active_count);
+        if (jpe_cpp_density_graph_evaluate_points_f32(
+                context->graph_handles[0],
+                active_x.data(), active_y.data(), active_z.data(), active_count,
+                barrier_values.data(), static_cast<uint64_t>(barrier_values.size())) != 0) {
+            return 2;
+        }
+
+        std::vector<JpeAquiferCoreInput> core_inputs(active_count);
+        std::vector<JpeAquiferCoreOutput> core_outputs(active_count);
+        for (uint32_t i = 0; i < active_count; ++i) {
+            const uint32_t source_index = active_indices[i];
+            auto& input = core_inputs[i];
+            input.block_y = active_y[i];
+            input.density = static_cast<double>(density_values[source_index]);
+            input.barrier_noise = barrier_values[i];
+            for (uint32_t neighbor = 0; neighbor < kNeighbors; ++neighbor) {
+                const size_t neighbor_index = static_cast<size_t>(i) * kNeighbors + neighbor;
+                input.distance_sqr[neighbor] = distances[neighbor_index];
+                input.closest[neighbor] = closest_statuses[neighbor_index];
+            }
+            const int32_t below_y = static_cast<int32_t>(
+                static_cast<uint32_t>(active_y[i]) - 1U);
+            const JpeAquiferFluidStatus global_below = global_picker(below_y);
+            input.global_fluid_below_type = fluid_at(global_below, below_y);
+            input.air_type = context->air_type;
+            input.water_type = context->water_type;
+            input.lava_type = context->lava_type;
+            input.debug_disable_fluid_generation = debug_disable_fluid_generation;
+        }
+        if (jpe_cpp_aquifer_compute_substance_batch(
+                core_inputs.data(), active_count, core_outputs.data()) != 0) {
+            return 1;
+        }
+        for (uint32_t i = 0; i < active_count; ++i) {
+            staged[active_indices[i]] = core_outputs[i];
+        }
+    }
+
+    for (size_t i = 0; i < total; ++i) outputs[i] = staged[i];
+    return 0;
+} catch (...) {
+    return 2;
+}
+
 extern "C" JPE_API int32_t jpe_cpp_aquifer_context_evaluate_samplers_f32(
     uint64_t context_handle,
     const uint8_t* expected_world_fingerprint,
