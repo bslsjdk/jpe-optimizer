@@ -2,14 +2,15 @@
 """Verify and inspect the exact Mojang 26.3 release and NeoForge-patched jar.
 
 Minecraft binaries and decompiled output stay under build/ and are never committed
-or uploaded as workflow artifacts. The report contains hashes and class-level
-comparison metadata only.
+or uploaded as workflow artifacts. The report contains hashes, method inventories, and resolved bytecode references,
+not redistributed Mojang/NeoForge source.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.request
@@ -235,6 +236,89 @@ def compare_method_inventories(
                     lines.append(f"    {name}{descriptor}: Code bytes={code_length}")
     return lines
 
+REFERENCE_METHODS = {
+    "net/minecraft/world/level/levelgen/NoiseBasedChunkGenerator": {
+        "doFill", "buildSurface", "generateCarvers",
+        "lambda$applyCarvingMask$0", "lambda$createFluidPicker$0",
+    },
+    "net/minecraft/world/level/levelgen/Aquifer$NoiseBasedAquifer": {
+        "computeSubstance", "computeFluid", "calculatePressure",
+        "computeFluidType", "computeRandomizedFluidSurfaceLevel",
+        "computeSurfaceLevel", "surfaceLevel", "maxSurfaceLevel",
+        "getAquiferStatus",
+    },
+    "net/minecraft/world/level/levelgen/carver/WorldCarver": {
+        "carveEllipsoid", "canReach", "getRange",
+    },
+    "net/minecraft/world/level/levelgen/carver/CaveWorldCarver": {
+        "carve", "createTunnel", "createRoom", "shouldSkip",
+    },
+    "net/minecraft/world/level/levelgen/carver/CanyonWorldCarver": {
+        "carve", "doCarve", "shouldSkip", "updateVerticalRadius",
+    },
+    "net/minecraft/world/level/chunk/CarverOutput": {"carve", "minY", "maxY"},
+}
+
+
+def resolved_bytecode_references(jar: Path, class_name: str) -> dict[str, set[str]]:
+    """Use javap to resolve CP references made by each selected method."""
+    process = subprocess.run(
+        ["javap", "-classpath", str(jar), "-p", "-c", "-s", class_name.replace("/", ".")],
+        check=True, capture_output=True, text=True,
+    )
+    methods: dict[str, set[str]] = {}
+    current_method: str | None = None
+    in_code = False
+    for line in process.stdout.splitlines():
+        stripped = line.strip()
+        if "(" in stripped and stripped.endswith(";") and not stripped.startswith("descriptor:"):
+            current_method = stripped
+            in_code = False
+            continue
+        if stripped == "Code:":
+            in_code = current_method is not None
+            if in_code:
+                methods.setdefault(current_method, set())
+            continue
+        if not in_code or current_method is None:
+            continue
+        reference = re.search(r"// (?:InterfaceMethod|Method|Field) (.+)$", line)
+        if reference:
+            methods[current_method].add(reference.group(1))
+    return methods
+
+
+def execution_stage_reference_inventory(vanilla_jar: Path, patched_jar: Path) -> list[str]:
+    """Summarize resolved call/field references for the stage methods used by a native port."""
+    lines: list[str] = []
+    for class_name, selected_names in REFERENCE_METHODS.items():
+        vanilla = resolved_bytecode_references(vanilla_jar, class_name)
+        patched = resolved_bytecode_references(patched_jar, class_name)
+        lines.append(f"{class_name}:")
+        selected = [
+            declaration for declaration in patched
+            if declaration.split("(", 1)[0].split()[-1] in selected_names
+        ]
+        for declaration in sorted(selected):
+            current = patched[declaration]
+            previous = vanilla.get(declaration, set())
+            added = sorted(current - previous)
+            removed = sorted(previous - current)
+            lines.append(f"  {declaration}")
+            lines.append(f"    patched references: {len(current)}")
+            for reference in sorted(current):
+                lines.append(f"      {reference}")
+            if added:
+                lines.append("    added vs vanilla:")
+                lines.extend(f"      + {reference}" for reference in added)
+            if removed:
+                lines.append("    removed vs vanilla:")
+                lines.extend(f"      - {reference}" for reference in removed)
+        if not selected:
+            lines.append("  (no selected methods found)")
+    return lines
+
+
 def main() -> int:
     root = Path("build/source-audit")
     root.mkdir(parents=True, exist_ok=True)
@@ -304,6 +388,7 @@ def main() -> int:
 
     all_names = sorted(set(vanilla_hashes) | set(patched_hashes))
     method_report = compare_method_inventories(vanilla_inner, PATCHED_JAR, all_names)
+    execution_references = execution_stage_reference_inventory(vanilla_inner, PATCHED_JAR)
     changed = [name for name in all_names if vanilla_hashes.get(name) != patched_hashes.get(name)]
     report = [
         f"Minecraft version: {VERSION} ({version_data['type']})",
@@ -325,6 +410,9 @@ def main() -> int:
         "",
         "Method-level inventory (raw Code hashes may differ when constant-pool indices are remapped):",
         *method_report,
+        "",
+        "Resolved execution-stage method and field references (NeoForge patched, compared with Mojang vanilla):",
+        *execution_references,
         "",
         "Decompiled source generated locally in build/source-audit/decompiled/ (not committed or uploaded).",
     ]
