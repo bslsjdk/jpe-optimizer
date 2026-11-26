@@ -5,6 +5,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../cpp-kernels/src/perlin_stack.cpp");
     println!("cargo:rerun-if-changed=../cpp-kernels/src/density_graph.cpp");
     println!("cargo:rerun-if-changed=../cpp-kernels/src/blender.cpp");
+    println!("cargo:rerun-if-changed=../cpp-kernels/src/aquifer_random.cpp");
     println!("cargo:rerun-if-changed=../include/jpe_native_api.h");
     let mut build = cc::Build::new();
     build.cpp(true)
@@ -17,6 +18,7 @@ fn main() {
         .file("../cpp-kernels/src/perlin_stack.cpp")
         .file("../cpp-kernels/src/density_graph.cpp")
         .file("../cpp-kernels/src/blender.cpp")
+        .file("../cpp-kernels/src/aquifer_random.cpp")
         .include("../include")
         .define("JPE_NATIVE_BUILD", None);
     // The scalar comparison helper is present only in explicit benchmark builds,
