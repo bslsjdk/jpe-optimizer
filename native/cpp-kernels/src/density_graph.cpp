@@ -150,7 +150,7 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                     || node.immediate != 0.0 || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
                 break;
             case kGradient:
-                if (node.input_a > 2 || node.input_b != 0
+                if (node.input_a > 2 || node.input_b > 2
                     || !std::isfinite(decode_float(node.reserved))
                     || !std::isfinite(node.immediate) || !std::isfinite(node.auxiliary)
                     || !std::isfinite(node.tertiary)
@@ -475,10 +475,29 @@ int32_t evaluate_density_graph_impl(
                 case kGradient: {
                     const int32_t from_coordinate = static_cast<int32_t>(node.immediate);
                     const int32_t to_coordinate = static_cast<int32_t>(node.auxiliary);
+                    const int32_t coordinate_range = static_cast<int32_t>(
+                        static_cast<uint32_t>(to_coordinate) - static_cast<uint32_t>(from_coordinate));
                     const Scalar from_value = static_cast<Scalar>(decode_float(node.reserved));
                     const Scalar to_value = static_cast<Scalar>(node.tertiary);
-                    const int64_t coordinate_range = static_cast<int64_t>(to_coordinate) - from_coordinate;
-                    const Scalar inverse_range = Scalar(1) / static_cast<Scalar>(coordinate_range);
+                    const Scalar coordinate_factor =
+                        (to_value - from_value) / static_cast<Scalar>(coordinate_range);
+                    const auto wrapped_subtract = [](int32_t left, int32_t right) {
+                        const uint32_t bits = static_cast<uint32_t>(left) - static_cast<uint32_t>(right);
+                        int32_t result;
+                        std::memcpy(&result, &bits, sizeof(result));
+                        return result;
+                    };
+                    const auto floor_div = [](int64_t value, int64_t divisor) {
+                        int64_t quotient = value / divisor;
+                        const int64_t remainder = value % divisor;
+                        if (remainder != 0 && ((remainder < 0) != (divisor < 0))) --quotient;
+                        return quotient;
+                    };
+                    const auto floor_mod = [&](int64_t value, int64_t divisor) {
+                        return value - floor_div(value, divisor) * divisor;
+                    };
+                    const int32_t min_coordinate = std::min(from_coordinate, to_coordinate);
+                    const int32_t max_coordinate = std::max(from_coordinate, to_coordinate);
                     size_t out = 0;
                     for (uint32_t z = 0; z < size_z; ++z) {
                         const int32_t wz = wrapped_coordinate(min_z, z, step_z);
@@ -488,11 +507,26 @@ int32_t evaluate_density_graph_impl(
                                 const int32_t wy = wrapped_coordinate(min_y, y, step_y);
                                 const int32_t coordinate = node.input_a == 0 ? wx
                                     : node.input_a == 1 ? wy : wz;
-                                const int64_t coordinate_delta = static_cast<int64_t>(coordinate) - from_coordinate;
-                                const Scalar normalized = static_cast<Scalar>(coordinate_delta) * inverse_range;
-                                const Scalar t = std::min(std::max(normalized, Scalar(0)), Scalar(1));
-                                const Scalar delta = to_value - from_value;
-                                volatile Scalar scaled = delta * t;
+                                const int32_t relative = wrapped_subtract(coordinate, from_coordinate);
+                                int32_t sample_offset;
+                                if (node.input_b == 0) {
+                                    const int32_t clamped = std::min(
+                                        std::max(coordinate, min_coordinate), max_coordinate);
+                                    sample_offset = wrapped_subtract(clamped, from_coordinate);
+                                } else if (node.input_b == 1) {
+                                    sample_offset = static_cast<int32_t>(
+                                        floor_mod(relative, coordinate_range));
+                                } else {
+                                    const int64_t tile_index = floor_div(relative, coordinate_range);
+                                    const int64_t local_coordinate =
+                                        static_cast<int64_t>(relative) - tile_index * coordinate_range;
+                                    sample_offset = static_cast<int32_t>(
+                                        (tile_index & 1) == 0
+                                            ? local_coordinate
+                                            : static_cast<int64_t>(coordinate_range) - local_coordinate);
+                                }
+                                volatile Scalar scaled =
+                                    static_cast<Scalar>(sample_offset) * coordinate_factor;
                                 values[out++] = from_value + scaled;
                             }
                         }
