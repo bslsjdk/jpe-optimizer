@@ -1,9 +1,11 @@
 package dev.jpe.optimizer.mixin;
 
+import dev.jpe.optimizer.JPEOptimizer;
 import dev.jpe.optimizer.mixin.AquiferNoiseBasedAccessor;
 import dev.jpe.optimizer.worldgen.DensityVolumeIndex;
 import dev.jpe.optimizer.worldgen.NativeDensityGraphCompiler;
 import dev.jpe.optimizer.worldgen.SectionCachePolicy;
+import dev.jpe.optimizer.runtime.NativeRuntime;
 import dev.jpe.optimizer.worldgen.WorldgenMetrics;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
@@ -23,6 +25,8 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Shadow;
 
+import java.util.concurrent.atomic.AtomicBoolean;
+
 /**
  * Rewrites the vanilla block-fill loop while preserving its density, aquifer,
  * debug-surface, heightmap, and post-processing operations.
@@ -31,6 +35,7 @@ import org.spongepowered.asm.mixin.Shadow;
 public abstract class NoiseBasedChunkGeneratorMixin {
     private static final boolean POSITIVE_DENSITY_AQUIFER_FAST_PATH =
             !Boolean.getBoolean("jpe.disablePositiveDensityAquiferFastPath");
+    private static final AtomicBoolean REPORTED_NATIVE_AQUIFER_VOLUME_MISMATCH = new AtomicBoolean();
     @Shadow @Final private Holder<NoiseGeneratorSettings> settings;
     @Shadow @Final private static BlockState AIR;
     @Shadow
@@ -66,11 +71,15 @@ public abstract class NoiseBasedChunkGeneratorMixin {
         // immutable C++ plans. This does not replace computeSubstance yet; it proves
         // the real world settings can be lowered before the full-volume takeover.
         NativeDensityGraphCompiler.AquiferSamplerPlans aquiferSamplerPlans = null;
-        boolean prepareNativeAquifer = Boolean.getBoolean("jpe.nativeAquiferSamplerPlansEnabled")
+        boolean nativeAquiferVolumeEnabled = Boolean.getBoolean("jpe.nativeAquiferSubstanceEnabled")
                 || Boolean.getBoolean("jpe.nativeAquiferFluidStatusEnabled");
+        boolean nativeAquiferVolumeStrict = Boolean.getBoolean("jpe.nativeAquiferSubstanceStrict")
+                || Boolean.getBoolean("jpe.nativeAquiferFluidStatusStrict");
+        boolean prepareNativeAquifer = Boolean.getBoolean("jpe.nativeAquiferSamplerPlansEnabled")
+                || nativeAquiferVolumeEnabled;
         if (prepareNativeAquifer) {
             boolean strictAquiferPlans = Boolean.getBoolean("jpe.nativeAquiferSamplerPlansStrict")
-                    || Boolean.getBoolean("jpe.nativeAquiferFluidStatusStrict");
+                    || nativeAquiferVolumeStrict;
             if (noiseAquifer == null) {
                 if (strictAquiferPlans) {
                     throw new IllegalStateException(
@@ -94,13 +103,16 @@ public abstract class NoiseBasedChunkGeneratorMixin {
             }
         }
         dev.jpe.optimizer.worldgen.NativeAquiferFluidStatusPrefill.Prepared nativeAquiferPrepared = null;
-        if (Boolean.getBoolean("jpe.nativeAquiferFluidStatusEnabled") && noiseAquifer != null) {
-            nativeAquiferPrepared = dev.jpe.optimizer.worldgen.NativeAquiferFluidStatusPrefill.open(
+        if (nativeAquiferVolumeEnabled && noiseAquifer != null) {
+            nativeAquiferPrepared = NativeAquiferFluidStatusPrefill.open(
                     noiseAquifer, noiseChunk, chunk, generatorSettings, aquiferSamplerPlans);
-            if (nativeAquiferPrepared == null
-                    && Boolean.getBoolean("jpe.nativeAquiferFluidStatusStrict")) {
-                throw new IllegalStateException("Strict native full-volume Aquifer preparation was not completed");
+            if (nativeAquiferPrepared == null && nativeAquiferVolumeStrict) {
+                throw new IllegalStateException(
+                        "Strict native full-volume Aquifer preparation was not completed");
             }
+        } else if (nativeAquiferVolumeStrict) {
+            throw new IllegalStateException(
+                    "Strict native full-volume Aquifer mode requires NoiseBasedAquifer");
         }
 
         boolean profile = WorldgenMetrics.enabled();
@@ -127,11 +139,42 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                 }
                 sampledDensity = finalDensity.sampleVolume(volume);
             }
-            try (ScopedDensityBuffer densityBuffer = sampledDensity;
-                 dev.jpe.optimizer.runtime.NativeRuntime.AquiferSubstanceVolumeResult nativeAquiferResults =
-                         nativeAquiferPrepared == null ? null
-                                 : nativeAquiferPrepared.computeSubstanceVolumeF32(
-                                         noiseAquifer, volume, densityBuffer)) {
+            try (ScopedDensityBuffer densityBuffer = sampledDensity) {
+            NativeRuntime.AquiferSubstanceVolumeResult computedNativeVolume = null;
+            if (nativeAquiferPrepared != null) {
+                try {
+                    computedNativeVolume = nativeAquiferPrepared.computeSubstanceVolumeF32(
+                            noiseAquifer, volume, densityBuffer);
+                } catch (RuntimeException | LinkageError failure) {
+                    if (nativeAquiferVolumeStrict) {
+                        throw new IllegalStateException(
+                                "Strict native Aquifer volume execution failed; Java fallback is disabled",
+                                failure);
+                    }
+                    JPEOptimizer.LOGGER.warn(
+                            "Native Aquifer volume execution failed; this chunk will use vanilla: {}",
+                            failure.toString());
+                }
+            }
+            try (NativeRuntime.AquiferSubstanceVolumeResult nativeAquiferResults = computedNativeVolume) {
+            boolean nativeVolumeAccepted = nativeAquiferResults != null;
+            if (nativeVolumeAccepted && (Boolean.getBoolean("jpe.nativeAquiferSubstanceVerify")
+                    || nativeAquiferVolumeStrict)) {
+                String mismatch = jpe$verifyNativeAquiferVolume(
+                        aquifer, nativeAquiferPrepared, nativeAquiferResults, volume, densityBuffer);
+                if (mismatch != null) {
+                    if (nativeAquiferVolumeStrict) {
+                        throw new IllegalStateException(
+                                "Strict native Aquifer full-volume parity failed: " + mismatch);
+                    }
+                    nativeVolumeAccepted = false;
+                    if (REPORTED_NATIVE_AQUIFER_VOLUME_MISMATCH.compareAndSet(false, true)) {
+                        JPEOptimizer.LOGGER.warn(
+                                "Native Aquifer full-volume parity mismatch; this and subsequent chunks use vanilla: {}",
+                                mismatch);
+                    }
+                }
+            }
             if (profile) {
                 densityNanos = System.nanoTime() - densityStart;
                 fillStart = System.nanoTime();
@@ -174,7 +217,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                             long aquiferStart = sampleTiming ? System.nanoTime() : 0L;
                             BlockState state;
                             boolean scheduleFluidUpdate;
-                            if (nativeAquiferResults != null) {
+                            if (nativeVolumeAccepted) {
                                 if (nativeAquiferResults.hasBlockState(densityIndex)) {
                                     state = nativeAquiferPrepared.blockStateForToken(
                                             nativeAquiferResults.blockStateToken(densityIndex));
@@ -230,6 +273,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                 }
             }
             }
+            }
         } finally {
             try {
                 if (nativeAquiferPrepared != null) nativeAquiferPrepared.close();
@@ -243,6 +287,42 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                     sampledAquiferNanos, sampledPlacementNanos, timingSampleCount,
                     aquiferCallsExecuted, aquiferCallsSkipped);
         }
+    }
+
+    private static String jpe$verifyNativeAquiferVolume(
+            Aquifer aquifer,
+            NativeAquiferFluidStatusPrefill.Prepared nativeAquifer,
+            NativeRuntime.AquiferSubstanceVolumeResult nativeResults,
+            DensityVolume volume,
+            ScopedDensityBuffer density
+    ) {
+        for (int z = 0; z < volume.sizeZ(); ++z) {
+            int blockZ = volume.blockZ(z);
+            for (int x = 0; x < volume.sizeX(); ++x) {
+                int blockX = volume.blockX(x);
+                for (int y = 0; y < volume.sizeY(); ++y) {
+                    int blockY = volume.blockY(y);
+                    int index = volume.indexUnchecked(x, y, z);
+                    BlockState vanillaState = aquifer.computeSubstance(
+                            blockX, blockY, blockZ, density.get(index));
+                    boolean vanillaSchedule = aquifer.shouldScheduleFluidUpdate();
+                    boolean nativeHasState = nativeResults.hasBlockState(index);
+                    BlockState nativeState = nativeHasState
+                            ? nativeAquifer.blockStateForToken(nativeResults.blockStateToken(index))
+                            : null;
+                    boolean nativeSchedule = nativeResults.shouldScheduleFluidUpdate(index);
+                    if ((vanillaState == null) != !nativeHasState
+                            || (vanillaState != null && !vanillaState.equals(nativeState))
+                            || vanillaSchedule != nativeSchedule) {
+                        return "index=" + index + " pos=(" + blockX + "," + blockY + "," + blockZ
+                                + ") vanilla=" + vanillaState + " native=" + nativeState
+                                + " vanillaSchedule=" + vanillaSchedule
+                                + " nativeSchedule=" + nativeSchedule;
+                    }
+                }
+            }
+        }
+        return null;
     }
 
 }
