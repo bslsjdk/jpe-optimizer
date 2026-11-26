@@ -683,8 +683,12 @@ public final class NativeRuntime implements AutoCloseable {
                 && aquiferContextComputeFluidStatusBatch != null
                 && aquiferContextConfigureGlobalFluidPicker != null
                 && aquiferContextComputeFluidStatusPointsBatch != null
-                && aquiferContextComputeSubstanceVolumeF32 != null
-                && aquiferContextComputeDensityAndSubstanceVolumeF32 != null;
+                && aquiferContextComputeSubstanceVolumeF32 != null;
+    }
+
+    /** True when the runtime can fuse final-density evaluation with Aquifer decisions. */
+    public boolean supportsFusedDensityAquifer() {
+        return aquiferContextComputeDensityAndSubstanceVolumeF32 != null;
     }
 
     /**
