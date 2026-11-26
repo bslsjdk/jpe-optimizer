@@ -128,7 +128,9 @@ enum {
     JPE_DENSITY_INTERPOLATED = 26,
     JPE_DENSITY_RANGE_CHOICE = 27,
     JPE_DENSITY_ROUND = 28,
-    JPE_DENSITY_LOG = 29
+    JPE_DENSITY_LOG = 29,
+    /* DISTANCE_TO_POINT: input_a=DistanceMetric (0=CHEBYSHEV, 1=EUCLIDEAN, 2=EUCLIDEAN_SQUARED, 3=MANHATTAN); immediate/auxiliary/tertiary=integer point x/y/z. */
+    JPE_DENSITY_DISTANCE_TO_POINT = 30
 };
 /* Returns a retained compiled-plan handle, or zero for an invalid graph. */
 JPE_API uint64_t jpe_runtime_density_graph_compile(
