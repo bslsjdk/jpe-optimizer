@@ -34,6 +34,36 @@ struct JpeDensityNode {
 
 const _: [(); 40] = [(); std::mem::size_of::<JpeDensityNode>()];
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct JpeAquiferFluidStatus {
+    fluid_level: i32,
+    fluid_type: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct JpeAquiferCoreInput {
+    block_y: i32,
+    density: f64,
+    barrier_noise: f32,
+    distance_sqr: [i32; 4],
+    closest: [JpeAquiferFluidStatus; 4],
+    global_fluid_below_type: u32,
+    air_type: u32,
+    water_type: u32,
+    lava_type: u32,
+    debug_disable_fluid_generation: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+struct JpeAquiferCoreOutput {
+    has_block_state: u32,
+    block_state_type: u32,
+    should_schedule_fluid_update: u32,
+}
+
 const DENSITY_NO_INPUT: u32 = u32::MAX;
 const DENSITY_CONST: u32 = 1;
 const DENSITY_X: u32 = 2;
@@ -67,6 +97,10 @@ unsafe extern "C" {
         output: *mut f32, output_length: u64,
     ) -> i32;
     fn jpe_runtime_density_graph_release(graph_handle: u64) -> i32;
+    fn jpe_runtime_aquifer_compute_substance_core(
+        input: *const JpeAquiferCoreInput,
+        output: *mut JpeAquiferCoreOutput,
+    ) -> i32;
 }
 
 #[repr(C)]
@@ -2012,6 +2046,127 @@ mod tests {
         }, STATUS_OK);
         assert_eq!(logged[0], (e as f64).ln() as f32);
         assert_eq!(unsafe { jpe_runtime_density_graph_release(log_graph) }, STATUS_OK);
+    }
+
+    #[test]
+    fn aquifer_core_preserves_density_and_flowing_update_decisions() {
+        const AIR: u32 = 0;
+        const WATER: u32 = 1;
+        const LAVA: u32 = 2;
+        let water = JpeAquiferFluidStatus { fluid_level: 20, fluid_type: WATER };
+        let lava = JpeAquiferFluidStatus { fluid_level: 20, fluid_type: LAVA };
+        let air = JpeAquiferFluidStatus { fluid_level: -64, fluid_type: WATER };
+        let base = JpeAquiferCoreInput {
+            block_y: 10,
+            density: -1.0,
+            barrier_noise: 0.0,
+            distance_sqr: [0, 1, 4, 9],
+            closest: [water, water, water, water],
+            global_fluid_below_type: AIR,
+            air_type: AIR,
+            water_type: WATER,
+            lava_type: LAVA,
+            debug_disable_fluid_generation: 0,
+        };
+
+        // Positive density means terrain wins and no aquifer state is returned.
+        let mut positive = base;
+        positive.density = 0.25;
+        let mut output = JpeAquiferCoreOutput::default();
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_compute_substance_core(&positive, &mut output)
+        }, STATUS_OK);
+        assert_eq!(output.has_block_state, 0);
+        assert_eq!(output.should_schedule_fluid_update, 0);
+
+        // Equal fluid statuses have no pressure barrier. Water above a global
+        // lava layer schedules a fluid update, matching the special adjacency case.
+        let mut adjacency = base;
+        adjacency.global_fluid_below_type = LAVA;
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_compute_substance_core(&adjacency, &mut output)
+        }, STATUS_OK);
+        assert_eq!(output.has_block_state, 1);
+        assert_eq!(output.block_state_type, WATER);
+        assert_eq!(output.should_schedule_fluid_update, 1);
+
+        // At similarity zero, the closest fluid is retained but a nearby
+        // unequal status requests a fluid update.
+        let mut threshold = base;
+        threshold.distance_sqr = [0, 25, 100, 144];
+        threshold.closest = [water, lava, water, water];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_compute_substance_core(&threshold, &mut output)
+        }, STATUS_OK);
+        assert_eq!(output.has_block_state, 1);
+        assert_eq!(output.block_state_type, WATER);
+        assert_eq!(output.should_schedule_fluid_update, 1);
+
+        // Debug fluid suppression changes the returned block to air without
+        // suppressing the aquifer's fluid-update decision.
+        let mut debug = adjacency;
+        debug.debug_disable_fluid_generation = 1;
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_compute_substance_core(&debug, &mut output)
+        }, STATUS_OK);
+        assert_eq!(output.has_block_state, 1);
+        assert_eq!(output.block_state_type, AIR);
+        assert_eq!(output.should_schedule_fluid_update, 1);
+
+        // Keep a non-fluid status fixture available to guard at(y) semantics.
+        assert_eq!(air.fluid_type, WATER);
+    }
+
+    #[test]
+    fn aquifer_core_applies_lava_water_pressure_and_barrier_noise() {
+        const AIR: u32 = 0;
+        const WATER: u32 = 1;
+        const LAVA: u32 = 2;
+        let water = JpeAquiferFluidStatus { fluid_level: 30, fluid_type: WATER };
+        let lava = JpeAquiferFluidStatus { fluid_level: 30, fluid_type: LAVA };
+        let input = JpeAquiferCoreInput {
+            block_y: 10,
+            density: -0.5,
+            barrier_noise: 0.0,
+            distance_sqr: [0, 1, 4, 9],
+            closest: [water, lava, water, water],
+            global_fluid_below_type: AIR,
+            air_type: AIR,
+            water_type: WATER,
+            lava_type: LAVA,
+            debug_disable_fluid_generation: 0,
+        };
+        let mut output = JpeAquiferCoreOutput::default();
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_compute_substance_core(&input, &mut output)
+        }, STATUS_OK);
+        assert_eq!(output.has_block_state, 0,
+            "water/lava interface pressure should leave a solid barrier");
+
+        // A large positive barrier-noise sample raises pressure enough to
+        // suppress fluid even when both nearby statuses are the same fluid.
+        let same_status = JpeAquiferFluidStatus { fluid_level: 30, fluid_type: WATER };
+        let noisy = JpeAquiferCoreInput {
+            block_y: 10,
+            density: -1.0,
+            barrier_noise: 1.0,
+            distance_sqr: [0, 1, 4, 9],
+            closest: [
+                JpeAquiferFluidStatus { fluid_level: 30, fluid_type: WATER },
+                JpeAquiferFluidStatus { fluid_level: 20, fluid_type: WATER },
+                same_status,
+                same_status,
+            ],
+            global_fluid_below_type: AIR,
+            air_type: AIR,
+            water_type: WATER,
+            lava_type: LAVA,
+            debug_disable_fluid_generation: 0,
+        };
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_compute_substance_core(&noisy, &mut output)
+        }, STATUS_OK);
+        assert_eq!(output.has_block_state, 0);
     }
 
     #[test]
