@@ -246,7 +246,7 @@ typedef struct JpeAquiferCellLocation {
 typedef struct JpeAquiferNearestFour {
     uint32_t index[4];
     int32_t distance_sqr[4];
-};
+} JpeAquiferNearestFour;
 
 /* Select the four nearest of the twelve Minecraft 26.3 aquifer neighbor cells.
  * Equal distances retain Minecraft's insertion behavior (later equal candidates
