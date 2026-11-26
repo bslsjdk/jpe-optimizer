@@ -1197,7 +1197,7 @@ mod tests {
         let mut measurements: [Vec<f64>; 6] =
             std::array::from_fn(|_| Vec::with_capacity(51));
         let mut tile_output = vec![0.0_f32; output.len()];
-        for round in 0..21 {
+        for round in 0..51 {
             // Rotate the order each round to balance thermal / frequency drift.
             for step in 0..tile_limits.len() {
                 let index = (step + round) % tile_limits.len();
