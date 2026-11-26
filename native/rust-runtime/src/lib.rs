@@ -42,6 +42,36 @@ pub struct JpeAquiferFluidStatus {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct JpeAquiferFluidProbe {
+    pub status: JpeAquiferFluidStatus,
+    pub valid: u32,
+    pub fluid_type_is_air: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct JpeAquiferFluidStatusInput {
+    pub block_y: i32,
+    pub global_fluid: JpeAquiferFluidStatus,
+    pub surface_level: [i32; 13],
+    pub global_fluid_at_surface: [JpeAquiferFluidProbe; 13],
+    pub exclusion_noise: f32,
+    pub floodedness_noise: f32,
+    pub fluid_level_spread_noise: f32,
+    pub lava_noise: f32,
+    pub lava_type: u32,
+}
+
+const _: [(); 16] = [(); std::mem::size_of::<JpeAquiferFluidProbe>()];
+const _: [(); 296] = [(); std::mem::size_of::<JpeAquiferFluidStatusInput>()];
+const _: [(); 4] = [(); std::mem::offset_of!(JpeAquiferFluidStatusInput, global_fluid)];
+const _: [(); 12] = [(); std::mem::offset_of!(JpeAquiferFluidStatusInput, surface_level)];
+const _: [(); 64] = [(); std::mem::offset_of!(JpeAquiferFluidStatusInput, global_fluid_at_surface)];
+const _: [(); 272] = [(); std::mem::offset_of!(JpeAquiferFluidStatusInput, exclusion_noise)];
+const _: [(); 292] = [(); std::mem::offset_of!(JpeAquiferFluidStatusInput, lava_type)];
+
+#[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct JpeAquiferContextCreateInfo {
     pub density_graph_handles: [u64; 6],
@@ -163,6 +193,11 @@ unsafe extern "C" {
     fn jpe_cpp_aquifer_compute_substance_core(
         input: *const JpeAquiferCoreInput,
         output: *mut JpeAquiferCoreOutput,
+    ) -> i32;
+    fn jpe_cpp_aquifer_compute_fluid_status_batch(
+        inputs: *const JpeAquiferFluidStatusInput,
+        count: u32,
+        outputs: *mut JpeAquiferFluidStatus,
     ) -> i32;
     fn jpe_cpp_aquifer_context_create(info: *const JpeAquiferContextCreateInfo) -> u64;
     fn jpe_cpp_aquifer_context_destroy(context_handle: u64) -> i32;
@@ -503,6 +538,28 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_context_evaluate_samplers_f32(
             context_handle, expected_world_fingerprint, expected_semantic_fingerprint,
             point_x, point_y, point_z, points_per_sampler, output, output_length,
         )
+    })) {
+        Ok(STATUS_OK) => STATUS_OK,
+        Ok(STATUS_INVALID_ARGUMENT) => STATUS_INVALID_ARGUMENT,
+        Ok(_) => STATUS_CPP_FAILURE,
+        Err(_) => STATUS_RUST_PANIC,
+    }
+}
+
+/// Computes Minecraft 26.3 Aquifer FluidStatus values from native sampler results
+/// and pre-resolved opaque FluidPicker tokens. The whole batch is validated before writes.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_compute_fluid_status_batch(
+    inputs: *const JpeAquiferFluidStatusInput,
+    count: u32,
+    outputs: *mut JpeAquiferFluidStatus,
+) -> i32 {
+    if inputs.is_null() || outputs.is_null() || count == 0
+        || count as usize > MAX_VOLUME_ELEMENTS {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        jpe_cpp_aquifer_compute_fluid_status_batch(inputs, count, outputs)
     })) {
         Ok(STATUS_OK) => STATUS_OK,
         Ok(STATUS_INVALID_ARGUMENT) => STATUS_INVALID_ARGUMENT,
@@ -2992,6 +3049,135 @@ mod tests {
         }, STATUS_OK);
         assert_eq!(logged[0], (e as f64).ln() as f32);
         assert_eq!(unsafe { jpe_runtime_density_graph_release(log_graph) }, STATUS_OK);
+    }
+
+    #[test]
+    fn aquifer_fluid_status_matches_minecraft_surface_flooding_and_lava_rules() {
+        const AIR: u32 = 0;
+        const WATER: u32 = 1;
+        const LAVA: u32 = 2;
+        let air_probe = JpeAquiferFluidProbe {
+            status: JpeAquiferFluidStatus { fluid_level: i32::MIN, fluid_type: AIR },
+            valid: 1,
+            fluid_type_is_air: 1,
+        };
+        let mut base = JpeAquiferFluidStatusInput {
+            block_y: -1,
+            global_fluid: JpeAquiferFluidStatus { fluid_level: 50, fluid_type: WATER },
+            surface_level: [-5; 13],
+            global_fluid_at_surface: [air_probe; 13],
+            exclusion_noise: 0.0,
+            floodedness_noise: -0.5,
+            fluid_level_spread_noise: 0.5,
+            lava_noise: 0.31,
+            lava_type: LAVA,
+        };
+        // Center surface is below the top of the aquifer cell, and the center
+        // global FluidPicker status is non-air. Other twelve results are air.
+        base.surface_level[0] = 5;
+        base.global_fluid_at_surface[0] = JpeAquiferFluidProbe {
+            status: JpeAquiferFluidStatus { fluid_level: 15, fluid_type: WATER },
+            valid: 1,
+            fluid_type_is_air: 0,
+        };
+
+        let mut output = [JpeAquiferFluidStatus::default(); 1];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_compute_fluid_status_batch(&base, 1, output.as_mut_ptr())
+        }, STATUS_OK);
+        // floorDiv(-1,40)=-1 => middleY=-20; spread 0.5*10f quantizes
+        // to +3; target=-17; the lower surface wins; lava noise then selects lava.
+        assert_eq!(output[0].fluid_level, -17);
+        assert_eq!(output[0].fluid_type, LAVA);
+
+        // A fully flooded cell uses the global fluid level and never applies
+        // the underground lava override when the result is above -10.
+        let fully_flooded = JpeAquiferFluidStatusInput {
+            floodedness_noise: 1.0,
+            lava_noise: 1.0,
+            ..base
+        };
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_compute_fluid_status_batch(
+                &fully_flooded, 1, output.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        assert_eq!(output[0], fully_flooded.global_fluid);
+
+        // Exclusion noise suppresses both floodedness modes and returns the
+        // dimension-wide below-min-Y sentinel without changing the FluidType.
+        let excluded = JpeAquiferFluidStatusInput {
+            exclusion_noise: 0.01,
+            lava_noise: 1.0,
+            ..base
+        };
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_compute_fluid_status_batch(
+                &excluded, 1, output.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        assert_eq!(output[0].fluid_level, -32512);
+        assert_eq!(output[0].fluid_type, WATER);
+
+        // Vanilla's first center-cell shortcut returns the global status
+        // before reading any surface FluidPicker probes.
+        let mut center_shortcut = base;
+        center_shortcut.surface_level[0] = -100;
+        for probe in &mut center_shortcut.global_fluid_at_surface {
+            probe.valid = 0;
+        }
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_compute_fluid_status_batch(
+                &center_shortcut, 1, output.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        assert_eq!(output[0], center_shortcut.global_fluid);
+
+        // The first raised surface with non-air global fluid returns that exact
+        // FluidStatus immediately, preserving vanilla's 13-probe short circuit.
+        let mut raised_surface = base;
+        raised_surface.block_y = 0;
+        raised_surface.surface_level[0] = 0;
+        raised_surface.surface_level[1] = -5;
+        raised_surface.global_fluid_at_surface[0] = air_probe;
+        raised_surface.global_fluid_at_surface[1] = JpeAquiferFluidProbe {
+            status: JpeAquiferFluidStatus { fluid_level: 20, fluid_type: LAVA },
+            valid: 1,
+            fluid_type_is_air: 0,
+        };
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_compute_fluid_status_batch(
+                &raised_surface, 1, output.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        assert_eq!(output[0].fluid_level, 20);
+        assert_eq!(output[0].fluid_type, LAVA);
+
+        // An invalid required probe is rejected transactionally.
+        let mut invalid = base;
+        invalid.global_fluid_at_surface[1].valid = 0;
+        let sentinel = JpeAquiferFluidStatus { fluid_level: 123, fluid_type: 456 };
+        output[0] = sentinel;
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_compute_fluid_status_batch(
+                &invalid, 1, output.as_mut_ptr(),
+            )
+        }, STATUS_INVALID_ARGUMENT);
+        assert_eq!(output[0], sentinel);
+
+        // Input and output ranges may not alias.
+        #[repr(C)]
+        union StatusOverlap {
+            input: JpeAquiferFluidStatusInput,
+            output: JpeAquiferFluidStatus,
+        }
+        let mut overlap = StatusOverlap { input: base };
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_compute_fluid_status_batch(
+                std::ptr::addr_of!(overlap.input), 1,
+                std::ptr::addr_of_mut!(overlap.output),
+            )
+        }, STATUS_INVALID_ARGUMENT);
     }
 
     #[test]

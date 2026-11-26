@@ -7,6 +7,8 @@ fn main() {
     println!("cargo:rerun-if-changed=../cpp-kernels/src/aquifer_random.cpp");
     println!("cargo:rerun-if-changed=../cpp-kernels/src/aquifer_status_cache.cpp");
     println!("cargo:rerun-if-changed=../cpp-kernels/src/aquifer_context.cpp");
+    println!("cargo:rerun-if-changed=../cpp-kernels/src/aquifer_fluid_status.cpp");
+    //
     println!("cargo:rerun-if-changed=../cpp-kernels/src/prepared_perlin_stack.cpp");
     println!("cargo:rerun-if-changed=../include/jpe_native_api.h");
     cc::Build::new()
@@ -23,6 +25,7 @@ fn main() {
         .file("../cpp-kernels/src/aquifer_random.cpp")
         .file("../cpp-kernels/src/aquifer_status_cache.cpp")
         .file("../cpp-kernels/src/aquifer_context.cpp")
+        .file("../cpp-kernels/src/aquifer_fluid_status.cpp")
         .file("../cpp-kernels/src/prepared_perlin_stack.cpp")
         .include("../include")
         .define("JPE_NATIVE_BUILD", None)

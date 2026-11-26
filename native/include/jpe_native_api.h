@@ -254,6 +254,34 @@ typedef struct JpeAquiferFluidStatus {
     uint32_t fluid_type;
 } JpeAquiferFluidStatus;
 
+/* A pre-sampled global FluidPicker result at one of the 13 ordered Aquifer
+ * surface probes. fluid_type_is_air describes the BlockState trait of the
+ * stored type; valid says the caller evaluated this probe because vanilla's
+ * early-exit order requires it. */
+typedef struct JpeAquiferFluidProbe {
+    JpeAquiferFluidStatus status;
+    uint32_t valid;
+    uint32_t fluid_type_is_air;
+} JpeAquiferFluidProbe;
+
+/* Inputs for the native equivalent of NoiseBasedAquifer.computeFluid.
+ * surface_level/global_fluid_at_surface use vanilla order:
+ * (0,0),(-2,-1),(-1,-1),(0,-1),(1,-1),(-3,0),(-2,0),(-1,0),
+ * (1,0),(-2,1),(-1,1),(0,1),(1,1).
+ * Density sampler values have already been evaluated by the native sampler
+ * plans; global FluidPicker results are opaque tokens, never Java pointers. */
+typedef struct JpeAquiferFluidStatusInput {
+    int32_t block_y;
+    JpeAquiferFluidStatus global_fluid;
+    int32_t surface_level[13];
+    JpeAquiferFluidProbe global_fluid_at_surface[13];
+    float exclusion_noise;
+    float floodedness_noise;
+    float fluid_level_spread_noise;
+    float lava_noise;
+    uint32_t lava_type;
+} JpeAquiferFluidStatusInput;
+
 /* One world-scoped native Aquifer context. Handles are borrowed at create-time
  * and retained by C++; world_fingerprint is copied and never serialized.
  * Sampler order: barrier, floodedness, spread, lava, exclusion, surface.
@@ -299,6 +327,12 @@ JPE_API int32_t jpe_runtime_aquifer_status_cache_lookup_batch(
 JPE_API int32_t jpe_runtime_aquifer_status_cache_insert_batch(
     uint64_t handle, const uint64_t* keys,
     const JpeAquiferFluidStatus* statuses, uint32_t count
+);
+/* Native computeFluid status-value kernel. Validates the whole batch before writes. */
+JPE_API int32_t jpe_runtime_aquifer_compute_fluid_status_batch(
+    const JpeAquiferFluidStatusInput* inputs,
+    uint32_t count,
+    JpeAquiferFluidStatus* outputs
 );
 
 typedef struct JpeAquiferCoreInput {
@@ -360,6 +394,11 @@ JPE_API int32_t jpe_cpp_aquifer_status_cache_insert_batch(
 JPE_API int32_t jpe_cpp_aquifer_compute_substance_batch(
     const JpeAquiferCoreInput *inputs, uint32_t count,
     JpeAquiferCoreOutput *outputs
+);
+JPE_API int32_t jpe_cpp_aquifer_compute_fluid_status_batch(
+    const JpeAquiferFluidStatusInput* inputs,
+    uint32_t count,
+    JpeAquiferFluidStatus* outputs
 );
 
 typedef struct JpeAquiferCellLocation {
