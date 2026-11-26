@@ -4,6 +4,7 @@ import dev.jpe.optimizer.JPEOptimizer;
 import dev.jpe.optimizer.mixin.AquiferNoiseBasedAccessor;
 import dev.jpe.optimizer.worldgen.DensityVolumeIndex;
 import dev.jpe.optimizer.worldgen.NativeDensityGraphCompiler;
+import dev.jpe.optimizer.worldgen.NativeAquiferFluidStatusPrefill;
 import dev.jpe.optimizer.worldgen.SectionCachePolicy;
 import dev.jpe.optimizer.runtime.NativeRuntime;
 import dev.jpe.optimizer.worldgen.WorldgenMetrics;
