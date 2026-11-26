@@ -177,7 +177,8 @@ public final class NativeRuntime implements AutoCloseable {
         private MemorySegment contextWorldFingerprint;
         private MemorySegment contextStatusKeys, contextStatusInputs, contextStatusOutputs;
         private int contextStatusCapacity;
-        private MemorySegment contextPointX, contextPointY, contextPointZ;
+        private MemorySegment contextPointStatusKeys, contextPointX, contextPointY, contextPointZ;
+        private MemorySegment contextPointStatusOutputs;
         private int contextPointStatusCapacity;
         private final AtomicBoolean leased = new AtomicBoolean();
 
@@ -309,15 +310,15 @@ public final class NativeRuntime implements AutoCloseable {
                 long keyBytes = Math.multiplyExact((long) next, ValueLayout.JAVA_LONG.byteSize());
                 long coordinateBytes = Math.multiplyExact((long) next, ValueLayout.JAVA_INT.byteSize());
                 long outputBytes = Math.multiplyExact((long) next, 8L);
-                contextStatusKeys = arena.allocate(keyBytes, ValueLayout.JAVA_LONG.byteAlignment());
+                contextPointStatusKeys = arena.allocate(keyBytes, ValueLayout.JAVA_LONG.byteAlignment());
                 contextPointX = arena.allocate(coordinateBytes, ValueLayout.JAVA_INT.byteAlignment());
                 contextPointY = arena.allocate(coordinateBytes, ValueLayout.JAVA_INT.byteAlignment());
                 contextPointZ = arena.allocate(coordinateBytes, ValueLayout.JAVA_INT.byteAlignment());
-                contextStatusOutputs = arena.allocate(outputBytes, ValueLayout.JAVA_LONG.byteAlignment());
+                contextPointStatusOutputs = arena.allocate(outputBytes, ValueLayout.JAVA_LONG.byteAlignment());
                 contextPointStatusCapacity = next;
             }
             return new MemorySegment[] {
-                    contextStatusKeys, contextPointX, contextPointY, contextPointZ, contextStatusOutputs
+                    contextPointStatusKeys, contextPointX, contextPointY, contextPointZ, contextPointStatusOutputs
             };
         }
         @Override
