@@ -429,10 +429,10 @@ struct DensityEvaluationScratch {
         slot_storage.resize(static_cast<size_t>(slot_count) * volume);
         slots.resize(slot_count);
         for (uint32_t i = 0; i < slot_count; ++i) {
-            slots[i] = DensitySlotView<Scalar>{
-                slot_storage.data() + static_cast<size_t>(i) * volume,
-                volume
-            };
+            Scalar* slot_data = slot_storage.empty()
+                    ? nullptr
+                    : slot_storage.data() + static_cast<size_t>(i) * volume;
+            slots[i] = DensitySlotView<Scalar>{slot_data, volume};
         }
         if (has_perlin) perlin.resize(volume);
     }
