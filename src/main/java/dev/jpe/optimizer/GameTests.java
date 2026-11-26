@@ -531,7 +531,8 @@ public final class GameTests {
         }
         String backendMetrics = NativeBlenderDensityBackend.metrics();
         JPEOptimizer.LOGGER.info("JPE_NATIVE_BLENDER_BACKEND_SUMMARY {}", backendMetrics);
-        if (!backendMetrics.contains("attempts=4 completed=4 fallbacks=0 parityMismatches=0")) {
+        if (!backendMetrics.contains("attempts=4 completed=4 fallbacks=0")
+                || !backendMetrics.contains("parityMismatches=0")) {
             throw new AssertionError("Production Native Blender backend did not complete all synthetic legacy cases: "
                     + backendMetrics);
         }
