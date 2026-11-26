@@ -103,7 +103,8 @@ public final class NativeDensityGraphCompiler {
         DensityFunction.CompileContext context = ((DensityFunctionCompilerAccessor)
                 (Object) ((RandomStateAccessor) (Object) randomState).jpe$getDensityFunctionCompiler())
                 .jpe$getContext();
-        long handle = graphHandle(root, randomState, context, runtime);
+        boolean blenderEmpty = noiseChunkAccess.jpe$getBlender().isEmpty();
+        long handle = graphHandle(root, randomState, context, blenderEmpty, runtime);
         if (handle == 0L) return null;
 
         DensityBufferPool pool = noiseChunkAccess.jpe$getBufferPool();
@@ -128,6 +129,7 @@ public final class NativeDensityGraphCompiler {
             DensityFunction root,
             RandomState randomState,
             DensityFunction.CompileContext context,
+            boolean blenderEmpty,
             NativeRuntime runtime
     ) {
         synchronized (LOCK) {
@@ -147,7 +149,7 @@ public final class NativeDensityGraphCompiler {
                 existing.runtime().releaseDensityGraph(existing.handle());
             }
 
-            Builder builder = new Builder(context);
+            Builder builder = new Builder(context, blenderEmpty);
             int rootIndex;
             try {
                 rootIndex = builder.lower(root);
@@ -218,12 +220,14 @@ public final class NativeDensityGraphCompiler {
 
     private static final class Builder {
         private final DensityFunction.CompileContext context;
+        private final boolean blenderEmpty;
         private final List<NativeRuntime.DensityNode> nodes = new ArrayList<>();
         private final IdentityHashMap<DensityFunction, Integer> indices = new IdentityHashMap<>();
         private final IdentityHashMap<DensityFunction, Boolean> active = new IdentityHashMap<>();
 
-        private Builder(DensityFunction.CompileContext context) {
+        private Builder(DensityFunction.CompileContext context, boolean blenderEmpty) {
             this.context = context;
+            this.blenderEmpty = blenderEmpty;
         }
 
         private int append(NativeRuntime.DensityNode node) {
@@ -250,6 +254,12 @@ public final class NativeDensityGraphCompiler {
                         result = lower(holder.value());
                     }
                     case "CacheFunction" -> result = lower((DensityFunction) component(function, "input"));
+                    case "BlendDensityFunction" -> {
+                        if (!blenderEmpty) {
+                            throw new UnsupportedOperationException("Legacy chunk blending requires a native blender node");
+                        }
+                        result = lower((DensityFunction) component(function, "input"));
+                    }
                     case "ConstantFunction" -> {
                         Number value = (Number) component(function, "value");
                         result = append(NativeRuntime.DensityNode.constant(value.floatValue()));
@@ -282,9 +292,35 @@ public final class NativeDensityGraphCompiler {
                             case "QUARTER_NEGATIVE" -> NativeRuntime.DensityNode.quarterNegative(input);
                             case "RECIPROCAL" -> NativeRuntime.DensityNode.reciprocal(input);
                             case "SIGN" -> NativeRuntime.DensityNode.sign(input);
+                            case "SQUEEZE" -> NativeRuntime.DensityNode.squeeze(input);
                             default -> throw new UnsupportedOperationException("Unsupported unary density op " + operation);
                         };
                         result = append(node);
+                    }
+                    case "LerpFunction" -> {
+                        int alpha = lower((DensityFunction) component(function, "alpha"));
+                        int first = lower((DensityFunction) component(function, "first"));
+                        int second = lower((DensityFunction) component(function, "second"));
+                        result = append(NativeRuntime.DensityNode.lerp(alpha, first, second));
+                    }
+                    case "GradientFunction" -> {
+                        String axisName = component(function, "axis").toString();
+                        String tilingName = component(function, "tiling").toString();
+                        if (!tilingName.equals("CLAMP_TO_EDGE")) {
+                            throw new UnsupportedOperationException("Unsupported gradient tiling " + tilingName);
+                        }
+                        int axis = switch (axisName) {
+                            case "X" -> 0;
+                            case "Y" -> 1;
+                            case "Z" -> 2;
+                            default -> throw new UnsupportedOperationException("Unknown gradient axis " + axisName);
+                        };
+                        int fromCoordinate = ((Number) component(function, "fromCoordinate")).intValue();
+                        int toCoordinate = ((Number) component(function, "toCoordinate")).intValue();
+                        float fromValue = ((Number) component(function, "fromValue")).floatValue();
+                        float toValue = ((Number) component(function, "toValue")).floatValue();
+                        result = append(NativeRuntime.DensityNode.gradient(
+                                axis, fromCoordinate, toCoordinate, fromValue, toValue));
                     }
                     case "PowFunction" -> {
                         int base = lower((DensityFunction) component(function, "base"));
