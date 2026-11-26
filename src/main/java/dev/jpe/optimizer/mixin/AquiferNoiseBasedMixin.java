@@ -87,16 +87,15 @@ public abstract class AquiferNoiseBasedMixin {
 
         long started = System.nanoTime();
         try {
-            // Generate off to the side; commit only after the entire native call succeeds.
-            long[] generated = new long[vanillaCache.length];
+            // NativeRuntime stages output in a reusable per-worker FFM buffer.
+            // It copies into this pristine vanilla array only after the full native call succeeds.
             runtime.aquiferGridCenters(randomMode, seedLo, seedHi,
                     aquifer.jpe$getMinGridX(), aquifer.jpe$getMinGridY(), aquifer.jpe$getMinGridZ(),
-                    sizeX, sizeZ, generated);
-            System.arraycopy(generated, 0, vanillaCache, 0, generated.length);
+                    sizeX, sizeZ, vanillaCache);
             if (REPORTED_SUCCESS.compareAndSet(false, true)) {
                 JPEOptimizer.LOGGER.info(
                         "JPE_NATIVE_AQUIFER_CACHE_PREFILL mode={} cells={} elapsedUs={}",
-                        randomMode, generated.length, (System.nanoTime() - started) / 1_000.0);
+                        randomMode, vanillaCache.length, (System.nanoTime() - started) / 1_000.0);
             }
         } catch (RuntimeException | LinkageError failure) {
             if (REPORTED_FAILURE.compareAndSet(false, true)) {
