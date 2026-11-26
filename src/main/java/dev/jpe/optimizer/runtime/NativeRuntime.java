@@ -86,6 +86,7 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle blendDensityVolume;
     private final MethodHandle aquiferXoroshiroOffsets;
     private final MethodHandle aquiferLegacyOffsets;
+    private final MethodHandle aquiferNearestFour;
     private final ConcurrentHashMap<Long, NativeJob> jobs = new ConcurrentHashMap<>();
     private final java.util.Set<NativeDensityGraph> densityGraphs = ConcurrentHashMap.newKeySet();
     private final ReentrantReadWriteLock lifecycle = new ReentrantReadWriteLock();
@@ -423,7 +424,8 @@ public final class NativeRuntime implements AutoCloseable {
                           MethodHandle releaseDensityGraph, MethodHandle loadDensityGraphCache,
                           MethodHandle saveDensityGraphCache, MethodHandle blendDensityVolume,
                           MethodHandle aquiferXoroshiroOffsets,
-                          MethodHandle aquiferLegacyOffsets) {
+                          MethodHandle aquiferLegacyOffsets,
+                          MethodHandle aquiferNearestFour) {
         this.configureWorkers = configureWorkers;
         this.workerCount = workerCount;
         this.addF32 = add;
@@ -445,6 +447,7 @@ public final class NativeRuntime implements AutoCloseable {
         this.blendDensityVolume = blendDensityVolume;
         this.aquiferXoroshiroOffsets = aquiferXoroshiroOffsets;
         this.aquiferLegacyOffsets = aquiferLegacyOffsets;
+        this.aquiferNearestFour = aquiferNearestFour;
     }
 
     public static NativeRuntime load(Path libraryPath) throws IOException {
@@ -574,6 +577,15 @@ public final class NativeRuntime implements AutoCloseable {
                                     ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)))
                     .orElse(null);
 
+            MethodHandle aquiferNearestFour = lookup.find("jpe_runtime_aquifer_nearest_four")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                                    ValueLayout.JAVA_INT,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)))
+                    .orElse(null);
+
             int actual = (int) version.invokeExact();
             if (actual != EXPECTED_ABI_VERSION) {
                 throw new IllegalStateException("Native ABI mismatch: expected " + EXPECTED_ABI_VERSION + ", got " + actual);
@@ -584,7 +596,7 @@ public final class NativeRuntime implements AutoCloseable {
             return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, perlinStack, submit, submitStack, status, wait, cancel, release,
                     compileDensityGraph, evaluateDensityGraph, evaluateDensityGraphWithInputs, evaluateDensityGraphMultiWithInputs, releaseDensityGraph,
                     loadDensityGraphCache, saveDensityGraphCache, blendDensityVolume,
-                    aquiferXoroshiroOffsets, aquiferLegacyOffsets);
+                    aquiferXoroshiroOffsets, aquiferLegacyOffsets, aquiferNearestFour);
         } catch (Throwable failure) {
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
         }
@@ -731,6 +743,65 @@ public final class NativeRuntime implements AutoCloseable {
         } catch (Throwable failure) {
             throw new IllegalStateException("Unable to evaluate Native Aquifer XOROSHIRO offsets", failure);
         }
+    }
+
+    public record AquiferNearestFour(int[] centerX, int[] centerY, int[] centerZ, int[] squaredDistances) {}
+
+    public boolean supportsAquiferNearestFour() { return aquiferNearestFour != null; }
+
+    static int validateAquiferNearestFour(int randomMode, int[] blockX, int[] blockY, int[] blockZ) {
+        Objects.requireNonNull(blockX, "blockX");
+        Objects.requireNonNull(blockY, "blockY");
+        Objects.requireNonNull(blockZ, "blockZ");
+        if (randomMode != 0 && randomMode != 1) throw new IllegalArgumentException("Aquifer random mode must be 0 (XOROSHIRO) or 1 (LEGACY)");
+        if (blockX.length == 0 || blockY.length != blockX.length || blockZ.length != blockX.length
+                || blockX.length > 1_048_576) {
+            throw new IllegalArgumentException("Aquifer coordinate arrays must have equal lengths in [1, 1048576]");
+        }
+        return blockX.length;
+    }
+
+    /**
+     * Executes nearest-four Aquifer center search for a whole coordinate batch in one FFM call.
+     * Output arrays are sample-major: each input sample owns four consecutive neighbors.
+     */
+    public AquiferNearestFour aquiferNearestFour(int randomMode, long seedLo, long seedHi,
+                                                  int[] blockX, int[] blockY, int[] blockZ) {
+        if (aquiferNearestFour == null) throw new UnsupportedOperationException("Native runtime does not export Aquifer nearest-four support");
+        int count = validateAquiferNearestFour(randomMode, blockX, blockY, blockZ);
+        int outputLength = Math.multiplyExact(count, 4);
+        int[] centerX = new int[outputLength];
+        int[] centerY = new int[outputLength];
+        int[] centerZ = new int[outputLength];
+        int[] distances = new int[outputLength];
+        lifecycle.readLock().lock();
+        try {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment inputX = arena.allocate(Math.multiplyExact((long) count, ValueLayout.JAVA_INT.byteSize()), ValueLayout.JAVA_INT.byteAlignment());
+                MemorySegment inputY = arena.allocate(Math.multiplyExact((long) count, ValueLayout.JAVA_INT.byteSize()), ValueLayout.JAVA_INT.byteAlignment());
+                MemorySegment inputZ = arena.allocate(Math.multiplyExact((long) count, ValueLayout.JAVA_INT.byteSize()), ValueLayout.JAVA_INT.byteAlignment());
+                MemorySegment outputX = arena.allocate(Math.multiplyExact((long) outputLength, ValueLayout.JAVA_INT.byteSize()), ValueLayout.JAVA_INT.byteAlignment());
+                MemorySegment outputY = arena.allocate(Math.multiplyExact((long) outputLength, ValueLayout.JAVA_INT.byteSize()), ValueLayout.JAVA_INT.byteAlignment());
+                MemorySegment outputZ = arena.allocate(Math.multiplyExact((long) outputLength, ValueLayout.JAVA_INT.byteSize()), ValueLayout.JAVA_INT.byteAlignment());
+                MemorySegment outputDistances = arena.allocate(Math.multiplyExact((long) outputLength, ValueLayout.JAVA_INT.byteSize()), ValueLayout.JAVA_INT.byteAlignment());
+                MemorySegment.copy(blockX, 0, inputX, ValueLayout.JAVA_INT, 0, count);
+                MemorySegment.copy(blockY, 0, inputY, ValueLayout.JAVA_INT, 0, count);
+                MemorySegment.copy(blockZ, 0, inputZ, ValueLayout.JAVA_INT, 0, count);
+                int status = (int) aquiferNearestFour.invokeExact(randomMode, seedLo, seedHi,
+                        inputX, inputY, inputZ, count, outputX, outputY, outputZ, outputDistances);
+                checkStatus(status, "aquifer-nearest-four");
+                MemorySegment.copy(outputX, ValueLayout.JAVA_INT, 0, centerX, 0, outputLength);
+                MemorySegment.copy(outputY, ValueLayout.JAVA_INT, 0, centerY, 0, outputLength);
+                MemorySegment.copy(outputZ, ValueLayout.JAVA_INT, 0, centerZ, 0, outputLength);
+                MemorySegment.copy(outputDistances, ValueLayout.JAVA_INT, 0, distances, 0, outputLength);
+            } catch (Throwable failure) {
+                throw rethrow("Unable to evaluate Native Aquifer nearest-four batch", failure);
+            }
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+        return new AquiferNearestFour(centerX, centerY, centerZ, distances);
     }
 
     public boolean supportsBlenderDensityVolume() { return blendDensityVolume != null; }
