@@ -1,6 +1,7 @@
 #include "jpe_native_api.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <cstdint>
@@ -134,36 +135,54 @@ void append_points(const JpeBlendingDataView* views, uint32_t count,
         }
     }
 }
+struct CandidateCursor {
+    const std::vector<uint32_t>* indices;
+    size_t offset;
+    uint32_t value;
+};
+struct CandidateCursorGreater {
+    bool operator()(const CandidateCursor& left, const CandidateCursor& right) const noexcept {
+        return left.value > right.value;
+    }
+};
+
 float blend_one(int32_t block_x, int32_t block_y, int32_t block_z, float noise,
                 const std::unordered_map<uint64_t, const JpeBlendingDataView*>& height_index,
                 const std::unordered_map<Coord, std::vector<uint32_t>, CoordHash>& spatial,
-                const std::vector<DensityPoint>& points,
-                std::vector<uint32_t>& candidates) {
+                const std::vector<DensityPoint>& points) {
     const int32_t cell_x = floor_div4(block_x);
     const int32_t cell_y = java_div8(block_y);
     const int32_t cell_z = floor_div4(block_z);
     const float fixed = fixed_density(height_index, cell_x, cell_y, cell_z);
     if (fixed != kNoValue) return fixed;
 
-    // Vanilla iterateDensities(cellY - 1, cellY + 1) uses an exclusive upper bound.
-    // The native spatial index gathers only possible radius-2 candidates, then sorts
-    // their original forEach/column/Y ordinal to preserve Java's double accumulation order.
-    candidates.clear();
+    // Each coordinate bucket is appended in original vanilla iteration order.
+    // Merge the at-most-50 sorted buckets with a fixed-size min-heap instead of
+    // concatenating and sorting every voxel's candidates. This preserves the exact
+    // global callback order while avoiding a per-voxel O(n log n) sort and heap growth.
+    std::array<CandidateCursor, 50> heap{};
+    size_t heap_size = 0;
+    const CandidateCursorGreater greater{};
     for (int32_t y = cell_y - 1; y < cell_y + 1; ++y) {
         for (int32_t dx = -2; dx <= 2; ++dx) {
             for (int32_t dz = -2; dz <= 2; ++dz) {
                 const Coord key{cell_x + dx, y, cell_z + dz};
                 const auto it = spatial.find(key);
-                if (it != spatial.end()) candidates.insert(candidates.end(), it->second.begin(), it->second.end());
+                if (it == spatial.end() || it->second.empty()) continue;
+                const auto* indices = &it->second;
+                heap[heap_size++] = CandidateCursor{indices, 0, (*indices)[0]};
+                std::push_heap(heap.begin(), heap.begin() + heap_size, greater);
             }
         }
     }
-    std::sort(candidates.begin(), candidates.end());
+
     double total_weight = 0.0;
     double weighted_density = 0.0;
     double closest_distance = std::numeric_limits<double>::infinity();
-    for (uint32_t index : candidates) {
-        const DensityPoint& point = points[index];
+    while (heap_size != 0) {
+        std::pop_heap(heap.begin(), heap.begin() + heap_size, greater);
+        CandidateCursor cursor = heap[--heap_size];
+        const DensityPoint& point = points[cursor.value];
         // Minecraft calls Mth.length(float,float,float) here. Java performs
         // wrapped int subtraction, converts each delta to float32, evaluates
         // the squared length in float32, then Math.sqrt(double) and casts
@@ -188,6 +207,13 @@ float blend_one(int32_t block_x, int32_t block_y, int32_t block_z, float noise,
         const double weight = 1.0 / (distance * distance * distance * distance);
         weighted_density += static_cast<double>(point.density) * weight;
         total_weight += weight;
+
+        ++cursor.offset;
+        if (cursor.offset < cursor.indices->size()) {
+            cursor.value = (*cursor.indices)[cursor.offset];
+            heap[heap_size++] = cursor;
+            std::push_heap(heap.begin(), heap.begin() + heap_size, greater);
+        }
     }
     if (closest_distance == std::numeric_limits<double>::infinity()) return noise;
     const double average = weighted_density / total_weight;
@@ -247,10 +273,6 @@ extern "C" int32_t jpe_cpp_blend_density_volume(
         std::unordered_map<Coord, std::vector<uint32_t>, CoordHash> spatial;
         spatial.reserve(points.size() * 2U + 1U);
         for (uint32_t i = 0; i < points.size(); ++i) spatial[points[i].coord].push_back(i);
-        // Reuse candidate scratch across every voxel; no per-sample heap allocation.
-        std::vector<uint32_t> candidates;
-        candidates.reserve(96);
-
         // Match DensityVolume.indexUnchecked: ((z * sizeX + x) * sizeY + y).
         // All coordinate arithmetic is performed here, with Java int wrap semantics.
         for (uint32_t z = 0; z < size_z; ++z) {
@@ -261,7 +283,7 @@ extern "C" int32_t jpe_cpp_blend_density_volume(
                 for (uint32_t y = 0; y < size_y; ++y, ++index) {
                     const int32_t block_y = wrapped_coordinate(min_y, y, step_y);
                     outputs[index] = blend_one(block_x, block_y, block_z, noise_values[index],
-                                                height_index, spatial, points, candidates);
+                                                height_index, spatial, points);
                 }
             }
         }
