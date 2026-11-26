@@ -281,6 +281,8 @@ JPE_API int32_t jpe_runtime_aquifer_context_destroy(uint64_t context_handle);
  * entries and output has the same element count. */
 JPE_API int32_t jpe_runtime_aquifer_context_evaluate_samplers_f32(
     uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
     const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
     uint32_t points_per_sampler, float* output, uint64_t output_length
 );
@@ -340,6 +342,8 @@ JPE_API uint64_t jpe_cpp_aquifer_context_create(const JpeAquiferContextCreateInf
 JPE_API int32_t jpe_cpp_aquifer_context_destroy(uint64_t context_handle);
 JPE_API int32_t jpe_cpp_aquifer_context_evaluate_samplers_f32(
     uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
     const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
     uint32_t points_per_sampler, float* output, uint64_t output_length
 );
