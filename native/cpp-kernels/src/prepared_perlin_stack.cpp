@@ -8,6 +8,11 @@
 #include <unordered_map>
 #include <vector>
 
+extern "C" int32_t jpe_cpp_perlin_add_stack_fused(
+    const JpePerlinLayer*, uint32_t, uint32_t, uint32_t, uint32_t,
+    int32_t, int32_t, int32_t, int32_t, int32_t, int32_t,
+    float*, uint64_t, uint32_t) noexcept;
+
 namespace {
 struct PreparedLayer {
     std::array<uint8_t, 256> permutation{};
