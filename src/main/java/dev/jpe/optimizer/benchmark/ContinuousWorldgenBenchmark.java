@@ -129,6 +129,18 @@ public final class ContinuousWorldgenBenchmark {
         private void tick() {
             long now = System.nanoTime();
             tick++;
+            // Long strict native-worldgen CI runs must expose forward progress,
+            // not merely remain "in progress" until the job timeout.
+            if (tick == 1 || tick % 100 == 0) {
+                JPEOptimizer.LOGGER.info(
+                        "JPE continuous worldgen progress: tick={} warmupRows={}/{} measuredRows={}/{} "
+                                + "completed={} failed={} inFlight={} activeGenerationFutures={} pendingTasks={} loadedChunks={}",
+                        tick, warmupRowsIssued, WARMUP_ROWS, measuredRowsIssued, MEASURED_ROWS,
+                        measuredCompleted.get(), measuredFailed.get(), inFlight.get(),
+                        activeGenerationFutures.get(), level.getChunkSource().getPendingTasksCount(),
+                        level.getChunkSource().getLoadedChunksCount()
+                );
+            }
             if (measurementStartNanos != 0L && lastTickNanos != 0L) {
                 tickIntervals.add(now - lastTickNanos);
             }
