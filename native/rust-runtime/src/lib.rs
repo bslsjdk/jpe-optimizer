@@ -155,6 +155,58 @@ unsafe extern "C" {
         center_x: *mut i32, center_y: *mut i32, center_z: *mut i32,
         squared_distances: *mut i32,
     ) -> i32;
+    fn jpe_cpp_aquifer_status_cache_create(maximum_entries: u32) -> u64;
+    fn jpe_cpp_aquifer_status_cache_destroy(handle: u64) -> i32;
+    fn jpe_cpp_aquifer_status_cache_lookup_batch(
+        handle: u64, keys: *const u64, count: u32,
+        statuses: *mut JpeAquiferFluidStatus, found: *mut u8,
+    ) -> i32;
+    fn jpe_cpp_aquifer_status_cache_insert_batch(
+        handle: u64, keys: *const u64,
+        statuses: *const JpeAquiferFluidStatus, count: u32,
+    ) -> i32;
+}
+
+/// Creates a fixed-capacity, per-Aquifer native FluidStatus cache.
+#[no_mangle]
+pub extern "C" fn jpe_runtime_aquifer_status_cache_create(maximum_entries: u32) -> u64 {
+    if maximum_entries == 0 || maximum_entries as usize > MAX_VOLUME_ELEMENTS {
+        return 0;
+    }
+    unsafe { jpe_cpp_aquifer_status_cache_create(maximum_entries) }
+}
+
+/// Destroys a native FluidStatus cache handle.
+#[no_mangle]
+pub extern "C" fn jpe_runtime_aquifer_status_cache_destroy(handle: u64) -> i32 {
+    if handle == 0 { return STATUS_INVALID_ARGUMENT; }
+    unsafe { jpe_cpp_aquifer_status_cache_destroy(handle) }
+}
+
+/// Looks up a batch of packed Aquifer cell-center keys.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_status_cache_lookup_batch(
+    handle: u64, keys: *const u64, count: u32,
+    statuses: *mut JpeAquiferFluidStatus, found: *mut u8,
+) -> i32 {
+    if handle == 0 || keys.is_null() || statuses.is_null() || found.is_null()
+        || count == 0 || count as usize > MAX_VOLUME_ELEMENTS {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe { jpe_cpp_aquifer_status_cache_lookup_batch(handle, keys, count, statuses, found) }
+}
+
+/// Inserts missing statuses. Existing keys are left unchanged (first-writer-wins).
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_status_cache_insert_batch(
+    handle: u64, keys: *const u64,
+    statuses: *const JpeAquiferFluidStatus, count: u32,
+) -> i32 {
+    if handle == 0 || keys.is_null() || statuses.is_null()
+        || count == 0 || count as usize > MAX_VOLUME_ELEMENTS {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe { jpe_cpp_aquifer_status_cache_insert_batch(handle, keys, statuses, count) }
 }
 
 /// Runs the scalar Aquifer decision kernel. This wrapper is exported from the Rust cdylib.
