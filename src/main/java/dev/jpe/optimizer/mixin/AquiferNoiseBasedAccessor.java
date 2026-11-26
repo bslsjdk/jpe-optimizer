@@ -40,4 +40,7 @@ public interface AquiferNoiseBasedAccessor {
 
     @Accessor("positionalRandomFactory")
     PositionalRandomFactory jpe$getPositionalRandomFactory();
+
+    @Accessor("skipSamplingAboveY")
+    int jpe$getSkipSamplingAboveY();
 }
