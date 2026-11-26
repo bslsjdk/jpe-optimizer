@@ -1481,6 +1481,74 @@ mod tests {
     }
 
     #[test]
+    fn density_graph_evaluates_multiple_samplers_and_point_sets_in_one_call() {
+        let add_nodes = [
+            JpeDensityNode { opcode: DENSITY_X, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_Y, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 0,
+                input_b: 1, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+        ];
+        let mul_nodes = [
+            JpeDensityNode { opcode: DENSITY_X, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_Y, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_MUL, input_a: 0,
+                input_b: 1, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+        ];
+        let add_graph = unsafe {
+            jpe_runtime_density_graph_compile(add_nodes.as_ptr(), 3, 2, 0xA91F_001)
+        };
+        let mul_graph = unsafe {
+            jpe_runtime_density_graph_compile(mul_nodes.as_ptr(), 3, 2, 0xA91F_002)
+        };
+        assert_ne!(add_graph, 0);
+        assert_ne!(mul_graph, 0);
+
+        // Two sampler-major point sets. Each sampler receives distinct coordinates.
+        let handles = [add_graph, mul_graph];
+        let xs = [2_i32, -4, 7, 8];
+        let ys = [3_i32, 5, 6, -3];
+        let zs = [0_i32, 1, 2, 0];
+        let mut output64 = [f64::NAN; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_multi_points(
+                handles.as_ptr(), 2,
+                xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
+                2, output64.as_mut_ptr(), 4,
+            )
+        }, STATUS_OK);
+        assert_eq!(output64, [5.0, 1.0, 42.0, -24.0]);
+
+        let mut output32 = [f32::NAN; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_multi_points_f32(
+                handles.as_ptr(), 2,
+                xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
+                2, output32.as_mut_ptr(), 4,
+            )
+        }, STATUS_OK);
+        assert_eq!(output32.map(f32::to_bits), [5.0_f32, 1.0, 42.0, -24.0].map(f32::to_bits));
+
+        // Every handle is resolved before the evaluator writes output.
+        let invalid_handles = [add_graph, 0_u64];
+        let mut untouched = [123.25_f64; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_multi_points(
+                invalid_handles.as_ptr(), 2,
+                xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
+                2, untouched.as_mut_ptr(), 4,
+            )
+        }, STATUS_CPP_FAILURE);
+        assert_eq!(untouched, [123.25_f64; 4]);
+
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(add_graph) }, STATUS_OK);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(mul_graph) }, STATUS_OK);
+    }
+
+    #[test]
     fn density_graph_rejects_forward_references_and_bad_volumes() {
         let invalid = [
             JpeDensityNode { opcode: DENSITY_ADD, input_a: 1,
