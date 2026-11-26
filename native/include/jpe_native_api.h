@@ -314,6 +314,17 @@ JPE_API int32_t jpe_runtime_aquifer_context_evaluate_samplers_f32(
     const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
     uint32_t points_per_sampler, float* output, uint64_t output_length
 );
+/* Computes/cache-fills cell-center FluidStatus values using opaque BlockPos.asLong keys.
+ * The full batch is transactional: cache-capacity or validation failure leaves outputs untouched. */
+JPE_API int32_t jpe_runtime_aquifer_context_compute_fluid_status_batch(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    const uint64_t* cache_keys,
+    const JpeAquiferFluidStatusInput* inputs,
+    uint32_t count,
+    JpeAquiferFluidStatus* outputs
+);
 
 /* Per-Aquifer, fixed-capacity FluidStatus cache. Keys are packed BlockPos.asLong
  * values for aquifer cell centers. First insertion wins, matching compute-if-absent.
@@ -380,6 +391,15 @@ JPE_API int32_t jpe_cpp_aquifer_context_evaluate_samplers_f32(
     uint64_t expected_semantic_fingerprint,
     const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
     uint32_t points_per_sampler, float* output, uint64_t output_length
+);
+JPE_API int32_t jpe_cpp_aquifer_context_compute_fluid_status_batch(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    const uint64_t* cache_keys,
+    const JpeAquiferFluidStatusInput* inputs,
+    uint32_t count,
+    JpeAquiferFluidStatus* outputs
 );
 JPE_API uint64_t jpe_cpp_aquifer_status_cache_create(uint32_t maximum_entries);
 JPE_API int32_t jpe_cpp_aquifer_status_cache_destroy(uint64_t handle);

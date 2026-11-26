@@ -208,6 +208,15 @@ unsafe extern "C" {
         point_x: *const i32, point_y: *const i32, point_z: *const i32,
         points_per_sampler: u32, output: *mut f32, output_length: u64,
     ) -> i32;
+    fn jpe_cpp_aquifer_context_compute_fluid_status_batch(
+        context_handle: u64,
+        expected_world_fingerprint: *const u8,
+        expected_semantic_fingerprint: u64,
+        cache_keys: *const u64,
+        inputs: *const JpeAquiferFluidStatusInput,
+        count: u32,
+        outputs: *mut JpeAquiferFluidStatus,
+    ) -> i32;
     fn jpe_cpp_aquifer_compute_substance_batch(
         inputs: *const JpeAquiferCoreInput,
         count: u32,
@@ -494,6 +503,38 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_context_create(
     })) {
         Ok(handle) => handle,
         Err(_) => 0,
+    }
+}
+
+/// Computes and caches Aquifer FluidStatus values under this world's native context.
+/// Duplicate keys obey first-writer-wins semantics. Outputs are untouched on failure.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_context_compute_fluid_status_batch(
+    context_handle: u64,
+    expected_world_fingerprint: *const u8,
+    expected_semantic_fingerprint: u64,
+    cache_keys: *const u64,
+    inputs: *const JpeAquiferFluidStatusInput,
+    count: u32,
+    outputs: *mut JpeAquiferFluidStatus,
+) -> i32 {
+    const MAX_AQUIFER_STATUS_BATCH: u32 = 65_536;
+    if context_handle == 0 || expected_world_fingerprint.is_null()
+        || expected_semantic_fingerprint == 0 || cache_keys.is_null()
+        || inputs.is_null() || outputs.is_null() || count == 0
+        || count > MAX_AQUIFER_STATUS_BATCH {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        jpe_cpp_aquifer_context_compute_fluid_status_batch(
+            context_handle, expected_world_fingerprint, expected_semantic_fingerprint,
+            cache_keys, inputs, count, outputs,
+        )
+    })) {
+        Ok(STATUS_OK) => STATUS_OK,
+        Ok(STATUS_INVALID_ARGUMENT) => STATUS_INVALID_ARGUMENT,
+        Ok(_) => STATUS_CPP_FAILURE,
+        Err(_) => STATUS_RUST_PANIC,
     }
 }
 
@@ -3513,6 +3554,74 @@ mod tests {
                 );
             }
         }
+
+        let air_probe = JpeAquiferFluidProbe {
+            status: JpeAquiferFluidStatus { fluid_level: i32::MIN, fluid_type: info.air_type },
+            valid: 0,
+            fluid_type_is_air: 1,
+        };
+        let status_input = JpeAquiferFluidStatusInput {
+            block_y: 0,
+            global_fluid: JpeAquiferFluidStatus { fluid_level: 40, fluid_type: info.water_type },
+            surface_level: [-100; 13],
+            global_fluid_at_surface: [air_probe; 13],
+            exclusion_noise: 0.0,
+            floodedness_noise: 0.0,
+            fluid_level_spread_noise: 0.0,
+            lava_noise: 0.0,
+            lava_type: info.lava_type,
+        };
+        let conflicting_input = JpeAquiferFluidStatusInput {
+            global_fluid: JpeAquiferFluidStatus { fluid_level: 90, fluid_type: info.lava_type },
+            ..status_input
+        };
+        let status_keys = [0x1122_3344_5566_7788_u64, 0x1122_3344_5566_7788_u64];
+        let status_inputs = [status_input, conflicting_input];
+        let mut statuses = [JpeAquiferFluidStatus::default(); 2];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_compute_fluid_status_batch(
+                context, expected_fingerprint.as_ptr(), expected_semantic_fingerprint,
+                status_keys.as_ptr(), status_inputs.as_ptr(), 2, statuses.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        let first_writer = JpeAquiferFluidStatus { fluid_level: 40, fluid_type: info.water_type };
+        assert_eq!(statuses, [first_writer; 2]);
+
+        // A later conflicting value for an existing key must not replace the first writer.
+        let later_key = [status_keys[0]];
+        let later_input = [conflicting_input];
+        let mut later_output = [JpeAquiferFluidStatus::default(); 1];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_compute_fluid_status_batch(
+                context, expected_fingerprint.as_ptr(), expected_semantic_fingerprint,
+                later_key.as_ptr(), later_input.as_ptr(), 1, later_output.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        assert_eq!(later_output[0], first_writer);
+
+        let invalid_status_input = [JpeAquiferFluidStatusInput {
+            surface_level: [0; 13],
+            ..status_input
+        }];
+        let new_key = [0x8877_6655_4433_2211_u64];
+        let sentinel_status = JpeAquiferFluidStatus { fluid_level: 123, fluid_type: 456 };
+        later_output[0] = sentinel_status;
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_compute_fluid_status_batch(
+                context, expected_fingerprint.as_ptr(), expected_semantic_fingerprint,
+                new_key.as_ptr(), invalid_status_input.as_ptr(), 1, later_output.as_mut_ptr(),
+            )
+        }, STATUS_INVALID_ARGUMENT);
+        assert_eq!(later_output[0], sentinel_status);
+
+        let wrong_world = [0xA5_u8; 32];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_compute_fluid_status_batch(
+                context, wrong_world.as_ptr(), expected_semantic_fingerprint,
+                new_key.as_ptr(), status_inputs.as_ptr(), 1, later_output.as_mut_ptr(),
+            )
+        }, STATUS_INVALID_ARGUMENT);
+        assert_eq!(later_output[0], sentinel_status);
 
         assert_eq!(unsafe { jpe_runtime_aquifer_context_destroy(context) }, STATUS_OK);
         assert_eq!(unsafe { jpe_runtime_aquifer_context_destroy(context) }, STATUS_INVALID_ARGUMENT);

@@ -8,6 +8,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 static_assert(sizeof(JpeAquiferContextCreateInfo) == 128,
               "Aquifer context create ABI size mismatch");
@@ -151,6 +152,89 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_destroy(uint64_t context_hand
     // In-flight calls hold their own shared_ptr and finish before resources are released.
     retired.reset();
     return 0;
+}
+
+extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_fluid_status_batch(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    const uint64_t* cache_keys,
+    const JpeAquiferFluidStatusInput* inputs,
+    uint32_t count,
+    JpeAquiferFluidStatus* outputs
+) try {
+    constexpr uint32_t kMaxStatusBatch = 65536U;
+    if (expected_world_fingerprint == nullptr || expected_semantic_fingerprint == 0
+        || cache_keys == nullptr || inputs == nullptr || outputs == nullptr
+        || count == 0 || count > kMaxStatusBatch) return 1;
+
+    const size_t key_bytes = static_cast<size_t>(count) * sizeof(*cache_keys);
+    const size_t input_bytes = static_cast<size_t>(count) * sizeof(*inputs);
+    const size_t output_bytes = static_cast<size_t>(count) * sizeof(*outputs);
+    if (ranges_overlap(outputs, output_bytes, cache_keys, key_bytes)
+        || ranges_overlap(outputs, output_bytes, inputs, input_bytes)
+        || ranges_overlap(outputs, output_bytes, expected_world_fingerprint, 32U)) {
+        return 1;
+    }
+
+    const auto context = acquire_context(context_handle);
+    if (!context) return 1;
+    if (context->semantic_fingerprint != expected_semantic_fingerprint
+        || std::memcmp(context->world_fingerprint.data(), expected_world_fingerprint,
+                       context->world_fingerprint.size()) != 0) {
+        return 1;
+    }
+
+    // All intermediate state stays native. Caller output is copied only after
+    // the cache has been filled and a final first-writer-wins lookup succeeds.
+    std::vector<JpeAquiferFluidStatus> resolved(count);
+    std::vector<uint8_t> found(count, 0);
+    if (jpe_cpp_aquifer_status_cache_lookup_batch(
+            context->status_cache_handle, cache_keys, count,
+            resolved.data(), found.data()) != 0) {
+        return 2;
+    }
+
+    std::vector<uint64_t> missing_keys;
+    std::vector<JpeAquiferFluidStatusInput> missing_inputs;
+    std::vector<JpeAquiferFluidStatus> missing_statuses;
+    missing_keys.reserve(count);
+    missing_inputs.reserve(count);
+    missing_statuses.resize(count);
+
+    for (uint32_t i = 0; i < count; ++i) {
+        if (found[i] != 0) continue;
+        missing_keys.push_back(cache_keys[i]);
+        missing_inputs.push_back(inputs[i]);
+    }
+
+    if (!missing_keys.empty()) {
+        if (jpe_cpp_aquifer_compute_fluid_status_batch(
+                missing_inputs.data(), static_cast<uint32_t>(missing_inputs.size()),
+                missing_statuses.data()) != 0) {
+            return 1;
+        }
+        if (jpe_cpp_aquifer_status_cache_insert_batch(
+                context->status_cache_handle, missing_keys.data(),
+                missing_statuses.data(), static_cast<uint32_t>(missing_keys.size())) != 0) {
+            return 2;
+        }
+    }
+
+    std::fill(found.begin(), found.end(), static_cast<uint8_t>(0));
+    if (jpe_cpp_aquifer_status_cache_lookup_batch(
+            context->status_cache_handle, cache_keys, count,
+            resolved.data(), found.data()) != 0) {
+        return 2;
+    }
+    for (uint8_t is_found : found) {
+        if (is_found == 0) return 2;
+    }
+
+    for (uint32_t i = 0; i < count; ++i) outputs[i] = resolved[i];
+    return 0;
+} catch (...) {
+    return 2;
 }
 
 extern "C" JPE_API int32_t jpe_cpp_aquifer_context_evaluate_samplers_f32(

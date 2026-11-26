@@ -88,6 +88,7 @@ jobs:
             jpe_runtime_density_graph_release \
             jpe_runtime_aquifer_compute_substance_batch \
             jpe_runtime_aquifer_compute_fluid_status_batch \
+            jpe_runtime_aquifer_context_compute_fluid_status_batch \
             jpe_runtime_aquifer_grid_centers \
             jpe_runtime_aquifer_nearest_four; do
             if ! grep -Fxq "$symbol" build-native-export-symbols.txt; then
