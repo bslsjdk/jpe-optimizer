@@ -29,6 +29,11 @@ NESTED_SERVER_JAR = f"META-INF/versions/{VERSION}/server-{VERSION}.jar"
 TARGET_CLASSES = (
     "net/minecraft/world/level/levelgen/NoiseBasedChunkGenerator",
     "net/minecraft/world/level/levelgen/NoiseChunk",
+    "net/minecraft/world/level/levelgen/Aquifer",
+    "net/minecraft/world/level/levelgen/carver/WorldCarver",
+    "net/minecraft/world/level/levelgen/carver/CaveWorldCarver",
+    "net/minecraft/world/level/levelgen/carver/CanyonWorldCarver",
+    "net/minecraft/world/level/chunk/CarverOutput",
     "net/minecraft/world/level/levelgen/densityfunction/DensitySampler",
     "net/minecraft/world/level/levelgen/densityfunction/DensityFunctionCompiler",
     "net/minecraft/world/level/levelgen/densityfunction/SamplerContext",
@@ -36,6 +41,17 @@ TARGET_CLASSES = (
     "net/minecraft/world/level/levelgen/densityfunction/generator/NoiseFunction",
     "net/minecraft/world/level/levelgen/synth/NoiseStack",
     "net/minecraft/world/level/levelgen/synth/PerlinNoise",
+)
+
+# Print complete signatures for these execution-stage classes. This makes the
+# artifact report useful for planning native ports without distributing or
+# committing Mojang/NeoForge-decompiled source.
+EXECUTION_STAGE_PREFIXES = (
+    "net/minecraft/world/level/levelgen/Aquifer",
+    "net/minecraft/world/level/levelgen/carver/WorldCarver",
+    "net/minecraft/world/level/levelgen/carver/CaveWorldCarver",
+    "net/minecraft/world/level/levelgen/carver/CanyonWorldCarver",
+    "net/minecraft/world/level/chunk/CarverOutput",
 )
 
 
@@ -212,6 +228,11 @@ def compare_method_inventories(
                 lines.append(f"  - {name}{descriptor}")
             for (name, descriptor), before, after in length_changed:
                 lines.append(f"  * {name}{descriptor}: Code bytes {before} -> {after}")
+            if any(class_name.startswith(prefix) for prefix in EXECUTION_STAGE_PREFIXES):
+                lines.append("  patched execution-stage method signatures:")
+                for (name, descriptor), details in sorted(new.items()):
+                    code_length = details["code_length"]
+                    lines.append(f"    {name}{descriptor}: Code bytes={code_length}")
     return lines
 
 def main() -> int:
