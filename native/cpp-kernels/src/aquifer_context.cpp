@@ -334,6 +334,7 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_fluid_status_points_b
     constexpr uint32_t kMaxStatusBatch = 65536U;
     constexpr uint32_t kSurfaceProbeCount = 13U;
     constexpr uint32_t kNoiseSamplerCount = 4U;
+    constexpr size_t kMaxSurfaceCacheEntries = 65536U;
     constexpr int32_t surface_offset_x[kSurfaceProbeCount] = {
         0, -2, -1, 0, 1, -3, -2, -1, 1, -2, -1, 0, 1
     };
@@ -508,25 +509,29 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_fluid_status_points_b
         for (uint32_t missing = 0; missing < missing_count; ++missing) {
             missing_keys[missing] = cache_keys[missing_indices[missing]];
         }
-        if (jpe_cpp_aquifer_status_cache_insert_batch(
+        for (uint32_t missing = 0; missing < missing_count; ++missing) {
+            resolved[missing_indices[missing]] = computed[missing];
+        }
+        if (jpe_cpp_aquifer_status_cache_insert_batch_evict(
                 context->status_cache_handle, missing_keys.data(),
                 computed.data(), missing_count) != 0) return 2;
 
         if (!new_surface_keys.empty()) {
             std::lock_guard<std::mutex> lock(context->surface_cache_mutex);
-            for (size_t i = 0; i < new_surface_keys.size(); ++i) {
-                context->surface_level_cache.try_emplace(new_surface_keys[i], new_surface_values[i]);
+            auto& surface_cache = context->surface_level_cache;
+            if (new_surface_keys.size() > kMaxSurfaceCacheEntries
+                    || surface_cache.size() > kMaxSurfaceCacheEntries - new_surface_keys.size()) {
+                surface_cache.clear();
+            }
+            const size_t retain_count = std::min(new_surface_keys.size(), kMaxSurfaceCacheEntries);
+            for (size_t i = 0; i < retain_count; ++i) {
+                surface_cache.try_emplace(new_surface_keys[i], new_surface_values[i]);
             }
         }
     }
 
-    std::fill(found.begin(), found.end(), static_cast<uint8_t>(0));
-    if (jpe_cpp_aquifer_status_cache_lookup_batch(
-            context->status_cache_handle, cache_keys, count,
-            resolved.data(), found.data()) != 0) return 2;
-    for (uint8_t is_found : found) {
-        if (is_found == 0) return 2;
-    }
+    // Use the values resolved for this call rather than re-reading the shared cache:
+    // another worker may evict an older entry while this volume is still in flight.
     for (uint32_t i = 0; i < count; ++i) outputs[i] = resolved[i];
     return 0;
 } catch (...) {
