@@ -87,7 +87,7 @@ float minecraft_clamp(float value, float minimum, float maximum) noexcept {
 float minecraft_volume_min(float left, float right) noexcept { return right < left ? right : left; }
 float minecraft_volume_max(float left, float right) noexcept { return right > left ? right : left; }
 
-float apply_unary_density(uint32_t opcode, float value) noexcept {
+float apply_unary_density(uint32_t opcode, float value, float parameter = 0.0f) noexcept {
     switch (opcode) {
         case JPE_DENSITY_SQRT:
             return static_cast<float>(std::sqrt(static_cast<double>(value)));
@@ -98,6 +98,8 @@ float apply_unary_density(uint32_t opcode, float value) noexcept {
         case JPE_DENSITY_SIGN:
             if (std::isnan(value) || value == 0.0f) return value;
             return std::copysign(1.0f, value);
+        case JPE_DENSITY_LEAKY_RELU:
+            return value > 0.0f ? value : parameter * value;
         case JPE_DENSITY_SQUEEZE: {
             const float clamped = minecraft_clamp(value, -1.0f, 1.0f);
             const float cube = (clamped * clamped) * clamped;
@@ -179,6 +181,10 @@ void build_execution_plan(CompiledGraph& graph) {
             case JPE_DENSITY_SIGN:
             case JPE_DENSITY_SQUEEZE:
                 graph.arithmetic.push_back({node.opcode, node.input_a, kNoInput, i, 0.0f, 0.0f});
+                break;
+            case JPE_DENSITY_LEAKY_RELU:
+                graph.arithmetic.push_back({node.opcode, node.input_a, kNoInput, i,
+                    static_cast<float>(node.immediate), 0.0f});
                 break;
             case JPE_DENSITY_CLAMP: {
                 uint64_t packed = 0;
@@ -287,6 +293,11 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
             case JPE_DENSITY_SIGN:
             case JPE_DENSITY_SQUEEZE:
                 if (node.reserved != 0 || node.input_a >= i || node.input_b != kNoInput) return false;
+                break;
+            case JPE_DENSITY_LEAKY_RELU:
+                if (node.reserved != 0 || node.input_a >= i || node.input_b != kNoInput
+                    || !std::isfinite(node.immediate)
+                    || static_cast<double>(static_cast<float>(node.immediate)) != node.immediate) return false;
                 break;
             case JPE_DENSITY_CLAMP:
                 if (node.reserved != 0 || node.input_a >= i || node.input_b != kNoInput) return false;
@@ -618,9 +629,9 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
                     const float square = left[sample] * left[sample];
                     destination[sample] = square * left[sample];
                 }
-            } else if (instruction.opcode >= JPE_DENSITY_SQRT && instruction.opcode <= JPE_DENSITY_SQUEEZE) {
+            } else if (instruction.opcode >= JPE_DENSITY_SQRT && instruction.opcode <= JPE_DENSITY_LEAKY_RELU) {
                 for (uint32_t sample = 0; sample < count; ++sample) {
-                    destination[sample] = apply_unary_density(instruction.opcode, left[sample]);
+                    destination[sample] = apply_unary_density(instruction.opcode, left[sample], instruction.parameter_a);
                 }
             } else {
                 for (uint32_t sample = 0; sample < count; ++sample) {
@@ -744,6 +755,10 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_scalar_reference(
                         case JPE_DENSITY_SIGN:
                         case JPE_DENSITY_SQUEEZE:
                             values[n] = apply_unary_density(node.opcode, values[node.input_a]);
+                            break;
+                        case JPE_DENSITY_LEAKY_RELU:
+                            values[n] = apply_unary_density(node.opcode, values[node.input_a],
+                                static_cast<float>(node.immediate));
                             break;
                         case JPE_DENSITY_CLAMP: {
                             uint64_t packed = 0;
