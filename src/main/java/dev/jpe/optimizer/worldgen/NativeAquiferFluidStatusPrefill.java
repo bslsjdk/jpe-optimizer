@@ -9,7 +9,6 @@ import dev.jpe.optimizer.mixin.XoroshiroPositionalRandomFactoryAccessor;
 import dev.jpe.optimizer.runtime.NativePerlinNoiseBackend;
 import dev.jpe.optimizer.runtime.NativeRuntime;
 import net.minecraft.SharedConstants;
-import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.ChunkAccess;
@@ -45,7 +44,6 @@ public final class NativeAquiferFluidStatusPrefill {
     private static final long SEMANTIC_FINGERPRINT = 0x4A50_4541_5155_4632L;
     private static final AtomicBoolean REPORTED_SUCCESS = new AtomicBoolean();
     private static final AtomicBoolean REPORTED_FAILURE = new AtomicBoolean();
-    private static final int MAX_STATUS_BATCH = 65_536;
 
     private NativeAquiferFluidStatusPrefill() {}
 
@@ -68,7 +66,7 @@ public final class NativeAquiferFluidStatusPrefill {
                 || Boolean.getBoolean("jpe.nativeAquiferSubstanceVerify");
         if (strict && !verify) {
             throw new IllegalStateException(
-                    "Strict native Aquifer mode requires the vanilla FluidStatus parity oracle");
+                    "Strict native Aquifer mode requires the full-volume vanilla parity oracle");
         }
 
         NativeRuntime runtime;
@@ -84,9 +82,13 @@ public final class NativeAquiferFluidStatusPrefill {
             return fail(strict, "Six native Aquifer sampler plans were not prepared for this runtime", null);
         }
 
-        long[] locationCache = aquifer.jpe$getAquiferLocationCache();
-        if (locationCache == null || locationCache.length == 0 || locationCache.length > 1_048_576) {
-            return fail(strict, "Vanilla Aquifer location cache dimensions are invalid", null);
+        // Vanilla allocates this location cache for the same [gridY][gridZ][gridX]
+        // domain that native nearest-four searches. Use only its capacity: C++ now
+        // generates center positions and computes/caches FluidStatus on demand.
+        long[] vanillaLocationCache = aquifer.jpe$getAquiferLocationCache();
+        if (vanillaLocationCache == null || vanillaLocationCache.length == 0
+                || vanillaLocationCache.length > 1_048_576) {
+            return fail(strict, "Vanilla Aquifer location-cache dimensions are invalid", null);
         }
 
         final int randomMode;
@@ -105,97 +107,39 @@ public final class NativeAquiferFluidStatusPrefill {
             return fail(strict, "Unsupported positional random factory: " + factory.getClass().getName(), null);
         }
 
+        BlockState defaultFluid = settings.defaultFluid();
+        if (!matchesVanillaGlobalFluidPicker(aquifer.jpe$getGlobalFluidPicker(), settings)) {
+            return fail(strict,
+                    "A custom or non-vanilla global FluidPicker is not supported by the native Aquifer kernel",
+                    null);
+        }
+        int defaultFluidToken = tokenForDefaultFluid(defaultFluid);
+        byte[] fingerprint = makeEphemeralFingerprint(
+                noiseChunk, chunk, aquifer, randomMode, seedLo, seedHi);
+
         long started = System.nanoTime();
         long contextHandle = 0L;
         try {
-            ensureLocationCache(runtime, aquifer, locationCache, randomMode, seedLo, seedHi);
-            long[] cacheKeys = new long[locationCache.length];
-            int[] pointX = new int[locationCache.length];
-            int[] pointY = new int[locationCache.length];
-            int[] pointZ = new int[locationCache.length];
-            for (int i = 0; i < locationCache.length; i++) {
-                long packed = locationCache[i];
-                if (packed == Long.MAX_VALUE) {
-                    throw new IllegalStateException("Native Aquifer location cache contains an unfilled cell");
-                }
-                cacheKeys[i] = packed;
-                pointX[i] = BlockPos.getX(packed);
-                pointY[i] = BlockPos.getY(packed);
-                pointZ[i] = BlockPos.getZ(packed);
-            }
-
-            BlockState defaultFluid = settings.defaultFluid();
-            if (!matchesVanillaGlobalFluidPicker(
-                    aquifer.jpe$getGlobalFluidPicker(), settings)) {
-                return fail(strict,
-                        "A custom or non-vanilla global FluidPicker is not supported by the native Aquifer kernel",
-                        null);
-            }
-            int defaultFluidToken = tokenForDefaultFluid(defaultFluid);
-            byte[] fingerprint = makeEphemeralFingerprint(
-                    noiseChunk, chunk, aquifer, randomMode, seedLo, seedHi);
             contextHandle = runtime.createAquiferContext(
                     plans.copyHandles(), fingerprint, SEMANTIC_FINGERPRINT,
                     seedLo, seedHi, randomMode,
                     AIR_TOKEN, WATER_TOKEN, LAVA_TOKEN,
-                    Math.max(1, locationCache.length));
+                    Math.max(1, vanillaLocationCache.length));
             runtime.configureAquiferGlobalFluidPicker(
                     contextHandle, fingerprint, SEMANTIC_FINGERPRINT,
                     settings.seaLevel(), DimensionType.MIN_Y,
                     defaultFluidToken, defaultFluid.isAir(),
                     SharedConstants.DEBUG_DISABLE_FLUID_GENERATION);
 
-            int total = cacheKeys.length;
-            int[] fluidLevels = new int[Math.min(total, MAX_STATUS_BATCH)];
-            int[] fluidTypes = new int[Math.min(total, MAX_STATUS_BATCH)];
-            if (verify) {
-                for (int start = 0; start < total; start += MAX_STATUS_BATCH) {
-                    int count = Math.min(MAX_STATUS_BATCH, total - start);
-                    long[] keys = java.util.Arrays.copyOfRange(cacheKeys, start, start + count);
-                    int[] xs = java.util.Arrays.copyOfRange(pointX, start, start + count);
-                    int[] ys = java.util.Arrays.copyOfRange(pointY, start, start + count);
-                    int[] zs = java.util.Arrays.copyOfRange(pointZ, start, start + count);
-                    if (fluidLevels.length < count) {
-                        fluidLevels = new int[count];
-                        fluidTypes = new int[count];
-                    }
-                    runtime.computeAquiferFluidStatusPointsBatch(
-                            contextHandle, fingerprint, SEMANTIC_FINGERPRINT,
-                            keys, xs, ys, zs, fluidLevels, fluidTypes);
-                    for (int i = 0; i < count; i++) {
-                        Aquifer.FluidStatus expected = aquifer.jpe$computeFluid(xs[i], ys[i], zs[i]);
-                        BlockState actualState = stateForToken(fluidTypes[i], defaultFluid);
-                        if (expected.fluidLevel() != fluidLevels[i]
-                                || !expected.fluidType().equals(actualState)) {
-                            throw new IllegalStateException(
-                                    "Native FluidStatus parity mismatch at cell index " + (start + i)
-                                            + " center=(" + xs[i] + "," + ys[i] + "," + zs[i] + ")"
-                                            + " vanilla=(" + expected.fluidLevel() + "," + expected.fluidType() + ")"
-                                            + " native=(" + fluidLevels[i] + "," + actualState + ")");
-                        }
-                    }
-                }
-            } else {
-                // The point-status call both computes missing values and fills the
-                // context cache. Split requests to keep every C ABI batch bounded.
-                for (int start = 0; start < total; start += MAX_STATUS_BATCH) {
-                    int count = Math.min(MAX_STATUS_BATCH, total - start);
-                    runtime.computeAquiferFluidStatusPointsBatch(
-                            contextHandle, fingerprint, SEMANTIC_FINGERPRINT,
-                            java.util.Arrays.copyOfRange(cacheKeys, start, start + count),
-                            java.util.Arrays.copyOfRange(pointX, start, start + count),
-                            java.util.Arrays.copyOfRange(pointY, start, start + count),
-                            java.util.Arrays.copyOfRange(pointZ, start, start + count),
-                            fluidLevels, fluidTypes);
-                }
-            }
-
             Prepared prepared = new Prepared(runtime, contextHandle, fingerprint, defaultFluid);
             contextHandle = 0L; // Ownership transfers to Prepared.
             if (REPORTED_SUCCESS.compareAndSet(false, true)) {
                 JPEOptimizer.LOGGER.info(
-                        "JPE_NATIVE_AQUIFER_CONTEXT_READY cells={} verified={} randomMode={} elapsedUs={}",
-                        total, verify, randomMode, (System.nanoTime() - started) / 1_000.0);
+                        "JPE_NATIVE_AQUIFER_CONTEXT_READY statusCacheCapacity={} "
+                                + "statusComputedOnDemand=true fullVolumeOracleRequested={} "
+                                + "randomMode={} elapsedUs={}",
+                        vanillaLocationCache.length, verify, randomMode,
+                        (System.nanoTime() - started) / 1_000.0);
             }
             return prepared;
         } catch (RuntimeException | LinkageError failure) {
@@ -259,33 +203,6 @@ public final class NativeAquiferFluidStatusPrefill {
             closed = true;
             runtime.destroyAquiferContext(contextHandle);
         }
-    }
-
-    private static void ensureLocationCache(
-            NativeRuntime runtime,
-            AquiferNoiseBasedAccessor aquifer,
-            long[] locations,
-            int randomMode,
-            long seedLo,
-            long seedHi
-    ) {
-        boolean hasUnset = false;
-        boolean hasInitialized = false;
-        for (long location : locations) {
-            if (location == Long.MAX_VALUE) hasUnset = true;
-            else hasInitialized = true;
-        }
-        if (!hasUnset) return;
-        if (hasInitialized) {
-            throw new IllegalStateException("Aquifer location cache is partially initialized");
-        }
-        if (!runtime.supportsAquiferGridCenters()) {
-            throw new IllegalStateException("Native Aquifer grid-center API is unavailable");
-        }
-        runtime.aquiferGridCenters(
-                randomMode, seedLo, seedHi,
-                aquifer.jpe$getMinGridX(), aquifer.jpe$getMinGridY(), aquifer.jpe$getMinGridZ(),
-                aquifer.jpe$getGridSizeX(), aquifer.jpe$getGridSizeZ(), locations);
     }
 
     /**
