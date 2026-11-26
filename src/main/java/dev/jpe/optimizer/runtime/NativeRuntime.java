@@ -57,6 +57,7 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle densityGraphRelease;
     private final MethodHandle aquiferGridCenters;
     private final MethodHandle aquiferNearestFour;
+    private final MethodHandle aquiferSubstanceBatch;
     private final ConcurrentHashMap<Long, java.util.concurrent.atomic.AtomicInteger> densityGraphHandles = new ConcurrentHashMap<>();
     private final java.util.Set<Long> preparedStackHandles = ConcurrentHashMap.newKeySet();
     private final MethodHandle jobStatus;
@@ -148,6 +149,8 @@ public final class NativeRuntime implements AutoCloseable {
         private final Arena arena = Arena.ofShared();
         private MemorySegment inputX, inputY, inputZ, outputX, outputY, outputZ, distances;
         private int inputCapacity, outputCapacity;
+        private MemorySegment substanceInputs, substanceOutputs;
+        private int substanceInputCapacity, substanceOutputCapacity;
         private final AtomicBoolean leased = new AtomicBoolean();
 
         private boolean tryAcquire() { return leased.compareAndSet(false, true); }
@@ -179,6 +182,23 @@ public final class NativeRuntime implements AutoCloseable {
             }
             return new MemorySegment[] {inputX, inputY, inputZ, outputX, outputY, outputZ, distances};
         }
+        private MemorySegment[] ensureSubstanceCapacity(int count) {
+            if (substanceInputCapacity < count) {
+                int next = Math.max(128, substanceInputCapacity);
+                while (next < count) next = Math.min(1_048_576, Math.multiplyExact(next, 2));
+                long bytes = Math.multiplyExact((long) next, 88L);
+                substanceInputs = arena.allocate(bytes, 8);
+                substanceInputCapacity = next;
+            }
+            if (substanceOutputCapacity < count) {
+                int next = Math.max(256, substanceOutputCapacity);
+                while (next < count) next = Math.min(1_048_576, Math.multiplyExact(next, 2));
+                long bytes = Math.multiplyExact((long) next, 12L);
+                substanceOutputs = arena.allocate(bytes, 4);
+                substanceOutputCapacity = next;
+            }
+            return new MemorySegment[] {substanceInputs, substanceOutputs};
+        }
         @Override
         public void close() {
             if (leased.get()) throw new IllegalStateException("Cannot close a leased Aquifer scratch arena");
@@ -203,7 +223,8 @@ public final class NativeRuntime implements AutoCloseable {
                           MethodHandle preparePreparedStack, MethodHandle evaluatePreparedStack,
                           MethodHandle releasePreparedStack,
                           MethodHandle graphCompile, MethodHandle graphEvaluate, MethodHandle graphEvaluateF32, MethodHandle graphRelease,
-                          MethodHandle aquiferGridCenters, MethodHandle aquiferNearestFour) {
+                          MethodHandle aquiferGridCenters, MethodHandle aquiferNearestFour,
+                          MethodHandle aquiferSubstanceBatch) {
         this.configureWorkers = configureWorkers;
         this.workerCount = workerCount;
         this.addF32 = add;
@@ -220,6 +241,7 @@ public final class NativeRuntime implements AutoCloseable {
         this.densityGraphRelease = graphRelease;
         this.aquiferGridCenters = aquiferGridCenters;
         this.aquiferNearestFour = aquiferNearestFour;
+        this.aquiferSubstanceBatch = aquiferSubstanceBatch;
         this.jobStatus = status;
         this.waitJob = wait;
         this.cancelJob = cancel;
@@ -349,6 +371,11 @@ public final class NativeRuntime implements AutoCloseable {
                                     ValueLayout.ADDRESS, ValueLayout.ADDRESS,
                                     ValueLayout.ADDRESS, ValueLayout.ADDRESS)))
                     .orElse(null);
+            MethodHandle aquiferSubstanceBatch = lookup.find("jpe_runtime_aquifer_compute_substance_batch")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS)))
+                    .orElse(null);
             if (graphCompile == null || graphEvaluate == null || graphRelease == null) {
                 graphCompile = null;
                 graphEvaluate = null;
@@ -376,7 +403,8 @@ public final class NativeRuntime implements AutoCloseable {
             if (actualWorkers < 1) throw new IllegalStateException("Unable to configure native workers: " + actualWorkers);
             return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, perlinStack, submit, submitStack, status, wait, cancel, release,
                     preparePreparedStack, evaluatePreparedStack, releasePreparedStack,
-                    graphCompile, graphEvaluate, graphEvaluateF32, graphRelease, aquiferGridCenters, aquiferNearestFour);
+                    graphCompile, graphEvaluate, graphEvaluateF32, graphRelease, aquiferGridCenters, aquiferNearestFour,
+                    aquiferSubstanceBatch);
         } catch (Throwable failure) {
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
         }
@@ -495,6 +523,103 @@ public final class NativeRuntime implements AutoCloseable {
             lifecycle.readLock().unlock();
         }
         return new AquiferNearestFour(centerX, centerY, centerZ, distances);
+    }
+
+    public record AquiferSubstanceBatch(
+            boolean[] hasBlockState, int[] blockStateTypes, boolean[] shouldScheduleFluidUpdate) {}
+
+    /** True when the native runtime exposes the allocation-free batch substance kernel. */
+    public boolean supportsAquiferSubstanceBatch() {
+        return aquiferSubstanceBatch != null;
+    }
+
+    /**
+     * Evaluates a contiguous batch of Aquifer substance decisions in one FFM call.
+     * Fluid status inputs are sample-major with four neighbors per sample.
+     *
+     * The input arrays are data preparation only; density, pressure, barrier tests,
+     * fluid decision, and update scheduling all execute in native code.
+     */
+    public AquiferSubstanceBatch aquiferSubstanceBatch(
+            int[] blockY, double[] density, float[] barrierNoise,
+            int[] distanceSquared, int[] closestFluidLevels, int[] closestFluidTypes,
+            int[] globalFluidBelowTypes, int airType, int waterType, int lavaType,
+            boolean debugDisableFluidGeneration) {
+        if (aquiferSubstanceBatch == null) {
+            throw new UnsupportedOperationException("Native runtime does not export Aquifer substance batch support");
+        }
+        Objects.requireNonNull(blockY, "blockY");
+        Objects.requireNonNull(density, "density");
+        Objects.requireNonNull(barrierNoise, "barrierNoise");
+        Objects.requireNonNull(distanceSquared, "distanceSquared");
+        Objects.requireNonNull(closestFluidLevels, "closestFluidLevels");
+        Objects.requireNonNull(closestFluidTypes, "closestFluidTypes");
+        Objects.requireNonNull(globalFluidBelowTypes, "globalFluidBelowTypes");
+        int count = blockY.length;
+        if (count == 0 || count > 1_048_576 || density.length != count
+                || barrierNoise.length != count || globalFluidBelowTypes.length != count) {
+            throw new IllegalArgumentException("Aquifer per-sample arrays must have equal lengths in [1, 1048576]");
+        }
+        int neighborLength = Math.multiplyExact(count, 4);
+        if (distanceSquared.length != neighborLength || closestFluidLevels.length != neighborLength
+                || closestFluidTypes.length != neighborLength) {
+            throw new IllegalArgumentException("Aquifer nearest-four arrays must contain exactly four entries per sample");
+        }
+        if (airType == waterType || airType == lavaType || waterType == lavaType) {
+            throw new IllegalArgumentException("Air, water, and lava registry tokens must be distinct");
+        }
+
+        boolean[] hasBlockState = new boolean[count];
+        int[] blockStateTypes = new int[count];
+        boolean[] shouldSchedule = new boolean[count];
+        lifecycle.readLock().lock();
+        AquiferScratch scratch = null;
+        try {
+            ensureOpen();
+            scratch = acquireAquiferScratch();
+            MemorySegment[] buffers = scratch.ensureSubstanceCapacity(count);
+            MemorySegment inputs = buffers[0];
+            MemorySegment outputs = buffers[1];
+            final long inputStride = 88L;
+            final long outputStride = 12L;
+            for (int i = 0; i < count; i++) {
+                long base = i * inputStride;
+                inputs.set(ValueLayout.JAVA_INT, base, blockY[i]);
+                inputs.set(ValueLayout.JAVA_DOUBLE, base + 8L, density[i]);
+                inputs.set(ValueLayout.JAVA_FLOAT, base + 16L, barrierNoise[i]);
+                int neighborBase = i * 4;
+                for (int neighbor = 0; neighbor < 4; neighbor++) {
+                    long statusOffset = base + 36L + neighbor * 8L;
+                    inputs.set(ValueLayout.JAVA_INT, base + 20L + neighbor * 4L,
+                            distanceSquared[neighborBase + neighbor]);
+                    inputs.set(ValueLayout.JAVA_INT, statusOffset,
+                            closestFluidLevels[neighborBase + neighbor]);
+                    inputs.set(ValueLayout.JAVA_INT, statusOffset + 4L,
+                            closestFluidTypes[neighborBase + neighbor]);
+                }
+                inputs.set(ValueLayout.JAVA_INT, base + 68L, globalFluidBelowTypes[i]);
+                inputs.set(ValueLayout.JAVA_INT, base + 72L, airType);
+                inputs.set(ValueLayout.JAVA_INT, base + 76L, waterType);
+                inputs.set(ValueLayout.JAVA_INT, base + 80L, lavaType);
+                inputs.set(ValueLayout.JAVA_INT, base + 84L, debugDisableFluidGeneration ? 1 : 0);
+            }
+            try {
+                int status = (int) aquiferSubstanceBatch.invokeExact(inputs, count, outputs);
+                checkStatus(status, "aquifer-substance-batch");
+                for (int i = 0; i < count; i++) {
+                    long base = i * outputStride;
+                    hasBlockState[i] = outputs.get(ValueLayout.JAVA_INT, base) != 0;
+                    blockStateTypes[i] = outputs.get(ValueLayout.JAVA_INT, base + 4L);
+                    shouldSchedule[i] = outputs.get(ValueLayout.JAVA_INT, base + 8L) != 0;
+                }
+            } catch (Throwable failure) {
+                throw rethrow("Unable to evaluate Native Aquifer substance batch", failure);
+            }
+        } finally {
+            if (scratch != null) scratch.release();
+            lifecycle.readLock().unlock();
+        }
+        return new AquiferSubstanceBatch(hasBlockState, blockStateTypes, shouldSchedule);
     }
 
     private static int requestedNativeWorkers() {
