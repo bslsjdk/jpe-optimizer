@@ -1067,7 +1067,8 @@ mod tests {
         });
         for index in 2..600 {
             nodes.push(JpeDensityNode {
-                opcode: DENSITY_ADD, input_a: (index - 1) as u32,
+                opcode: DENSITY_ADD,
+                input_a: if index == 2 { 0 } else { (index - 1) as u32 },
                 input_b: 1, reserved: 0, immediate: 0.0,
             });
         }
