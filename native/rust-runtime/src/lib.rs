@@ -1564,6 +1564,55 @@ mod tests {
     }
 
     #[test]
+    fn density_graph_executes_prepared_perlin_as_a_volume_node_and_retains_it() {
+        let permutation: [u8; 256] = std::array::from_fn(|i| ((i * 37 + 11) & 255) as u8);
+        let layer = JpePerlinLayer {
+            permutation: permutation.as_ptr(),
+            offset_x: 0.13, offset_y: -0.17, offset_z: 0.23,
+            xz_scale: 0.375, y_scale: 0.625, amplitude: 0.75,
+        };
+        let stack = unsafe { jpe_runtime_prepare_perlin_stack(&layer, 1) };
+        assert_ne!(stack, 0);
+
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.125 },
+            JpeDensityNode { opcode: 7, input_a: 1.0_f32.to_bits(),
+                input_b: 1.0_f32.to_bits(), reserved: 1.0_f32.to_bits(),
+                immediate: stack as f64 },
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 0, input_b: 1,
+                reserved: 0, immediate: 0.0 },
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 2, 0xD3517A)
+        };
+        assert_ne!(graph, 0);
+
+        // The compiled graph owns a retained native stack reference.
+        assert_eq!(jpe_runtime_release_prepared_perlin_stack(stack), STATUS_OK);
+        let mut actual = [0.0_f64; 24];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                graph, 2, 3, 4, -3, -5, 7, 1, 2, 1,
+                actual.as_mut_ptr(), actual.len() as u64,
+            )
+        }, STATUS_OK);
+
+        let mut expected = [0.125_f32; 24];
+        let direct_layer = JpePerlinLayer { ..layer };
+        assert_eq!(unsafe {
+            jpe_runtime_perlin_add_stack(
+                &direct_layer, 1, 2, 3, 4, -3, -5, 7, 1, 2, 1,
+                expected.as_mut_ptr(), expected.len() as u64, 0,
+            )
+        }, STATUS_OK);
+        for (actual, expected) in actual.iter().zip(expected.iter()) {
+            assert_eq!(*actual, (*expected as f64) + 0.125);
+        }
+        assert_eq!(jpe_runtime_density_graph_release(graph), STATUS_OK);
+    }
+
+    #[test]
     fn prepared_perlin_stack_matches_direct_stack_and_reuses_plan() {
         let permutation_a: [u8; 256] = std::array::from_fn(|i| ((i * 13 + 7) & 255) as u8);
         let permutation_b: [u8; 256] = std::array::from_fn(|i| ((i * 29 + 3) & 255) as u8);
