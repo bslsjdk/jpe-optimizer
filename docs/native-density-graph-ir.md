@@ -1,4 +1,4 @@
-# Native density graph IR v6
+# Native density graph IR v8
 
 Status: experimental shadow execution. Compiled-sampler arithmetic islands are evaluated by Native during real Minecraft world generation and compared bit-for-bit with Java. Native results are not committed to chunks; Java remains authoritative until broader exact-output and end-to-end performance gates pass.
 
@@ -59,14 +59,15 @@ All floating-point operations must use the same precision and evaluation order a
 
 ## Initial opcode families
 
-The initial compiler should be deliberately narrow. Candidate pure operations include:
+The compiler remains deliberately narrow. The current exact-op allowlist includes:
 
 - constants and coordinate inputs
-- add, multiply, min, max
-- clamp and the simple unary transforms whose exact formulas are confirmed from the target artifact
+- add, subtract, multiply, divide, min and max
+- clamp
+- unary negate, absolute value, square and cube (their Native implementations are present; enablement remains gated on exact 26.3 bytecode parity)
 - noise references only after permutation, octave order, coordinate wrapping, and float/double conversion points have parity tests
 
-These are a proposed allowlist, not a claim that every opcode is already implemented. The current native prototype implements `CONST`, `X`, `Y`, `Z`, `ADD`, `SUB`, and `MUL` in `native/cpp-kernels/src/density_graph.cpp`. Its C ABI supports versioned compile/cache, full-volume evaluation, and reference-counted release; Java 25 FFM wrappers are present in `NativeRuntime`. Rust unit tests exercise the arithmetic graph, cache reuse, malformed topological references, and invalid volume rejection. Java unit tests exercise IR validation. The prototype API is callable from Java, but no Minecraft `DensityFunction` extractor or `NoiseRouter` integration exists yet. It is not a terrain speedup.
+These are a proposed allowlist, not a claim that every opcode is already implemented. The current native prototype implements `CONST`, `X`, `Y`, `Z`, `INPUT`, `ADD`, `SUB`, `MUL`, `DIV`, `MIN`, `MAX`, `CLAMP`, `NEGATE`, `ABS`, `SQUARE`, and `CUBE` in `native/cpp-kernels/src/density_graph.cpp`. Its C ABI supports versioned compile/cache, full-volume evaluation, and reference-counted release; Java 25 FFM wrappers are present in `NativeRuntime`. Rust unit tests exercise the arithmetic graph, unary float32 operations (including signed zero), cache reuse, malformed topological references, and invalid volume rejection. Java unit tests exercise IR validation and lowering. The prototype API is callable from Java, but no Minecraft `DensityFunction` extractor or `NoiseRouter` integration exists yet. It is not a terrain speedup.
 
 The following require dedicated semantic work and must not be approximated as ordinary arithmetic:
 
