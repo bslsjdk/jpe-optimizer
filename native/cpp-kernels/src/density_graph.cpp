@@ -1077,6 +1077,60 @@ int32_t evaluate_density_graph(
         output, output_length, 0);
 }
 
+template <typename Scalar>
+int32_t evaluate_density_graph_points(
+    uint64_t graph_handle,
+    const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
+    uint32_t point_count, Scalar* output, uint64_t output_length
+) {
+    if (point_x == nullptr || point_y == nullptr || point_z == nullptr || output == nullptr
+        || point_count == 0 || point_count > kMaxVolumeElements || output_length != point_count) return 1;
+    std::shared_ptr<CompiledGraph> graph;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        const auto found = g_handles.find(graph_handle);
+        if (found == g_handles.end()) return 2;
+        graph = found->second;
+    }
+
+    // Reuse the complete volume evaluator for one-point frames. This preserves
+    // the existing interpolation, range-choice, warped-Perlin, and Java numeric
+    // behavior while allowing arbitrary, non-grid-aligned Aquifer sample sites.
+    // Its thread-local scratch retains capacity between points and graph calls.
+    try {
+        for (uint32_t i = 0; i < point_count; ++i) {
+            const int32_t status = evaluate_density_graph_impl<Scalar>(
+                graph, graph->root,
+                1, 1, 1,
+                point_x[i], point_y[i], point_z[i],
+                1, 1, 1,
+                &output[i], 1, 0);
+            if (status != 0) return status;
+        }
+        return 0;
+    } catch (...) {
+        return 3;
+    }
+}
+
+extern "C" int32_t jpe_runtime_density_graph_evaluate_points(
+    uint64_t graph_handle,
+    const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
+    uint32_t point_count, double* output, uint64_t output_length
+) {
+    return evaluate_density_graph_points<double>(
+        graph_handle, point_x, point_y, point_z, point_count, output, output_length);
+}
+
+extern "C" int32_t jpe_runtime_density_graph_evaluate_points_f32(
+    uint64_t graph_handle,
+    const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
+    uint32_t point_count, float* output, uint64_t output_length
+) {
+    return evaluate_density_graph_points<float>(
+        graph_handle, point_x, point_y, point_z, point_count, output, output_length);
+}
+
 extern "C" int32_t jpe_runtime_density_graph_evaluate(
     uint64_t graph_handle,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
