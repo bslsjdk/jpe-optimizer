@@ -74,54 +74,6 @@ Entry* find_slot(Cache& cache, uint64_t key) noexcept {
     return first_tombstone;
 }
 
-extern "C" int32_t jpe_cpp_aquifer_status_cache_insert_batch_evict(
-    uint64_t handle,
-    const uint64_t* keys,
-    const JpeAquiferFluidStatus* statuses,
-    uint32_t count
-) {
-    constexpr uint32_t kMaxBatch = 1024U * 1024U;
-    if (keys == nullptr || statuses == nullptr || count == 0 || count > kMaxBatch) return 1;
-    auto cache = acquire_cache(handle);
-    if (!cache) return 1;
-
-    try {
-        std::lock_guard<std::mutex> lock(cache->mutex);
-        for (uint32_t i = 0; i < count; ++i) {
-            Entry* entry = find_slot(*cache, keys[i]);
-            if (entry == nullptr) return 2;
-            if (entry->occupied) continue;
-
-            if (cache->size >= cache->max_entries) {
-                bool evicted = false;
-                for (size_t probe = 0; probe < cache->slots.size(); ++probe) {
-                    Entry& candidate = cache->slots[cache->eviction_cursor];
-                    cache->eviction_cursor = (cache->eviction_cursor + 1U) & (cache->slots.size() - 1U);
-                    if (!candidate.occupied) continue;
-                    candidate.occupied = false;
-                    candidate.tombstone = true;
-                    --cache->size;
-                    evicted = true;
-                    break;
-                }
-                if (!evicted) return 2;
-                entry = find_slot(*cache, keys[i]);
-                if (entry == nullptr || entry->occupied) return 2;
-            }
-
-            entry->key = keys[i];
-            entry->fluid_level = statuses[i].fluid_level;
-            entry->fluid_type = statuses[i].fluid_type;
-            entry->occupied = true;
-            entry->tombstone = false;
-            ++cache->size;
-        }
-        return 0;
-    } catch (...) {
-        return 2;
-    }
-}
-
 } // namespace
 
 extern "C" uint64_t jpe_cpp_aquifer_status_cache_create(uint32_t maximum_entries) {
@@ -217,6 +169,54 @@ extern "C" int32_t jpe_cpp_aquifer_status_cache_insert_batch(
     return 0;
     } catch (...) {
         // No cache mutation occurs before preflight succeeds.
+        return 2;
+    }
+}
+
+extern "C" int32_t jpe_cpp_aquifer_status_cache_insert_batch_evict(
+    uint64_t handle,
+    const uint64_t* keys,
+    const JpeAquiferFluidStatus* statuses,
+    uint32_t count
+) {
+    constexpr uint32_t kMaxBatch = 1024U * 1024U;
+    if (keys == nullptr || statuses == nullptr || count == 0 || count > kMaxBatch) return 1;
+    auto cache = acquire_cache(handle);
+    if (!cache) return 1;
+
+    try {
+        std::lock_guard<std::mutex> lock(cache->mutex);
+        for (uint32_t i = 0; i < count; ++i) {
+            Entry* entry = find_slot(*cache, keys[i]);
+            if (entry == nullptr) return 2;
+            if (entry->occupied) continue;
+
+            if (cache->size >= cache->max_entries) {
+                bool evicted = false;
+                for (size_t probe = 0; probe < cache->slots.size(); ++probe) {
+                    Entry& candidate = cache->slots[cache->eviction_cursor];
+                    cache->eviction_cursor = (cache->eviction_cursor + 1U) & (cache->slots.size() - 1U);
+                    if (!candidate.occupied) continue;
+                    candidate.occupied = false;
+                    candidate.tombstone = true;
+                    --cache->size;
+                    evicted = true;
+                    break;
+                }
+                if (!evicted) return 2;
+                entry = find_slot(*cache, keys[i]);
+                if (entry == nullptr || entry->occupied) return 2;
+            }
+
+            entry->key = keys[i];
+            entry->fluid_level = statuses[i].fluid_level;
+            entry->fluid_type = statuses[i].fluid_type;
+            entry->occupied = true;
+            entry->tombstone = false;
+            ++cache->size;
+        }
+        return 0;
+    } catch (...) {
         return 2;
     }
 }
