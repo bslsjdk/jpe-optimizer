@@ -35,6 +35,24 @@ constexpr uint32_t kSamplerCount = 6;
 constexpr uint32_t kMaxCacheEntries = 1024U * 1024U;
 constexpr uint64_t kMaxVolumeElements = 1024ULL * 1024ULL;
 
+// Reuse volume work buffers on the native worldgen worker that owns this call.
+// No buffer is shared across workers; the existing transactional output staging
+// remains intact while repeated per-volume heap allocations are avoided.
+struct AquiferVolumeScratch {
+    std::vector<float> density_values;
+    std::vector<JpeAquiferCoreOutput> staged;
+    std::vector<uint32_t> active_indices;
+    std::vector<int32_t> active_x, active_y, active_z;
+    std::vector<int32_t> center_x, center_y, center_z, distances;
+    std::vector<uint64_t> status_keys;
+    std::vector<JpeAquiferFluidStatus> closest_statuses;
+    std::vector<float> barrier_values;
+    std::vector<JpeAquiferCoreInput> core_inputs;
+    std::vector<JpeAquiferCoreOutput> core_outputs;
+};
+
+thread_local AquiferVolumeScratch g_aquifer_volume_scratch;
+
 struct AquiferContext {
     std::array<uint64_t, kSamplerCount> graph_handles{};
     std::array<uint8_t, 32> world_fingerprint{};
@@ -613,9 +631,17 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
 
     // Stage every result first. The caller's output array is committed only after
     // nearest-cell selection, FluidStatus lookup, barrier sampling and core math succeed.
-    std::vector<JpeAquiferCoreOutput> staged(total);
-    std::vector<uint32_t> active_indices;
-    std::vector<int32_t> active_x, active_y, active_z;
+    auto& scratch = g_aquifer_volume_scratch;
+    auto& staged = scratch.staged;
+    staged.resize(total);
+    auto& active_indices = scratch.active_indices;
+    auto& active_x = scratch.active_x;
+    auto& active_y = scratch.active_y;
+    auto& active_z = scratch.active_z;
+    active_indices.clear();
+    active_x.clear();
+    active_y.clear();
+    active_z.clear();
     active_indices.reserve(total);
     active_x.reserve(total);
     active_y.reserve(total);
@@ -663,8 +689,14 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
     if (!active_indices.empty()) {
         const uint32_t active_count = static_cast<uint32_t>(active_indices.size());
         const size_t neighbor_count = static_cast<size_t>(active_count) * kNeighbors;
-        std::vector<int32_t> center_x(neighbor_count), center_y(neighbor_count);
-        std::vector<int32_t> center_z(neighbor_count), distances(neighbor_count);
+        auto& center_x = scratch.center_x;
+        auto& center_y = scratch.center_y;
+        auto& center_z = scratch.center_z;
+        auto& distances = scratch.distances;
+        center_x.resize(neighbor_count);
+        center_y.resize(neighbor_count);
+        center_z.resize(neighbor_count);
+        distances.resize(neighbor_count);
         if (jpe_cpp_aquifer_nearest_four(
                 random_mode, seed_lo, seed_hi,
                 active_x.data(), active_y.data(), active_z.data(), active_count,
@@ -672,11 +704,13 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
             return 2;
         }
 
-        std::vector<uint64_t> status_keys(neighbor_count);
+        auto& status_keys = scratch.status_keys;
+        status_keys.resize(neighbor_count);
         for (size_t i = 0; i < neighbor_count; ++i) {
             status_keys[i] = block_pos_as_long(center_x[i], center_y[i], center_z[i]);
         }
-        std::vector<JpeAquiferFluidStatus> closest_statuses(neighbor_count);
+        auto& closest_statuses = scratch.closest_statuses;
+        closest_statuses.resize(neighbor_count);
         // Status point API has a bounded per-call batch. Four neighbours per
         // voxel means at most 16,384 voxels are sent in one status batch.
         constexpr uint32_t kVoxelsPerStatusBatch = kStatusBatchMax / kNeighbors;
@@ -693,7 +727,8 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
             }
         }
 
-        std::vector<float> barrier_values(active_count);
+        auto& barrier_values = scratch.barrier_values;
+        barrier_values.resize(active_count);
         if (jpe_cpp_density_graph_evaluate_points_f32(
                 context->graph_handles[0],
                 active_x.data(), active_y.data(), active_z.data(), active_count,
@@ -701,8 +736,10 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
             return 2;
         }
 
-        std::vector<JpeAquiferCoreInput> core_inputs(active_count);
-        std::vector<JpeAquiferCoreOutput> core_outputs(active_count);
+        auto& core_inputs = scratch.core_inputs;
+        auto& core_outputs = scratch.core_outputs;
+        core_inputs.resize(active_count);
+        core_outputs.resize(active_count);
         for (uint32_t i = 0; i < active_count; ++i) {
             const uint32_t source_index = active_indices[i];
             auto& input = core_inputs[i];
@@ -763,7 +800,8 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_density_and_substance
 
     // Density stays in native memory: the graph evaluator feeds the Aquifer
     // kernel directly without a Java-owned ScopedDensityBuffer or FFM bulk copy.
-    std::vector<float> density_values(static_cast<size_t>(total));
+    auto& density_values = g_aquifer_volume_scratch.density_values;
+    density_values.resize(static_cast<size_t>(total));
     const int32_t density_status = jpe_cpp_density_graph_evaluate_f32(
         final_density_graph_handle,
         size_x, size_y, size_z,
