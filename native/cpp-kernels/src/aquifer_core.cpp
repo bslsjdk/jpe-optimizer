@@ -3,6 +3,22 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+
+namespace {
+bool byte_ranges_overlap(const void* first, size_t first_size,
+                         const void* second, size_t second_size) noexcept {
+    if (first_size == 0 || second_size == 0) return false;
+    const uintptr_t first_begin = reinterpret_cast<uintptr_t>(first);
+    const uintptr_t second_begin = reinterpret_cast<uintptr_t>(second);
+    constexpr uintptr_t max_address = std::numeric_limits<uintptr_t>::max();
+    if (first_size > max_address - first_begin
+        || second_size > max_address - second_begin) return true;
+    const uintptr_t first_end = first_begin + static_cast<uintptr_t>(first_size);
+    const uintptr_t second_end = second_begin + static_cast<uintptr_t>(second_size);
+    return first_begin < second_end && second_begin < first_end;
+}
+}
 
 static_assert(sizeof(JpeAquiferFluidStatus) == 8, "Aquifer fluid-status ABI mismatch");
 static_assert(sizeof(JpeAquiferCoreInput) == 88, "Aquifer core input ABI mismatch");
@@ -63,8 +79,9 @@ double calculate_pressure(const JpeAquiferCoreInput& in,
 extern "C" JPE_API int32_t jpe_cpp_aquifer_compute_substance_core(
     const JpeAquiferCoreInput* in, JpeAquiferCoreOutput* out) {
     if (in == nullptr || out == nullptr
+        || byte_ranges_overlap(in, sizeof(*in), out, sizeof(*out))
         || in->air_type == in->water_type || in->air_type == in->lava_type
-        || in->water_type == in->lava_type
+        || in->water_type == in->lava_type || in->debug_disable_fluid_generation > 1U
         || in->distance_sqr[0] < 0 || in->distance_sqr[1] < 0
         || in->distance_sqr[2] < 0 || in->distance_sqr[3] < 0) return 1;
 
@@ -126,13 +143,16 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_compute_substance_batch(
 ) {
     constexpr uint32_t max_batch = 1024U * 1024U;
     if (inputs == nullptr || outputs == nullptr || count == 0 || count > max_batch) return 1;
+    const size_t input_bytes = static_cast<size_t>(count) * sizeof(*inputs);
+    const size_t output_bytes = static_cast<size_t>(count) * sizeof(*outputs);
+    if (byte_ranges_overlap(inputs, input_bytes, outputs, output_bytes)) return 1;
 
     // Validate the complete input range before writing anything. This makes a
     // rejected batch transactional from the caller's perspective.
     for (uint32_t i = 0; i < count; ++i) {
         const auto& in = inputs[i];
         if (in.air_type == in.water_type || in.air_type == in.lava_type
-            || in.water_type == in.lava_type
+            || in.water_type == in.lava_type || in.debug_disable_fluid_generation > 1U
             || in.distance_sqr[0] < 0 || in.distance_sqr[1] < 0
             || in.distance_sqr[2] < 0 || in.distance_sqr[3] < 0) return 1;
     }
