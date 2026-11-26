@@ -111,7 +111,8 @@ enum {
     JPE_DENSITY_LOG = 19,
     JPE_DENSITY_RECIPROCAL = 20,
     JPE_DENSITY_SIGN = 21,
-    JPE_DENSITY_SQUEEZE = 22
+    JPE_DENSITY_SQUEEZE = 22,
+    JPE_DENSITY_LEAKY_RELU = 23
 };
 /* Returns a retained compiled-plan handle, or zero for an invalid graph. */
 JPE_API uint64_t jpe_runtime_density_graph_compile(
