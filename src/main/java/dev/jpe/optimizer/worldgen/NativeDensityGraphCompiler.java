@@ -149,8 +149,29 @@ public final class NativeDensityGraphCompiler {
      * a Java fallback handle.
      */
     public static long prepareDensityGraphHandle(DensityFunction root, NoiseChunk noiseChunk) {
-        if (root == null || noiseChunk == null) {
-            throw new IllegalArgumentException("Density graph root and NoiseChunk are required");
+        long[] handles = prepareDensityGraphHandles(List.of(root), noiseChunk);
+        return handles[0];
+    }
+
+    /**
+     * Prepares several immutable native density plans for one NoiseChunk/RandomState.
+     * Every handle is compiled once and cached by root identity within RandomState.
+     * The returned array preserves caller order; zero marks a sampler that the native
+     * compiler declined in non-strict mode.
+     *
+     * This is preparation only: no density sample values are computed in Java here.
+     */
+    public static long[] prepareDensityGraphHandles(
+            List<? extends DensityFunction> roots, NoiseChunk noiseChunk
+    ) {
+        if (roots == null || noiseChunk == null) {
+            throw new IllegalArgumentException("Density graph roots and NoiseChunk are required");
+        }
+        if (roots.isEmpty() || roots.size() > 64) {
+            throw new IllegalArgumentException("Density graph sampler plan count must be in [1, 64]");
+        }
+        for (DensityFunction root : roots) {
+            if (root == null) throw new IllegalArgumentException("Density graph sampler root must not be null");
         }
 
         final NativeRuntime runtime;
@@ -160,11 +181,11 @@ public final class NativeDensityGraphCompiler {
             if (strictMode()) {
                 throw new IllegalStateException("Strict native sampler preparation: runtime unavailable", unavailable);
             }
-            return 0L;
+            return new long[roots.size()];
         }
         if (runtime == null) {
             if (strictMode()) throw new IllegalStateException("Strict native sampler preparation: runtime unavailable");
-            return 0L;
+            return new long[roots.size()];
         }
 
         try {
@@ -180,17 +201,33 @@ public final class NativeDensityGraphCompiler {
             }
             Beardifier beardifier = samplerContext.getField(Beardifier.CONTEXT_KEY);
             boolean beardifierEmpty = beardifier == null || beardifier == Beardifier.EMPTY;
-            return graphHandle(root, randomState, context, true, beardifierEmpty, runtime);
+
+            long[] handles = new long[roots.size()];
+            for (int i = 0; i < roots.size(); i++) {
+                DensityFunction root = roots.get(i);
+                try {
+                    handles[i] = graphHandle(
+                            root, randomState, context, true, beardifierEmpty, runtime);
+                } catch (RuntimeException | LinkageError unavailable) {
+                    if (strictMode()) {
+                        throw new IllegalStateException(
+                                "Strict native sampler preparation failed for " + root.getClass().getName()
+                                        + ": " + describe(unavailable), unavailable);
+                    }
+                    JPEOptimizer.LOGGER.debug(
+                            "Native sampler plan declined for {}: {}",
+                            root.getClass().getName(), describe(unavailable));
+                    handles[i] = 0L;
+                }
+            }
+            return handles;
         } catch (RuntimeException | LinkageError unavailable) {
             if (strictMode()) {
                 throw new IllegalStateException(
-                        "Strict native sampler preparation failed for " + root.getClass().getName()
-                                + ": " + describe(unavailable), unavailable);
+                        "Strict native sampler preparation failed: " + describe(unavailable), unavailable);
             }
-            JPEOptimizer.LOGGER.debug(
-                    "Native sampler plan declined for {}: {}",
-                    root.getClass().getName(), describe(unavailable));
-            return 0L;
+            JPEOptimizer.LOGGER.debug("Native sampler plan preparation declined: {}", describe(unavailable));
+            return new long[roots.size()];
         }
     }
 
