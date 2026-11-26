@@ -79,6 +79,12 @@ struct JpeAquiferNearestFour {
     distance_sqr: [i32; 4],
 }
 
+const _: [(); 8] = [(); std::mem::size_of::<JpeAquiferFluidStatus>()];
+const _: [(); 88] = [(); std::mem::size_of::<JpeAquiferCoreInput>()];
+const _: [(); 12] = [(); std::mem::size_of::<JpeAquiferCoreOutput>()];
+const _: [(); 12] = [(); std::mem::size_of::<JpeAquiferCellLocation>()];
+const _: [(); 32] = [(); std::mem::size_of::<JpeAquiferNearestFour>()];
+
 const DENSITY_NO_INPUT: u32 = u32::MAX;
 const DENSITY_CONST: u32 = 1;
 const DENSITY_X: u32 = 2;
