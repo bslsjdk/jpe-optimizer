@@ -68,6 +68,17 @@ public final class CompiledSamplerGraphDiagnostics {
                     snapshot.nodes().size(), snapshot.droppedNodes(), snapshot.rootId(), counts, opaqueClasses,
                     arithmeticPlan.islands().size(), arithmeticPlan.eligibleNodeCount(),
                     arithmeticPlan.boundaryNodeCount(), loweredIslands.size());
+            // Emit unsupported-node schemas at INFO so CI artifacts retain the data
+            // needed to implement semantic adapters. This diagnostic is opt-in with
+            // jpe.traceCompiledSamplers and does not affect normal world generation.
+            for (CompiledSamplerGraphIr.Node node : graph.nodes()) {
+                if (node.op() == CompiledSamplerGraphIr.Op.OPAQUE) {
+                    LOGGER.log(System.Logger.Level.INFO,
+                            "JPE_NATIVE_OPAQUE_NODE id={0} source={1} children={2} edges={3} values={4} limitation={5}",
+                            node.id(), node.sourceClass(), node.children(), node.childEdges(),
+                            node.scalarValues(), node.note());
+                }
+            }
             for (CompiledSamplerArithmeticIslands.Island island : arithmeticPlan.islands()) {
                 LOGGER.log(System.Logger.Level.DEBUG,
                         "arithmetic-island[{0}] nodes={1} inputs={2} outputs={3}",
