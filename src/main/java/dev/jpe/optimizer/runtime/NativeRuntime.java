@@ -107,6 +107,12 @@ public final class NativeRuntime implements AutoCloseable {
         blenderScratchArenas.add(scratch);
         return scratch;
     });
+    private final ConcurrentLinkedQueue<AquiferScratch> aquiferScratchArenas = new ConcurrentLinkedQueue<>();
+    private final ThreadLocal<AquiferScratch> aquiferScratch = ThreadLocal.withInitial(() -> {
+        AquiferScratch scratch = new AquiferScratch();
+        aquiferScratchArenas.add(scratch);
+        return scratch;
+    });
     private final ThreadLocal<PerlinScratch> perlinScratch = ThreadLocal.withInitial(() -> {
         PerlinScratch scratch = new PerlinScratch();
         perlinScratchArenas.add(scratch);
@@ -333,6 +339,45 @@ public final class NativeRuntime implements AutoCloseable {
         }
     }
 
+    private static final class AquiferScratch implements AutoCloseable {
+        private final Arena arena = Arena.ofShared();
+        private MemorySegment inputX, inputY, inputZ, outputX, outputY, outputZ, distances;
+        private int inputCapacity, outputCapacity;
+        private final AtomicBoolean leased = new AtomicBoolean();
+
+        private boolean tryAcquire() { return leased.compareAndSet(false, true); }
+        private void release() {
+            if (!leased.compareAndSet(true, false)) throw new IllegalStateException("Aquifer scratch lease was not active");
+        }
+        private MemorySegment[] ensureCapacity(int inputs) {
+            if (inputCapacity < inputs) {
+                int next = Math.max(256, inputCapacity);
+                while (next < inputs) next = Math.min(1_048_576, Math.multiplyExact(next, 2));
+                long bytes = Math.multiplyExact((long) next, ValueLayout.JAVA_INT.byteSize());
+                inputX = arena.allocate(bytes, ValueLayout.JAVA_INT.byteAlignment());
+                inputY = arena.allocate(bytes, ValueLayout.JAVA_INT.byteAlignment());
+                inputZ = arena.allocate(bytes, ValueLayout.JAVA_INT.byteAlignment());
+                inputCapacity = next;
+            }
+            int requiredOutputs = Math.multiplyExact(inputs, 4);
+            if (outputCapacity < requiredOutputs) {
+                int next = Math.max(1024, outputCapacity);
+                while (next < requiredOutputs) next = Math.multiplyExact(next, 2);
+                long bytes = Math.multiplyExact((long) next, ValueLayout.JAVA_INT.byteSize());
+                outputX = arena.allocate(bytes, ValueLayout.JAVA_INT.byteAlignment());
+                outputY = arena.allocate(bytes, ValueLayout.JAVA_INT.byteAlignment());
+                outputZ = arena.allocate(bytes, ValueLayout.JAVA_INT.byteAlignment());
+                distances = arena.allocate(bytes, ValueLayout.JAVA_INT.byteAlignment());
+                outputCapacity = next;
+            }
+            return new MemorySegment[] {inputX, inputY, inputZ, outputX, outputY, outputZ, distances};
+        }
+        @Override public void close() {
+            if (leased.get()) throw new IllegalStateException("Cannot close a leased Aquifer scratch arena");
+            arena.close();
+        }
+    }
+
     private static final class PerlinScratch implements AutoCloseable {
         private final Arena arena = Arena.ofShared();
         private MemorySegment permutation;
@@ -402,6 +447,16 @@ public final class NativeRuntime implements AutoCloseable {
         perlinScratch.set(scratch);
         perlinScratchArenas.add(scratch);
         if (!scratch.tryAcquire()) throw new IllegalStateException("Unable to acquire Perlin scratch arena");
+        return scratch;
+    }
+
+    private AquiferScratch acquireAquiferScratch() {
+        AquiferScratch scratch = aquiferScratch.get();
+        if (scratch.tryAcquire()) return scratch;
+        scratch = new AquiferScratch();
+        aquiferScratch.set(scratch);
+        aquiferScratchArenas.add(scratch);
+        if (!scratch.tryAcquire()) throw new IllegalStateException("Unable to acquire Aquifer scratch arena");
         return scratch;
     }
 
@@ -775,19 +830,17 @@ public final class NativeRuntime implements AutoCloseable {
         int[] centerZ = new int[outputLength];
         int[] distances = new int[outputLength];
         lifecycle.readLock().lock();
+        AquiferScratch scratch = null;
         try {
             ensureOpen();
-            try (Arena arena = Arena.ofConfined()) {
-                MemorySegment inputX = arena.allocate(Math.multiplyExact((long) count, ValueLayout.JAVA_INT.byteSize()), ValueLayout.JAVA_INT.byteAlignment());
-                MemorySegment inputY = arena.allocate(Math.multiplyExact((long) count, ValueLayout.JAVA_INT.byteSize()), ValueLayout.JAVA_INT.byteAlignment());
-                MemorySegment inputZ = arena.allocate(Math.multiplyExact((long) count, ValueLayout.JAVA_INT.byteSize()), ValueLayout.JAVA_INT.byteAlignment());
-                MemorySegment outputX = arena.allocate(Math.multiplyExact((long) outputLength, ValueLayout.JAVA_INT.byteSize()), ValueLayout.JAVA_INT.byteAlignment());
-                MemorySegment outputY = arena.allocate(Math.multiplyExact((long) outputLength, ValueLayout.JAVA_INT.byteSize()), ValueLayout.JAVA_INT.byteAlignment());
-                MemorySegment outputZ = arena.allocate(Math.multiplyExact((long) outputLength, ValueLayout.JAVA_INT.byteSize()), ValueLayout.JAVA_INT.byteAlignment());
-                MemorySegment outputDistances = arena.allocate(Math.multiplyExact((long) outputLength, ValueLayout.JAVA_INT.byteSize()), ValueLayout.JAVA_INT.byteAlignment());
-                MemorySegment.copy(blockX, 0, inputX, ValueLayout.JAVA_INT, 0, count);
-                MemorySegment.copy(blockY, 0, inputY, ValueLayout.JAVA_INT, 0, count);
-                MemorySegment.copy(blockZ, 0, inputZ, ValueLayout.JAVA_INT, 0, count);
+            scratch = acquireAquiferScratch();
+            MemorySegment[] buffers = scratch.ensureCapacity(count);
+            MemorySegment inputX = buffers[0], inputY = buffers[1], inputZ = buffers[2];
+            MemorySegment outputX = buffers[3], outputY = buffers[4], outputZ = buffers[5], outputDistances = buffers[6];
+            MemorySegment.copy(blockX, 0, inputX, ValueLayout.JAVA_INT, 0, count);
+            MemorySegment.copy(blockY, 0, inputY, ValueLayout.JAVA_INT, 0, count);
+            MemorySegment.copy(blockZ, 0, inputZ, ValueLayout.JAVA_INT, 0, count);
+            try {
                 int status = (int) aquiferNearestFour.invokeExact(randomMode, seedLo, seedHi,
                         inputX, inputY, inputZ, count, outputX, outputY, outputZ, outputDistances);
                 checkStatus(status, "aquifer-nearest-four");
@@ -799,6 +852,7 @@ public final class NativeRuntime implements AutoCloseable {
                 throw rethrow("Unable to evaluate Native Aquifer nearest-four batch", failure);
             }
         } finally {
+            if (scratch != null) scratch.release();
             lifecycle.readLock().unlock();
         }
         return new AquiferNearestFour(centerX, centerY, centerZ, distances);
@@ -1707,6 +1761,8 @@ public final class NativeRuntime implements AutoCloseable {
         while ((density = densityScratchArenas.poll()) != null) density.close();
         BlenderScratch blender;
         while ((blender = blenderScratchArenas.poll()) != null) blender.close();
+        AquiferScratch aquifer;
+        while ((aquifer = aquiferScratchArenas.poll()) != null) aquifer.close();
         // The global FFM arena intentionally keeps the Rust library loaded until JVM exit.
     
         } finally {
