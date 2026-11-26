@@ -9,7 +9,7 @@ public final class DensityGraphIr {
     public static final int MAX_NODES = 65_536;
     public static final int NO_INPUT = -1;
 
-    public static final int CONST = 1, X = 2, Y = 3, Z = 4, ADD = 5, MUL = 6, OPAQUE = 7, SUB = 8, INPUT = 9, DIV = 10, CLAMP = 11, MIN = 12, MAX = 13, NEGATE = 14, ABS = 15, SQUARE = 16, CUBE = 17;
+    public static final int CONST = 1, X = 2, Y = 3, Z = 4, ADD = 5, MUL = 6, OPAQUE = 7, SUB = 8, INPUT = 9, DIV = 10, CLAMP = 11, MIN = 12, MAX = 13, NEGATE = 14, ABS = 15, SQUARE = 16, CUBE = 17, SQRT = 18, LOG = 19, RECIPROCAL = 20, SIGN = 21, SQUEEZE = 22;
 
     public record Node(int opcode, int inputA, int inputB, double immediate) {
         public static Node constant(double value) { return new Node(CONST, NO_INPUT, NO_INPUT, value); }
@@ -28,6 +28,11 @@ public final class DensityGraphIr {
         public static Node abs(int input) { return new Node(ABS, input, NO_INPUT, 0.0); }
         public static Node square(int input) { return new Node(SQUARE, input, NO_INPUT, 0.0); }
         public static Node cube(int input) { return new Node(CUBE, input, NO_INPUT, 0.0); }
+        public static Node sqrt(int input) { return new Node(SQRT, input, NO_INPUT, 0.0); }
+        public static Node log(int input) { return new Node(LOG, input, NO_INPUT, 0.0); }
+        public static Node reciprocal(int input) { return new Node(RECIPROCAL, input, NO_INPUT, 0.0); }
+        public static Node sign(int input) { return new Node(SIGN, input, NO_INPUT, 0.0); }
+        public static Node squeeze(int input) { return new Node(SQUEEZE, input, NO_INPUT, 0.0); }
         /** Encodes min/max as two raw float32 words in the immediate's 64-bit payload. */
         public static Node clamp(int input, float min, float max) {
             long bits = ((long) Float.floatToRawIntBits(min) << 32)
@@ -130,7 +135,7 @@ public final class DensityGraphIr {
                         throw new IllegalArgumentException("Opaque node " + i + " has invalid child references");
                     }
                 }
-                case NEGATE, ABS, SQUARE, CUBE -> {
+                case NEGATE, ABS, SQUARE, CUBE, SQRT, LOG, RECIPROCAL, SIGN, SQUEEZE -> {
                     if (node.inputA() < 0 || node.inputA() >= i || node.inputB() != NO_INPUT) {
                         throw new IllegalArgumentException("Unary node " + i + " must reference one earlier node");
                     }
