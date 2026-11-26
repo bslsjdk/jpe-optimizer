@@ -9,7 +9,7 @@
 
 static_assert(sizeof(JpeAquiferFluidStatus) == 8, "Aquifer fluid-status ABI mismatch");
 static_assert(sizeof(JpeAquiferFluidProbe) == 16, "Aquifer fluid-probe ABI mismatch");
-static_assert(sizeof(JpeAquiferFluidStatusInput) == 296, "Aquifer fluid-status input ABI mismatch");
+static_assert(sizeof(JpeAquiferFluidStatusInput) == 292, "Aquifer fluid-status input ABI mismatch");
 static_assert(offsetof(JpeAquiferFluidStatusInput, global_fluid) == 4,
               "Aquifer global-fluid offset mismatch");
 static_assert(offsetof(JpeAquiferFluidStatusInput, surface_level) == 12,
@@ -18,7 +18,7 @@ static_assert(offsetof(JpeAquiferFluidStatusInput, global_fluid_at_surface) == 6
               "Aquifer surface FluidPicker offset mismatch");
 static_assert(offsetof(JpeAquiferFluidStatusInput, exclusion_noise) == 272,
               "Aquifer exclusion sample offset mismatch");
-static_assert(offsetof(JpeAquiferFluidStatusInput, lava_type) == 292,
+static_assert(offsetof(JpeAquiferFluidStatusInput, lava_type) == 288,
               "Aquifer lava token offset mismatch");
 
 namespace {
@@ -26,17 +26,6 @@ constexpr uint32_t kProbeCount = 13;
 constexpr uint32_t kMaxBatch = 1024U * 1024U;
 // Minecraft 26.3 DimensionType.WAY_BELOW_MIN_Y (12 packed Y bits).
 constexpr int32_t kWayBelowMinY = -32512;
-
-constexpr int32_t kSurfaceOffsetX[kProbeCount] = {
-    0, -2, -1, 0, 1, -3, -2, -1, 1, -2, -1, 0, 1
-};
-constexpr int32_t kSurfaceOffsetZ[kProbeCount] = {
-    0, -1, -1, -1, -1, 0, 0, 0, 0, 1, 1, 1, 1
-};
-static_assert(sizeof(kSurfaceOffsetX) / sizeof(kSurfaceOffsetX[0]) == kProbeCount,
-              "Aquifer surface X schedule must have thirteen entries");
-static_assert(sizeof(kSurfaceOffsetZ) / sizeof(kSurfaceOffsetZ[0]) == kProbeCount,
-              "Aquifer surface Z schedule must have thirteen entries");
 
 int32_t from_i32_bits(uint32_t bits) noexcept {
     int32_t result;

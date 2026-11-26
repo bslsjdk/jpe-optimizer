@@ -64,12 +64,12 @@ pub struct JpeAquiferFluidStatusInput {
 }
 
 const _: [(); 16] = [(); std::mem::size_of::<JpeAquiferFluidProbe>()];
-const _: [(); 296] = [(); std::mem::size_of::<JpeAquiferFluidStatusInput>()];
+const _: [(); 292] = [(); std::mem::size_of::<JpeAquiferFluidStatusInput>()];
 const _: [(); 4] = [(); std::mem::offset_of!(JpeAquiferFluidStatusInput, global_fluid)];
 const _: [(); 12] = [(); std::mem::offset_of!(JpeAquiferFluidStatusInput, surface_level)];
 const _: [(); 64] = [(); std::mem::offset_of!(JpeAquiferFluidStatusInput, global_fluid_at_surface)];
 const _: [(); 272] = [(); std::mem::offset_of!(JpeAquiferFluidStatusInput, exclusion_noise)];
-const _: [(); 292] = [(); std::mem::offset_of!(JpeAquiferFluidStatusInput, lava_type)];
+const _: [(); 288] = [(); std::mem::offset_of!(JpeAquiferFluidStatusInput, lava_type)];
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]

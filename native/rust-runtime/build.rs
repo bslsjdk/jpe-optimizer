@@ -8,7 +8,6 @@ fn main() {
     println!("cargo:rerun-if-changed=../cpp-kernels/src/aquifer_status_cache.cpp");
     println!("cargo:rerun-if-changed=../cpp-kernels/src/aquifer_context.cpp");
     println!("cargo:rerun-if-changed=../cpp-kernels/src/aquifer_fluid_status.cpp");
-    //
     println!("cargo:rerun-if-changed=../cpp-kernels/src/prepared_perlin_stack.cpp");
     println!("cargo:rerun-if-changed=../include/jpe_native_api.h");
     cc::Build::new()
