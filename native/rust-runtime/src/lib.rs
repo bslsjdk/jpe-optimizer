@@ -1994,6 +1994,40 @@ mod tests {
     }
 
     #[test]
+    fn density_graph_f32_executes_repeat_and_mirrored_repeat_gradients() {
+        let expected = [
+            (1_u32, [0.75_f32, 0.0, 0.25, 0.5, 0.75, 0.0, 0.25, 0.5, 0.75, 0.0, 0.25]),
+            (2_u32, [0.25_f32, 0.0, 0.25, 0.5, 0.75, 1.0, 0.75, 0.5, 0.25, 0.0, 0.25]),
+        ];
+        for (tiling, values) in expected {
+            let nodes = [JpeDensityNode {
+                opcode: 25,
+                input_a: 0, // X axis
+                input_b: tiling,
+                reserved: 0.0_f32.to_bits(),
+                immediate: 0.0,
+                auxiliary: 4.0,
+                tertiary: 1.0,
+            }];
+            let graph = unsafe {
+                jpe_runtime_density_graph_compile(
+                    nodes.as_ptr(), 1, 0, 0x6AAD_0000 + tiling as u64,
+                )
+            };
+            assert_ne!(graph, 0);
+            let mut output = [f32::NAN; 11];
+            assert_eq!(unsafe {
+                jpe_runtime_density_graph_evaluate_f32(
+                    graph, 11, 1, 1, -1, 0, 0, 1, 1, 1,
+                    output.as_mut_ptr(), output.len() as u64,
+                )
+            }, STATUS_OK);
+            assert_eq!(output, values, "tiling mode {}", tiling);
+            assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+        }
+    }
+
+    #[test]
     fn density_graph_recycles_buffers_for_unary_binary_and_clamp_nodes() {
         let nodes = [
             // This value has no consumers and must release its slot immediately.
