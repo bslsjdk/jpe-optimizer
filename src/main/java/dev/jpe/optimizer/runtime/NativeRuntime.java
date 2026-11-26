@@ -699,6 +699,12 @@ public final class NativeRuntime implements AutoCloseable {
         public static DensityNode lerp(int alpha, int first, int second) {
             return new DensityNode(24, alpha, first, second, 0.0, 0.0, 0.0);
         }
+        public static DensityNode interpolated(int input, int cellSizeXz, int cellSizeY) {
+            if (input < 0 || cellSizeXz <= 0 || cellSizeY <= 0) {
+                throw new IllegalArgumentException("Invalid interpolated density node");
+            }
+            return new DensityNode(26, input, cellSizeXz, cellSizeY, 0.0, 0.0, 0.0);
+        }
         public static DensityNode gradient(int axis, int fromCoordinate, int toCoordinate,
                                             float fromValue, float toValue) {
             if (axis < 0 || axis > 2 || fromCoordinate == toCoordinate
