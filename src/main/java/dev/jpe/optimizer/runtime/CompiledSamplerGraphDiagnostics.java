@@ -165,6 +165,13 @@ public final class CompiledSamplerGraphDiagnostics {
                 CompiledSamplerArithmeticLowering.LoweredIsland batch =
                         CompiledSamplerArithmeticLowering.lowerAll(graph, lowerable, fingerprint);
                 long batchLowerNanos = System.nanoTime() - batchLowerStarted;
+                java.util.TreeMap<Integer, Integer> nativeOpCounts = new java.util.TreeMap<>();
+                for (DensityGraphIr.Node node : batch.graph().nodes()) {
+                    nativeOpCounts.merge(node.opcode(), 1, Integer::sum);
+                }
+                LOGGER.log(System.Logger.Level.INFO,
+                        "Native sampler parity lowered graph: nodes={0}, outputs={1}, opcodes={2}",
+                        batch.graph().nodes().size(), batch.outputSourceNodeIds().size(), nativeOpCounts);
                 long nativeCompileStarted = System.nanoTime();
                 try (NativeRuntime.NativeDensityGraph executable = runtime.compileDensityGraph(batch.graph())) {
                     long nativeCompileNanos = System.nanoTime() - nativeCompileStarted;
@@ -177,10 +184,10 @@ public final class CompiledSamplerGraphDiagnostics {
                     mismatches = report.mismatches();
                     outputFloats = Math.multiplyExact((long) report.outputCount(), report.samplesPerOutput());
                     JPEOptimizer.LOGGER.info(
-                            "JPE_NATIVE_SAMPLER_PARITY_BATCH exact={} islands={} outputs={} samplesPerOutput={} compared={} mismatches={} graphNodes={} externalInputs={} captureMs={} graphLowerMs={} islandPlanMs={} batchLowerMs={} nativeCompileMs={} externalInputStageMs={} nativeEvaluateMs={} javaReferenceMs={} compareMs={} graphFingerprint={}",
+                            "JPE_NATIVE_SAMPLER_PARITY_BATCH exact={} islands={} outputs={} samplesPerOutput={} compared={} mismatches={} graphNodes={} externalInputs={} nativeOps={} captureMs={} graphLowerMs={} islandPlanMs={} batchLowerMs={} nativeCompileMs={} externalInputStageMs={} nativeEvaluateMs={} javaReferenceMs={} compareMs={} graphFingerprint={}",
                             report.exact(), testedIslands, report.outputCount(), report.samplesPerOutput(),
                             report.comparedValues(), report.mismatches(), batch.graph().nodes().size(),
-                            batch.inputSourceNodeIds().size(), captureNanos / 1_000_000.0,
+                            batch.inputSourceNodeIds().size(), nativeOpCounts, captureNanos / 1_000_000.0,
                             graphLowerNanos / 1_000_000.0, islandPlanNanos / 1_000_000.0,
                             batchLowerNanos / 1_000_000.0, nativeCompileNanos / 1_000_000.0,
                             report.externalInputNanos() / 1_000_000.0,
