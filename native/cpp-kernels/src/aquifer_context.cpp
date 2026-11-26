@@ -738,6 +738,51 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
     return 2;
 }
 
+
+extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_density_and_substance_volume_f32(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    uint64_t final_density_graph_handle,
+    int32_t skip_sampling_above_y,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    JpeAquiferCoreOutput* outputs
+) try {
+    constexpr uint64_t kMaxVolumeElements = 1024ULL * 1024ULL;
+    if (context_handle == 0 || expected_world_fingerprint == nullptr
+        || expected_semantic_fingerprint == 0 || final_density_graph_handle == 0
+        || outputs == nullptr || size_x == 0 || size_y == 0 || size_z == 0
+        || step_x <= 0 || step_y <= 0 || step_z <= 0) return 1;
+
+    const uint64_t plane = static_cast<uint64_t>(size_x) * size_y;
+    if (plane == 0 || plane > std::numeric_limits<uint64_t>::max() / size_z) return 1;
+    const uint64_t total = plane * size_z;
+    if (total == 0 || total > kMaxVolumeElements) return 1;
+
+    // Density stays in native memory: the graph evaluator feeds the Aquifer
+    // kernel directly without a Java-owned ScopedDensityBuffer or FFM bulk copy.
+    std::vector<float> density_values(static_cast<size_t>(total));
+    const int32_t density_status = jpe_cpp_density_graph_evaluate_f32(
+        final_density_graph_handle,
+        size_x, size_y, size_z,
+        min_x, min_y, min_z,
+        step_x, step_y, step_z,
+        density_values.data(), total);
+    if (density_status != 0) return density_status;
+
+    return jpe_cpp_aquifer_context_compute_substance_volume_f32(
+        context_handle, expected_world_fingerprint, expected_semantic_fingerprint,
+        skip_sampling_above_y,
+        size_x, size_y, size_z,
+        min_x, min_y, min_z,
+        step_x, step_y, step_z,
+        density_values.data(), static_cast<uint32_t>(total), outputs);
+} catch (...) {
+    return 2;
+}
+
 extern "C" JPE_API int32_t jpe_cpp_aquifer_context_evaluate_samplers_f32(
     uint64_t context_handle,
     const uint8_t* expected_world_fingerprint,
