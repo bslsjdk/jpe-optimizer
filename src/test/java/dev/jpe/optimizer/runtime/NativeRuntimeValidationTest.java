@@ -9,6 +9,22 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class NativeRuntimeValidationTest {
     @Test
+    void densityGraphPerlinNodePreservesDoublePrecisionScales() {
+        double xzScale = Math.nextUp(0.1D);
+        double yScale = Math.nextDown(0.2D);
+        NativeRuntime.DensityNode node =
+                NativeRuntime.DensityNode.perlinStack(17L, xzScale, yScale, 0.75F);
+
+        assertEquals(17L, (long) node.immediate());
+        assertEquals(Double.doubleToRawLongBits(xzScale),
+                Double.doubleToRawLongBits(node.auxiliary()));
+        assertEquals(Double.doubleToRawLongBits(yScale),
+                Double.doubleToRawLongBits(node.tertiary()));
+        assertEquals(-1, node.inputA());
+        assertEquals(-1, node.inputB());
+    }
+
+    @Test
     void acceptsValidPerlinStackAndPooledOutputBuffer() {
         int length = NativeRuntime.validatePerlinStackInputs(List.of(
                 new NativeRuntime.PerlinLayer(new byte[256], 0, 0, 0, 1, 1, 0.5F),
