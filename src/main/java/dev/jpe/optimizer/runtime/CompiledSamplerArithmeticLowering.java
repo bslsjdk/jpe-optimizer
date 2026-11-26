@@ -287,6 +287,8 @@ public final class CompiledSamplerArithmeticLowering {
                 || op == CompiledSamplerGraphIr.Op.CONST_SUB_LEFT
                 || op == CompiledSamplerGraphIr.Op.CONST_MUL_RIGHT
                 || op == CompiledSamplerGraphIr.Op.CONST_DIV_LEFT
-                || op == CompiledSamplerGraphIr.Op.CLAMP;
+                || op == CompiledSamplerGraphIr.Op.CLAMP
+                || op == CompiledSamplerGraphIr.Op.MIN_RIGHT_BOUND
+                || op == CompiledSamplerGraphIr.Op.MAX_RIGHT_BOUND;
     }
 }
