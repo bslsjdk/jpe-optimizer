@@ -22,6 +22,9 @@ The simple Aquifer implementation is distinct: it returns null for positive dens
 - Candidate anchor: gridX(x-5), gridY(y+1), gridZ(z-5).
 - Visit candidates in nested order x offset 0..1, y offset -1..1, z offset 0..1: 12 candidates.
 - NoiseChunk requests the named positional factory with identifier `aquifer`. RandomState.getOrCreateRandomFactory caches it and derives it as `this.random.fromHashOf("aquifer").forkPositional()`. RandomState initializes `this.random` as `Algorithm.newInstance(worldSeed).forkPositional()`, where Algorithm is LEGACY or XOROSHIRO according to NoiseGeneratorSettings.useLegacyRandomSource.
+- Audited XOROSHIRO positional factory: `at(x,y,z)` computes `Mth.getSeed(x,y,z) ^ seedLo` and uses `seedHi` unchanged. It returns a fresh XoroshiroRandomSource.
+- Audited XOROSHIRO nextInt(bound): cast nextLong to int, reinterpret unsigned 32-bit, multiply by bound, use the high 32 bits; when the low 32-bit fraction is below bound, reject values below `Integer.remainderUnsigned(~bound + 1, bound)` and draw again.
+- Audited Xoroshiro128++ state transition: result=`rotl(s0+s1,17)+s0`; then `s1 ^= s0`; `seedLo=rotl(s0,49)^s1^(s1<<21)`; `seedHi=rotl(s1,28)`. An all-zero seed pair is replaced by the two fixed nonzero constants in the audited source.
 - Uncached center: positional random factory at integer grid coordinate; draw in exact order nextInt(10) for x, nextInt(9) for y, nextInt(10) for z. Center=(gridX*16+rx, gridY*12+ry, gridZ*16+rz).
 - Squared distance uses Java int arithmetic: dx*dx+dy*dy+dz*dz. The insertion logic uses >=, so equal-distance candidates are inserted before earlier equal-distance candidates. Preserve visit order and tie behavior.
 - Retain four nearest indices and distances. The fourth status affects the final update-flag fallback even though it is not used in the main pressure barrier terms.
@@ -91,7 +94,7 @@ The eventual C++ call should process a full density volume and return parallel o
 Per-volume caches: cell center locations; FluidStatus (level+state token); quart-quantized surface levels; lazily sampled barrier noise for current block sample.
 
 Unresolved before implementation:
-1. Complete exact implementation of both Legacy and Xoroshiro positional factories, including coordinate hashing, 128-bit seed upgrade, PRNG state transition, and bounded nextInt rejection behavior. The call chain and algorithm selection are known, but those low-level routines still need source/bytecode parity tests. Do not substitute a convenient PRNG.
+1. Complete the Legacy positional factory and Java LCG behavior, and finish the XOROSHIRO 128-bit world-seed upgrade / Seed128bit mixing details. The XOROSHIRO coordinate hash, positional factory chain, Xoroshiro128++ transition, and bounded nextInt rejection behavior have been source-audited, but still need golden-vector parity tests. Do not substitute a convenient PRNG.
 2. Runtime encoding for arbitrary modded FluidPicker states and NeoForge additions to the Aquifer call path.
 3. DensitySampler binding and noise sampling transfer for all six Aquifer samplers. Do not make Java-computed per-block values the final architecture.
 4. Confirm exact Java floating-point behavior of Mth.quantize, Mth.clampedMap, and noise return types from bytecode before claiming parity.
