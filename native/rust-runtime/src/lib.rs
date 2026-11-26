@@ -3046,6 +3046,20 @@ mod tests {
                 inputs.as_ptr(), 0, batch.as_mut_ptr(),
             )
         }, STATUS_INVALID_ARGUMENT);
+
+        // The native volume API rejects aliased input/output spans before it writes.
+        #[repr(C)]
+        union OverlappingAquiferBuffer {
+            input: JpeAquiferCoreInput,
+            output: JpeAquiferCoreOutput,
+        }
+        let mut overlap = OverlappingAquiferBuffer { input: base };
+        let input_ptr = std::ptr::addr_of!(overlap.input);
+        let output_ptr = std::ptr::addr_of_mut!(overlap.output);
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_compute_substance_batch(input_ptr, 1, output_ptr)
+        }, STATUS_INVALID_ARGUMENT);
+        assert_eq!(unsafe { (*input_ptr).block_y }, base.block_y);
     }
 
     #[test]
