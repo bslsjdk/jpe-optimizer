@@ -193,6 +193,18 @@ JPE_API int32_t jpe_cpp_density_graph_evaluate_points_f32(
     const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
     uint32_t point_count, float *output, uint64_t output_length
 );
+/* Internal multi-sampler helpers. Input/output arrays use [sampler][point] order;
+ * each sampler has an independent coordinate set of points_per_graph entries. */
+JPE_API int32_t jpe_cpp_density_graph_evaluate_multi_points(
+    const uint64_t *graph_handles, uint32_t graph_count,
+    const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
+    uint32_t points_per_graph, double *output, uint64_t output_length
+);
+JPE_API int32_t jpe_cpp_density_graph_evaluate_multi_points_f32(
+    const uint64_t *graph_handles, uint32_t graph_count,
+    const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
+    uint32_t points_per_graph, float *output, uint64_t output_length
+);
 /* Strict IEEE-754 single-precision evaluation for Minecraft 26.3 density nodes. */
 JPE_API int32_t jpe_runtime_density_graph_evaluate_f32(
     uint64_t graph_handle,
