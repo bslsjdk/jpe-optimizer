@@ -1597,7 +1597,7 @@ mod tests {
             )
         }, STATUS_OK);
 
-        let mut expected = [0.125_f32; 24];
+        let mut expected = [0.0_f32; 24];
         let direct_layer = JpePerlinLayer { ..layer };
         assert_eq!(unsafe {
             jpe_runtime_perlin_add_stack(
