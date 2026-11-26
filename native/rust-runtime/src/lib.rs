@@ -117,12 +117,12 @@ unsafe extern "C" {
         step_x: i32, step_y: i32, step_z: i32,
         output: *mut f32, output_length: u64,
     ) -> i32;
-    fn jpe_runtime_density_graph_evaluate_points(
+    fn jpe_cpp_density_graph_evaluate_points(
         graph_handle: u64,
         point_x: *const i32, point_y: *const i32, point_z: *const i32,
         point_count: u32, output: *mut f64, output_length: u64,
     ) -> i32;
-    fn jpe_runtime_density_graph_evaluate_points_f32(
+    fn jpe_cpp_density_graph_evaluate_points_f32(
         graph_handle: u64,
         point_x: *const i32, point_y: *const i32, point_z: *const i32,
         point_count: u32, output: *mut f32, output_length: u64,
@@ -217,6 +217,46 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_status_cache_insert_batch(
         return STATUS_INVALID_ARGUMENT;
     }
     unsafe { jpe_cpp_aquifer_status_cache_insert_batch(handle, keys, statuses, count) }
+}
+
+/// Evaluates a batch of non-grid-aligned density graph points through the Rust cdylib ABI.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate_points(
+    graph_handle: u64,
+    point_x: *const i32, point_y: *const i32, point_z: *const i32,
+    point_count: u32, output: *mut f64, output_length: u64,
+) -> i32 {
+    if graph_handle == 0 || point_x.is_null() || point_y.is_null() || point_z.is_null()
+        || output.is_null() || point_count == 0
+        || point_count as usize > MAX_VOLUME_ELEMENTS
+        || output_length != point_count as u64 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_density_graph_evaluate_points(
+            graph_handle, point_x, point_y, point_z, point_count, output, output_length,
+        )
+    }
+}
+
+/// f32 variant of the arbitrary-point density graph C ABI.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate_points_f32(
+    graph_handle: u64,
+    point_x: *const i32, point_y: *const i32, point_z: *const i32,
+    point_count: u32, output: *mut f32, output_length: u64,
+) -> i32 {
+    if graph_handle == 0 || point_x.is_null() || point_y.is_null() || point_z.is_null()
+        || output.is_null() || point_count == 0
+        || point_count as usize > MAX_VOLUME_ELEMENTS
+        || output_length != point_count as u64 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_density_graph_evaluate_points_f32(
+            graph_handle, point_x, point_y, point_z, point_count, output, output_length,
+        )
+    }
 }
 
 /// Runs the scalar Aquifer decision kernel. This wrapper is exported from the Rust cdylib.
