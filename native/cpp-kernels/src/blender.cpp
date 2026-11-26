@@ -137,8 +137,101 @@ void append_points(const JpeBlendingDataView* views, uint32_t count,
 }
 constexpr uint32_t kNoPoint = std::numeric_limits<uint32_t>::max();
 struct SpatialBucket {
-    uint32_t head;
-    uint32_t tail;
+    uint32_t head{kNoPoint};
+    uint32_t tail{kNoPoint};
+};
+
+// Prefer a compact direct-address grid when the captured density points occupy
+// a reasonably dense coordinate box. Very dispersed modded worlds retain the
+// sparse hash-map fallback, with an explicit memory ceiling for the dense grid.
+struct SpatialIndex {
+    static constexpr uint64_t kMaxDenseBuckets = 2'000'000ULL;
+    bool dense{false};
+    int32_t min_x{0}, min_y{0}, min_z{0};
+    uint64_t size_x{0}, size_y{0}, size_z{0};
+    std::vector<SpatialBucket> dense_buckets;
+    std::unordered_map<Coord, SpatialBucket, CoordHash> sparse_buckets;
+
+    static SpatialIndex build(const std::vector<DensityPoint>& points,
+                              std::vector<uint32_t>& next_point) {
+        SpatialIndex result;
+        if (points.empty()) return result;
+
+        int32_t min_x = points[0].coord.x, max_x = min_x;
+        int32_t min_y = points[0].coord.y, max_y = min_y;
+        int32_t min_z = points[0].coord.z, max_z = min_z;
+        for (const DensityPoint& point : points) {
+            min_x = std::min(min_x, point.coord.x);
+            max_x = std::max(max_x, point.coord.x);
+            min_y = std::min(min_y, point.coord.y);
+            max_y = std::max(max_y, point.coord.y);
+            min_z = std::min(min_z, point.coord.z);
+            max_z = std::max(max_z, point.coord.z);
+        }
+        const uint64_t sx = static_cast<uint64_t>(static_cast<int64_t>(max_x) - min_x) + 1U;
+        const uint64_t sy = static_cast<uint64_t>(static_cast<int64_t>(max_y) - min_y) + 1U;
+        const uint64_t sz = static_cast<uint64_t>(static_cast<int64_t>(max_z) - min_z) + 1U;
+        const bool dimensions_safe = sx <= kMaxDenseBuckets && sy <= kMaxDenseBuckets
+            && sz <= kMaxDenseBuckets && sx <= kMaxDenseBuckets / sy
+            && sx * sy <= kMaxDenseBuckets / sz;
+        const uint64_t dense_count = dimensions_safe ? sx * sy * sz : kMaxDenseBuckets + 1U;
+        const uint64_t density_limit = std::min<uint64_t>(
+            kMaxDenseBuckets, static_cast<uint64_t>(points.size()) * 16U + 65'536U);
+        result.dense = dimensions_safe && dense_count <= density_limit;
+        if (result.dense) {
+            result.min_x = min_x;
+            result.min_y = min_y;
+            result.min_z = min_z;
+            result.size_x = sx;
+            result.size_y = sy;
+            result.size_z = sz;
+            result.dense_buckets.resize(static_cast<size_t>(dense_count));
+        } else {
+            result.sparse_buckets.reserve(points.size() * 2U + 1U);
+        }
+
+        for (uint32_t i = 0; i < points.size(); ++i) {
+            const Coord& coord = points[i].coord;
+            SpatialBucket* bucket = nullptr;
+            if (result.dense) {
+                const uint64_t x = static_cast<uint64_t>(static_cast<int64_t>(coord.x) - result.min_x);
+                const uint64_t y = static_cast<uint64_t>(static_cast<int64_t>(coord.y) - result.min_y);
+                const uint64_t z = static_cast<uint64_t>(static_cast<int64_t>(coord.z) - result.min_z);
+                const uint64_t index = (z * result.size_x + x) * result.size_y + y;
+                bucket = &result.dense_buckets[static_cast<size_t>(index)];
+            } else {
+                const auto [it, inserted] = result.sparse_buckets.try_emplace(coord);
+                (void)inserted;
+                bucket = &it->second;
+            }
+            if (bucket->head == kNoPoint) {
+                bucket->head = i;
+                bucket->tail = i;
+            } else {
+                next_point[bucket->tail] = i;
+                bucket->tail = i;
+            }
+        }
+        return result;
+    }
+
+    const SpatialBucket* find(const Coord& coord) const noexcept {
+        if (dense) {
+            const int64_t x = static_cast<int64_t>(coord.x) - min_x;
+            const int64_t y = static_cast<int64_t>(coord.y) - min_y;
+            const int64_t z = static_cast<int64_t>(coord.z) - min_z;
+            if (x < 0 || y < 0 || z < 0
+                || static_cast<uint64_t>(x) >= size_x
+                || static_cast<uint64_t>(y) >= size_y
+                || static_cast<uint64_t>(z) >= size_z) return nullptr;
+            const uint64_t index = (static_cast<uint64_t>(z) * size_x
+                + static_cast<uint64_t>(x)) * size_y + static_cast<uint64_t>(y);
+            const SpatialBucket& bucket = dense_buckets[static_cast<size_t>(index)];
+            return bucket.head == kNoPoint ? nullptr : &bucket;
+        }
+        const auto it = sparse_buckets.find(coord);
+        return it == sparse_buckets.end() ? nullptr : &it->second;
+    }
 };
 struct CandidateCursor {
     uint32_t value;
@@ -151,7 +244,7 @@ struct CandidateCursorGreater {
 
 float blend_one(int32_t block_x, int32_t block_y, int32_t block_z, float noise,
                 const std::unordered_map<uint64_t, const JpeBlendingDataView*>& height_index,
-                const std::unordered_map<Coord, SpatialBucket, CoordHash>& spatial,
+                const SpatialIndex& spatial,
                 const std::vector<uint32_t>& next_point,
                 const std::vector<DensityPoint>& points) {
     const int32_t cell_x = floor_div4(block_x);
@@ -171,9 +264,9 @@ float blend_one(int32_t block_x, int32_t block_y, int32_t block_z, float noise,
         for (int32_t dx = -2; dx <= 2; ++dx) {
             for (int32_t dz = -2; dz <= 2; ++dz) {
                 const Coord key{cell_x + dx, y, cell_z + dz};
-                const auto it = spatial.find(key);
-                if (it == spatial.end()) continue;
-                heap[heap_size++] = CandidateCursor{it->second.head};
+                const SpatialBucket* bucket = spatial.find(key);
+                if (bucket == nullptr) continue;
+                heap[heap_size++] = CandidateCursor{bucket->head};
                 std::push_heap(heap.begin(), heap.begin() + heap_size, greater);
             }
         }
@@ -335,16 +428,8 @@ extern "C" int32_t jpe_cpp_blend_density_volume(
         // This avoids one separately allocated std::vector per occupied coordinate.
         // next_point is indexed by the stable point ID, so each bucket remains
         // sorted by vanilla callback order without copying or sorting its members.
-        std::unordered_map<Coord, SpatialBucket, CoordHash> spatial;
-        spatial.reserve(points.size() * 2U + 1U);
         std::vector<uint32_t> next_point(points.size(), kNoPoint);
-        for (uint32_t i = 0; i < points.size(); ++i) {
-            const auto [it, inserted] = spatial.try_emplace(points[i].coord, SpatialBucket{i, i});
-            if (!inserted) {
-                next_point[it->second.tail] = i;
-                it->second.tail = i;
-            }
-        }
+        SpatialIndex spatial = SpatialIndex::build(points, next_point);
         // Match DensityVolume.indexUnchecked: ((z * sizeX + x) * sizeY + y).
         // All coordinate arithmetic is performed here, with Java int wrap semantics.
         for (uint32_t z = 0; z < size_z; ++z) {
