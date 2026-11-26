@@ -57,3 +57,18 @@ Run cargo tests and release build, then Gradle unit tests, GameTests and the ded
 ## Palette hash experiment
 
 `-Djpe.paletteHashEnabled=true` replaces only the 3-bit and 4-bit linear palette configurations with Minecraft's existing HashMap palette factory. The default remains vanilla. This is an isolated experiment, not an assumed optimization: GameTest checks that the requested Mixin actually applied, and CI compares fresh same-seed servers in off/on/on/off order. Keep the option disabled unless the full benchmark shows a repeatable end-to-end gain without changing generated chunk contents.
+
+## Required end state: closed native terrain execution
+
+The current Perlin volume bridge and compiled-sampler arithmetic-island path are transitional experiments, not the target architecture. In particular, `CompiledSamplerExternalInputs` calls Minecraft's `DensitySampler.sampleVolume` for every opaque boundary. That path is allowed only for shadow diagnostics and must never become the production density execution path. Its per-chunk Java sampling and input staging costs are not a tuning target; production must remove that work from the chunk hot path.
+
+The production density plan must be a **closed native graph** for every supported world configuration:
+
+1. At world preparation time, inspect the actual compiled density graph and the exact registered worldgen configuration. Resolve all static sampler structure, noise parameters, octave/layer lists, interpolation rules, and supported cache semantics into a versioned native plan.
+2. Persist the plan under a cache identity that includes Minecraft/NeoForge versions, native IR/ABI versions, registry/configuration fingerprints, and relevant mod identities. Reuse it on later launches. Do not rediscover or translate the graph per chunk.
+3. At chunk execution time, pass only genuinely dynamic chunk inputs that cannot be known at world preparation (coordinates, chunk-local Blender/Beardifier state, seed-derived runtime handles, and bounded scratch/output memory). C++ evaluates the complete final-density graph and writes the density volume directly into the chunk task's native output buffer.
+4. No Java `sampleVolume()` calls may be used to resolve density graph nodes on the production path. No per-node Java callbacks, per-node FFM calls, or Java-generated external-input float volumes are permitted for built-in terrain nodes.
+5. Every built-in density/noise operation needed by a selected generator must have a native semantic implementation. Mod-provided density/noise operations require an explicit adapter/compiler contract; if a graph contains an unsupported operation, native authoritative mode must reject that plan rather than silently sampling it in Java or silently dropping it. A compatibility mode may keep vanilla Java generation for the whole affected plan, clearly reported as a fallback, but must not claim native execution.
+6. After density is closed and bit-exact, migrate aquifer substance selection, surface rules, carvers, and other terrain stages into native execution in separately validated slices. Keep registry registration and genuinely game-owned lifecycle callbacks on Java where required.
+
+The success criterion is not a faster arithmetic island. It is that a generated chunk's terrain density is evaluated by one prepared C++ plan without Java doing the density math or staging opaque sampler volumes during that chunk. Shadow parity must compare the complete final-density volume, then same-seed block-state hashes, before production handoff is enabled.
