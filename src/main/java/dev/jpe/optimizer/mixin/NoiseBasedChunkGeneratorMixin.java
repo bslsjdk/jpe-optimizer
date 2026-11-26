@@ -93,11 +93,13 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                 }
             }
         }
+        dev.jpe.optimizer.worldgen.NativeAquiferFluidStatusPrefill.Prepared nativeAquiferPrepared = null;
         if (Boolean.getBoolean("jpe.nativeAquiferFluidStatusEnabled") && noiseAquifer != null) {
-            int prefilled = dev.jpe.optimizer.worldgen.NativeAquiferFluidStatusPrefill.prefill(
+            nativeAquiferPrepared = dev.jpe.optimizer.worldgen.NativeAquiferFluidStatusPrefill.open(
                     noiseAquifer, noiseChunk, chunk, generatorSettings, aquiferSamplerPlans);
-            if (prefilled < 0 && Boolean.getBoolean("jpe.nativeAquiferFluidStatusStrict")) {
-                throw new IllegalStateException("Strict native Aquifer FluidStatus prefill was not completed");
+            if (nativeAquiferPrepared == null
+                    && Boolean.getBoolean("jpe.nativeAquiferFluidStatusStrict")) {
+                throw new IllegalStateException("Strict native full-volume Aquifer preparation was not completed");
             }
         }
 
@@ -125,7 +127,11 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                 }
                 sampledDensity = finalDensity.sampleVolume(volume);
             }
-            try (ScopedDensityBuffer densityBuffer = sampledDensity) {
+            try (ScopedDensityBuffer densityBuffer = sampledDensity;
+                 dev.jpe.optimizer.runtime.NativeRuntime.AquiferSubstanceVolumeResult nativeAquiferResults =
+                         nativeAquiferPrepared == null ? null
+                                 : nativeAquiferPrepared.computeSubstanceVolumeF32(
+                                         noiseAquifer, volume, densityBuffer)) {
             if (profile) {
                 densityNanos = System.nanoTime() - densityStart;
                 fillStart = System.nanoTime();
@@ -167,14 +173,26 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                             boolean sampleTiming = profile && (densityIndex & 63) == 0;
                             long aquiferStart = sampleTiming ? System.nanoTime() : 0L;
                             BlockState state;
-                            if (POSITIVE_DENSITY_AQUIFER_FAST_PATH && density > 0.0F && noiseAquifer != null) {
-                                // Vanilla NoiseBasedAquifer.computeSubstance() does exactly this:
-                                // clear the fluid-update flag and return null for positive density.
+                            boolean scheduleFluidUpdate;
+                            if (nativeAquiferResults != null) {
+                                if (nativeAquiferResults.hasBlockState(densityIndex)) {
+                                    state = nativeAquiferPrepared.blockStateForToken(
+                                            nativeAquiferResults.blockStateToken(densityIndex));
+                                } else {
+                                    state = null;
+                                }
+                                scheduleFluidUpdate = nativeAquiferResults.shouldScheduleFluidUpdate(densityIndex);
+                                if (profile) ++aquiferCallsExecuted;
+                            } else if (POSITIVE_DENSITY_AQUIFER_FAST_PATH
+                                    && density > 0.0F && noiseAquifer != null) {
+                                // Vanilla positive-density behavior is null plus a cleared update flag.
                                 noiseAquifer.jpe$setShouldScheduleFluidUpdate(false);
                                 state = defaultBlock;
+                                scheduleFluidUpdate = false;
                                 if (profile) ++aquiferCallsSkipped;
                             } else {
                                 state = aquifer.computeSubstance(worldX, blockY, blockZ, density);
+                                scheduleFluidUpdate = aquifer.shouldScheduleFluidUpdate();
                                 if (profile) ++aquiferCallsExecuted;
                             }
                             if (sampleTiming) {
@@ -190,7 +208,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                                 oceanFloor.update(x, blockY, z, state);
                                 worldSurface.update(x, blockY, z, state);
 
-                                if (aquifer.shouldScheduleFluidUpdate() && !state.getFluidState().isEmpty()) {
+                                if (scheduleFluidUpdate && !state.getFluidState().isEmpty()) {
                                     blockPos.set(worldX, blockY, blockZ);
                                     chunk.markPosForPostProcessing(blockPos);
                                 }
@@ -213,8 +231,10 @@ public abstract class NoiseBasedChunkGeneratorMixin {
             }
             }
         } finally {
-            if (profile) {
-                WorldgenMetrics.endDoFill();
+            try {
+                if (nativeAquiferPrepared != null) nativeAquiferPrepared.close();
+            } finally {
+                if (profile) WorldgenMetrics.endDoFill();
             }
         }
 
