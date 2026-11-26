@@ -1715,7 +1715,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn density_graph_executes_domain_warped_perlin_with_per_voxel_shift_inputs() {
         let permutation_a: [u8; 256] = std::array::from_fn(|i| ((i * 41 + 7) & 255) as u8);
         let permutation_b: [u8; 256] = std::array::from_fn(|i| ((i * 17 + 29) & 255) as u8);
