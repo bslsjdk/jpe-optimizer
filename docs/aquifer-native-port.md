@@ -126,3 +126,22 @@ Implementation details:
 A Rust unit test independently enumerates the 12 candidates and compares the four returned centers and distances for both RNG modes, including negative coordinates and signed-int extremes.
 
 The C++/Rust batch kernel now has an optional Java FFM binding in `NativeRuntime.aquiferNearestFour(...)`. It accepts three equal-length coordinate arrays and performs one downcall for the whole batch; output arrays are sample-major with four consecutive neighbors per input. The bridge validates mode, lengths, and the 1,048,576-sample ceiling. Native input/output segments are retained in a per-worker FFM scratch arena and reused across calls, avoiding repeated native-buffer allocation; Java result arrays are still materialized per call. This is still not a Minecraft execution path: no Aquifer mixin currently captures production coordinates or invokes the batch bridge. FluidStatus caching, pressure, surface/fluid sampling, block-state mapping, and real generated-chunk parity remain outstanding. Do not treat the bridge as a production backend or assume it is faster until full-volume measurements include array preparation, FFM copies, and the native call. Do not enable it in production until those layers and full-volume parity are complete.
+
+## Batched location-cache precomputation (experimental)
+
+The native runtime now exposes `jpe_runtime_aquifer_grid_centers`. It computes the complete
+`NoiseBasedAquifer.aquiferLocationCache` payload in vanilla's flat index order
+(x fastest, then z, then y), and returns values packed with the exact
+`BlockPos.asLong(x, y, z)` bit layout. The grid dimensions are taken from the audited
+`gridSizeX` and `gridSizeZ` fields; the Y extent is derived from the cache length.
+
+The Java FFM bridge uses one downcall for the entire cache and reuses a per-worker native
+output buffer. A GameTest compares all 825 entries in a 5×33×5 cache-shaped fixture against
+Minecraft's XOROSHIRO and Legacy positional factories, then times 101 measured rounds after
+10 warmups. The native timing includes the FFM boundary and output copy; the vanilla timing
+includes positional factory creation and all three bounded random draws.
+
+This is still a diagnostic API, not a production hook. It does not yet replace or mutate
+Minecraft's cache during world generation. No chunk-generation speedup is claimed until
+the exact real constructor dimensions are exercised and end-to-end chunk timings show a
+repeatable benefit. Keep the feature opt-in and disabled by default.
