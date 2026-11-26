@@ -241,6 +241,8 @@ JPE_API int32_t jpe_runtime_density_graph_evaluate_points_f32(
 );
 /* Releases one retained handle. Active evaluations keep their immutable plan alive. */
 JPE_API int32_t jpe_runtime_density_graph_release(uint64_t graph_handle);
+/* Internal C++ retain used by longer-lived native execution contexts. */
+JPE_API int32_t jpe_cpp_density_graph_retain(uint64_t graph_handle);
 
 /*
  * Experimental Aquifer decision core. Fluid types are runtime registry IDs;
@@ -251,6 +253,37 @@ typedef struct JpeAquiferFluidStatus {
     int32_t fluid_level;
     uint32_t fluid_type;
 } JpeAquiferFluidStatus;
+
+/* One world-scoped native Aquifer context. Handles are borrowed at create-time
+ * and retained by C++; world_fingerprint is copied and never serialized.
+ * Sampler order: barrier, floodedness, spread, lava, exclusion, surface.
+ * Fluid type values are opaque per-context registry tokens, not global IDs. */
+typedef struct JpeAquiferContextCreateInfo {
+    uint64_t density_graph_handles[6];
+    uint8_t world_fingerprint[32];
+    uint64_t semantic_fingerprint;
+    uint64_t seed_lo;
+    uint64_t seed_hi;
+    uint32_t random_mode;
+    uint32_t air_type;
+    uint32_t water_type;
+    uint32_t lava_type;
+    uint32_t max_status_cache_entries;
+    uint32_t reserved;
+} JpeAquiferContextCreateInfo;
+
+/* Context owns graph-handle references and its FluidStatus cache until destroy.
+ * A stale, zero, unsupported, or fingerprint-incompatible context fails closed. */
+JPE_API uint64_t jpe_runtime_aquifer_context_create(const JpeAquiferContextCreateInfo* info);
+JPE_API int32_t jpe_runtime_aquifer_context_destroy(uint64_t context_handle);
+/* Evaluates all six immutable density samplers in one FFI call.
+ * Coordinates are sampler-major; each coordinate array has 6 * points_per_sampler
+ * entries and output has the same element count. */
+JPE_API int32_t jpe_runtime_aquifer_context_evaluate_samplers_f32(
+    uint64_t context_handle,
+    const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
+    uint32_t points_per_sampler, float* output, uint64_t output_length
+);
 
 /* Per-Aquifer, fixed-capacity FluidStatus cache. Keys are packed BlockPos.asLong
  * values for aquifer cell centers. First insertion wins, matching compute-if-absent.
@@ -302,6 +335,13 @@ JPE_API int32_t jpe_runtime_aquifer_compute_substance_batch(
  * are exported by Rust wrappers so the cdylib exposes a stable ABI. */
 JPE_API int32_t jpe_cpp_aquifer_compute_substance_core(
     const JpeAquiferCoreInput *input, JpeAquiferCoreOutput *output
+);
+JPE_API uint64_t jpe_cpp_aquifer_context_create(const JpeAquiferContextCreateInfo* info);
+JPE_API int32_t jpe_cpp_aquifer_context_destroy(uint64_t context_handle);
+JPE_API int32_t jpe_cpp_aquifer_context_evaluate_samplers_f32(
+    uint64_t context_handle,
+    const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
+    uint32_t points_per_sampler, float* output, uint64_t output_length
 );
 JPE_API uint64_t jpe_cpp_aquifer_status_cache_create(uint32_t maximum_entries);
 JPE_API int32_t jpe_cpp_aquifer_status_cache_destroy(uint64_t handle);
