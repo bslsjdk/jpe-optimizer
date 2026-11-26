@@ -125,6 +125,7 @@ public final class CompiledSamplerArithmeticIslands {
                 || op == CompiledSamplerGraphIr.Op.RECIPROCAL
                 || op == CompiledSamplerGraphIr.Op.SIGN
                 || op == CompiledSamplerGraphIr.Op.SQUEEZE
+                || op == CompiledSamplerGraphIr.Op.LEAKY_RELU
                 || op == CompiledSamplerGraphIr.Op.MIN_RIGHT_BOUND
                 || op == CompiledSamplerGraphIr.Op.MAX_RIGHT_BOUND;
     }
