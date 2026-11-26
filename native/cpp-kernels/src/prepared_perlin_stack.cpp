@@ -44,27 +44,31 @@ extern "C" uint64_t jpe_cpp_perlin_stack_prepare(
     const JpePerlinLayer* layers, uint32_t layer_count
 ) noexcept {
     if (layers == nullptr || layer_count == 0 || layer_count > 64) return 0;
-    auto prepared = std::make_shared<PreparedStack>();
-    prepared->layers.reserve(layer_count);
-    for (uint32_t i = 0; i < layer_count; ++i) {
-        const JpePerlinLayer& source = layers[i];
-        if (source.permutation == nullptr) return 0;
-        PreparedLayer layer;
-        std::memcpy(layer.permutation.data(), source.permutation, layer.permutation.size());
-        layer.offset_x = source.offset_x;
-        layer.offset_y = source.offset_y;
-        layer.offset_z = source.offset_z;
-        // During preparation xz_scale/y_scale carry the immutable layer frequency.
-        layer.base_xz_frequency = source.xz_scale;
-        layer.base_y_frequency = source.y_scale;
-        layer.base_amplitude = source.amplitude;
-        prepared->layers.push_back(layer);
+    try {
+        auto prepared = std::make_shared<PreparedStack>();
+        prepared->layers.reserve(layer_count);
+        for (uint32_t i = 0; i < layer_count; ++i) {
+            const JpePerlinLayer& source = layers[i];
+            if (source.permutation == nullptr) return 0;
+            PreparedLayer layer;
+            std::memcpy(layer.permutation.data(), source.permutation, layer.permutation.size());
+            layer.offset_x = source.offset_x;
+            layer.offset_y = source.offset_y;
+            layer.offset_z = source.offset_z;
+            // During preparation xz_scale/y_scale carry the immutable layer frequency.
+            layer.base_xz_frequency = source.xz_scale;
+            layer.base_y_frequency = source.y_scale;
+            layer.base_amplitude = source.amplitude;
+            prepared->layers.push_back(layer);
+        }
+        std::lock_guard<std::mutex> lock(g_prepared_mutex);
+        uint64_t handle = g_next_prepared_handle++;
+        if (handle == 0) handle = g_next_prepared_handle++;
+        g_prepared_stacks.emplace(handle, std::move(prepared));
+        return handle;
+    } catch (...) {
+        return 0;
     }
-    std::lock_guard<std::mutex> lock(g_prepared_mutex);
-    uint64_t handle = g_next_prepared_handle++;
-    if (handle == 0) handle = g_next_prepared_handle++;
-    g_prepared_stacks.emplace(handle, std::move(prepared));
-    return handle;
 }
 
 extern "C" int32_t jpe_cpp_perlin_stack_evaluate(
@@ -84,25 +88,29 @@ extern "C" int32_t jpe_cpp_perlin_stack_evaluate(
         prepared = found->second;
     }
 
-    // Each calling worldgen thread owns its descriptor scratch. The immutable
-    // prepared permutations remain shared and are never copied per chunk.
-    thread_local std::vector<JpePerlinLayer> descriptors;
-    if (descriptors.size() < prepared->layers.size()) descriptors.resize(prepared->layers.size());
-    for (size_t i = 0; i < prepared->layers.size(); ++i) {
-        const PreparedLayer& source = prepared->layers[i];
-        JpePerlinLayer& target = descriptors[i];
-        target.permutation = source.permutation.data();
-        target.offset_x = source.offset_x;
-        target.offset_y = source.offset_y;
-        target.offset_z = source.offset_z;
-        target.xz_scale = xz_scale * source.base_xz_frequency;
-        target.y_scale = y_scale * source.base_y_frequency;
-        target.amplitude = amplitude * source.base_amplitude;
+    try {
+        // Each calling worldgen thread owns its descriptor scratch. The immutable
+        // prepared permutations remain shared and are never copied per chunk.
+        thread_local std::vector<JpePerlinLayer> descriptors;
+        if (descriptors.size() < prepared->layers.size()) descriptors.resize(prepared->layers.size());
+        for (size_t i = 0; i < prepared->layers.size(); ++i) {
+            const PreparedLayer& source = prepared->layers[i];
+            JpePerlinLayer& target = descriptors[i];
+            target.permutation = source.permutation.data();
+            target.offset_x = source.offset_x;
+            target.offset_y = source.offset_y;
+            target.offset_z = source.offset_z;
+            target.xz_scale = xz_scale * source.base_xz_frequency;
+            target.y_scale = y_scale * source.base_y_frequency;
+            target.amplitude = amplitude * source.base_amplitude;
+        }
+        return jpe_cpp_perlin_add_stack_fused(descriptors.data(),
+                static_cast<uint32_t>(prepared->layers.size()),
+                size_x, size_y, size_z, min_x, min_y, min_z,
+                step_x, step_y, step_z, output, output_length, flags);
+    } catch (...) {
+        return 3;
     }
-    return jpe_cpp_perlin_add_stack_fused(descriptors.data(),
-            static_cast<uint32_t>(prepared->layers.size()),
-            size_x, size_y, size_z, min_x, min_y, min_z,
-            step_x, step_y, step_z, output, output_length, flags);
 }
 
 extern "C" int32_t jpe_cpp_perlin_stack_release(uint64_t handle) noexcept {
