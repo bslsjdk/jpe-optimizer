@@ -241,6 +241,10 @@ public final class NativeDensityGraphCompiler {
             }
             Beardifier beardifier = samplerContext.getField(Beardifier.CONTEXT_KEY);
             boolean beardifierEmpty = beardifier == null || beardifier == Beardifier.EMPTY;
+            if (!beardifierEmpty) {
+                throw new UnsupportedOperationException(
+                        "Non-empty Beardifier requires a native Beardifier node");
+            }
 
             long[] handles = new long[roots.size()];
             for (int i = 0; i < roots.size(); i++) {

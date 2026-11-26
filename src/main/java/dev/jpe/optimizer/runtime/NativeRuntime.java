@@ -73,6 +73,7 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle aquiferContextConfigureGlobalFluidPicker;
     private final MethodHandle aquiferContextComputeFluidStatusPointsBatch;
     private final MethodHandle aquiferContextComputeSubstanceVolumeF32;
+    private final MethodHandle aquiferContextComputeDensityAndSubstanceVolumeF32;
     private final ConcurrentHashMap<Long, java.util.concurrent.atomic.AtomicInteger> densityGraphHandles = new ConcurrentHashMap<>();
     private final java.util.Set<Long> preparedStackHandles = ConcurrentHashMap.newKeySet();
     private final java.util.Set<Long> aquiferStatusCacheHandles = ConcurrentHashMap.newKeySet();
@@ -358,7 +359,8 @@ public final class NativeRuntime implements AutoCloseable {
                           MethodHandle aquiferContextComputeFluidStatusBatch,
                           MethodHandle aquiferContextConfigureGlobalFluidPicker,
                           MethodHandle aquiferContextComputeFluidStatusPointsBatch,
-                          MethodHandle aquiferContextComputeSubstanceVolumeF32) {
+                          MethodHandle aquiferContextComputeSubstanceVolumeF32,
+                          MethodHandle aquiferContextComputeDensityAndSubstanceVolumeF32) {
         this.configureWorkers = configureWorkers;
         this.workerCount = workerCount;
         this.addF32 = add;
@@ -390,6 +392,8 @@ public final class NativeRuntime implements AutoCloseable {
         this.aquiferContextConfigureGlobalFluidPicker = aquiferContextConfigureGlobalFluidPicker;
         this.aquiferContextComputeFluidStatusPointsBatch = aquiferContextComputeFluidStatusPointsBatch;
         this.aquiferContextComputeSubstanceVolumeF32 = aquiferContextComputeSubstanceVolumeF32;
+        this.aquiferContextComputeDensityAndSubstanceVolumeF32 =
+                aquiferContextComputeDensityAndSubstanceVolumeF32;
         this.jobStatus = status;
         this.waitJob = wait;
         this.cancelJob = cancel;
@@ -616,6 +620,17 @@ public final class NativeRuntime implements AutoCloseable {
                                     ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
                                     ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS)))
                     .orElse(null);
+            MethodHandle aquiferContextComputeDensityAndSubstanceVolumeF32 = lookup.find(
+                    "jpe_runtime_aquifer_context_compute_density_and_substance_volume_f32")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                                    ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.ADDRESS)))
+                    .orElse(null);
             if (graphCompile == null || graphEvaluate == null || graphRelease == null) {
                 graphCompile = null;
                 graphEvaluate = null;
@@ -650,7 +665,8 @@ public final class NativeRuntime implements AutoCloseable {
                     aquiferContextCreate, aquiferContextDestroy, aquiferContextEvaluateSamplersF32,
                     aquiferContextComputeFluidStatusBatch, aquiferContextConfigureGlobalFluidPicker,
                     aquiferContextComputeFluidStatusPointsBatch,
-                    aquiferContextComputeSubstanceVolumeF32);
+                    aquiferContextComputeSubstanceVolumeF32,
+                    aquiferContextComputeDensityAndSubstanceVolumeF32);
         } catch (Throwable failure) {
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
         }
@@ -668,6 +684,11 @@ public final class NativeRuntime implements AutoCloseable {
                 && aquiferContextConfigureGlobalFluidPicker != null
                 && aquiferContextComputeFluidStatusPointsBatch != null
                 && aquiferContextComputeSubstanceVolumeF32 != null;
+    }
+
+    /** True when the runtime can fuse final-density evaluation with Aquifer decisions. */
+    public boolean supportsFusedDensityAquifer() {
+        return aquiferContextComputeDensityAndSubstanceVolumeF32 != null;
     }
 
     /**
@@ -1100,6 +1121,71 @@ public final class NativeRuntime implements AutoCloseable {
             return result;
         } catch (Throwable failure) {
             throw rethrow("Unable to compute native full-volume Aquifer decisions", failure);
+        } finally {
+            if (!transferred) {
+                if (scratch != null) scratch.release();
+                volumeReadLock.unlock();
+            }
+        }
+    }
+
+    /**
+     * Evaluates final density and the complete Aquifer decision volume in one native call.
+     * No Java density buffer is allocated or copied across the FFM boundary.
+     */
+    public AquiferSubstanceVolumeResult computeDensityAndAquiferSubstanceVolumeF32(
+            long contextHandle,
+            byte[] worldFingerprint,
+            long semanticFingerprint,
+            long finalDensityGraphHandle,
+            int skipSamplingAboveY,
+            net.minecraft.world.level.levelgen.densityfunction.DensityVolume volume
+    ) {
+        Objects.requireNonNull(worldFingerprint, "worldFingerprint");
+        Objects.requireNonNull(volume, "volume");
+        if (!supportsAquiferContext()) {
+            throw new IllegalStateException("Fused native density/Aquifer ABI is unavailable");
+        }
+        if (contextHandle == 0L || !aquiferContextHandles.contains(contextHandle)
+                || finalDensityGraphHandle == 0L || !densityGraphHandles.containsKey(finalDensityGraphHandle)
+                || worldFingerprint.length != 32 || semanticFingerprint == 0L) {
+            throw new IllegalArgumentException("Invalid fused native density/Aquifer handles or fingerprint");
+        }
+        long totalLong = Math.multiplyExact(
+                Math.multiplyExact((long) volume.sizeX(), volume.sizeY()), volume.sizeZ());
+        if (volume.sizeX() <= 0 || volume.sizeY() <= 0 || volume.sizeZ() <= 0
+                || volume.stepBlockX() <= 0 || volume.stepBlockY() <= 0 || volume.stepBlockZ() <= 0
+                || totalLong <= 0 || totalLong > 1_048_576L) {
+            throw new IllegalArgumentException("Invalid fused native DensityVolume geometry");
+        }
+        int count = Math.toIntExact(totalLong);
+
+        ReentrantReadWriteLock.ReadLock volumeReadLock = lifecycle.readLock();
+        volumeReadLock.lock();
+        AquiferScratch scratch = null;
+        boolean transferred = false;
+        try {
+            ensureOpen();
+            scratch = acquireAquiferScratch();
+            MemorySegment outputValues = scratch.ensureSubstanceCapacity(count)[1];
+            MemorySegment expectedFingerprint = scratch.ensureContextWorldFingerprint();
+            MemorySegment.copy(worldFingerprint, 0, expectedFingerprint,
+                    ValueLayout.JAVA_BYTE, 0L, worldFingerprint.length);
+
+            int status = (int) aquiferContextComputeDensityAndSubstanceVolumeF32.invokeExact(
+                    contextHandle, expectedFingerprint, semanticFingerprint, finalDensityGraphHandle,
+                    skipSamplingAboveY,
+                    volume.sizeX(), volume.sizeY(), volume.sizeZ(),
+                    volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
+                    volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ(),
+                    outputValues);
+            checkStatus(status, "aquifer-context-compute-density-and-substance-volume-f32");
+            AquiferSubstanceVolumeResult result =
+                    new AquiferSubstanceVolumeResult(scratch, outputValues, count, volumeReadLock);
+            transferred = true;
+            return result;
+        } catch (Throwable failure) {
+            throw rethrow("Unable to compute fused native density and Aquifer volume", failure);
         } finally {
             if (!transferred) {
                 if (scratch != null) scratch.release();

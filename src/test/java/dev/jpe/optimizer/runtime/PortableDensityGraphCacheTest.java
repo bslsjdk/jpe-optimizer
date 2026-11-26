@@ -81,6 +81,24 @@ class PortableDensityGraphCacheTest {
     }
 
     @Test
+    void malformedButChecksummedDescriptorsBecomeCacheMisses() throws Exception {
+        Path cache = temporaryDirectory.resolve("malformed.dgraph");
+        byte[] expectedFingerprint = fingerprint(7);
+        PortableDensityGraphCache.write(cache, expectedFingerprint, 29L, sampleGraph());
+
+        byte[] bytes = Files.readAllBytes(cache);
+        // Header: magic(8), format(4), semantic(8), world fingerprint(32),
+        // root(4), node count(4), then stack count(4).
+        java.nio.ByteBuffer.wrap(bytes).putInt(60, 0);
+        byte[] body = java.util.Arrays.copyOf(bytes, bytes.length - 32);
+        byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(body);
+        System.arraycopy(digest, 0, bytes, body.length, digest.length);
+        Files.write(cache, bytes);
+
+        assertTrue(PortableDensityGraphCache.read(cache, expectedFingerprint, 29L).isEmpty());
+    }
+
+    @Test
     void rejectsPerlinNodesThatContainRawHandlesInsteadOfPortableSlots() {
         assertThrows(IllegalArgumentException.class, () ->
                 new PortableDensityGraphCache.Graph(List.of(

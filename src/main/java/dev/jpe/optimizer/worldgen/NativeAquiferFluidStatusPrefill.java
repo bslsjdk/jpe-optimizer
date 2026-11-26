@@ -334,6 +334,29 @@ public final class NativeAquiferFluidStatusPrefill {
                     aquifer.jpe$getSkipSamplingAboveY(), volume, density);
         }
 
+        /**
+         * Runs final-density evaluation and Aquifer decisions together in C++.
+         * The DensityVolume is never materialized in a Java ScopedDensityBuffer.
+         */
+        public boolean supportsFusedDensityPath() {
+            ensureOpen();
+            return context.runtime.supportsFusedDensityAquifer();
+        }
+
+        public NativeRuntime.AquiferSubstanceVolumeResult computeDensityAndSubstanceVolumeF32(
+                AquiferNoiseBasedAccessor aquifer,
+                long finalDensityGraphHandle,
+                DensityVolume volume
+        ) {
+            ensureOpen();
+            if (finalDensityGraphHandle == 0L) {
+                throw new IllegalArgumentException("Final density graph handle must be non-zero");
+            }
+            return context.runtime.computeDensityAndAquiferSubstanceVolumeF32(
+                    context.handle(), context.fingerprint, SEMANTIC_FINGERPRINT,
+                    finalDensityGraphHandle, aquifer.jpe$getSkipSamplingAboveY(), volume);
+        }
+
         public BlockState blockStateForToken(int token) {
             ensureOpen();
             return stateForToken(token, context.defaultFluid);

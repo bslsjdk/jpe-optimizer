@@ -248,6 +248,17 @@ unsafe extern "C" {
         density_count: u32,
         outputs: *mut JpeAquiferCoreOutput,
     ) -> i32;
+    fn jpe_cpp_aquifer_context_compute_density_and_substance_volume_f32(
+        context_handle: u64,
+        expected_world_fingerprint: *const u8,
+        expected_semantic_fingerprint: u64,
+        final_density_graph_handle: u64,
+        skip_sampling_above_y: i32,
+        size_x: u32, size_y: u32, size_z: u32,
+        min_x: i32, min_y: i32, min_z: i32,
+        step_x: i32, step_y: i32, step_z: i32,
+        outputs: *mut JpeAquiferCoreOutput,
+    ) -> i32;
     fn jpe_cpp_aquifer_compute_substance_batch(
         inputs: *const JpeAquiferCoreInput,
         count: u32,
@@ -686,6 +697,49 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_context_compute_substance_volume_f3
             skip_sampling_above_y, size_x, size_y, size_z,
             min_x, min_y, min_z, step_x, step_y, step_z,
             density_values, density_count, outputs,
+        )
+    })) {
+        Ok(STATUS_OK) => STATUS_OK,
+        Ok(STATUS_INVALID_ARGUMENT) => STATUS_INVALID_ARGUMENT,
+        Ok(_) => STATUS_CPP_FAILURE,
+        Err(_) => STATUS_RUST_PANIC,
+    }
+}
+
+
+/// Evaluates the final density graph and Aquifer decisions in one native call.
+/// The density volume never crosses through Java-owned memory.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_context_compute_density_and_substance_volume_f32(
+    context_handle: u64,
+    expected_world_fingerprint: *const u8,
+    expected_semantic_fingerprint: u64,
+    final_density_graph_handle: u64,
+    skip_sampling_above_y: i32,
+    size_x: u32, size_y: u32, size_z: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    step_x: i32, step_y: i32, step_z: i32,
+    outputs: *mut JpeAquiferCoreOutput,
+) -> i32 {
+    const MAX_VOLUME_VOXELS: u64 = 1_048_576;
+    let Some(total) = (size_x as u64)
+        .checked_mul(size_y as u64)
+        .and_then(|n| n.checked_mul(size_z as u64)) else {
+        return STATUS_INVALID_ARGUMENT;
+    };
+    if context_handle == 0 || expected_world_fingerprint.is_null()
+        || expected_semantic_fingerprint == 0 || final_density_graph_handle == 0
+        || outputs.is_null() || size_x == 0 || size_y == 0 || size_z == 0
+        || step_x <= 0 || step_y <= 0 || step_z <= 0
+        || total == 0 || total > MAX_VOLUME_VOXELS {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        jpe_cpp_aquifer_context_compute_density_and_substance_volume_f32(
+            context_handle, expected_world_fingerprint, expected_semantic_fingerprint,
+            final_density_graph_handle, skip_sampling_above_y,
+            size_x, size_y, size_z,
+            min_x, min_y, min_z, step_x, step_y, step_z, outputs,
         )
     })) {
         Ok(STATUS_OK) => STATUS_OK,
@@ -4083,6 +4137,168 @@ mod tests {
         assert_eq!(debug_output[0].fluid_level, -32512);
         assert_eq!(debug_output[0].fluid_type, debug_info.air_type);
         assert_eq!(unsafe { jpe_runtime_aquifer_context_destroy(debug_context) }, STATUS_OK);
+    }
+
+    #[test]
+    fn aquifer_fused_density_volume_matches_split_native_path() {
+        let sampler_nodes = [JpeDensityNode {
+            opcode: DENSITY_CONST,
+            input_a: DENSITY_NO_INPUT,
+            input_b: DENSITY_NO_INPUT,
+            reserved: 0,
+            immediate: 0.0,
+            auxiliary: 0.0,
+            tertiary: 0.0,
+        }];
+        let mut sampler_handles = [0_u64; 6];
+        for i in 0..6_u32 {
+            sampler_handles[i as usize] = unsafe {
+                jpe_runtime_density_graph_compile(
+                    sampler_nodes.as_ptr(), 1, 0, 0xF053_0000 + i as u64,
+                )
+            };
+            assert_ne!(sampler_handles[i as usize], 0);
+        }
+        let final_density_nodes = [JpeDensityNode {
+            opcode: DENSITY_CONST,
+            input_a: DENSITY_NO_INPUT,
+            input_b: DENSITY_NO_INPUT,
+            reserved: 0,
+            immediate: -0.2,
+            auxiliary: 0.0,
+            tertiary: 0.0,
+        }];
+        let final_density_graph = unsafe {
+            jpe_runtime_density_graph_compile(
+                final_density_nodes.as_ptr(), 1, 0, 0xF053_1000,
+            )
+        };
+        assert_ne!(final_density_graph, 0);
+
+        let fingerprint = [0xF0_u8; 32];
+        let info = JpeAquiferContextCreateInfo {
+            density_graph_handles: sampler_handles,
+            world_fingerprint: fingerprint,
+            semantic_fingerprint: 0xF053_2000,
+            seed_lo: 101,
+            seed_hi: 202,
+            random_mode: 0,
+            air_type: 100,
+            water_type: 200,
+            lava_type: 300,
+            max_status_cache_entries: 64,
+            reserved: 0,
+        };
+        let context = unsafe { jpe_runtime_aquifer_context_create(&info) };
+        assert_ne!(context, 0);
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_configure_global_fluid_picker(
+                context, fingerprint.as_ptr(), info.semantic_fingerprint,
+                63, -64, 200, 0, 0,
+            )
+        }, STATUS_OK);
+
+        let mut fused = [JpeAquiferCoreOutput::default(); 8];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_compute_density_and_substance_volume_f32(
+                context, fingerprint.as_ptr(), info.semantic_fingerprint,
+                final_density_graph, 0,
+                2, 2, 2, -16, -64, 32, 1, 1, 1,
+                fused.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+
+        let split_density = [-0.2_f32; 8];
+        let mut split = [JpeAquiferCoreOutput::default(); 8];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_compute_substance_volume_f32(
+                context, fingerprint.as_ptr(), info.semantic_fingerprint,
+                0,
+                2, 2, 2, -16, -64, 32, 1, 1, 1,
+                split_density.as_ptr(), split_density.len() as u32,
+                split.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        for index in 0..8 {
+            assert_eq!(fused[index].has_block_state, split[index].has_block_state);
+            assert_eq!(fused[index].block_state_type, split[index].block_state_type);
+            assert_eq!(
+                fused[index].should_schedule_fluid_update,
+                split[index].should_schedule_fluid_update,
+            );
+        }
+
+        // Reuse the same native worker scratch with a smaller volume, then a
+        // no-active-voxel volume, then an active voxel again. This catches stale
+        // vector lengths/content surviving between successive chunk fills.
+        let mut fused_small = [JpeAquiferCoreOutput::default(); 1];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_compute_density_and_substance_volume_f32(
+                context, fingerprint.as_ptr(), info.semantic_fingerprint,
+                final_density_graph, 0,
+                1, 1, 1, -16, -64, 32, 1, 1, 1,
+                fused_small.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+
+        let small_density = [-0.2_f32];
+        let mut split_small = [JpeAquiferCoreOutput::default(); 1];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_compute_substance_volume_f32(
+                context, fingerprint.as_ptr(), info.semantic_fingerprint,
+                0,
+                1, 1, 1, -16, -64, 32, 1, 1, 1,
+                small_density.as_ptr(), 1, split_small.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        assert_eq!(fused_small[0].has_block_state, split_small[0].has_block_state);
+        assert_eq!(fused_small[0].block_state_type, split_small[0].block_state_type);
+        assert_eq!(
+            fused_small[0].should_schedule_fluid_update,
+            split_small[0].should_schedule_fluid_update,
+        );
+
+        let positive_density = [1.0_f32; 3];
+        let mut positive_outputs = [JpeAquiferCoreOutput::default(); 3];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_compute_substance_volume_f32(
+                context, fingerprint.as_ptr(), info.semantic_fingerprint,
+                0,
+                3, 1, 1, -16, -64, 32, 1, 1, 1,
+                positive_density.as_ptr(), 3, positive_outputs.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        for output in positive_outputs {
+            assert_eq!(output.has_block_state, 0);
+            assert_eq!(output.block_state_type, info.air_type);
+            assert_eq!(output.should_schedule_fluid_update, 0);
+        }
+
+        let mut reactivated_output = [JpeAquiferCoreOutput::default(); 1];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_compute_substance_volume_f32(
+                context, fingerprint.as_ptr(), info.semantic_fingerprint,
+                0,
+                1, 1, 1, -16, -64, 32, 1, 1, 1,
+                small_density.as_ptr(), 1, reactivated_output.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        assert_eq!(reactivated_output[0].has_block_state, split_small[0].has_block_state);
+        assert_eq!(reactivated_output[0].block_state_type, split_small[0].block_state_type);
+        assert_eq!(
+            reactivated_output[0].should_schedule_fluid_update,
+            split_small[0].should_schedule_fluid_update,
+        );
+
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_destroy(context)
+        }, STATUS_OK);
+        for handle in sampler_handles {
+            assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
+        }
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_release(final_density_graph)
+        }, STATUS_OK);
     }
 
     #[test]
