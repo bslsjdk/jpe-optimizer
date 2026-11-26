@@ -34,6 +34,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.Collections;
 import java.util.WeakHashMap;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 
 /**
  * Compiles the subset of the actual 26.3 final-density tree that has a verified
@@ -60,6 +62,8 @@ public final class NativeDensityGraphCompiler {
                 Collections.newSetFromMap(new IdentityHashMap<>());
         private final Set<DensityFunction> evaluated =
                 Collections.newSetFromMap(new IdentityHashMap<>());
+        private final IdentityHashMap<DensityFunction, CompletableFuture<GraphHandle>> compiling =
+                new IdentityHashMap<>();
     }
 
     private static final class IdentityWeakReference<T> extends WeakReference<T> {
@@ -226,10 +230,13 @@ public final class NativeDensityGraphCompiler {
             boolean beardifierEmpty,
             NativeRuntime runtime
     ) {
+        StateGraphs stateGraphs;
+        CompletableFuture<GraphHandle> pending;
+        boolean compileOwner = false;
         synchronized (LOCK) {
             drainQueues();
             IdentityWeakReference<RandomState> lookup = new IdentityWeakReference<>(randomState, null);
-            StateGraphs stateGraphs = GRAPHS.get(lookup);
+            stateGraphs = GRAPHS.get(lookup);
             if (stateGraphs == null) {
                 stateGraphs = new StateGraphs();
                 GRAPHS.put(new IdentityWeakReference<>(randomState, RANDOM_STATE_QUEUE), stateGraphs);
@@ -243,64 +250,86 @@ public final class NativeDensityGraphCompiler {
             }
 
             GraphHandle existing = stateGraphs.handles.get(root);
+            if (existing != null && existing.runtime() == runtime) return existing.handle();
             if (existing != null) {
-                if (existing.runtime() == runtime) return existing.handle();
                 stateGraphs.handles.remove(root);
                 existing.runtime().releaseDensityGraph(existing.handle());
             }
 
+            pending = stateGraphs.compiling.get(root);
+            if (pending == null) {
+                pending = new CompletableFuture<>();
+                stateGraphs.compiling.put(root, pending);
+                compileOwner = true;
+            }
+        }
+
+        if (!compileOwner) {
+            try {
+                GraphHandle result = pending.get();
+                return result.runtime() == runtime ? result.handle() : 0L;
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Interrupted while waiting for density graph compilation", interrupted);
+            } catch (ExecutionException failed) {
+                Throwable cause = failed.getCause();
+                if (cause instanceof RuntimeException runtimeFailure) throw runtimeFailure;
+                if (cause instanceof LinkageError linkageFailure) throw linkageFailure;
+                throw new IllegalStateException("Concurrent density graph compilation failed", cause);
+            }
+        }
+
+        try {
+            // Reflection-heavy graph lowering and native compilation deliberately run
+            // outside LOCK. Other RandomState instances can prepare in parallel.
             Builder builder = new Builder(context, blenderEmpty, beardifierEmpty);
-            int rootIndex;
-            try {
-                rootIndex = builder.lower(root);
-            } catch (RuntimeException | LinkageError unsupported) {
-                stateGraphs.disabled.add(root);
-                String reason = describe(unsupported);
-                JPEOptimizer.LOGGER.error(
-                        "Native density graph rejected for {}: {}",
-                        root.getClass().getName(), reason
-                );
-                if (strictMode()) {
-                    throw new IllegalStateException(
-                            "Strict native density graph rejected " + root.getClass().getName() + ": " + reason,
-                            unsupported
-                    );
-                }
-                return 0L;
-            }
-
+            int rootIndex = builder.lower(root);
             if (rootIndex < 0 || builder.nodes.isEmpty()) {
-                stateGraphs.disabled.add(root);
-                return 0L;
+                throw new UnsupportedOperationException("Density graph lowered to an empty graph");
+            }
+            long handle = runtime.compileDensityGraph(builder.nodes, rootIndex, CONFIGURATION_FINGERPRINT);
+            if (handle == 0L) {
+                throw new IllegalStateException("Native density graph compiler returned a null handle");
             }
 
-            try {
-                long handle = runtime.compileDensityGraph(builder.nodes, rootIndex, CONFIGURATION_FINGERPRINT);
-                if (handle == 0L) {
-                    stateGraphs.disabled.add(root);
-                    return 0L;
+            GraphHandle compiled = new GraphHandle(runtime, handle);
+            synchronized (LOCK) {
+                IdentityWeakReference<RandomState> lookup = new IdentityWeakReference<>(randomState, null);
+                StateGraphs current = GRAPHS.get(lookup);
+                if (current == null) {
+                    current = stateGraphs;
+                    GRAPHS.put(new IdentityWeakReference<>(randomState, RANDOM_STATE_QUEUE), current);
                 }
-                stateGraphs.handles.put(root, new GraphHandle(runtime, handle));
-                JPEOptimizer.LOGGER.info(
-                        "Native density graph compiled for {} ({} nodes)",
-                        root.getClass().getName(),
-                        builder.nodes.size()
-                );
-                return handle;
-            } catch (RuntimeException | LinkageError rejected) {
-                stateGraphs.disabled.add(root);
-                JPEOptimizer.LOGGER.error(
-                        "Native density graph compilation failed for {}: {}",
-                        root.getClass().getName(), describe(rejected)
-                );
-                if (strictMode()) {
-                    throw new IllegalStateException(
-                            "Native density graph compilation failed for " + root.getClass().getName()
-                                    + ": " + describe(rejected), rejected
-                    );
+                if (current.disabled.contains(root)) {
+                    runtime.releaseDensityGraph(handle);
+                    throw new IllegalStateException("Density graph was disabled while native compilation was in progress");
                 }
-                return 0L;
+                current.handles.put(root, compiled);
+                current.compiling.remove(root, pending);
             }
+            pending.complete(compiled);
+            JPEOptimizer.LOGGER.info(
+                    "Native density graph compiled for {} ({} nodes)",
+                    root.getClass().getName(), builder.nodes.size()
+            );
+            return handle;
+        } catch (RuntimeException | LinkageError failure) {
+            synchronized (LOCK) {
+                stateGraphs.compiling.remove(root, pending);
+                stateGraphs.disabled.add(root);
+            }
+            pending.completeExceptionally(failure);
+            JPEOptimizer.LOGGER.error(
+                    "Native density graph rejected/compilation failed for {}: {}",
+                    root.getClass().getName(), describe(failure)
+            );
+            if (strictMode()) {
+                throw new IllegalStateException(
+                        "Strict native density graph compilation failed for " + root.getClass().getName()
+                                + ": " + describe(failure), failure
+                );
+            }
+            return 0L;
         }
     }
 
