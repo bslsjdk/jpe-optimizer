@@ -103,7 +103,23 @@ enum {
     JPE_DENSITY_ADD = 5,
     JPE_DENSITY_MUL = 6,
     /* PERLIN_STACK: immediate=prepared handle; input_a/input_b/reserved=f32 bits for xz/y/amplitude. */
-    JPE_DENSITY_PERLIN_STACK = 7
+    JPE_DENSITY_PERLIN_STACK = 7,
+    JPE_DENSITY_SUB = 8,
+    JPE_DENSITY_DIV = 9,
+    JPE_DENSITY_MIN = 10,
+    JPE_DENSITY_MAX = 11,
+    JPE_DENSITY_ABS = 12,
+    JPE_DENSITY_NEGATE = 13,
+    JPE_DENSITY_SQUARE = 14,
+    JPE_DENSITY_CUBE = 15,
+    JPE_DENSITY_SQRT = 16,
+    JPE_DENSITY_HALF_NEGATIVE = 17,
+    JPE_DENSITY_QUARTER_NEGATIVE = 18,
+    JPE_DENSITY_RECIPROCAL = 19,
+    JPE_DENSITY_SIGN = 20,
+    JPE_DENSITY_POW = 21,
+    /* CLAMP: input_a=source; input_b/reserved=f32 minimum/maximum bits. */
+    JPE_DENSITY_CLAMP = 22
 };
 /* Returns a retained compiled-plan handle, or zero for an invalid graph. */
 JPE_API uint64_t jpe_runtime_density_graph_compile(
