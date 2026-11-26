@@ -53,6 +53,7 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle releasePreparedPerlinStack;
     private final MethodHandle densityGraphCompile;
     private final MethodHandle densityGraphEvaluate;
+    private final MethodHandle densityGraphEvaluateF32;
     private final MethodHandle densityGraphRelease;
     private final ConcurrentHashMap<Long, java.util.concurrent.atomic.AtomicInteger> densityGraphHandles = new ConcurrentHashMap<>();
     private final java.util.Set<Long> preparedStackHandles = ConcurrentHashMap.newKeySet();
@@ -140,7 +141,7 @@ public final class NativeRuntime implements AutoCloseable {
                           MethodHandle cancel, MethodHandle release,
                           MethodHandle preparePreparedStack, MethodHandle evaluatePreparedStack,
                           MethodHandle releasePreparedStack,
-                          MethodHandle graphCompile, MethodHandle graphEvaluate, MethodHandle graphRelease) {
+                          MethodHandle graphCompile, MethodHandle graphEvaluate, MethodHandle graphEvaluateF32, MethodHandle graphRelease) {
         this.configureWorkers = configureWorkers;
         this.workerCount = workerCount;
         this.addF32 = add;
@@ -153,6 +154,7 @@ public final class NativeRuntime implements AutoCloseable {
         this.releasePreparedPerlinStack = releasePreparedStack;
         this.densityGraphCompile = graphCompile;
         this.densityGraphEvaluate = graphEvaluate;
+        this.densityGraphEvaluateF32 = graphEvaluateF32;
         this.densityGraphRelease = graphRelease;
         this.jobStatus = status;
         this.waitJob = wait;
@@ -253,6 +255,15 @@ public final class NativeRuntime implements AutoCloseable {
                                     ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
                                     ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)))
                     .orElse(null);
+            MethodHandle graphEvaluateF32 = lookup.find("jpe_runtime_density_graph_evaluate_f32")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_LONG,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)))
+                    .orElse(null);
             MethodHandle graphRelease = lookup.find("jpe_runtime_density_graph_release")
                     .map(symbol -> linker.downcallHandle(symbol,
                             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG)))
@@ -284,7 +295,7 @@ public final class NativeRuntime implements AutoCloseable {
             if (actualWorkers < 1) throw new IllegalStateException("Unable to configure native workers: " + actualWorkers);
             return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, perlinStack, submit, submitStack, status, wait, cancel, release,
                     preparePreparedStack, evaluatePreparedStack, releasePreparedStack,
-                    graphCompile, graphEvaluate, graphRelease);
+                    graphCompile, graphEvaluate, graphEvaluateF32, graphRelease);
         } catch (Throwable failure) {
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
         }
@@ -705,6 +716,11 @@ public final class NativeRuntime implements AutoCloseable {
         return densityGraphCompile != null && densityGraphEvaluate != null && densityGraphRelease != null;
     }
 
+    /** Minecraft 26.3's density pipeline uses float at every intermediate step. */
+    public boolean supportsDensityGraphF32() {
+        return densityGraphCompile != null && densityGraphEvaluateF32 != null && densityGraphRelease != null;
+    }
+
     /** Compiles a topologically ordered native DAG. PERLIN_STACK nodes retain their C++ plans. */
     public long compileDensityGraph(List<DensityNode> nodes, int rootNode, long configurationFingerprint) {
         if (!supportsDensityGraph()) throw new IllegalStateException("Native density graph API is unavailable");
@@ -766,6 +782,38 @@ public final class NativeRuntime implements AutoCloseable {
                 MemorySegment.copy(nativeOutput, ValueLayout.JAVA_DOUBLE, 0L, output, 0, Math.toIntExact(length));
             } catch (Throwable failure) {
                 throw rethrow("Unable to evaluate native density graph", failure);
+            }
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    /** Evaluates a complete volume with IEEE-754 single-precision intermediates. */
+    public void evaluateDensityGraphF32(long handle,
+                                        int sizeX, int sizeY, int sizeZ,
+                                        int minX, int minY, int minZ,
+                                        int stepX, int stepY, int stepZ,
+                                        float[] output) {
+        if (!supportsDensityGraphF32()) throw new IllegalStateException("Native f32 density graph API is unavailable");
+        Objects.requireNonNull(output, "output");
+        long length = Math.multiplyExact(Math.multiplyExact((long) sizeX, sizeY), sizeZ);
+        if (handle == 0L || sizeX <= 0 || sizeY <= 0 || sizeZ <= 0
+                || stepX == 0 || stepY == 0 || stepZ == 0
+                || length > output.length || length > 1_048_576L) {
+            throw new IllegalArgumentException("Invalid native f32 density graph volume");
+        }
+        lifecycle.readLock().lock();
+        try {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment nativeOutput = arena.allocate(Math.multiplyExact(length, 4L), 4);
+                int status = (int) densityGraphEvaluateF32.invokeExact(
+                        handle, sizeX, sizeY, sizeZ, minX, minY, minZ,
+                        stepX, stepY, stepZ, nativeOutput, length);
+                checkStatus(status, "density-graph-evaluate-f32");
+                MemorySegment.copy(nativeOutput, ValueLayout.JAVA_FLOAT, 0L, output, 0, Math.toIntExact(length));
+            } catch (Throwable failure) {
+                throw rethrow("Unable to evaluate native f32 density graph", failure);
             }
         } finally {
             lifecycle.readLock().unlock();
