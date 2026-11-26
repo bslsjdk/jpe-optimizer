@@ -2065,7 +2065,7 @@ mod tests {
     #[test]
     fn density_graph_f32_executes_round_with_per_voxel_multiple() {
         let nodes = [
-            JpeDensityNode { opcode: 0, input_a: DENSITY_NO_INPUT,
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
                 input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 5.5,
                 auxiliary: 0.0, tertiary: 0.0 },
             JpeDensityNode { opcode: 25, input_a: 0, input_b: 0,
