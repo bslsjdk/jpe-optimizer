@@ -99,6 +99,30 @@ class CompiledSamplerArithmeticLoweringTest {
     }
 
     @Test
+    void lowersExactUnarySamplerOperationsToNativeNodes() {
+        CompiledSamplerGraphIr.Graph graph = new CompiledSamplerGraphIr.Graph(List.of(
+                node(0, CompiledSamplerGraphIr.Op.ADD, List.of(1, 2), Map.of()),
+                node(1, CompiledSamplerGraphIr.Op.NEGATE, List.of(3), Map.of()),
+                node(2, CompiledSamplerGraphIr.Op.CUBE, List.of(4), Map.of()),
+                node(3, CompiledSamplerGraphIr.Op.ABS, List.of(5), Map.of()),
+                node(4, CompiledSamplerGraphIr.Op.SQUARE, List.of(6), Map.of()),
+                node(5, CompiledSamplerGraphIr.Op.OPAQUE, List.of(), Map.of()),
+                node(6, CompiledSamplerGraphIr.Op.OPAQUE, List.of(), Map.of())
+        ), 0, 0);
+        CompiledSamplerArithmeticIslands.Plan plan = CompiledSamplerArithmeticIslands.plan(graph);
+        assertEquals(1, plan.islands().size());
+        CompiledSamplerArithmeticLowering.LoweredIsland lowered =
+                CompiledSamplerArithmeticLowering.lower(graph, plan.islands().get(0), 0xA85);
+        assertEquals(List.of(5, 6), lowered.inputSourceNodeIds());
+        assertEquals(4, lowered.graph().nodes().get(2).opcode());
+        assertEquals(DensityGraphIr.ABS, lowered.graph().nodes().get(2).opcode());
+        assertEquals(DensityGraphIr.SQUARE, lowered.graph().nodes().get(3).opcode());
+        assertEquals(DensityGraphIr.CUBE, lowered.graph().nodes().get(4).opcode());
+        assertEquals(DensityGraphIr.NEGATE, lowered.graph().nodes().get(5).opcode());
+        assertEquals(DensityGraphIr.ADD, lowered.graph().nodes().get(6).opcode());
+    }
+
+    @Test
     void lowersConstantLeftDivisionWithoutReversingOperands() {
         CompiledSamplerGraphIr.Graph graph = new CompiledSamplerGraphIr.Graph(List.of(
                 node(0, CompiledSamplerGraphIr.Op.CONST_DIV_LEFT, List.of(1), Map.of("left", "12.0")),
