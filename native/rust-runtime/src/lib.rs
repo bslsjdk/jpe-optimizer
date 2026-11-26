@@ -2519,6 +2519,35 @@ mod tests {
     }
 
     #[test]
+    fn blender_density_volume_uses_minecraft_float32_distance_before_double_weighting() {
+        let mut first_column = vec![0.0_f32; 16];
+        let mut second_column = vec![0.0_f32; 16];
+        // Query cell (1, -4, 1): these points are at sqrt(2) and 1 respectively.
+        // The raw density values are scaled by BlendingData's 0.1f factor.
+        first_column[3] = 10.0;
+        second_column[3] = 30.0;
+        let mut density_columns = [std::ptr::null(); 16];
+        density_columns[3] = first_column.as_ptr();  // (0, 0)
+        density_columns[4] = second_column.as_ptr(); // (0, 1)
+        let view = JpeBlendingDataView {
+            chunk_x: 0, chunk_z: 0, min_section_y: -4, section_count: 8,
+            density_columns,
+        };
+        let noise = [-11.181_111_f32];
+        let mut output = [0.0_f32; 1];
+        assert_eq!(unsafe {
+            jpe_runtime_blend_density_volume(
+                std::ptr::null(), 0, &view, 1,
+                1, 1, 1, 4, -32, 4, 1, 1, 1,
+                noise.as_ptr(), output.as_mut_ptr(), 1,
+            )
+        }, STATUS_OK);
+        // Mth.length(float,float,float) rounds sqrt(2) to float32 before
+        // widening for the double-precision inverse-fourth-power weighting.
+        assert_eq!(output[0].to_bits(), 0xbfff31b0);
+    }
+
+    #[test]
     fn blender_density_volume_handles_negative_coordinates_and_boundary_fallback() {
         let mut column = vec![0.0_f32; 16];
         column[3] = 12.5;
