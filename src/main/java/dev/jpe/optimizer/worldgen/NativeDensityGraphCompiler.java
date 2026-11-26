@@ -58,6 +58,8 @@ public final class NativeDensityGraphCompiler {
         private final IdentityHashMap<DensityFunction, GraphHandle> handles = new IdentityHashMap<>();
         private final Set<DensityFunction> disabled =
                 Collections.newSetFromMap(new IdentityHashMap<>());
+        private final Set<DensityFunction> evaluated =
+                Collections.newSetFromMap(new IdentityHashMap<>());
     }
 
     private static final class IdentityWeakReference<T> extends WeakReference<T> {
@@ -135,6 +137,7 @@ public final class NativeDensityGraphCompiler {
                     volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ(),
                     ((DensityBufferAccessor) output).jpe$values()
             );
+            recordSuccessfulEvaluation(root, randomState, volume);
             if (Boolean.getBoolean("jpe.nativeDensityGraphVerify")) {
                 ScopedDensityBuffer vanilla = vanillaSampler.sampleVolume(volume);
                 float[] nativeValues = ((DensityBufferAccessor) output).jpe$values();
@@ -162,8 +165,28 @@ public final class NativeDensityGraphCompiler {
             return output;
         } catch (RuntimeException | LinkageError failure) {
             output.close();
+            JPEOptimizer.LOGGER.warn(
+                    "Native density graph evaluation failed for {}: {}",
+                    root.getClass().getName(),
+                    failure.getMessage() == null ? failure.getClass().getName() : failure.getMessage()
+            );
             disableGraph(root, randomState, runtime);
             return null;
+        }
+    }
+
+    private static void recordSuccessfulEvaluation(
+            DensityFunction root, RandomState randomState, DensityVolume volume
+    ) {
+        synchronized (LOCK) {
+            StateGraphs stateGraphs = GRAPHS.get(new IdentityWeakReference<>(randomState, null));
+            if (stateGraphs != null && stateGraphs.evaluated.add(root)) {
+                JPEOptimizer.LOGGER.info(
+                        "Native density graph evaluated for {} ({}x{}x{} volume, {} samples)",
+                        root.getClass().getName(),
+                        volume.sizeX(), volume.sizeY(), volume.sizeZ(), volume.size()
+                );
+            }
         }
     }
 
