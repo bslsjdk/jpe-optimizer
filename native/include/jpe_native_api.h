@@ -348,21 +348,6 @@ JPE_API int32_t jpe_runtime_aquifer_context_compute_fluid_status_points_batch(
     uint32_t count,
     JpeAquiferFluidStatus* outputs
 );
-/* Full-volume NoiseBasedAquifer.computeSubstance decision. Density and results use
- * DensityVolume.indexUnchecked order (Y fastest, then X, then Z). C++ derives
- * world coordinates from the volume descriptor and performs all Aquifer math. */
-JPE_API int32_t jpe_runtime_aquifer_context_compute_substance_volume_f32(
-    uint64_t context_handle,
-    const uint8_t* expected_world_fingerprint,
-    uint64_t expected_semantic_fingerprint,
-    int32_t skip_sampling_above_y,
-    uint32_t size_x, uint32_t size_y, uint32_t size_z,
-    int32_t min_x, int32_t min_y, int32_t min_z,
-    int32_t step_x, int32_t step_y, int32_t step_z,
-    const float* density_values,
-    uint32_t density_count,
-    JpeAquiferCoreOutput* outputs
-);
 
 /* Per-Aquifer, fixed-capacity FluidStatus cache. Keys are packed BlockPos.asLong
  * values for aquifer cell centers. First insertion wins, matching compute-if-absent.
@@ -402,6 +387,34 @@ typedef struct JpeAquiferCoreOutput {
     uint32_t block_state_type;
     uint32_t should_schedule_fluid_update;
 } JpeAquiferCoreOutput;
+
+/* Full-volume NoiseBasedAquifer.computeSubstance decision. Density and results use
+ * DensityVolume.indexUnchecked order (Y fastest, then X, then Z). C++ derives
+ * world coordinates from the volume descriptor and performs all Aquifer math. */
+JPE_API int32_t jpe_runtime_aquifer_context_compute_substance_volume_f32(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    int32_t skip_sampling_above_y,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    const float* density_values,
+    uint32_t density_count,
+    JpeAquiferCoreOutput* outputs
+);
+JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    int32_t skip_sampling_above_y,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    const float* density_values,
+    uint32_t density_count,
+    JpeAquiferCoreOutput* outputs
+);
 
 /* Returns 0 on success, 1 for invalid input. A false has_block_state means
  * computeSubstance returns null and density terrain should remain untouched. */
