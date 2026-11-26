@@ -338,6 +338,11 @@ public final class NativeAquiferFluidStatusPrefill {
          * Runs final-density evaluation and Aquifer decisions together in C++.
          * The DensityVolume is never materialized in a Java ScopedDensityBuffer.
          */
+        public boolean supportsFusedDensityPath() {
+            ensureOpen();
+            return context.runtime.supportsFusedDensityAquifer();
+        }
+
         public NativeRuntime.AquiferSubstanceVolumeResult computeDensityAndSubstanceVolumeF32(
                 AquiferNoiseBasedAccessor aquifer,
                 long finalDensityGraphHandle,
