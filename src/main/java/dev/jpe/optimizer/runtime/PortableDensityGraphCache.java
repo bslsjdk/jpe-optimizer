@@ -31,6 +31,7 @@ public final class PortableDensityGraphCache {
     private static final int MAX_NODES = 65_536;
     private static final int MAX_STACKS = 65_536;
     private static final int MAX_LAYERS = 64;
+    private static final int MAX_TOTAL_LAYERS = 65_536;
 
     private PortableDensityGraphCache() {}
 
@@ -71,6 +72,14 @@ public final class PortableDensityGraphCache {
         public Graph {
             nodes = List.copyOf(nodes);
             perlinStacks = List.copyOf(perlinStacks);
+            int totalLayers = 0;
+            for (PerlinStack stack : perlinStacks) {
+                if (stack == null) throw new IllegalArgumentException("Null portable Perlin stack");
+                totalLayers = Math.addExact(totalLayers, stack.layers().size());
+                if (totalLayers > MAX_TOTAL_LAYERS) {
+                    throw new IllegalArgumentException("Portable graph contains too many Perlin layers");
+                }
+            }
             validateGraph(nodes, rootNode, perlinStacks.size());
         }
 
@@ -119,7 +128,9 @@ public final class PortableDensityGraphCache {
         Path absolute = destination.toAbsolutePath();
         Path parent = absolute.getParent();
         if (parent != null) Files.createDirectories(parent);
-        Path temporary = Files.createTempFile(parent, absolute.getFileName().toString(), ".tmp");
+        String prefix = absolute.getFileName().toString();
+        if (prefix.length() < 3) prefix = (prefix + "___").substring(0, 3);
+        Path temporary = Files.createTempFile(parent, prefix, ".tmp");
         boolean moved = false;
         try {
             Files.write(temporary, complete.toByteArray());
@@ -168,9 +179,12 @@ public final class PortableDensityGraphCache {
             }
 
             List<PerlinStack> stacks = new ArrayList<>(stackCount);
+            int totalLayers = 0;
             for (int i = 0; i < stackCount; i++) {
                 int layerCount = input.readInt();
                 if (layerCount <= 0 || layerCount > MAX_LAYERS) return Optional.empty();
+                totalLayers = Math.addExact(totalLayers, layerCount);
+                if (totalLayers > MAX_TOTAL_LAYERS) return Optional.empty();
                 List<PerlinLayer> layers = new ArrayList<>(layerCount);
                 for (int layer = 0; layer < layerCount; layer++) {
                     byte[] permutation = input.readNBytes(256);
