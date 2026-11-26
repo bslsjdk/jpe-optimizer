@@ -171,6 +171,7 @@ public final class NativeRuntime implements AutoCloseable {
         private int pointGraphHandleCapacity;
         private MemorySegment packedLocations;
         private int packedLocationCapacity;
+        private MemorySegment contextWorldFingerprint;
         private final AtomicBoolean leased = new AtomicBoolean();
 
         private boolean tryAcquire() { return leased.compareAndSet(false, true); }
@@ -267,6 +268,12 @@ public final class NativeRuntime implements AutoCloseable {
                 packedLocationCapacity = next;
             }
             return packedLocations;
+        }
+        private MemorySegment ensureContextWorldFingerprint() {
+            if (contextWorldFingerprint == null) {
+                contextWorldFingerprint = arena.allocate(32L, ValueLayout.JAVA_BYTE.byteAlignment());
+            }
+            return contextWorldFingerprint;
         }
         @Override
         public void close() {
@@ -438,7 +445,7 @@ public final class NativeRuntime implements AutoCloseable {
             MethodHandle graphEvaluatePoints = lookup.find("jpe_runtime_density_graph_evaluate_points")
                     .map(symbol -> linker.downcallHandle(symbol,
                             FunctionDescriptor.of(ValueLayout.JAVA_INT,
-                                    ValueLayout.JAVA_LONG,
+                                    ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
                                     ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
                                     ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)))
                     .orElse(null);
@@ -631,13 +638,18 @@ public final class NativeRuntime implements AutoCloseable {
      * for barrier, floodedness, spread, lava, exclusion, and surface.
      */
     public void evaluateAquiferSamplersF32(
-            long contextHandle, int[][] pointX, int[][] pointY, int[][] pointZ, float[][] output
+            long contextHandle, byte[] worldFingerprint, long semanticFingerprint,
+            int[][] pointX, int[][] pointY, int[][] pointZ, float[][] output
     ) {
+        Objects.requireNonNull(worldFingerprint, "worldFingerprint");
         Objects.requireNonNull(pointX, "pointX");
         Objects.requireNonNull(pointY, "pointY");
         Objects.requireNonNull(pointZ, "pointZ");
         Objects.requireNonNull(output, "output");
         if (!supportsAquiferContext()) throw new IllegalStateException("Native Aquifer context ABI is unavailable");
+        if (worldFingerprint.length != 32 || semanticFingerprint == 0L) {
+            throw new IllegalArgumentException("Aquifer world and semantic fingerprints must be valid");
+        }
         if (contextHandle == 0L || !aquiferContextHandles.contains(contextHandle)
                 || pointX.length != 6 || pointY.length != 6 || pointZ.length != 6 || output.length != 6) {
             throw new IllegalArgumentException("Invalid native Aquifer sampler batch");
@@ -663,6 +675,9 @@ public final class NativeRuntime implements AutoCloseable {
             scratch = acquireAquiferScratch();
             MemorySegment[] buffers = scratch.ensurePointCapacity(Math.toIntExact(total));
             MemorySegment x = buffers[0], y = buffers[1], z = buffers[2], values = buffers[3];
+            MemorySegment expectedFingerprint = scratch.ensureContextWorldFingerprint();
+            MemorySegment.copy(worldFingerprint, 0, expectedFingerprint,
+                    ValueLayout.JAVA_BYTE, 0L, worldFingerprint.length);
             for (int sampler = 0; sampler < 6; sampler++) {
                 long baseBytes = Math.multiplyExact(
                         Math.multiplyExact((long) sampler, pointsPerSampler),
@@ -672,7 +687,8 @@ public final class NativeRuntime implements AutoCloseable {
                 MemorySegment.copy(pointZ[sampler], 0, z, ValueLayout.JAVA_INT, baseBytes, pointsPerSampler);
             }
             int status = (int) aquiferContextEvaluateSamplersF32.invokeExact(
-                    contextHandle, x, y, z, pointsPerSampler, values, total);
+                    contextHandle, expectedFingerprint, semanticFingerprint,
+                    x, y, z, pointsPerSampler, values, total);
             checkStatus(status, "aquifer-context-evaluate-samplers-f32");
             for (int sampler = 0; sampler < 6; sampler++) {
                 long baseBytes = Math.multiplyExact(
