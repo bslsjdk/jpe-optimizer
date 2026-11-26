@@ -171,6 +171,20 @@ typedef struct JpeAquiferFluidStatus {
     uint32_t fluid_type;
 } JpeAquiferFluidStatus;
 
+/* Per-Aquifer, fixed-capacity FluidStatus cache. Keys are packed BlockPos.asLong
+ * values for aquifer cell centers. First insertion wins, matching compute-if-absent.
+ * The cache supports concurrent batch lookups/inserts. */
+JPE_API uint64_t jpe_runtime_aquifer_status_cache_create(uint32_t maximum_entries);
+JPE_API int32_t jpe_runtime_aquifer_status_cache_destroy(uint64_t handle);
+JPE_API int32_t jpe_runtime_aquifer_status_cache_lookup_batch(
+    uint64_t handle, const uint64_t* keys, uint32_t count,
+    JpeAquiferFluidStatus* statuses, uint8_t* found
+);
+JPE_API int32_t jpe_runtime_aquifer_status_cache_insert_batch(
+    uint64_t handle, const uint64_t* keys,
+    const JpeAquiferFluidStatus* statuses, uint32_t count
+);
+
 typedef struct JpeAquiferCoreInput {
     int32_t block_y;
     double density;
@@ -207,6 +221,16 @@ JPE_API int32_t jpe_runtime_aquifer_compute_substance_batch(
  * are exported by Rust wrappers so the cdylib exposes a stable ABI. */
 JPE_API int32_t jpe_cpp_aquifer_compute_substance_core(
     const JpeAquiferCoreInput *input, JpeAquiferCoreOutput *output
+);
+JPE_API uint64_t jpe_cpp_aquifer_status_cache_create(uint32_t maximum_entries);
+JPE_API int32_t jpe_cpp_aquifer_status_cache_destroy(uint64_t handle);
+JPE_API int32_t jpe_cpp_aquifer_status_cache_lookup_batch(
+    uint64_t handle, const uint64_t* keys, uint32_t count,
+    JpeAquiferFluidStatus* statuses, uint8_t* found
+);
+JPE_API int32_t jpe_cpp_aquifer_status_cache_insert_batch(
+    uint64_t handle, const uint64_t* keys,
+    const JpeAquiferFluidStatus* statuses, uint32_t count
 );
 JPE_API int32_t jpe_cpp_aquifer_compute_substance_batch(
     const JpeAquiferCoreInput *inputs, uint32_t count,
