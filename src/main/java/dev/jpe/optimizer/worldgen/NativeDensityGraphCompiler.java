@@ -581,13 +581,9 @@ public final class NativeDensityGraphCompiler {
                             default -> throw new UnsupportedOperationException("Unsupported round type " + typeName);
                         };
                         DensityFunction multipleFunction = (DensityFunction) component(function, "multiple");
-                        if (!multipleFunction.getClass().getSimpleName().equals("ConstantFunction")) {
-                            throw new UnsupportedOperationException("Dynamic round multiples are not lowered");
-                        }
-                        float multipleValue = ((Number) component(multipleFunction, "value")).floatValue();
-                        if (!Float.isFinite(multipleValue) || multipleValue == 0.0F) {
-                            throw new UnsupportedOperationException("Invalid round multiple");
-                        }
+                        // The native ROUND node already consumes a per-voxel multiple buffer.
+                        // Lower it as a normal child graph instead of restricting the codec
+                        // to constants; zero and non-finite runtime values retain IEEE semantics.
                         int input = lower((DensityFunction) component(function, "input"));
                         int multiple = lower(multipleFunction);
                         result = append(NativeRuntime.DensityNode.round(input, multiple, type));
