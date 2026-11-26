@@ -2218,6 +2218,89 @@ mod tests {
     }
 
     #[test]
+    fn density_graph_f32_interpolates_each_axis_from_cached_coordinate_maps() {
+        // X/Y/Z are linear fields. Interpolation across 4-block cells must
+        // reproduce each field at negative, non-boundary coordinates with
+        // non-unit voxel steps, independent of the selected source axis.
+        for axis in 0..3_u32 {
+            let nodes = [
+                JpeDensityNode {
+                    opcode: DENSITY_X,
+                    input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT,
+                    reserved: 0,
+                    immediate: 0.0,
+                    auxiliary: 0.0,
+                    tertiary: 0.0,
+                },
+                JpeDensityNode {
+                    opcode: DENSITY_Y,
+                    input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT,
+                    reserved: 0,
+                    immediate: 0.0,
+                    auxiliary: 0.0,
+                    tertiary: 0.0,
+                },
+                JpeDensityNode {
+                    opcode: DENSITY_Z,
+                    input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT,
+                    reserved: 0,
+                    immediate: 0.0,
+                    auxiliary: 0.0,
+                    tertiary: 0.0,
+                },
+                JpeDensityNode {
+                    opcode: 26,
+                    input_a: axis,
+                    input_b: 4,
+                    reserved: 4,
+                    immediate: 0.0,
+                    auxiliary: 0.0,
+                    tertiary: 0.0,
+                },
+            ];
+            let graph = unsafe {
+                jpe_runtime_density_graph_compile(
+                    nodes.as_ptr(), nodes.len() as u32, 3, 0x1A7E_3000 + axis as u64,
+                )
+            };
+            assert_ne!(graph, 0);
+
+            let mut output = [f32::NAN; 27];
+            assert_eq!(unsafe {
+                jpe_runtime_density_graph_evaluate_f32(
+                    graph, 3, 3, 3, -5, -5, -5, 2, 2, 2,
+                    output.as_mut_ptr(), output.len() as u64,
+                )
+            }, STATUS_OK);
+
+            let expected_axis = [-5.0_f32, -3.0_f32, -1.0_f32];
+            for z in 0..3 {
+                for x in 0..3 {
+                    for y in 0..3 {
+                        let selected = match axis {
+                            0 => x,
+                            1 => y,
+                            _ => z,
+                        };
+                        let index = (z * 3 + x) * 3 + y;
+                        assert_eq!(
+                            output[index].to_bits(),
+                            expected_axis[selected].to_bits(),
+                            "interpolated axis {}, voxel {}",
+                            axis,
+                            index,
+                        );
+                    }
+                }
+            }
+            assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+        }
+    }
+
+    #[test]
     fn density_graph_f32_executes_lerp_and_squeeze() {
         let nodes = [
             JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
