@@ -493,6 +493,12 @@ JPE_API int32_t jpe_cpp_aquifer_status_cache_insert_batch(
     uint64_t handle, const uint64_t* keys,
     const JpeAquiferFluidStatus* statuses, uint32_t count
 );
+/* Internal context cache insertion: FIFO-evicts old entries instead of rejecting
+ * when its bounded world cache is full. The regular API above remains transactional. */
+JPE_API int32_t jpe_cpp_aquifer_status_cache_insert_batch_evict(
+    uint64_t handle, const uint64_t* keys,
+    const JpeAquiferFluidStatus* statuses, uint32_t count
+);
 JPE_API int32_t jpe_cpp_aquifer_compute_substance_batch(
     const JpeAquiferCoreInput *inputs, uint32_t count,
     JpeAquiferCoreOutput *outputs
