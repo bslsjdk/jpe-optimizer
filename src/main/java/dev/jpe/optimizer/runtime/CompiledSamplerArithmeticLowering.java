@@ -190,6 +190,16 @@ public final class CompiledSamplerArithmeticLowering {
                     int constant = appendConstant(lowered, node, "left");
                     lowered.add(DensityGraphIr.Node.divide(constant, input));
                 }
+                case CONST_MIN_RIGHT -> {
+                    int input = resolveOnlyChild(node, members, nativeIndex, inputSlot);
+                    int constant = appendConstant(lowered, node, "right");
+                    lowered.add(DensityGraphIr.Node.min(input, constant));
+                }
+                case CONST_MAX_RIGHT -> {
+                    int input = resolveOnlyChild(node, members, nativeIndex, inputSlot);
+                    int constant = appendConstant(lowered, node, "right");
+                    lowered.add(DensityGraphIr.Node.max(input, constant));
+                }
                 case CLAMP -> {
                     int input = resolveOnlyChild(node, members, nativeIndex, inputSlot);
                     float min = readFloatComponent(node, "min");

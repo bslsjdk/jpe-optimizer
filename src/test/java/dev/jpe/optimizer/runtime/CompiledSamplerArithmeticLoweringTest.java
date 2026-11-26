@@ -161,6 +161,33 @@ class CompiledSamplerArithmeticLoweringTest {
     }
 
     @Test
+    void lowersConstantSpecializedMinMaxUsingVanillaRightBoundSemantics() {
+        CompiledSamplerGraphIr.Graph graph = new CompiledSamplerGraphIr.Graph(List.of(
+                node(0, CompiledSamplerGraphIr.Op.ADD, List.of(1, 2), Map.of()),
+                node(1, CompiledSamplerGraphIr.Op.CONST_MIN_RIGHT, List.of(3), Map.of("right", "-12.5")),
+                node(2, CompiledSamplerGraphIr.Op.CONST_MAX_RIGHT, List.of(4), Map.of("right", "7.25")),
+                node(3, CompiledSamplerGraphIr.Op.OPAQUE, List.of(), Map.of()),
+                node(4, CompiledSamplerGraphIr.Op.OPAQUE, List.of(), Map.of())
+        ), 0, 0);
+        CompiledSamplerArithmeticIslands.Plan plan = CompiledSamplerArithmeticIslands.plan(graph);
+        assertEquals(1, plan.islands().size());
+        CompiledSamplerArithmeticLowering.LoweredIsland lowered =
+                CompiledSamplerArithmeticLowering.lower(graph, plan.islands().get(0), 0xC057);
+        assertEquals(List.of(3, 4), lowered.inputSourceNodeIds());
+        assertEquals(DensityGraphIr.CONST, lowered.graph().nodes().get(2).opcode());
+        assertEquals(-12.5f, (float) lowered.graph().nodes().get(2).immediate());
+        assertEquals(DensityGraphIr.MIN, lowered.graph().nodes().get(3).opcode());
+        assertEquals(0, lowered.graph().nodes().get(3).inputA());
+        assertEquals(2, lowered.graph().nodes().get(3).inputB());
+        assertEquals(DensityGraphIr.CONST, lowered.graph().nodes().get(4).opcode());
+        assertEquals(7.25f, (float) lowered.graph().nodes().get(4).immediate());
+        assertEquals(DensityGraphIr.MAX, lowered.graph().nodes().get(5).opcode());
+        assertEquals(1, lowered.graph().nodes().get(5).inputA());
+        assertEquals(4, lowered.graph().nodes().get(5).inputB());
+        assertEquals(DensityGraphIr.ADD, lowered.graph().nodes().get(6).opcode());
+    }
+
+    @Test
     void lowersAllOutputsOfOneSharedArithmeticIsland() {
         CompiledSamplerGraphIr.Graph graph = new CompiledSamplerGraphIr.Graph(List.of(
                 node(0, CompiledSamplerGraphIr.Op.ADD, List.of(1, 2), Map.of()),
