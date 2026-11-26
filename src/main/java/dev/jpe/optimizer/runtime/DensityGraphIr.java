@@ -5,11 +5,11 @@ import java.util.Objects;
 
 /** Compact, topologically ordered density graph transport model. */
 public final class DensityGraphIr {
-    public static final int VERSION = 7;
+    public static final int VERSION = 8;
     public static final int MAX_NODES = 65_536;
     public static final int NO_INPUT = -1;
 
-    public static final int CONST = 1, X = 2, Y = 3, Z = 4, ADD = 5, MUL = 6, OPAQUE = 7, SUB = 8, INPUT = 9, DIV = 10, CLAMP = 11;
+    public static final int CONST = 1, X = 2, Y = 3, Z = 4, ADD = 5, MUL = 6, OPAQUE = 7, SUB = 8, INPUT = 9, DIV = 10, CLAMP = 11, MIN = 12, MAX = 13;
 
     public record Node(int opcode, int inputA, int inputB, double immediate) {
         public static Node constant(double value) { return new Node(CONST, NO_INPUT, NO_INPUT, value); }
@@ -20,6 +20,10 @@ public final class DensityGraphIr {
         public static Node multiply(int left, int right) { return new Node(MUL, left, right, 0.0); }
         public static Node subtract(int left, int right) { return new Node(SUB, left, right, 0.0); }
         public static Node divide(int numerator, int denominator) { return new Node(DIV, numerator, denominator, 0.0); }
+        /** Vanilla MinSampler.sampleVolume: choose right only when right < left; ties and NaN keep left. */
+        public static Node min(int left, int right) { return new Node(MIN, left, right, 0.0); }
+        /** Vanilla MaxSampler.sampleVolume: choose right only when right > left; ties and NaN keep left. */
+        public static Node max(int left, int right) { return new Node(MAX, left, right, 0.0); }
         /** Encodes min/max as two raw float32 words in the immediate's 64-bit payload. */
         public static Node clamp(int input, float min, float max) {
             long bits = ((long) Float.floatToRawIntBits(min) << 32)
@@ -127,7 +131,7 @@ public final class DensityGraphIr {
                         throw new IllegalArgumentException("Clamp node " + i + " must reference one earlier input");
                     }
                 }
-                case ADD, MUL, SUB, DIV -> {
+                case ADD, MUL, SUB, DIV, MIN, MAX -> {
                     if (node.inputA() < 0 || node.inputA() >= i
                             || node.inputB() < 0 || node.inputB() >= i) {
                         throw new IllegalArgumentException("Binary node " + i
