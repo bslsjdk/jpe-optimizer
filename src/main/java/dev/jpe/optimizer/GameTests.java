@@ -68,6 +68,8 @@ public final class GameTests {
     
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> AQUIFER_RANDOM_NATIVE_PARITY =
             TEST_FUNCTIONS.register("aquifer_random_native_parity", () -> GameTests::aquiferRandomNativeParity);
+    public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> DENSITY_GRAPH_POINT_BATCH =
+            TEST_FUNCTIONS.register("density_graph_point_batch", () -> GameTests::densityGraphPointBatch);
 
     public static void registerFunctions(net.neoforged.bus.api.IEventBus modEventBus) {
         TEST_FUNCTIONS.register(modEventBus);
@@ -116,6 +118,61 @@ public final class GameTests {
                 Identifier.parse("jpe_optimizer:aquifer_random_native_parity"),
                 new FunctionGameTestInstance(AQUIFER_RANDOM_NATIVE_PARITY.getKey(), data)
         );
+        event.registerTest(
+                Identifier.parse("jpe_optimizer:density_graph_point_batch"),
+                new FunctionGameTestInstance(DENSITY_GRAPH_POINT_BATCH.getKey(), data)
+        );
+    }
+
+    /** Verifies sparse non-grid-aligned density sampling through one native FFM batch call. */
+    private static void densityGraphPointBatch(GameTestHelper helper) {
+        String library = System.getProperty("jpe.nativeLibraryPath");
+        if (library == null || library.isBlank()) {
+            throw new AssertionError("Density graph point batch requires jpe.nativeLibraryPath");
+        }
+        try (NativeRuntime runtime = NativeRuntime.load(java.nio.file.Path.of(library))) {
+            if (!runtime.supportsDensityGraphPoints()) {
+                throw new AssertionError("Native arbitrary-point density graph ABI is unavailable");
+            }
+            List<NativeRuntime.DensityNode> nodes = List.of(
+                    NativeRuntime.DensityNode.x(),
+                    NativeRuntime.DensityNode.y(),
+                    NativeRuntime.DensityNode.z(),
+                    NativeRuntime.DensityNode.constant(2.0),
+                    NativeRuntime.DensityNode.add(0, 3),
+                    NativeRuntime.DensityNode.multiply(4, 1),
+                    NativeRuntime.DensityNode.add(5, 2)
+            );
+            long graph = runtime.compileDensityGraph(nodes, 6, 0xA91F_263L);
+            int[] xs = {17, -31, 0, 2048, -512, 77, 5};
+            int[] ys = {-9, 12, 0, -64, 33, -3, 29};
+            int[] zs = {3, -7, 41, -128, 11, 23, -19};
+            double[] values64 = new double[xs.length];
+            runtime.evaluateDensityGraphPoints(graph, xs, ys, zs, values64);
+            float[] values32 = new float[xs.length];
+            runtime.evaluateDensityGraphPointsF32(graph, xs, ys, zs, values32);
+
+            for (int i = 0; i < xs.length; i++) {
+                double expected64 = (xs[i] + 2.0) * ys[i] + zs[i];
+                if (values64[i] != expected64) {
+                    throw new AssertionError("Native arbitrary-point f64 mismatch at " + i
+                            + ": expected=" + expected64 + ", actual=" + values64[i]);
+                }
+                float add = (float) xs[i] + 2.0F;
+                float multiply = add * (float) ys[i];
+                float expected32 = multiply + (float) zs[i];
+                if (Float.floatToRawIntBits(values32[i]) != Float.floatToRawIntBits(expected32)) {
+                    throw new AssertionError("Native arbitrary-point f32 mismatch at " + i
+                            + ": expected=" + expected32 + ", actual=" + values32[i]);
+                }
+            }
+            JPEOptimizer.LOGGER.info(
+                    "JPE_DENSITY_GRAPH_POINT_BATCH samples={} f64Exact=true f32Exact=true irregularCoordinates=true",
+                    xs.length);
+        } catch (Exception failure) {
+            throw new AssertionError("Native arbitrary-point density graph parity failed", failure);
+        }
+        helper.succeed();
     }
 
     /**
