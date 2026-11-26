@@ -806,11 +806,14 @@ public final class NativeRuntime implements AutoCloseable {
         lifecycle.readLock().lock();
         try {
             ensureOpen();
-            try {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment fingerprint = arena.allocate(32L, ValueLayout.JAVA_BYTE.byteAlignment());
+                MemorySegment.copy(worldFingerprint, 0, fingerprint,
+                        ValueLayout.JAVA_BYTE, 0L, worldFingerprint.length);
                 int status = (int) aquiferContextConfigureGlobalFluidPicker.invokeExact(
-                        contextHandle, copyFingerprint(worldFingerprint),
-                        semanticFingerprint, seaLevel, minY, defaultFluidType,
-                        defaultFluidIsAir ? 1 : 0, debugDisableFluidGeneration ? 1 : 0);
+                        contextHandle, fingerprint, semanticFingerprint, seaLevel, minY,
+                        defaultFluidType, defaultFluidIsAir ? 1 : 0,
+                        debugDisableFluidGeneration ? 1 : 0);
                 checkStatus(status, "aquifer-context-configure-global-fluid-picker");
             } catch (Throwable failure) {
                 throw rethrow("Unable to configure native Aquifer global FluidPicker", failure);
