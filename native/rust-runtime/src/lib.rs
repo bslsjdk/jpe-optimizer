@@ -66,6 +66,7 @@ const DENSITY_LOG: u32 = 19;
 const DENSITY_RECIPROCAL: u32 = 20;
 const DENSITY_SIGN: u32 = 21;
 const DENSITY_SQUEEZE: u32 = 22;
+const DENSITY_LEAKY_RELU: u32 = 23;
 #[cfg(test)]
 static CACHE_TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
