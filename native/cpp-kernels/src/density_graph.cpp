@@ -18,6 +18,8 @@ extern "C" int32_t jpe_cpp_perlin_stack_evaluate(
     int32_t, int32_t, int32_t, int32_t, int32_t, int32_t,
     float*, uint64_t, uint32_t) noexcept;
 
+static_assert(sizeof(JpeDensityNode) == 40, "JpeDensityNode ABI layout mismatch");
+
 namespace {
 constexpr uint32_t kMaxNodes = 65536;
 constexpr uint64_t kMaxVolumeElements = 1024ULL * 1024ULL;
@@ -118,20 +120,24 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
             case JPE_DENSITY_X:
             case JPE_DENSITY_Y:
             case JPE_DENSITY_Z:
-                if (node.reserved != 0 || node.input_a != kNoInput || node.input_b != kNoInput) return false;
+                if (node.reserved != 0 || node.input_a != kNoInput || node.input_b != kNoInput
+                    || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
                 break;
             case JPE_DENSITY_ADD: case JPE_DENSITY_MUL:
             case kSub: case kDiv: case kMin: case kMax: case kPow:
-                if (node.reserved != 0 || node.input_a >= i || node.input_b >= i) return false;
+                if (node.reserved != 0 || node.input_a >= i || node.input_b >= i
+                    || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
                 break;
             case kAbs: case kNegate: case kSquare: case kCube: case kSqrt:
             case kHalfNegative: case kQuarterNegative: case kReciprocal: case kSign:
-                if (node.input_a >= i || node.input_b != kNoInput || node.reserved != 0) return false;
+                if (node.input_a >= i || node.input_b != kNoInput || node.reserved != 0
+                    || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
                 break;
             case kClamp:
                 if (node.input_a >= i || !std::isfinite(decode_float(node.input_b))
                     || !std::isfinite(decode_float(node.reserved))
-                    || decode_float(node.input_b) > decode_float(node.reserved)) return false;
+                    || decode_float(node.input_b) > decode_float(node.reserved)
+                    || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
                 break;
             case kPerlinStack: {
                 const double handle = node.immediate;
