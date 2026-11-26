@@ -3247,23 +3247,45 @@ mod tests {
         ];
         let ys = [0_i32; 18];
         let zs = [0_i32; 18];
+        let expected_fingerprint = info.world_fingerprint;
+        let expected_semantic_fingerprint = info.semantic_fingerprint;
         let mut output = [f32::NAN; 18];
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_evaluate_samplers_f32(
-                context, xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
+                context, expected_fingerprint.as_ptr(), expected_semantic_fingerprint,
+                xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
                 3, output.as_mut_ptr(), output.len() as u64 - 1,
+            )
+        }, STATUS_INVALID_ARGUMENT);
+        assert!(output.iter().all(|value| value.is_nan()));
+        let wrong_fingerprint = [0xA5_u8; 32];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_evaluate_samplers_f32(
+                context, wrong_fingerprint.as_ptr(), expected_semantic_fingerprint,
+                xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
+                3, output.as_mut_ptr(), output.len() as u64,
             )
         }, STATUS_INVALID_ARGUMENT);
         assert!(output.iter().all(|value| value.is_nan()));
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_evaluate_samplers_f32(
-                u64::MAX, xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
+                context, expected_fingerprint.as_ptr(), expected_semantic_fingerprint ^ 1,
+                xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
+                3, output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_INVALID_ARGUMENT);
+        assert!(output.iter().all(|value| value.is_nan()));
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_evaluate_samplers_f32(
+                u64::MAX, expected_fingerprint.as_ptr(), expected_semantic_fingerprint,
+                xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
                 3, output.as_mut_ptr(), output.len() as u64,
             )
         }, STATUS_INVALID_ARGUMENT);
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_evaluate_samplers_f32(
-                context, xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
+                context, expected_fingerprint.as_ptr(), expected_semantic_fingerprint,
+                xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
                 0, output.as_mut_ptr(), output.len() as u64,
             )
         }, STATUS_INVALID_ARGUMENT);
@@ -3277,6 +3299,8 @@ mod tests {
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_evaluate_samplers_f32(
                 context,
+                expected_fingerprint.as_ptr(),
+                expected_semantic_fingerprint,
                 std::ptr::addr_of!(overlap.coordinates).cast::<i32>(),
                 ys.as_ptr(),
                 zs.as_ptr(),
@@ -3288,7 +3312,8 @@ mod tests {
 
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_evaluate_samplers_f32(
-                context, xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
+                context, expected_fingerprint.as_ptr(), expected_semantic_fingerprint,
+                xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
                 3, output.as_mut_ptr(), output.len() as u64,
             )
         }, STATUS_OK);
