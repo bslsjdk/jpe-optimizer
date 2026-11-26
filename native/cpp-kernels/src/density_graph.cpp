@@ -248,12 +248,41 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
     }
 }
 
-extern "C" int32_t jpe_runtime_density_graph_evaluate(
+template <typename Scalar>
+Scalar java_min_scalar(Scalar a, Scalar b) noexcept {
+    if (std::isnan(a)) return a;
+    if (std::isnan(b)) return b;
+    if (a == b) {
+        if (a == Scalar(0)) return std::signbit(a) || std::signbit(b) ? -Scalar(0) : Scalar(0);
+        return a;
+    }
+    return a < b ? a : b;
+}
+
+template <typename Scalar>
+Scalar java_max_scalar(Scalar a, Scalar b) noexcept {
+    if (std::isnan(a)) return a;
+    if (std::isnan(b)) return b;
+    if (a == b) {
+        if (a == Scalar(0)) return std::signbit(a) && std::signbit(b) ? -Scalar(0) : Scalar(0);
+        return a;
+    }
+    return a > b ? a : b;
+}
+
+template <typename Scalar>
+Scalar java_signum_scalar(Scalar value) noexcept {
+    if (std::isnan(value) || value == Scalar(0)) return value;
+    return std::signbit(value) ? Scalar(-1) : Scalar(1);
+}
+
+template <typename Scalar>
+int32_t evaluate_density_graph(
     uint64_t graph_handle,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
-    double* output, uint64_t output_length
+    Scalar* output, uint64_t output_length
 ) {
     if (output == nullptr || !valid_volume(size_x, size_y, size_z,
             step_x, step_y, step_z, output_length)) return 1;
@@ -268,8 +297,7 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate(
 
     try {
         const size_t volume = static_cast<size_t>(output_length);
-        // Allocate only the maximum number of simultaneously live node buffers.
-        std::vector<std::vector<double>> slots(graph->slot_count);
+        std::vector<std::vector<Scalar>> slots(graph->slot_count);
         for (auto& slot : slots) slot.resize(volume);
         std::vector<float> perlin_scratch;
         if (graph->has_perlin) perlin_scratch.resize(volume);
@@ -281,18 +309,18 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate(
 
             switch (node.opcode) {
                 case JPE_DENSITY_CONST:
-                    std::fill(values.begin(), values.end(), node.immediate);
+                    std::fill(values.begin(), values.end(), static_cast<Scalar>(node.immediate));
                     break;
                 case JPE_DENSITY_X:
                 case JPE_DENSITY_Y:
                 case JPE_DENSITY_Z: {
                     size_t out = 0;
                     for (uint32_t z = 0; z < size_z; ++z) {
-                        const double wz = static_cast<double>(wrapped_coordinate(min_z, z, step_z));
+                        const Scalar wz = static_cast<Scalar>(wrapped_coordinate(min_z, z, step_z));
                         for (uint32_t x = 0; x < size_x; ++x) {
-                            const double wx = static_cast<double>(wrapped_coordinate(min_x, x, step_x));
+                            const Scalar wx = static_cast<Scalar>(wrapped_coordinate(min_x, x, step_x));
                             for (uint32_t y = 0; y < size_y; ++y) {
-                                const double wy = static_cast<double>(wrapped_coordinate(min_y, y, step_y));
+                                const Scalar wy = static_cast<Scalar>(wrapped_coordinate(min_y, y, step_y));
                                 values[out++] = node.opcode == JPE_DENSITY_X ? wx
                                     : node.opcode == JPE_DENSITY_Y ? wy : wz;
                             }
@@ -310,9 +338,9 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate(
                             case JPE_DENSITY_MUL: values[j] = a[j] * b[j]; break;
                             case kSub: values[j] = a[j] - b[j]; break;
                             case kDiv: values[j] = a[j] / b[j]; break;
-                            case kMin: values[j] = java_min(a[j], b[j]); break;
-                            case kMax: values[j] = java_max(a[j], b[j]); break;
-                            case kPow: values[j] = std::pow(a[j], b[j]); break;
+                            case kMin: values[j] = java_min_scalar(a[j], b[j]); break;
+                            case kMax: values[j] = java_max_scalar(a[j], b[j]); break;
+                            case kPow: values[j] = static_cast<Scalar>(std::pow(a[j], b[j])); break;
                         }
                     }
                     break;
@@ -321,25 +349,28 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate(
                 case kHalfNegative: case kQuarterNegative: case kReciprocal: case kSign: {
                     const auto& a = slots[graph->node_slots[node.input_a]];
                     for (size_t j = 0; j < volume; ++j) {
-                        const double v = a[j];
+                        const Scalar v = a[j];
                         switch (node.opcode) {
                             case kAbs: values[j] = std::abs(v); break;
                             case kNegate: values[j] = -v; break;
                             case kSquare: values[j] = v * v; break;
                             case kCube: values[j] = v * v * v; break;
-                            case kSqrt: values[j] = std::sqrt(v); break;
-                            case kHalfNegative: values[j] = v < 0.0 ? v * 0.5 : v; break;
-                            case kQuarterNegative: values[j] = v < 0.0 ? v * 0.25 : v; break;
-                            case kReciprocal: values[j] = 1.0 / v; break;
-                            case kSign: values[j] = java_signum(v); break;
+                            case kSqrt: values[j] = static_cast<Scalar>(std::sqrt(v)); break;
+                            case kHalfNegative: values[j] = v < Scalar(0) ? v * Scalar(0.5) : v; break;
+                            case kQuarterNegative: values[j] = v < Scalar(0) ? v * Scalar(0.25) : v; break;
+                            case kReciprocal: values[j] = Scalar(1) / v; break;
+                            case kSign: values[j] = java_signum_scalar(v); break;
                         }
                     }
                     break;
                 }
                 case kClamp: {
                     const auto& a = slots[graph->node_slots[node.input_a]];
-                    const double lo = decode_float(node.input_b), hi = decode_float(node.reserved);
-                    for (size_t j = 0; j < volume; ++j) values[j] = std::clamp(a[j], lo, hi);
+                    const Scalar lo = static_cast<Scalar>(decode_float(node.input_b));
+                    const Scalar hi = static_cast<Scalar>(decode_float(node.reserved));
+                    for (size_t j = 0; j < volume; ++j) {
+                        values[j] = std::min(std::max(a[j], lo), hi);
+                    }
                     break;
                 }
                 case kPerlinStack: {
@@ -350,13 +381,12 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate(
                         size_x, size_y, size_z, min_x, min_y, min_z,
                         step_x, step_y, step_z, perlin_scratch.data(), output_length, 0);
                     if (status != 0) return status;
-                    for (size_t j = 0; j < volume; ++j) values[j] = perlin_scratch[j];
+                    for (size_t j = 0; j < volume; ++j) values[j] = static_cast<Scalar>(perlin_scratch[j]);
                     break;
                 }
                 default:
                     return 1;
             }
-
         }
 
         const auto& root_values = slots[graph->node_slots[graph->root]];
@@ -365,6 +395,28 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate(
     } catch (...) {
         return 3;
     }
+}
+
+extern "C" int32_t jpe_runtime_density_graph_evaluate(
+    uint64_t graph_handle,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    double* output, uint64_t output_length
+) {
+    return evaluate_density_graph<double>(graph_handle, size_x, size_y, size_z,
+        min_x, min_y, min_z, step_x, step_y, step_z, output, output_length);
+}
+
+extern "C" int32_t jpe_runtime_density_graph_evaluate_f32(
+    uint64_t graph_handle,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    float* output, uint64_t output_length
+) {
+    return evaluate_density_graph<float>(graph_handle, size_x, size_y, size_z,
+        min_x, min_y, min_z, step_x, step_y, step_z, output, output_length);
 }
 
 extern "C" int32_t jpe_runtime_density_graph_release(uint64_t graph_handle) {
