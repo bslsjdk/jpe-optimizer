@@ -125,6 +125,12 @@ public final class NativeAquiferFluidStatusPrefill {
             }
 
             BlockState defaultFluid = settings.defaultFluid();
+            if (!matchesVanillaGlobalFluidPicker(
+                    aquifer.jpe$getGlobalFluidPicker(), settings)) {
+                return fail(strict,
+                        "A custom or non-vanilla global FluidPicker is not supported by the native Aquifer kernel",
+                        null);
+            }
             int defaultFluidToken = tokenForDefaultFluid(defaultFluid);
             byte[] fingerprint = makeEphemeralFingerprint(
                     noiseChunk, chunk, aquifer, randomMode, seedLo, seedHi);
@@ -280,6 +286,52 @@ public final class NativeAquiferFluidStatusPrefill {
                 randomMode, seedLo, seedHi,
                 aquifer.jpe$getMinGridX(), aquifer.jpe$getMinGridY(), aquifer.jpe$getMinGridZ(),
                 aquifer.jpe$getGridSizeX(), aquifer.jpe$getGridSizeZ(), locations);
+    }
+
+    /**
+     * Refuses to approximate a modded FluidPicker. The native C++ kernel models the
+     * vanilla 26.3 picker exactly; sample several horizontal coordinates and every
+     * vertical transition to detect coordinate-dependent or otherwise replaced rules.
+     */
+    private static boolean matchesVanillaGlobalFluidPicker(
+            Aquifer.FluidPicker picker, NoiseGeneratorSettings settings
+    ) {
+        if (picker == null) return false;
+        int seaLevel = settings.seaLevel();
+        int lavaThreshold = Math.min(-54, seaLevel);
+        int[] ySamples = {
+                DimensionType.MIN_Y,
+                lavaThreshold - 1, lavaThreshold, lavaThreshold + 1,
+                -55, -54, -53,
+                seaLevel - 1, seaLevel, seaLevel + 1
+        };
+        int[][] horizontalSamples = {
+                {0, 0}, {16, -16}, {-31, 65}, {257, -513}
+        };
+        BlockState air = Blocks.AIR.defaultBlockState();
+        BlockState lava = Blocks.LAVA.defaultBlockState();
+        for (int[] horizontal : horizontalSamples) {
+            for (int y : ySamples) {
+                final int expectedLevel;
+                final BlockState expectedType;
+                if (SharedConstants.DEBUG_DISABLE_FLUID_GENERATION) {
+                    expectedLevel = DimensionType.MIN_Y * 2;
+                    expectedType = air;
+                } else if (y < lavaThreshold) {
+                    expectedLevel = -54;
+                    expectedType = lava;
+                } else {
+                    expectedLevel = seaLevel;
+                    expectedType = settings.defaultFluid();
+                }
+                Aquifer.FluidStatus actual = picker.computeFluid(horizontal[0], y, horizontal[1]);
+                if (actual == null || actual.fluidLevel() != expectedLevel
+                        || !expectedType.equals(actual.fluidType())) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     private static int tokenForDefaultFluid(BlockState defaultFluid) {
