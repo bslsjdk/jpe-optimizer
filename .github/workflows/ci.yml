@@ -122,6 +122,8 @@ jobs:
           gradle runServer --no-daemon --stacktrace 2>&1 | tee build/native-density-worldgen/overworld.log
           grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*completedChunks=340.*failedChunks=0.*doFillCalls=([3-9][0-9]{2,}|[1-9][0-9]{3,})' build/native-density-worldgen/overworld.log
           grep -F 'Native density graph compiled for' build/native-density-worldgen/overworld.log
+          grep -F 'Native density graph evaluated for' build/native-density-worldgen/overworld.log
+          ! grep -F 'Native density graph evaluation failed' build/native-density-worldgen/overworld.log
           ! grep -F 'Native density graph parity mismatch' build/native-density-worldgen/overworld.log
 
       - name: Real overworld Climate R-tree benchmark (six fan-outs, vanilla result parity)
