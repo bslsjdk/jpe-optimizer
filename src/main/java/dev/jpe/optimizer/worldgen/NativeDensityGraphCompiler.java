@@ -11,6 +11,7 @@ import it.unimi.dsi.fastutil.floats.FloatList;
 import net.minecraft.core.Holder;
 import net.minecraft.core.Vec3i;
 import net.minecraft.world.level.levelgen.NoiseChunk;
+import net.minecraft.world.level.levelgen.Aquifer;
 import net.minecraft.world.level.levelgen.RandomState;
 import net.minecraft.world.level.levelgen.Beardifier;
 import net.minecraft.world.level.levelgen.blending.Blender;
@@ -102,6 +103,45 @@ public final class NativeDensityGraphCompiler {
                 Collections.newSetFromMap(new IdentityHashMap<>());
         private final IdentityHashMap<DensityFunction, CompletableFuture<GraphHandle>> compiling =
                 new IdentityHashMap<>();
+        private AquiferSamplerPlans aquiferSamplerPlans;
+    }
+
+    /** Immutable six-sampler plan, cached with the owning RandomState. */
+    public static final class AquiferSamplerPlans {
+        private final NativeRuntime runtime;
+        private final DensityFunction[] roots;
+        private final long[] handles;
+
+        private AquiferSamplerPlans(NativeRuntime runtime, DensityFunction[] roots, long[] handles) {
+            this.runtime = runtime;
+            this.roots = roots.clone();
+            this.handles = handles.clone();
+        }
+
+        public long handle(int samplerIndex) {
+            if (samplerIndex < 0 || samplerIndex >= handles.length) {
+                throw new IndexOutOfBoundsException("Aquifer sampler index " + samplerIndex);
+            }
+            return handles[samplerIndex];
+        }
+
+        public long[] copyHandles() {
+            return handles.clone();
+        }
+
+        public boolean belongsTo(NativeRuntime candidate) {
+            return runtime == candidate;
+        }
+
+        private boolean matches(NativeRuntime candidate, Aquifer.Config config) {
+            return runtime == candidate
+                    && roots[0] == config.barrierNoise()
+                    && roots[1] == config.fluidLevelFloodednessNoise()
+                    && roots[2] == config.fluidLevelSpreadNoise()
+                    && roots[3] == config.lavaNoise()
+                    && roots[4] == config.exclusion()
+                    && roots[5] == config.surfaceLevel();
+        }
     }
 
     private static final class IdentityWeakReference<T> extends WeakReference<T> {
@@ -228,6 +268,84 @@ public final class NativeDensityGraphCompiler {
             }
             JPEOptimizer.LOGGER.debug("Native sampler plan preparation declined: {}", describe(unavailable));
             return new long[roots.size()];
+        }
+    }
+
+    /**
+     * Compiles the six sampler graphs from the resolved Minecraft 26.3 Aquifer.Config.
+     * The plan is retained by the weak RandomState cache, so normal chunk fills do
+     * not allocate another six-handle array or recompile these graphs.
+     *
+     * Order is fixed to the C++ context ABI: barrier, floodedness, spread, lava,
+     * exclusion, surface. A null result means native compilation was unavailable
+     * or at least one sampler was unsupported in non-strict mode.
+     */
+    public static AquiferSamplerPlans prepareAquiferSamplerPlans(
+            Aquifer.Config config, NoiseChunk noiseChunk
+    ) {
+        if (config == null || noiseChunk == null) {
+            throw new IllegalArgumentException("Aquifer config and NoiseChunk are required");
+        }
+        NativeRuntime runtime;
+        try {
+            runtime = NativePerlinNoiseBackend.runtimeForDensityGraph();
+        } catch (RuntimeException | LinkageError unavailable) {
+            if (Boolean.getBoolean("jpe.nativeAquiferSamplerPlansStrict")) {
+                throw new IllegalStateException("Strict native Aquifer sampler preparation: runtime unavailable",
+                        unavailable);
+            }
+            return null;
+        }
+        if (runtime == null) {
+            if (Boolean.getBoolean("jpe.nativeAquiferSamplerPlansStrict")) {
+                throw new IllegalStateException("Strict native Aquifer sampler preparation: runtime unavailable");
+            }
+            return null;
+        }
+
+        RandomState randomState = ((NoiseChunkAccessor) (Object) noiseChunk).jpe$getRandomState();
+        synchronized (LOCK) {
+            drainQueues();
+            StateGraphs cached = GRAPHS.get(new IdentityWeakReference<>(randomState, null));
+            if (cached != null && cached.aquiferSamplerPlans != null
+                    && cached.aquiferSamplerPlans.matches(runtime, config)) {
+                return cached.aquiferSamplerPlans;
+            }
+        }
+
+        DensityFunction[] roots = {
+                config.barrierNoise(),
+                config.fluidLevelFloodednessNoise(),
+                config.fluidLevelSpreadNoise(),
+                config.lavaNoise(),
+                config.exclusion(),
+                config.surfaceLevel()
+        };
+        long[] handles = prepareDensityGraphHandles(List.of(roots), noiseChunk);
+        for (int i = 0; i < handles.length; i++) {
+            if (handles[i] == 0L) {
+                if (Boolean.getBoolean("jpe.nativeAquiferSamplerPlansStrict")) {
+                    throw new IllegalStateException("Strict native Aquifer sampler preparation rejected index "
+                            + i + " (" + roots[i].getClass().getName() + ")");
+                }
+                return null;
+            }
+        }
+
+        AquiferSamplerPlans prepared = new AquiferSamplerPlans(runtime, roots, handles);
+        synchronized (LOCK) {
+            drainQueues();
+            IdentityWeakReference<RandomState> key = new IdentityWeakReference<>(randomState, null);
+            StateGraphs cached = GRAPHS.get(key);
+            if (cached == null) {
+                cached = new StateGraphs();
+                GRAPHS.put(new IdentityWeakReference<>(randomState, RANDOM_STATE_QUEUE), cached);
+            }
+            if (cached.aquiferSamplerPlans == null
+                    || !cached.aquiferSamplerPlans.matches(runtime, config)) {
+                cached.aquiferSamplerPlans = prepared;
+            }
+            return cached.aquiferSamplerPlans;
         }
     }
 
