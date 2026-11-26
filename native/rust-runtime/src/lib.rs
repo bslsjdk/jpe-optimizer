@@ -3623,6 +3623,18 @@ mod tests {
         }, STATUS_INVALID_ARGUMENT);
         assert_eq!(later_output[0], sentinel_status);
 
+        let wrong_lava_token = [JpeAquiferFluidStatusInput {
+            lava_type: info.lava_type + 1,
+            ..status_input
+        }];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_compute_fluid_status_batch(
+                context, expected_fingerprint.as_ptr(), expected_semantic_fingerprint,
+                new_key.as_ptr(), wrong_lava_token.as_ptr(), 1, later_output.as_mut_ptr(),
+            )
+        }, STATUS_INVALID_ARGUMENT);
+        assert_eq!(later_output[0], sentinel_status);
+
         assert_eq!(unsafe { jpe_runtime_aquifer_context_destroy(context) }, STATUS_OK);
         assert_eq!(unsafe { jpe_runtime_aquifer_context_destroy(context) }, STATUS_INVALID_ARGUMENT);
     }
