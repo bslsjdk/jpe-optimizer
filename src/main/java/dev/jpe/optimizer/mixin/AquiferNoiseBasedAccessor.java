@@ -41,4 +41,7 @@ public interface AquiferNoiseBasedAccessor {
 
     @Accessor("positionalRandomFactory")
     PositionalRandomFactory jpe$getPositionalRandomFactory();
+
+    @Accessor("globalFluidPicker")
+    Aquifer.FluidPicker jpe$getGlobalFluidPicker();
 }
