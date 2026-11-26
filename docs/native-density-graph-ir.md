@@ -1,6 +1,33 @@
 # Native density graph IR v1
 
-Status: design contract only. No Minecraft density graph is executed by this IR yet. The native backend must remain opt-in until the exact-output and real-worldgen gates below pass.
+Status: an experimental, opt-in Minecraft 26.3 final-density path is integrated for a strict supported subset. It lowers the actual final-density object graph, evaluates complete density volumes through C++ F32, and falls back to vanilla for unsupported nodes or failures. It is not a complete terrain-generation takeover; exact parity across all shipped routers/modded graphs and end-to-end performance are not yet established.
+
+## Prepared NoiseStack implementation slice
+
+The experimental native branch now has an additive prepared-Perlin-stack primitive:
+
+- `jpe_runtime_prepare_perlin_stack` copies the ordered 256-byte permutation tables, offsets, per-layer XZ/Y frequencies, and base amplitudes into an immutable native handle.
+- `jpe_runtime_evaluate_prepared_perlin_stack` evaluates that handle with only sampler-level XZ/Y scales, amplitude, volume coordinates, and output storage. No per-layer descriptors or permutation arrays need to cross the FFM/Rust/C++ boundary for each volume.
+- The C++ handle owns immutable layer data; evaluation retains shared ownership while running, so a concurrent release cannot invalidate an active call.
+- Each calling thread reuses its descriptor scratch and the existing fused stack kernel remains the arithmetic implementation.
+- A Rust test compares prepared evaluation with the existing direct stack API by exact `f32::to_bits()` equality across multiple sampler scale/amplitude combinations.
+
+The Java `NativePerlinNoiseBackend` now keeps prepared handles in an identity-based weak cache keyed by `NoiseStack`; expired stack references release their native handles. The per-volume FFM call passes the prepared handle, sampler-level scales/amplitude, volume coordinates, and output storage, without re-reading the layer array or staging octave descriptors/permutations. `NativeRuntime.close()` releases remaining prepared handles. The prepared evaluator runs synchronously on the calling worldgen worker, avoiding a second queued worker-pool hop for this path.
+
+This is now also used as a density-graph leaf for captured seed-bound `NoiseFunction` instances backed by supported Perlin stacks. The graph path bypasses the outer Java density sampler for supported roots. The prepared handle cache and compiled graph cache are process-local; they are not yet the requested persistent on-disk world-preparation cache.
+
+## Implemented native IR prototype
+
+The current branch has an executable C ABI/Rust/C++/Java path for a topologically ordered graph. It supports constants, X/Y/Z coordinates, ADD/MUL/SUB/DIV/MIN/MAX/POW, ABS/NEGATE/SQUARE/CUBE/SQRT/HALF_NEGATIVE/QUARTER_NEGATIVE/RECIPROCAL/SIGN/CLAMP/SQUEEZE/LERP/GRADIENT (clamp, repeat, mirrored repeat)/INTERPOLATED/RANGE_CHOICE/ROUND (including dynamic per-voxel multiples)/LOG, DISTANCE_TO_POINT (all four Minecraft 26.3 metrics), cubic spline trees (constant and multipoint forms), and prepared PERLIN_STACK nodes.
+
+Execution is node-major over the complete requested volume. The C++ compiler precomputes a liveness-based slot assignment once, so each evaluation allocates only the maximum simultaneously-live volume buffers; dead nodes and nodes after their final consumer reuse slots. Compiled graphs retain prepared Perlin handles independently of their source handles.
+
+The original graph API returns a double volume and remains available for compatibility/testing. A separate `jpe_runtime_density_graph_evaluate_f32` path now executes every graph node in `float`, including intermediate arithmetic, and writes directly to a float output buffer. Rust FFI tests distinguish the two modes with a value that rounds differently after an intermediate addition. This is necessary for Minecraft 26.3, whose density functions and noises use single-precision intermediates; it is not yet proof of parity for every operator or real worldgen. The Java FFM wrapper is called from the experimental `NoiseBasedChunkGenerator.doFill` path for complete `DensityVolume` requests when the actual final-density graph is fully supported. It writes directly into a pooled `ScopedDensityBuffer`. An optional `jpe.nativeDensityGraphVerify` mode compares raw float bits against vanilla and disables a mismatching graph for that `RandomState`. The current C++ cache is process-local and has no persistent on-disk generator cache.
+
+
+Java FFM exposes `supportsDensityGraphF32()` and `evaluateDensityGraphF32(...)`; the mixin now calls the evaluator for supported final-density graphs.
+
+The implemented operator list is an execution substrate, not a claim that every 26.3 density function has been lowered. Cubic spline lowering was added experimentally: it handles constant and multipoint trees, nested values, Hermite segments, and linear endpoint extension, but exact float-bit parity has not yet been demonstrated against an in-game 26.3 sampler. DISTANCE_TO_POINT has an explicit opcode and unit coverage for all four metrics; its in-game bit parity is also still to be checked. Unsupported nodes still include shifted/domain-warped noise, non-empty legacy blending, non-empty beardifier, mod-defined/context-dependent functions. Cache/reference wrappers are lowered only where removing the cache wrapper preserves the pure function value. Unsupported roots fall back to vanilla. The compiler emits a debug-level rejection record containing the root implementation class and the first unsupported-lowering reason, so an actual game run can inventory which node families still prevent native execution without changing fallback behavior.
 
 ## Goal
 
@@ -62,21 +89,20 @@ All floating-point operations must use the same precision and evaluation order a
 The initial compiler should be deliberately narrow. Candidate pure operations include:
 
 - constants and coordinate inputs
-- add, multiply, min, max
-- clamp and the simple unary transforms whose exact formulas are confirmed from the target artifact
-- noise references only after permutation, octave order, coordinate wrapping, and float/double conversion points have parity tests
+- add, subtract, multiply, divide, min, max, power
+- clamp and implemented unary transforms (abs, negate, square, cube, sqrt, half-negative, quarter-negative, reciprocal, sign)
+- prepared Perlin stack references
 
 These are a proposed allowlist, not a claim that every opcode is already implemented.
 
-The following require dedicated semantic work and must not be approximated as ordinary arithmetic:
+The following still require dedicated semantic work and must not be approximated as ordinary arithmetic:
 
-- range-choice branches and their volume-specific branch evaluation
-- cache nodes and cache lifetimes
-- interpolated and cell-based density functions
+- spline and context-dependent nodes
 - shifted noise and shared shift buffers
-- blend alpha/offset and beardifier
-- Y gradients with exact coordinate/endpoint behavior
+- non-empty blend alpha/offset and beardifier
 - registry-backed or mod-provided custom density functions
+
+Range-choice, interval-select, interpolation, all three gradient tiling modes, and empty blender/beardifier cases have initial native lowering, but remain gated by exact vanilla parity.
 
 Unknown nodes make the graph unsupported as a whole for that execution path unless a future explicit hybrid plan proves that a whole batch can safely cross back to Java. The first implementation should prefer full Java fallback over per-voxel Java callbacks.
 
@@ -133,12 +159,12 @@ A successful arithmetic microbenchmark is not evidence of a Minecraft worldgen s
 ## Implementation sequence
 
 1. Confirm the official and NeoForge-patched 26.3 source audit and inventory concrete DensityFunction implementations reachable from the default overworld router.
-2. Define the C ABI wire structs and strict validator; add native unit tests for malformed graphs and stable fingerprints.
-3. Implement a tiny arithmetic-only graph evaluator and test it independently. This validates the transport/cache lifecycle, not Minecraft compatibility.
-4. Add Java extraction for only the confirmed arithmetic nodes and compare complete volume outputs.
-5. Add noise nodes using the existing verified Perlin kernel and descriptor representation.
-6. Add special nodes (range choice, interpolation, shifts, blend, beardifier, caches) one family at a time.
-7. Integrate behind a disabled-by-default graph backend flag. Keep the existing vanilla path as the correctness fallback.
+2. Extend and validate the C ABI wire structs; add native unit tests for malformed graphs, shared subgraphs, dead-node slot reuse, and stable fingerprints.
+3. Implement and test the arithmetic and prepared-Perlin volume evaluator independently. This validates transport/cache/liveness, not Minecraft compatibility.
+4. Expand parity coverage over the shipped 26.3 overworld graph and all other vanilla dimension routers, then verify against the exact NeoForge-patched artifact.
+5. Add remaining vanilla noise, spline, shift, and context nodes using exact target-artifact semantics.
+6. Add safe persistent world-preparation cache identity and lifecycle invalidation.
+7. Keep the graph backend opt-in and preserve deterministic vanilla fallback for every unsupported graph.
 8. Only after exact parity, run full-chunk benchmarks and compare the saved baseline.
 
 ## Explicit non-goals for v1

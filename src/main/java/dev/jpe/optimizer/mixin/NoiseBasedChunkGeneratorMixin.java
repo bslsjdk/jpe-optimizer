@@ -2,6 +2,7 @@ package dev.jpe.optimizer.mixin;
 
 import dev.jpe.optimizer.mixin.AquiferNoiseBasedAccessor;
 import dev.jpe.optimizer.worldgen.DensityVolumeIndex;
+import dev.jpe.optimizer.worldgen.NativeDensityGraphCompiler;
 import dev.jpe.optimizer.worldgen.SectionCachePolicy;
 import dev.jpe.optimizer.worldgen.WorldgenMetrics;
 import net.minecraft.core.BlockPos;
@@ -57,8 +58,9 @@ public abstract class NoiseBasedChunkGeneratorMixin {
 
         NoiseGeneratorSettings generatorSettings = this.settings.value();
         BlockState defaultBlock = generatorSettings.defaultBlock();
-        DensitySampler.Bound finalDensity = noiseChunk.cachingSamplers()
-                .get(generatorSettings.noiseRouter().finalDensity());
+        net.minecraft.world.level.levelgen.densityfunction.DensityFunction finalDensityFunction =
+                generatorSettings.noiseRouter().finalDensity();
+        DensitySampler.Bound finalDensity = noiseChunk.cachingSamplers().get(finalDensityFunction);
 
         boolean profile = WorldgenMetrics.enabled();
         if (profile) {
@@ -74,7 +76,17 @@ public abstract class NoiseBasedChunkGeneratorMixin {
         long aquiferCallsSkipped = 0L;
 
         try {
-            try (ScopedDensityBuffer densityBuffer = finalDensity.sampleVolume(volume)) {
+            ScopedDensityBuffer sampledDensity = NativeDensityGraphCompiler.trySampleVolume(
+                    finalDensityFunction, finalDensity, noiseChunk, volume);
+            if (sampledDensity == null) {
+                if (Boolean.getBoolean("jpe.nativeDensityGraphStrict")) {
+                    throw new IllegalStateException(
+                            "Strict native density graph mode blocked vanilla density fallback"
+                    );
+                }
+                sampledDensity = finalDensity.sampleVolume(volume);
+            }
+            try (ScopedDensityBuffer densityBuffer = sampledDensity) {
             if (profile) {
                 densityNanos = System.nanoTime() - densityStart;
                 fillStart = System.nanoTime();

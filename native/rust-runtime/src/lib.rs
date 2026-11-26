@@ -6,7 +6,7 @@ use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-const ABI_VERSION: u32 = 6;
+const ABI_VERSION: u32 = 7;
 const STATUS_OK: i32 = 0;
 const STATUS_INVALID_ARGUMENT: i32 = 1;
 const STATUS_CPP_FAILURE: i32 = 2;
@@ -21,7 +21,6 @@ const QUEUE_CAPACITY: usize = 16;
 const MAX_TRACKED_JOBS: usize = 32;
 
 #[repr(C)]
-#[repr(C)]
 #[derive(Clone, Copy)]
 struct JpeDensityNode {
     opcode: u32,
@@ -29,7 +28,11 @@ struct JpeDensityNode {
     input_b: u32,
     reserved: u32,
     immediate: f64,
+    auxiliary: f64,
+    tertiary: f64,
 }
+
+const _: [(); 40] = [(); std::mem::size_of::<JpeDensityNode>()];
 
 const DENSITY_NO_INPUT: u32 = u32::MAX;
 const DENSITY_CONST: u32 = 1;
@@ -38,6 +41,9 @@ const DENSITY_Y: u32 = 3;
 const DENSITY_Z: u32 = 4;
 const DENSITY_ADD: u32 = 5;
 const DENSITY_MUL: u32 = 6;
+const DENSITY_SUB: u32 = 8;
+const DENSITY_ABS: u32 = 12;
+const DENSITY_CLAMP: u32 = 22;
 
 unsafe extern "C" {
     fn jpe_runtime_density_graph_compile(
@@ -51,9 +57,18 @@ unsafe extern "C" {
         step_x: i32, step_y: i32, step_z: i32,
         output: *mut f64, output_length: u64,
     ) -> i32;
+    fn jpe_runtime_density_graph_evaluate_f32(
+        graph_handle: u64,
+        size_x: u32, size_y: u32, size_z: u32,
+        min_x: i32, min_y: i32, min_z: i32,
+        step_x: i32, step_y: i32, step_z: i32,
+        output: *mut f32, output_length: u64,
+    ) -> i32;
     fn jpe_runtime_density_graph_release(graph_handle: u64) -> i32;
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
 pub struct JpePerlinLayer {
     pub permutation: *const u8,
     pub offset_x: f64,
@@ -65,6 +80,15 @@ pub struct JpePerlinLayer {
 }
 
 unsafe extern "C" {
+    fn jpe_cpp_perlin_stack_prepare(layers: *const JpePerlinLayer, layer_count: u32) -> u64;
+    fn jpe_cpp_perlin_stack_evaluate(
+        handle: u64, xz_scale: f64, y_scale: f64, amplitude: f32,
+        size_x: u32, size_y: u32, size_z: u32,
+        min_x: i32, min_y: i32, min_z: i32,
+        step_x: i32, step_y: i32, step_z: i32,
+        output: *mut f32, output_length: u64, flags: u32,
+    ) -> i32;
+    fn jpe_cpp_perlin_stack_release(handle: u64) -> i32;
     fn jpe_cpp_perlin_add_stack_fused(
         layers: *const JpePerlinLayer, layer_count: u32,
         size_x: u32, size_y: u32, size_z: u32,
@@ -126,6 +150,59 @@ unsafe extern "C" {
         xz_scale: f64, y_scale: f64, amplitude: f32,
         output: *mut f32, output_length: u64, flags: u32,
     ) -> i32;
+}
+
+
+/// Copies immutable layer permutations and base octave parameters into a native
+/// prepared plan. The caller may release its source descriptors immediately.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_prepare_perlin_stack(
+    layers: *const JpePerlinLayer, layer_count: u32,
+) -> u64 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if layers.is_null() || layer_count == 0 || layer_count > 64 { return 0; }
+        let descriptors = unsafe { slice::from_raw_parts(layers, layer_count as usize) };
+        if descriptors.iter().any(|layer| layer.permutation.is_null()) { return 0; }
+        unsafe { jpe_cpp_perlin_stack_prepare(layers, layer_count) }
+    })).unwrap_or(0)
+}
+
+/// Evaluates a prepared stack. No layer descriptors or permutation arrays cross
+/// the language boundary on this per-volume path.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_evaluate_prepared_perlin_stack(
+    handle: u64, xz_scale: f64, y_scale: f64, amplitude: f32,
+    size_x: u32, size_y: u32, size_z: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    step_x: i32, step_y: i32, step_z: i32,
+    output: *mut f32, output_length: u64, flags: u32,
+) -> i32 {
+    if handle == 0 || output.is_null() || size_x == 0 || size_y == 0 || size_z == 0
+        || step_x == 0 || step_y == 0 || step_z == 0 { return STATUS_INVALID_ARGUMENT; }
+    let expected = match (size_x as u64).checked_mul(size_y as u64)
+        .and_then(|n| n.checked_mul(size_z as u64)) {
+        Some(value) => value, None => return STATUS_INVALID_ARGUMENT,
+    };
+    if expected != output_length || expected > MAX_VOLUME_ELEMENTS as u64 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        jpe_cpp_perlin_stack_evaluate(handle, xz_scale, y_scale, amplitude,
+            size_x, size_y, size_z, min_x, min_y, min_z,
+            step_x, step_y, step_z, output, output_length, flags)
+    })) {
+        Ok(STATUS_OK) => STATUS_OK,
+        Ok(code) => code,
+        Err(_) => STATUS_RUST_PANIC,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn jpe_runtime_release_prepared_perlin_stack(handle: u64) -> i32 {
+    match catch_unwind(AssertUnwindSafe(|| unsafe { jpe_cpp_perlin_stack_release(handle) })) {
+        Ok(code) => code,
+        Err(_) => STATUS_RUST_PANIC,
+    }
 }
 
 struct JobState {
@@ -533,15 +610,15 @@ mod tests {
     fn density_graph_compiles_caches_and_evaluates_a_full_volume() {
         let nodes = [
             JpeDensityNode { opcode: DENSITY_X, input_a: DENSITY_NO_INPUT,
-                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: DENSITY_Y, input_a: DENSITY_NO_INPUT,
-                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 2.0 },
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 2.0 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: DENSITY_ADD, input_a: 0,
-                input_b: 2, reserved: 0, immediate: 0.0 },
+                input_b: 2, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: DENSITY_MUL, input_a: 3,
-                input_b: 1, reserved: 0, immediate: 0.0 },
+                input_b: 1, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
         ];
         let first = unsafe {
             jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 0x1234)
@@ -582,9 +659,9 @@ mod tests {
     fn density_graph_rejects_forward_references_and_bad_volumes() {
         let invalid = [
             JpeDensityNode { opcode: DENSITY_ADD, input_a: 1,
-                input_b: 0, reserved: 0, immediate: 0.0 },
+                input_b: 0, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
             JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
-                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 },
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 , auxiliary: 0.0, tertiary: 0.0},
         ];
         assert_eq!(unsafe {
             jpe_runtime_density_graph_compile(invalid.as_ptr(), 2, 0, 7)
@@ -592,7 +669,7 @@ mod tests {
 
         let valid = [JpeDensityNode { opcode: DENSITY_CONST,
             input_a: DENSITY_NO_INPUT, input_b: DENSITY_NO_INPUT,
-            reserved: 0, immediate: 1.0 }];
+            reserved: 0, immediate: 1.0 , auxiliary: 0.0, tertiary: 0.0}];
         let handle = unsafe {
             jpe_runtime_density_graph_compile(valid.as_ptr(), 1, 0, 7)
         };
@@ -608,7 +685,7 @@ mod tests {
     }
 
     #[test]
-    fn exports_expected_abi_version() { assert_eq!(jpe_runtime_abi_version(), 6); }
+    fn exports_expected_abi_version() { assert_eq!(jpe_runtime_abi_version(), 7); }
 
     #[test]
     fn worker_configuration_is_idempotent_after_scheduler_start() {
@@ -1497,6 +1574,634 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn density_graph_executes_prepared_perlin_as_a_volume_node_and_retains_it() {
+        let permutation: [u8; 256] = std::array::from_fn(|i| ((i * 37 + 11) & 255) as u8);
+        let layer = JpePerlinLayer {
+            permutation: permutation.as_ptr(),
+            offset_x: 0.13, offset_y: -0.17, offset_z: 0.23,
+            xz_scale: 0.375, y_scale: 0.625, amplitude: 0.75,
+        };
+        let stack = unsafe { jpe_runtime_prepare_perlin_stack(&layer, 1) };
+        assert_ne!(stack, 0);
+
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.125 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: 7, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0.875_f32.to_bits(),
+                immediate: stack as f64 , auxiliary: f64::from_bits(0x3fb999999999999b),
+                tertiary: f64::from_bits(0x3fc9999999999999)},
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 0, input_b: 1,
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 2, 0xD3517A)
+        };
+        assert_ne!(graph, 0);
+
+        // The compiled graph owns a retained native stack reference.
+        assert_eq!(jpe_runtime_release_prepared_perlin_stack(stack), STATUS_OK);
+        let mut actual = [0.0_f64; 24];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                graph, 2, 3, 4, -3, -5, 7, 1, 2, 1,
+                actual.as_mut_ptr(), actual.len() as u64,
+            )
+        }, STATUS_OK);
+
+        let sampler_xz = f64::from_bits(0x3fb999999999999b);
+        let sampler_y = f64::from_bits(0x3fc9999999999999);
+        let mut expected = [0.0_f32; 24];
+        let direct_layer = JpePerlinLayer {
+            xz_scale: layer.xz_scale * sampler_xz,
+            y_scale: layer.y_scale * sampler_y,
+            amplitude: layer.amplitude * 0.875,
+            ..layer
+        };
+        assert_eq!(unsafe {
+            jpe_runtime_perlin_add_stack(
+                &direct_layer, 1, 2, 3, 4, -3, -5, 7, 1, 2, 1,
+                expected.as_mut_ptr(), expected.len() as u64, 0,
+            )
+        }, STATUS_OK);
+        for (actual, expected) in actual.iter().zip(expected.iter()) {
+            assert_eq!(*actual, (*expected as f64) + 0.125);
+        }
+
+        let mut actual_f32 = [0.0_f32; 24];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph, 2, 3, 4, -3, -5, 7, 1, 2, 1,
+                actual_f32.as_mut_ptr(), actual_f32.len() as u64,
+            )
+        }, STATUS_OK);
+        for (actual, expected) in actual_f32.iter().zip(expected.iter()) {
+            assert_eq!(*actual, *expected + 0.125);
+        }
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
+    fn density_graph_f32_preserves_single_precision_intermediate_rounding() {
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 16_777_216.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 0, input_b: 1,
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -16_777_216.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 2, input_b: 3,
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 0xF32_263)
+        };
+        assert_ne!(graph, 0);
+
+        let mut output = [f32::NAN; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph, 2, 2, 1, 0, 0, 0, 1, 1, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(output, [0.0; 4]);
+
+        let mut double_output = [f64::NAN; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                graph, 2, 2, 1, 0, 0, 0, 1, 1, 1,
+                double_output.as_mut_ptr(), double_output.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(double_output, [1.0; 4]);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
+    fn density_graph_f32_preserves_nan_and_signed_zero_for_min_max_sign() {
+        let cases: [([JpeDensityNode; 3], u32, fn(f32) -> bool); 3] = [
+            ([
+                JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: f64::NAN , auxiliary: 0.0, tertiary: 0.0},
+                JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 , auxiliary: 0.0, tertiary: 0.0},
+                JpeDensityNode { opcode: 10, input_a: 0, input_b: 1, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            ], 2, |v| v.is_nan()),
+            ([
+                JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+                JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -0.0 , auxiliary: 0.0, tertiary: 0.0},
+                JpeDensityNode { opcode: 11, input_a: 0, input_b: 1, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            ], 2, |v| v == 0.0 && !v.is_sign_negative()),
+            ([
+                JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -0.0 , auxiliary: 0.0, tertiary: 0.0},
+                JpeDensityNode { opcode: 20, input_a: 0, input_b: DENSITY_NO_INPUT,
+                    reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+                JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            ], 1, |v| v == 0.0 && v.is_sign_negative()),
+        ];
+        for (nodes, root, check) in cases {
+            let graph = unsafe {
+                jpe_runtime_density_graph_compile(
+                    nodes.as_ptr(), nodes.len() as u32, root, 0xF32_264 + root as u64,
+                )
+            };
+            assert_ne!(graph, 0);
+            let mut output = [1.0_f32; 1];
+            assert_eq!(unsafe {
+                jpe_runtime_density_graph_evaluate_f32(
+                    graph, 1, 1, 1, 0, 0, 0, 1, 1, 1,
+                    output.as_mut_ptr(), 1,
+                )
+            }, STATUS_OK);
+            assert!(check(output[0]), "unexpected f32 native value: {:?}", output[0]);
+            assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+        }
+    }
+
+    #[test]
+    fn density_graph_f32_executes_round_floor_multiple_and_log() {
+        let round_nodes = [
+            JpeDensityNode { opcode: 2, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 2.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: 28, input_a: 0, input_b: 1,
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+        ];
+        let round_graph = unsafe {
+            jpe_runtime_density_graph_compile(round_nodes.as_ptr(), round_nodes.len() as u32, 2, 0xF32_270)
+        };
+        assert_ne!(round_graph, 0);
+        let mut rounded = [f32::NAN; 2];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                round_graph, 2, 1, 1, -1, 0, 0, 3, 1, 1,
+                rounded.as_mut_ptr(), rounded.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(rounded, [-2.0, 2.0]);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(round_graph) }, STATUS_OK);
+
+        let e = std::f32::consts::E;
+        let log_nodes = [
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: e as f64 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: 29, input_a: 0, input_b: DENSITY_NO_INPUT,
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+        ];
+        let log_graph = unsafe {
+            jpe_runtime_density_graph_compile(log_nodes.as_ptr(), log_nodes.len() as u32, 1, 0xF32_271)
+        };
+        assert_ne!(log_graph, 0);
+        let mut logged = [f32::NAN; 1];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                log_graph, 1, 1, 1, 0, 0, 0, 1, 1, 1,
+                logged.as_mut_ptr(), 1,
+            )
+        }, STATUS_OK);
+        assert_eq!(logged[0], (e as f64).ln() as f32);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(log_graph) }, STATUS_OK);
+    }
+
+    #[test]
+    fn density_graph_f32_executes_all_distance_metrics() {
+        let expected = [4.0_f32, 5.0_f32, 25.0_f32, 7.0_f32];
+        for metric in 0..4_u32 {
+            let nodes = [JpeDensityNode {
+                opcode: 30,
+                input_a: metric,
+                input_b: DENSITY_NO_INPUT,
+                reserved: 0,
+                immediate: 3.0,
+                auxiliary: 4.0,
+                tertiary: 0.0,
+            }];
+            let graph = unsafe {
+                jpe_runtime_density_graph_compile(
+                    nodes.as_ptr(), nodes.len() as u32, 0, 0xF32_272 + metric as u64,
+                )
+            };
+            assert_ne!(graph, 0, "distance metric {} graph rejected", metric);
+            let mut output = [f32::NAN; 1];
+            assert_eq!(unsafe {
+                jpe_runtime_density_graph_evaluate_f32(
+                    graph, 1, 1, 1, 0, 0, 0, 1, 1, 1,
+                    output.as_mut_ptr(), 1,
+                )
+            }, STATUS_OK);
+            assert_eq!(output[0], expected[metric as usize], "metric {}", metric);
+            assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+        }
+    }
+
+    #[test]
+    fn density_graph_distance_to_point_preserves_negative_chunk_coordinates_and_volume_order() {
+        let nodes = [JpeDensityNode {
+            opcode: 30,
+            input_a: 3, // Manhattan
+            input_b: DENSITY_NO_INPUT,
+            reserved: 0,
+            immediate: 0.0,
+            auxiliary: 0.0,
+            tertiary: 0.0,
+        }];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), 1, 0, 0xD157_A11CE)
+        };
+        assert_ne!(graph, 0);
+        let mut output = [f32::NAN; 8];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph, 2, 2, 2, -1, -1, -1, 1, 1, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        // Native density-volume layout is z, then x, then y.
+        assert_eq!(output, [3.0, 2.0, 2.0, 1.0, 2.0, 1.0, 1.0, 0.0]);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
+    fn density_graph_f32_executes_multi_threshold_interval_select() {
+        let nodes = [
+            JpeDensityNode { opcode: 2, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 10.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 20.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -10.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: 27, input_a: 0, input_b: 2,
+                reserved: 3, immediate: f64::NEG_INFINITY, auxiliary: 1.0, tertiary: 0.0},
+            JpeDensityNode { opcode: 27, input_a: 0, input_b: 1,
+                reserved: 4, immediate: f64::NEG_INFINITY, auxiliary: 0.0, tertiary: 0.0},
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 5, 0xF32_269)
+        };
+        assert_ne!(graph, 0);
+        let mut output = [f32::NAN; 3];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph, 3, 1, 1, -1, 0, 0, 1, 1, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(output, [10.0, 20.0, -10.0]);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
+    fn density_graph_f32_executes_range_choice_with_exclusive_upper_bound() {
+        let nodes = [
+            JpeDensityNode { opcode: 2, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 10.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -10.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: 27, input_a: 0, input_b: 3,
+                reserved: 4, immediate: 0.0 , auxiliary: 1.0, tertiary: 0.0},
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 5, 0xF32_268)
+        };
+        assert_ne!(graph, 0);
+        let mut output = [f32::NAN; 2];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph, 2, 1, 1, 0, 0, 0, 1, 1, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(output, [10.0, -10.0]);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
+    fn density_graph_f32_interpolates_corner_volume_across_exact_cell_boundary() {
+        let nodes = [
+            JpeDensityNode { opcode: 2, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: 3, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: 4, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 2.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 3.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_MUL, input_a: 1, input_b: 3,
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_MUL, input_a: 2, input_b: 4,
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 0, input_b: 5,
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 7, input_b: 6,
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: 26, input_a: 8, input_b: 4,
+                reserved: 4, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 9, 0xF32_267)
+        };
+        assert_ne!(graph, 0);
+        let mut output = [f32::NAN; 75];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph, 5, 3, 5, 0, 0, 0, 1, 1, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        let mut index = 0;
+        for z in 0..5 {
+            for x in 0..5 {
+                for y in 0..3 {
+                    assert_eq!(output[index], (x + 2 * y + 3 * z) as f32);
+                    index += 1;
+                }
+            }
+        }
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
+    fn density_graph_f32_executes_lerp_and_squeeze() {
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.25 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.5 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: 24, input_a: 0, input_b: 1,
+                reserved: 2, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: 23, input_a: 3, input_b: DENSITY_NO_INPUT,
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 0xF32_265)
+        };
+        assert_ne!(graph, 0);
+        let mut output = [f32::NAN; 2];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph, 2, 1, 1, 0, 0, 0, 1, 1, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        let lerped = 0.5_f32 + 0.25_f32 * (1.0_f32 - 0.5_f32);
+        let expected = (lerped * 0.5_f32 - (lerped * lerped * lerped) / 24.0_f32).clamp(-1.0, 1.0);
+        assert_eq!(output, [expected; 2]);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
+    fn density_graph_f32_executes_clamped_axis_gradient() {
+        let nodes = [
+            JpeDensityNode { opcode: 25, input_a: 1, input_b: 0,
+                reserved: 0.0_f32.to_bits(), immediate: -64.0 , auxiliary: -40.0, tertiary: 1.0},
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 0, 0xF32_266)
+        };
+        assert_ne!(graph, 0);
+        let mut output = [f32::NAN; 3];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph, 1, 3, 1, 0, -64, 0, 1, 12, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(output, [0.0, 0.5, 1.0]);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
+    fn density_graph_f32_executes_repeat_and_mirrored_repeat_gradients() {
+        let expected = [
+            (1_u32, [0.75_f32, 0.0, 0.25, 0.5, 0.75, 0.0, 0.25, 0.5, 0.75, 0.0, 0.25]),
+            (2_u32, [0.25_f32, 0.0, 0.25, 0.5, 0.75, 1.0, 0.75, 0.5, 0.25, 0.0, 0.25]),
+        ];
+        for (tiling, values) in expected {
+            let nodes = [JpeDensityNode {
+                opcode: 25,
+                input_a: 0, // X axis
+                input_b: tiling,
+                reserved: 0.0_f32.to_bits(),
+                immediate: 0.0,
+                auxiliary: 4.0,
+                tertiary: 1.0,
+            }];
+            let graph = unsafe {
+                jpe_runtime_density_graph_compile(
+                    nodes.as_ptr(), 1, 0, 0x6AAD_0000 + tiling as u64,
+                )
+            };
+            assert_ne!(graph, 0);
+            let mut output = [f32::NAN; 11];
+            assert_eq!(unsafe {
+                jpe_runtime_density_graph_evaluate_f32(
+                    graph, 11, 1, 1, -1, 0, 0, 1, 1, 1,
+                    output.as_mut_ptr(), output.len() as u64,
+                )
+            }, STATUS_OK);
+            assert_eq!(output, values, "tiling mode {}", tiling);
+            assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+        }
+    }
+
+    #[test]
+    fn density_graph_f32_gradient_matches_java_for_descending_ranges() {
+        let cases = [
+            (0_u32, [1.0_f32, 1.0, 0.75, 0.5, 0.25, 0.0, 0.0]),
+            (1_u32, [0.25_f32, 0.0, 0.75, 0.5, 0.25, 0.0, 0.75]),
+            (2_u32, [0.75_f32, 1.0, 0.75, 0.5, 0.25, 0.0, 0.25]),
+        ];
+        for (tiling, expected) in cases {
+            let nodes = [JpeDensityNode {
+                opcode: 25,
+                input_a: 0, // X axis
+                input_b: tiling,
+                reserved: 0.0_f32.to_bits(),
+                immediate: 4.0,
+                auxiliary: 0.0,
+                tertiary: 1.0,
+            }];
+            let graph = unsafe {
+                jpe_runtime_density_graph_compile(
+                    nodes.as_ptr(), 1, 0, 0x6AAD_1000 + tiling as u64,
+                )
+            };
+            assert_ne!(graph, 0);
+            let mut output = [f32::NAN; 7];
+            assert_eq!(unsafe {
+                jpe_runtime_density_graph_evaluate_f32(
+                    graph, 7, 1, 1, -1, 0, 0, 1, 1, 1,
+                    output.as_mut_ptr(), output.len() as u64,
+                )
+            }, STATUS_OK);
+            assert_eq!(output, expected, "descending gradient tiling mode {}", tiling);
+            assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+        }
+    }
+
+    #[test]
+    fn density_graph_f32_executes_round_with_per_voxel_multiple() {
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 5.5,
+                auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: 25, input_a: 0, input_b: 0,
+                reserved: 1.0_f32.to_bits(), immediate: 0.0,
+                auxiliary: 2.0, tertiary: 2.0 },
+            JpeDensityNode { opcode: 28, input_a: 0, input_b: 1,
+                reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 2, 0xF32_271)
+        };
+        assert_ne!(graph, 0);
+        let mut output = [f32::NAN; 3];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph, 3, 1, 1, 0, 0, 0, 1, 1, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(output, [5.0, 4.5, 4.0]);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
+    fn density_graph_recycles_buffers_for_unary_binary_and_clamp_nodes() {
+        let nodes = [
+            // This value has no consumers and must release its slot immediately.
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 999.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 2.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -3.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_SUB, input_a: 1, input_b: 2,
+                reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_ABS, input_a: 3,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            JpeDensityNode { opcode: DENSITY_CLAMP, input_a: 4,
+                input_b: 0.0_f32.to_bits(), reserved: 4.0_f32.to_bits(), immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 5, 0xD3517B)
+        };
+        assert_ne!(graph, 0);
+        let mut output = [0.0_f64; 24];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                graph, 2, 3, 4, -3, -5, 7, 1, 2, 1,
+                output.as_mut_ptr(), output.len() as u64,
+            )
+        }, STATUS_OK);
+        assert!(output.iter().all(|value| *value == 4.0));
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
+    fn density_graph_matches_java_nan_and_signed_zero_semantics() {
+        let cases: [([JpeDensityNode; 3], u32, fn(f64) -> bool); 3] = [
+            ([
+                JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: f64::NAN , auxiliary: 0.0, tertiary: 0.0},
+                JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 1.0 , auxiliary: 0.0, tertiary: 0.0},
+                JpeDensityNode { opcode: 10, input_a: 0, input_b: 1, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            ], 2, |v| v.is_nan()),
+            ([
+                JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+                JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -0.0 , auxiliary: 0.0, tertiary: 0.0},
+                JpeDensityNode { opcode: 11, input_a: 0, input_b: 1, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            ], 2, |v| v == 0.0 && !v.is_sign_negative()),
+            ([
+                JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: -0.0 , auxiliary: 0.0, tertiary: 0.0},
+                JpeDensityNode { opcode: 20, input_a: 0, input_b: DENSITY_NO_INPUT,
+                    reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+                JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                    input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 , auxiliary: 0.0, tertiary: 0.0},
+            ], 1, |v| v == 0.0 && v.is_sign_negative()),
+        ];
+        for (nodes, root, check) in cases {
+            let graph = unsafe {
+                jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, root, 0xD35180 + root as u64)
+            };
+            assert_ne!(graph, 0);
+            let mut output = [1.0_f64; 1];
+            assert_eq!(unsafe {
+                jpe_runtime_density_graph_evaluate(
+                    graph, 1, 1, 1, 0, 0, 0, 1, 1, 1,
+                    output.as_mut_ptr(), 1,
+                )
+            }, STATUS_OK);
+            assert!(check(output[0]), "unexpected native value: {:?}", output[0]);
+            assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+        }
+    }
+
+    #[test]
+    fn prepared_perlin_stack_matches_direct_stack_and_reuses_plan() {
+        let permutation_a: [u8; 256] = std::array::from_fn(|i| ((i * 13 + 7) & 255) as u8);
+        let permutation_b: [u8; 256] = std::array::from_fn(|i| ((i * 29 + 3) & 255) as u8);
+        let source = [
+            JpePerlinLayer { permutation: permutation_a.as_ptr(),
+                offset_x: 0.11, offset_y: 0.27, offset_z: 0.39,
+                xz_scale: 0.5, y_scale: 0.5, amplitude: 0.75 },
+            JpePerlinLayer { permutation: permutation_b.as_ptr(),
+                offset_x: -0.21, offset_y: 0.19, offset_z: 0.31,
+                xz_scale: 1.25, y_scale: 1.25, amplitude: -0.25 },
+        ];
+        let handle = unsafe { jpe_runtime_prepare_perlin_stack(source.as_ptr(), source.len() as u32) };
+        assert_ne!(handle, 0);
+        for (xz_scale, y_scale, amplitude) in [(0.8, 1.2, 0.75_f32), (1.1, 0.7, -0.25_f32)] {
+            let direct_layers = [
+                JpePerlinLayer { xz_scale: xz_scale * source[0].xz_scale,
+                    y_scale: y_scale * source[0].y_scale, amplitude: amplitude * source[0].amplitude,
+                    ..source[0] },
+                JpePerlinLayer { xz_scale: xz_scale * source[1].xz_scale,
+                    y_scale: y_scale * source[1].y_scale, amplitude: amplitude * source[1].amplitude,
+                    ..source[1] },
+            ];
+            let mut expected = [0.125_f32; 24];
+            let mut actual = expected;
+            assert_eq!(unsafe { jpe_runtime_perlin_add_stack(
+                direct_layers.as_ptr(), 2, 2, 3, 4, -3, -5, 7, 1, 2, 1,
+                expected.as_mut_ptr(), 24, 0
+            ) }, STATUS_OK);
+            assert_eq!(unsafe { jpe_runtime_evaluate_prepared_perlin_stack(
+                handle, xz_scale, y_scale, amplitude,
+                2, 3, 4, -3, -5, 7, 1, 2, 1,
+                actual.as_mut_ptr(), 24, 0
+            ) }, STATUS_OK);
+            assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
+        }
+        assert_eq!(jpe_runtime_release_prepared_perlin_stack(handle), STATUS_OK);
+        assert_eq!(jpe_runtime_release_prepared_perlin_stack(handle), 2);
     }
 
     #[test]

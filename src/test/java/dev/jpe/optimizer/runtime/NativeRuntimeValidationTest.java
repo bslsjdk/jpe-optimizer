@@ -9,6 +9,113 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class NativeRuntimeValidationTest {
     @Test
+    void densityGraphRoundAndLogDescriptorsEncodeOperationKinds() {
+        NativeRuntime.DensityNode round = NativeRuntime.DensityNode.round(1, 2, 3);
+        assertEquals(28, round.opcode());
+        assertEquals(1, round.inputA());
+        assertEquals(2, round.inputB());
+        assertEquals(3, round.reserved());
+
+        NativeRuntime.DensityNode log = NativeRuntime.DensityNode.log(4);
+        assertEquals(29, log.opcode());
+        assertEquals(4, log.inputA());
+    }
+
+    @Test
+    void distanceToPointDescriptorEncodesCoordinatesAndMetric() {
+        NativeRuntime.DensityNode node = NativeRuntime.DensityNode.distanceToPoint(-12, 64, 37, 2);
+        assertEquals(30, node.opcode());
+        assertEquals(2, node.inputA());
+        assertEquals(-1, node.inputB());
+        assertEquals(0, node.reserved());
+        assertEquals(-12.0D, node.immediate());
+        assertEquals(64.0D, node.auxiliary());
+        assertEquals(37.0D, node.tertiary());
+        assertThrows(IllegalArgumentException.class,
+                () -> NativeRuntime.DensityNode.distanceToPoint(0, 0, 0, 4));
+    }
+
+    @Test
+    void densityGraphIntervalSelectThresholdHelperUsesNegativeInfinityLowerBound() {
+        NativeRuntime.DensityNode node =
+                NativeRuntime.DensityNode.rangeChoiceBelow(0, 1.0F, 2, 3);
+        assertEquals(27, node.opcode());
+        assertEquals(0, node.inputA());
+        assertEquals(2, node.inputB());
+        assertEquals(3, node.reserved());
+        assertEquals(Double.NEGATIVE_INFINITY, node.immediate());
+        assertEquals(1.0D, node.auxiliary());
+    }
+
+    @Test
+    void densityGraphRangeChoiceEncodesThreeInputsAndFloatBounds() {
+        NativeRuntime.DensityNode node =
+                NativeRuntime.DensityNode.rangeChoice(1, -0.25F, 0.75F, 2, 3);
+        assertEquals(27, node.opcode());
+        assertEquals(1, node.inputA());
+        assertEquals(2, node.inputB());
+        assertEquals(3, node.reserved());
+        assertEquals(-0.25D, node.immediate());
+        assertEquals(0.75D, node.auxiliary());
+    }
+
+    @Test
+    void densityGraphLerpSqueezeAndGradientNodesEncodeTheirOperands() {
+        NativeRuntime.DensityNode lerp = NativeRuntime.DensityNode.lerp(2, 3, 4);
+        assertEquals(24, lerp.opcode());
+        assertEquals(2, lerp.inputA());
+        assertEquals(3, lerp.inputB());
+        assertEquals(4, lerp.reserved());
+
+        NativeRuntime.DensityNode squeeze = NativeRuntime.DensityNode.squeeze(7);
+        assertEquals(23, squeeze.opcode());
+        assertEquals(7, squeeze.inputA());
+
+        NativeRuntime.DensityNode gradient =
+                NativeRuntime.DensityNode.gradient(1, -64, -40, 0.0F, 1.0F);
+        assertEquals(25, gradient.opcode());
+        assertEquals(1, gradient.inputA());
+        assertEquals(0, gradient.inputB());
+        assertEquals(Float.floatToRawIntBits(0.0F), gradient.reserved());
+        assertEquals(-64.0D, gradient.immediate());
+        assertEquals(-40.0D, gradient.auxiliary());
+        assertEquals(1.0D, gradient.tertiary());
+    }
+
+    @Test
+    void densityGraphGradientEncodesAllTilingModes() {
+        for (int tiling = 0; tiling <= 2; tiling++) {
+            NativeRuntime.DensityNode node =
+                    NativeRuntime.DensityNode.gradient(1, tiling, -64, -40, 0.0F, 1.0F);
+            assertEquals(25, node.opcode());
+            assertEquals(1, node.inputA());
+            assertEquals(tiling, node.inputB());
+            assertEquals(Float.floatToRawIntBits(0.0F), node.reserved());
+            assertEquals(-64.0D, node.immediate());
+            assertEquals(-40.0D, node.auxiliary());
+            assertEquals(1.0D, node.tertiary());
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> NativeRuntime.DensityNode.gradient(0, 3, 0, 1, 0.0F, 1.0F));
+    }
+
+    @Test
+    void densityGraphPerlinNodePreservesDoublePrecisionScales() {
+        double xzScale = Math.nextUp(0.1D);
+        double yScale = Math.nextDown(0.2D);
+        NativeRuntime.DensityNode node =
+                NativeRuntime.DensityNode.perlinStack(17L, xzScale, yScale, 0.75F);
+
+        assertEquals(17L, (long) node.immediate());
+        assertEquals(Double.doubleToRawLongBits(xzScale),
+                Double.doubleToRawLongBits(node.auxiliary()));
+        assertEquals(Double.doubleToRawLongBits(yScale),
+                Double.doubleToRawLongBits(node.tertiary()));
+        assertEquals(-1, node.inputA());
+        assertEquals(-1, node.inputB());
+    }
+
+    @Test
     void acceptsValidPerlinStackAndPooledOutputBuffer() {
         int length = NativeRuntime.validatePerlinStackInputs(List.of(
                 new NativeRuntime.PerlinLayer(new byte[256], 0, 0, 0, 1, 1, 0.5F),
