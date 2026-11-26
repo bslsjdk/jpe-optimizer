@@ -2136,6 +2136,41 @@ mod tests {
     }
 
     #[test]
+    fn density_graph_axis_nodes_work_when_only_their_axis_is_prepared() {
+        let cases = [
+            (DENSITY_X, [-2.0_f32, -2.0, 2.0, 2.0, -2.0, -2.0, 2.0, 2.0]),
+            (DENSITY_Y, [5.0_f32, 7.0, 5.0, 7.0, 5.0, 7.0, 5.0, 7.0]),
+            (DENSITY_Z, [-3.0_f32, -3.0, -3.0, -3.0, 3.0, 3.0, 3.0, 3.0]),
+        ];
+        for (index, (opcode, expected)) in cases.into_iter().enumerate() {
+            let nodes = [JpeDensityNode {
+                opcode,
+                input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT,
+                reserved: 0,
+                immediate: 0.0,
+                auxiliary: 0.0,
+                tertiary: 0.0,
+            }];
+            let graph = unsafe {
+                jpe_runtime_density_graph_compile(
+                    nodes.as_ptr(), 1, 0, 0xA715_0000 + index as u64,
+                )
+            };
+            assert_ne!(graph, 0);
+            let mut output = [0.0_f32; 8];
+            assert_eq!(unsafe {
+                jpe_runtime_density_graph_evaluate_f32(
+                    graph, 2, 2, 2, -2, 5, -3, 4, 2, 6,
+                    output.as_mut_ptr(), output.len() as u64,
+                )
+            }, STATUS_OK);
+            assert_eq!(output, expected);
+            assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+        }
+    }
+
+    #[test]
     fn density_graph_f32_interpolates_corner_volume_across_exact_cell_boundary() {
         let nodes = [
             JpeDensityNode { opcode: 2, input_a: DENSITY_NO_INPUT,

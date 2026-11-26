@@ -58,6 +58,9 @@ struct CompiledGraph {
     std::vector<uint32_t> node_slots;
     uint32_t slot_count = 0;
     bool has_perlin = false;
+    bool needs_x_coordinates = false;
+    bool needs_y_coordinates = false;
+    bool needs_z_coordinates = false;
 
     ~CompiledGraph() {
         for (uint64_t handle : prepared_handles) {
@@ -323,6 +326,21 @@ extern "C" uint64_t jpe_runtime_density_graph_compile(
             }
         }
 
+        for (uint32_t i = 0; i <= root_node; ++i) {
+            if (reachable[i] == 0) continue;
+            switch (graph->nodes[i].opcode) {
+                case JPE_DENSITY_X: graph->needs_x_coordinates = true; break;
+                case JPE_DENSITY_Y: graph->needs_y_coordinates = true; break;
+                case JPE_DENSITY_Z: graph->needs_z_coordinates = true; break;
+                case kDistanceToPoint:
+                    graph->needs_x_coordinates = true;
+                    graph->needs_y_coordinates = true;
+                    graph->needs_z_coordinates = true;
+                    break;
+                default: break;
+            }
+        }
+
         graph->prepared_handles.assign(node_count, 0);
         for (uint32_t i = 0; i < node_count; ++i) {
             if (reachable[i] == 0
@@ -464,6 +482,7 @@ struct DensityEvaluationScratch {
     std::vector<int32_t> z_coordinates;
 
     void prepare(uint32_t slot_count, size_t volume, bool has_perlin,
+                 bool needs_x_coordinates, bool needs_y_coordinates, bool needs_z_coordinates,
                  uint32_t size_x, uint32_t size_y, uint32_t size_z,
                  int32_t min_x, int32_t min_y, int32_t min_z,
                  int32_t step_x, int32_t step_y, int32_t step_z) {
@@ -479,17 +498,29 @@ struct DensityEvaluationScratch {
             slots[i] = DensitySlotView<Scalar>{slot_data, volume};
         }
         if (has_perlin) perlin.resize(volume);
-        x_coordinates.resize(size_x);
-        y_coordinates.resize(size_y);
-        z_coordinates.resize(size_z);
-        for (uint32_t x = 0; x < size_x; ++x) {
-            x_coordinates[x] = wrapped_coordinate(min_x, x, step_x);
+        if (needs_x_coordinates) {
+            x_coordinates.resize(size_x);
+            for (uint32_t x = 0; x < size_x; ++x) {
+                x_coordinates[x] = wrapped_coordinate(min_x, x, step_x);
+            }
+        } else {
+            x_coordinates.clear();
         }
-        for (uint32_t y = 0; y < size_y; ++y) {
-            y_coordinates[y] = wrapped_coordinate(min_y, y, step_y);
+        if (needs_y_coordinates) {
+            y_coordinates.resize(size_y);
+            for (uint32_t y = 0; y < size_y; ++y) {
+                y_coordinates[y] = wrapped_coordinate(min_y, y, step_y);
+            }
+        } else {
+            y_coordinates.clear();
         }
-        for (uint32_t z = 0; z < size_z; ++z) {
-            z_coordinates[z] = wrapped_coordinate(min_z, z, step_z);
+        if (needs_z_coordinates) {
+            z_coordinates.resize(size_z);
+            for (uint32_t z = 0; z < size_z; ++z) {
+                z_coordinates[z] = wrapped_coordinate(min_z, z, step_z);
+            }
+        } else {
+            z_coordinates.clear();
         }
     }
 };
@@ -520,6 +551,7 @@ int32_t evaluate_density_graph_impl(
         const size_t volume = static_cast<size_t>(output_length);
         auto& scratch = density_evaluation_scratch<Scalar>(recursion_depth);
         scratch.prepare(graph->slot_count, volume, graph->has_perlin,
+                graph->needs_x_coordinates, graph->needs_y_coordinates, graph->needs_z_coordinates,
                 size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z);
         auto& slots = scratch.slots;
         auto& perlin_scratch = scratch.perlin;
@@ -539,7 +571,8 @@ int32_t evaluate_density_graph_impl(
                 case JPE_DENSITY_Z: {
                     size_t out = 0;
                     for (uint32_t z = 0; z < size_z; ++z) {
-                        const Scalar wz = static_cast<Scalar>(scratch.z_coordinates[z]);
+                        const Scalar wz = node.opcode == JPE_DENSITY_Z
+                        ? static_cast<Scalar>(scratch.z_coordinates[z]) : Scalar(0);
                         for (uint32_t x = 0; x < size_x; ++x) {
                             if (node.opcode == JPE_DENSITY_Y) {
                                 const auto& y = scratch.y_coordinates;
