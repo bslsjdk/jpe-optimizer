@@ -58,8 +58,13 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle aquiferGridCenters;
     private final MethodHandle aquiferNearestFour;
     private final MethodHandle aquiferSubstanceBatch;
+    private final MethodHandle aquiferStatusCacheCreate;
+    private final MethodHandle aquiferStatusCacheDestroy;
+    private final MethodHandle aquiferStatusCacheLookup;
+    private final MethodHandle aquiferStatusCacheInsert;
     private final ConcurrentHashMap<Long, java.util.concurrent.atomic.AtomicInteger> densityGraphHandles = new ConcurrentHashMap<>();
     private final java.util.Set<Long> preparedStackHandles = ConcurrentHashMap.newKeySet();
+    private final java.util.Set<Long> aquiferStatusCacheHandles = ConcurrentHashMap.newKeySet();
     private final MethodHandle jobStatus;
     private final MethodHandle waitJob;
     private final MethodHandle cancelJob;
@@ -151,6 +156,8 @@ public final class NativeRuntime implements AutoCloseable {
         private int inputCapacity, outputCapacity;
         private MemorySegment substanceInputs, substanceOutputs;
         private int substanceInputCapacity, substanceOutputCapacity;
+        private MemorySegment statusKeys, statusValues, statusFound;
+        private int statusCapacity;
         private final AtomicBoolean leased = new AtomicBoolean();
 
         private boolean tryAcquire() { return leased.compareAndSet(false, true); }
@@ -199,6 +206,19 @@ public final class NativeRuntime implements AutoCloseable {
             }
             return new MemorySegment[] {substanceInputs, substanceOutputs};
         }
+        private MemorySegment[] ensureStatusCapacity(int count) {
+            if (statusCapacity < count) {
+                int next = Math.max(128, statusCapacity);
+                while (next < count) next = Math.min(1_048_576, Math.multiplyExact(next, 2));
+                long keyBytes = Math.multiplyExact((long) next, ValueLayout.JAVA_LONG.byteSize());
+                long statusBytes = Math.multiplyExact((long) next, 8L);
+                statusKeys = arena.allocate(keyBytes, ValueLayout.JAVA_LONG.byteAlignment());
+                statusValues = arena.allocate(statusBytes, ValueLayout.JAVA_INT.byteAlignment());
+                statusFound = arena.allocate(next, ValueLayout.JAVA_BYTE.byteAlignment());
+                statusCapacity = next;
+            }
+            return new MemorySegment[] {statusKeys, statusValues, statusFound};
+        }
         @Override
         public void close() {
             if (leased.get()) throw new IllegalStateException("Cannot close a leased Aquifer scratch arena");
@@ -224,7 +244,9 @@ public final class NativeRuntime implements AutoCloseable {
                           MethodHandle releasePreparedStack,
                           MethodHandle graphCompile, MethodHandle graphEvaluate, MethodHandle graphEvaluateF32, MethodHandle graphRelease,
                           MethodHandle aquiferGridCenters, MethodHandle aquiferNearestFour,
-                          MethodHandle aquiferSubstanceBatch) {
+                          MethodHandle aquiferSubstanceBatch,
+                          MethodHandle aquiferStatusCacheCreate, MethodHandle aquiferStatusCacheDestroy,
+                          MethodHandle aquiferStatusCacheLookup, MethodHandle aquiferStatusCacheInsert) {
         this.configureWorkers = configureWorkers;
         this.workerCount = workerCount;
         this.addF32 = add;
@@ -242,6 +264,10 @@ public final class NativeRuntime implements AutoCloseable {
         this.aquiferGridCenters = aquiferGridCenters;
         this.aquiferNearestFour = aquiferNearestFour;
         this.aquiferSubstanceBatch = aquiferSubstanceBatch;
+        this.aquiferStatusCacheCreate = aquiferStatusCacheCreate;
+        this.aquiferStatusCacheDestroy = aquiferStatusCacheDestroy;
+        this.aquiferStatusCacheLookup = aquiferStatusCacheLookup;
+        this.aquiferStatusCacheInsert = aquiferStatusCacheInsert;
         this.jobStatus = status;
         this.waitJob = wait;
         this.cancelJob = cancel;
@@ -376,6 +402,26 @@ public final class NativeRuntime implements AutoCloseable {
                             FunctionDescriptor.of(ValueLayout.JAVA_INT,
                                     ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS)))
                     .orElse(null);
+            MethodHandle aquiferStatusCacheCreate = lookup.find("jpe_runtime_aquifer_status_cache_create")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT)))
+                    .orElse(null);
+            MethodHandle aquiferStatusCacheDestroy = lookup.find("jpe_runtime_aquifer_status_cache_destroy")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG)))
+                    .orElse(null);
+            MethodHandle aquiferStatusCacheLookup = lookup.find("jpe_runtime_aquifer_status_cache_lookup_batch")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS)))
+                    .orElse(null);
+            MethodHandle aquiferStatusCacheInsert = lookup.find("jpe_runtime_aquifer_status_cache_insert_batch")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                                    ValueLayout.JAVA_INT)))
+                    .orElse(null);
             if (graphCompile == null || graphEvaluate == null || graphRelease == null) {
                 graphCompile = null;
                 graphEvaluate = null;
@@ -404,7 +450,8 @@ public final class NativeRuntime implements AutoCloseable {
             return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, perlinStack, submit, submitStack, status, wait, cancel, release,
                     preparePreparedStack, evaluatePreparedStack, releasePreparedStack,
                     graphCompile, graphEvaluate, graphEvaluateF32, graphRelease, aquiferGridCenters, aquiferNearestFour,
-                    aquiferSubstanceBatch);
+                    aquiferSubstanceBatch, aquiferStatusCacheCreate, aquiferStatusCacheDestroy,
+                    aquiferStatusCacheLookup, aquiferStatusCacheInsert);
         } catch (Throwable failure) {
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
         }
@@ -620,6 +667,136 @@ public final class NativeRuntime implements AutoCloseable {
             lifecycle.readLock().unlock();
         }
         return new AquiferSubstanceBatch(hasBlockState, blockStateTypes, shouldSchedule);
+    }
+
+    public record AquiferStatusBatch(int[] fluidLevels, int[] fluidTypes, boolean[] found) {}
+
+    /** True when all native FluidStatus cache operations are exported by the loaded runtime. */
+    public boolean supportsAquiferStatusCache() {
+        return aquiferStatusCacheCreate != null && aquiferStatusCacheDestroy != null
+                && aquiferStatusCacheLookup != null && aquiferStatusCacheInsert != null;
+    }
+
+    /**
+     * Creates a fixed-capacity cache scoped to one NoiseBasedAquifer instance.
+     * Keys are packed BlockPos.asLong values for the corresponding aquifer cell centers.
+     */
+    public long createAquiferStatusCache(int maximumEntries) {
+        if (!supportsAquiferStatusCache()) {
+            throw new UnsupportedOperationException("Native runtime does not export Aquifer FluidStatus cache support");
+        }
+        if (maximumEntries <= 0 || maximumEntries > 1_048_576) {
+            throw new IllegalArgumentException("Aquifer FluidStatus cache capacity must be in [1, 1048576]");
+        }
+        lifecycle.readLock().lock();
+        try {
+            ensureOpen();
+            long handle = (long) aquiferStatusCacheCreate.invokeExact(maximumEntries);
+            if (handle == 0L) throw new IllegalStateException("Native Aquifer FluidStatus cache creation failed");
+            aquiferStatusCacheHandles.add(handle);
+            return handle;
+        } catch (Throwable failure) {
+            throw rethrow("Unable to create native Aquifer FluidStatus cache", failure);
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    /** Looks up many packed cell-center keys in one FFM call. Missing rows are marked found=false. */
+    public AquiferStatusBatch lookupAquiferStatuses(long handle, long[] keys) {
+        if (!supportsAquiferStatusCache()) {
+            throw new UnsupportedOperationException("Native runtime does not export Aquifer FluidStatus cache support");
+        }
+        Objects.requireNonNull(keys, "keys");
+        if (handle == 0L || !aquiferStatusCacheHandles.contains(handle)
+                || keys.length == 0 || keys.length > 1_048_576) {
+            throw new IllegalArgumentException("Invalid native Aquifer status-cache handle or lookup batch size");
+        }
+        int[] levels = new int[keys.length];
+        int[] types = new int[keys.length];
+        boolean[] found = new boolean[keys.length];
+        lifecycle.readLock().lock();
+        AquiferScratch scratch = null;
+        try {
+            ensureOpen();
+            scratch = acquireAquiferScratch();
+            MemorySegment[] buffers = scratch.ensureStatusCapacity(keys.length);
+            MemorySegment keyBuffer = buffers[0], statusBuffer = buffers[1], foundBuffer = buffers[2];
+            MemorySegment.copy(keys, 0, keyBuffer, ValueLayout.JAVA_LONG, 0, keys.length);
+            int status = (int) aquiferStatusCacheLookup.invokeExact(
+                    handle, keyBuffer, keys.length, statusBuffer, foundBuffer);
+            checkStatus(status, "aquifer-status-cache-lookup");
+            for (int i = 0; i < keys.length; i++) {
+                long base = (long) i * 8L;
+                levels[i] = statusBuffer.get(ValueLayout.JAVA_INT, base);
+                types[i] = statusBuffer.get(ValueLayout.JAVA_INT, base + 4L);
+                found[i] = foundBuffer.get(ValueLayout.JAVA_BYTE, i) != 0;
+            }
+        } catch (Throwable failure) {
+            throw rethrow("Unable to query native Aquifer FluidStatus cache", failure);
+        } finally {
+            if (scratch != null) scratch.release();
+            lifecycle.readLock().unlock();
+        }
+        return new AquiferStatusBatch(levels, types, found);
+    }
+
+    /**
+     * Inserts only missing entries in one FFM call. Existing keys are first-writer-wins,
+     * matching vanilla's compute-if-absent status-cache behavior.
+     */
+    public void insertAquiferStatuses(long handle, long[] keys, int[] fluidLevels, int[] fluidTypes) {
+        if (!supportsAquiferStatusCache()) {
+            throw new UnsupportedOperationException("Native runtime does not export Aquifer FluidStatus cache support");
+        }
+        Objects.requireNonNull(keys, "keys");
+        Objects.requireNonNull(fluidLevels, "fluidLevels");
+        Objects.requireNonNull(fluidTypes, "fluidTypes");
+        if (handle == 0L || !aquiferStatusCacheHandles.contains(handle)
+                || keys.length == 0 || keys.length > 1_048_576
+                || fluidLevels.length != keys.length || fluidTypes.length != keys.length) {
+            throw new IllegalArgumentException("Invalid Aquifer status-cache insert arrays or handle");
+        }
+        lifecycle.readLock().lock();
+        AquiferScratch scratch = null;
+        try {
+            ensureOpen();
+            scratch = acquireAquiferScratch();
+            MemorySegment[] buffers = scratch.ensureStatusCapacity(keys.length);
+            MemorySegment keyBuffer = buffers[0], statusBuffer = buffers[1];
+            MemorySegment.copy(keys, 0, keyBuffer, ValueLayout.JAVA_LONG, 0, keys.length);
+            for (int i = 0; i < keys.length; i++) {
+                long base = (long) i * 8L;
+                statusBuffer.set(ValueLayout.JAVA_INT, base, fluidLevels[i]);
+                statusBuffer.set(ValueLayout.JAVA_INT, base + 4L, fluidTypes[i]);
+            }
+            int status = (int) aquiferStatusCacheInsert.invokeExact(
+                    handle, keyBuffer, statusBuffer, keys.length);
+            checkStatus(status, "aquifer-status-cache-insert");
+        } catch (Throwable failure) {
+            throw rethrow("Unable to insert into native Aquifer FluidStatus cache", failure);
+        } finally {
+            if (scratch != null) scratch.release();
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    /** Destroys a cache created by this runtime. */
+    public void destroyAquiferStatusCache(long handle) {
+        lifecycle.readLock().lock();
+        try {
+            ensureOpen();
+            if (!aquiferStatusCacheHandles.contains(handle)) {
+                throw new IllegalArgumentException("Unknown native Aquifer FluidStatus cache handle");
+            }
+            int status = (int) aquiferStatusCacheDestroy.invokeExact(handle);
+            checkStatus(status, "aquifer-status-cache-destroy");
+            aquiferStatusCacheHandles.remove(handle);
+        } catch (Throwable failure) {
+            throw rethrow("Unable to destroy native Aquifer FluidStatus cache", failure);
+        } finally {
+            lifecycle.readLock().unlock();
+        }
     }
 
     private static int requestedNativeWorkers() {
@@ -1384,6 +1561,17 @@ public final class NativeRuntime implements AutoCloseable {
         PerlinScratch scratch;
         while ((scratch = perlinScratchArenas.poll()) != null) {
             scratch.close();
+        }
+        if (aquiferStatusCacheDestroy != null) {
+            for (Long handle : aquiferStatusCacheHandles) {
+                try {
+                    int status = (int) aquiferStatusCacheDestroy.invokeExact(handle.longValue());
+                    if (status != 0) throw new IllegalStateException("Aquifer status-cache destroy status=" + status);
+                } catch (Throwable failure) {
+                    throw rethrow("Unable to destroy Aquifer status cache during runtime close", failure);
+                }
+            }
+            aquiferStatusCacheHandles.clear();
         }
         AquiferScratch aquifer;
         while ((aquifer = aquiferScratchArenas.poll()) != null) {
