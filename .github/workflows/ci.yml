@@ -72,6 +72,31 @@ jobs:
           cargo test --manifest-path native/rust-runtime/Cargo.toml
           cargo build --release --manifest-path native/rust-runtime/Cargo.toml
 
+      - name: Verify native runtime exported C ABI symbols
+        run: |
+          library="native/rust-runtime/target/release/libjpe_runtime.so"
+          test -f "$library"
+          nm -D --defined-only "$library" | awk '{print $3}' | sort > build-native-export-symbols.txt
+          for symbol in \
+            jpe_runtime_density_graph_compile \
+            jpe_runtime_density_graph_evaluate_points \
+            jpe_runtime_density_graph_evaluate_points_f32 \
+            jpe_runtime_density_graph_evaluate_multi_points \
+            jpe_runtime_density_graph_evaluate_multi_points_f32 \
+            jpe_runtime_density_graph_evaluate \
+            jpe_runtime_density_graph_evaluate_f32 \
+            jpe_runtime_density_graph_release \
+            jpe_runtime_aquifer_compute_substance_batch \
+            jpe_runtime_aquifer_grid_centers \
+            jpe_runtime_aquifer_nearest_four; do
+            if ! grep -Fxq "$symbol" build-native-export-symbols.txt; then
+              echo "Missing exported native ABI symbol: $symbol"
+              cat build-native-export-symbols.txt
+              exit 1
+            fi
+          done
+          echo "All required density-graph and Aquifer C ABI symbols are exported."
+
       - name: Set up Gradle 9.2.1
         if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         uses: gradle/actions/setup-gradle@v4
@@ -101,7 +126,7 @@ jobs:
       - name: GameTest correctness suite
         if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         env:
-          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.perlinVectorEnabled=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=true -Djpe.nativePerlinEnabled=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphVerify=true -Djpe.paletteHashEnabled=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
+          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.perlinVectorEnabled=true -Djpe.structureIndexMetrics=true -Djpe.structureIndexEnabled=true -Djpe.nativePerlinEnabled=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphVerify=true -Djpe.nativeAquiferGridCentersEnabled=true -Djpe.nativeAquiferGridCentersStrict=true -Djpe.paletteHashEnabled=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
         run: |
           mkdir -p build/gametest
           set +e
@@ -117,7 +142,7 @@ jobs:
       - name: Real overworld native density graph parity (full chunk generation)
         if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         env:
-          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphVerify=true -Djpe.nativeDensityGraphStrict=true -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=22 -Djpe.worldgenMetrics=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
+          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphVerify=true -Djpe.nativeDensityGraphStrict=true -Djpe.nativeAquiferGridCentersEnabled=true -Djpe.nativeAquiferGridCentersStrict=true -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=22 -Djpe.worldgenMetrics=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
         run: |
           mkdir -p build/native-density-worldgen
           rm -rf run

@@ -35,33 +35,33 @@ struct JpeDensityNode {
 const _: [(); 40] = [(); std::mem::size_of::<JpeDensityNode>()];
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
-struct JpeAquiferFluidStatus {
-    fluid_level: i32,
-    fluid_type: u32,
+#[derive(Clone, Copy, Debug, Default)]
+pub struct JpeAquiferFluidStatus {
+    pub fluid_level: i32,
+    pub fluid_type: u32,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-struct JpeAquiferCoreInput {
-    block_y: i32,
-    density: f64,
-    barrier_noise: f32,
-    distance_sqr: [i32; 4],
-    closest: [JpeAquiferFluidStatus; 4],
-    global_fluid_below_type: u32,
-    air_type: u32,
-    water_type: u32,
-    lava_type: u32,
-    debug_disable_fluid_generation: u32,
+pub struct JpeAquiferCoreInput {
+    pub block_y: i32,
+    pub density: f64,
+    pub barrier_noise: f32,
+    pub distance_sqr: [i32; 4],
+    pub closest: [JpeAquiferFluidStatus; 4],
+    pub global_fluid_below_type: u32,
+    pub air_type: u32,
+    pub water_type: u32,
+    pub lava_type: u32,
+    pub debug_disable_fluid_generation: u32,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-struct JpeAquiferCoreOutput {
-    has_block_state: u32,
-    block_state_type: u32,
-    should_schedule_fluid_update: u32,
+pub struct JpeAquiferCoreOutput {
+    pub has_block_state: u32,
+    pub block_state_type: u32,
+    pub should_schedule_fluid_update: u32,
 }
 
 #[repr(C)]
@@ -99,34 +99,435 @@ const DENSITY_PERLIN_STACK_WARP: u32 = 31;
 const DENSITY_SLICE: u32 = 32;
 
 unsafe extern "C" {
-    fn jpe_runtime_density_graph_compile(
+    fn jpe_cpp_density_graph_compile(
         nodes: *const JpeDensityNode, node_count: u32, root_node: u32,
         configuration_fingerprint: u64,
     ) -> u64;
-    fn jpe_runtime_density_graph_evaluate(
+    fn jpe_cpp_density_graph_evaluate(
         graph_handle: u64,
         size_x: u32, size_y: u32, size_z: u32,
         min_x: i32, min_y: i32, min_z: i32,
         step_x: i32, step_y: i32, step_z: i32,
         output: *mut f64, output_length: u64,
     ) -> i32;
-    fn jpe_runtime_density_graph_evaluate_f32(
+    fn jpe_cpp_density_graph_evaluate_f32(
         graph_handle: u64,
         size_x: u32, size_y: u32, size_z: u32,
         min_x: i32, min_y: i32, min_z: i32,
         step_x: i32, step_y: i32, step_z: i32,
         output: *mut f32, output_length: u64,
     ) -> i32;
-    fn jpe_runtime_density_graph_release(graph_handle: u64) -> i32;
-    fn jpe_runtime_aquifer_compute_substance_core(
+    fn jpe_cpp_density_graph_release(graph_handle: u64) -> i32;
+    fn jpe_cpp_density_graph_evaluate_points(
+        graph_handle: u64,
+        point_x: *const i32, point_y: *const i32, point_z: *const i32,
+        point_count: u32, output: *mut f64, output_length: u64,
+    ) -> i32;
+    fn jpe_cpp_density_graph_evaluate_points_f32(
+        graph_handle: u64,
+        point_x: *const i32, point_y: *const i32, point_z: *const i32,
+        point_count: u32, output: *mut f32, output_length: u64,
+    ) -> i32;
+    fn jpe_cpp_density_graph_evaluate_multi_points(
+        graph_handles: *const u64, graph_count: u32,
+        point_x: *const i32, point_y: *const i32, point_z: *const i32,
+        points_per_graph: u32, output: *mut f64, output_length: u64,
+    ) -> i32;
+    fn jpe_cpp_density_graph_evaluate_multi_points_f32(
+        graph_handles: *const u64, graph_count: u32,
+        point_x: *const i32, point_y: *const i32, point_z: *const i32,
+        points_per_graph: u32, output: *mut f32, output_length: u64,
+    ) -> i32;
+    fn jpe_cpp_aquifer_compute_substance_core(
         input: *const JpeAquiferCoreInput,
         output: *mut JpeAquiferCoreOutput,
+    ) -> i32;
+    fn jpe_cpp_aquifer_compute_substance_batch(
+        inputs: *const JpeAquiferCoreInput,
+        count: u32,
+        outputs: *mut JpeAquiferCoreOutput,
     ) -> i32;
     fn jpe_runtime_aquifer_find_nearest_four(
         block_x: i32, block_y: i32, block_z: i32,
         candidates: *const JpeAquiferCellLocation, candidate_count: u32,
         output: *mut JpeAquiferNearestFour,
     ) -> i32;
+    fn jpe_cpp_aquifer_xoroshiro_offsets(
+        seed_lo: u64, seed_hi: u64,
+        grid_x: i32, grid_y: i32, grid_z: i32,
+        offset_x: *mut i32, offset_y: *mut i32, offset_z: *mut i32,
+    ) -> i32;
+    fn jpe_cpp_aquifer_legacy_offsets(
+        factory_seed: u64,
+        grid_x: i32, grid_y: i32, grid_z: i32,
+        offset_x: *mut i32, offset_y: *mut i32, offset_z: *mut i32,
+    ) -> i32;
+    fn jpe_cpp_aquifer_grid_centers(
+        random_mode: u32, seed_lo: u64, seed_hi: u64,
+        min_grid_x: i32, min_grid_y: i32, min_grid_z: i32,
+        grid_size_x: u32, grid_size_z: u32, cell_count: u32,
+        packed_locations: *mut u64,
+    ) -> i32;
+    fn jpe_cpp_aquifer_nearest_four(
+        random_mode: u32, seed_lo: u64, seed_hi: u64,
+        block_x: *const i32, block_y: *const i32, block_z: *const i32,
+        sample_count: u32,
+        center_x: *mut i32, center_y: *mut i32, center_z: *mut i32,
+        squared_distances: *mut i32,
+    ) -> i32;
+    fn jpe_cpp_aquifer_status_cache_create(maximum_entries: u32) -> u64;
+    fn jpe_cpp_aquifer_status_cache_destroy(handle: u64) -> i32;
+    fn jpe_cpp_aquifer_status_cache_lookup_batch(
+        handle: u64, keys: *const u64, count: u32,
+        statuses: *mut JpeAquiferFluidStatus, found: *mut u8,
+    ) -> i32;
+    fn jpe_cpp_aquifer_status_cache_insert_batch(
+        handle: u64, keys: *const u64,
+        statuses: *const JpeAquiferFluidStatus, count: u32,
+    ) -> i32;
+}
+
+/// Creates a fixed-capacity, per-Aquifer native FluidStatus cache.
+#[no_mangle]
+pub extern "C" fn jpe_runtime_aquifer_status_cache_create(maximum_entries: u32) -> u64 {
+    if maximum_entries == 0 || maximum_entries as usize > MAX_VOLUME_ELEMENTS {
+        return 0;
+    }
+    unsafe { jpe_cpp_aquifer_status_cache_create(maximum_entries) }
+}
+
+/// Destroys a native FluidStatus cache handle.
+#[no_mangle]
+pub extern "C" fn jpe_runtime_aquifer_status_cache_destroy(handle: u64) -> i32 {
+    if handle == 0 { return STATUS_INVALID_ARGUMENT; }
+    unsafe { jpe_cpp_aquifer_status_cache_destroy(handle) }
+}
+
+/// Looks up a batch of packed Aquifer cell-center keys.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_status_cache_lookup_batch(
+    handle: u64, keys: *const u64, count: u32,
+    statuses: *mut JpeAquiferFluidStatus, found: *mut u8,
+) -> i32 {
+    if handle == 0 || keys.is_null() || statuses.is_null() || found.is_null()
+        || count == 0 || count as usize > MAX_VOLUME_ELEMENTS {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe { jpe_cpp_aquifer_status_cache_lookup_batch(handle, keys, count, statuses, found) }
+}
+
+/// Inserts missing statuses. Existing keys are left unchanged (first-writer-wins).
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_status_cache_insert_batch(
+    handle: u64, keys: *const u64,
+    statuses: *const JpeAquiferFluidStatus, count: u32,
+) -> i32 {
+    if handle == 0 || keys.is_null() || statuses.is_null()
+        || count == 0 || count as usize > MAX_VOLUME_ELEMENTS {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe { jpe_cpp_aquifer_status_cache_insert_batch(handle, keys, statuses, count) }
+}
+
+/// Compiles and retains a density graph through the stable Rust cdylib ABI.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_compile(
+    nodes: *const JpeDensityNode,
+    node_count: u32,
+    root_node: u32,
+    configuration_fingerprint: u64,
+) -> u64 {
+    if nodes.is_null() || node_count == 0 || node_count > 65_536 || root_node >= node_count {
+        return 0;
+    }
+    unsafe {
+        jpe_cpp_density_graph_compile(nodes, node_count, root_node, configuration_fingerprint)
+    }
+}
+
+/// Evaluates a regular density volume using f64 intermediates.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate(
+    graph_handle: u64,
+    size_x: u32, size_y: u32, size_z: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    step_x: i32, step_y: i32, step_z: i32,
+    output: *mut f64, output_length: u64,
+) -> i32 {
+    if graph_handle == 0 || output.is_null()
+        || size_x == 0 || size_y == 0 || size_z == 0
+        || step_x == 0 || step_y == 0 || step_z == 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    let Some(length) = (size_x as u64)
+        .checked_mul(size_y as u64)
+        .and_then(|xy| xy.checked_mul(size_z as u64)) else {
+            return STATUS_INVALID_ARGUMENT;
+        };
+    if length > MAX_VOLUME_ELEMENTS as u64 || output_length != length {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_density_graph_evaluate(
+            graph_handle, size_x, size_y, size_z,
+            min_x, min_y, min_z, step_x, step_y, step_z,
+            output, output_length,
+        )
+    }
+}
+
+/// Evaluates a regular density volume using IEEE-754 f32 intermediates.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate_f32(
+    graph_handle: u64,
+    size_x: u32, size_y: u32, size_z: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    step_x: i32, step_y: i32, step_z: i32,
+    output: *mut f32, output_length: u64,
+) -> i32 {
+    if graph_handle == 0 || output.is_null()
+        || size_x == 0 || size_y == 0 || size_z == 0
+        || step_x == 0 || step_y == 0 || step_z == 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    let Some(length) = (size_x as u64)
+        .checked_mul(size_y as u64)
+        .and_then(|xy| xy.checked_mul(size_z as u64)) else {
+            return STATUS_INVALID_ARGUMENT;
+        };
+    if length > MAX_VOLUME_ELEMENTS as u64 || output_length != length {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_density_graph_evaluate_f32(
+            graph_handle, size_x, size_y, size_z,
+            min_x, min_y, min_z, step_x, step_y, step_z,
+            output, output_length,
+        )
+    }
+}
+
+/// Releases one retained compiled density graph reference.
+#[no_mangle]
+pub extern "C" fn jpe_runtime_density_graph_release(graph_handle: u64) -> i32 {
+    if graph_handle == 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe { jpe_cpp_density_graph_release(graph_handle) }
+}
+
+/// Evaluates a batch of non-grid-aligned density graph points through the Rust cdylib ABI.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate_points(
+    graph_handle: u64,
+    point_x: *const i32, point_y: *const i32, point_z: *const i32,
+    point_count: u32, output: *mut f64, output_length: u64,
+) -> i32 {
+    if graph_handle == 0 || point_x.is_null() || point_y.is_null() || point_z.is_null()
+        || output.is_null() || point_count == 0
+        || point_count as usize > MAX_VOLUME_ELEMENTS
+        || output_length != point_count as u64 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_density_graph_evaluate_points(
+            graph_handle, point_x, point_y, point_z, point_count, output, output_length,
+        )
+    }
+}
+
+/// f32 variant of the arbitrary-point density graph C ABI.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate_points_f32(
+    graph_handle: u64,
+    point_x: *const i32, point_y: *const i32, point_z: *const i32,
+    point_count: u32, output: *mut f32, output_length: u64,
+) -> i32 {
+    if graph_handle == 0 || point_x.is_null() || point_y.is_null() || point_z.is_null()
+        || output.is_null() || point_count == 0
+        || point_count as usize > MAX_VOLUME_ELEMENTS
+        || output_length != point_count as u64 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_density_graph_evaluate_points_f32(
+            graph_handle, point_x, point_y, point_z, point_count, output, output_length,
+        )
+    }
+}
+
+/// Evaluates multiple immutable density graphs over independent arbitrary-point batches.
+/// Coordinates and outputs use sampler-major [graph][point] order.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate_multi_points(
+    graph_handles: *const u64,
+    graph_count: u32,
+    point_x: *const i32, point_y: *const i32, point_z: *const i32,
+    points_per_graph: u32,
+    output: *mut f64,
+    output_length: u64,
+) -> i32 {
+    if graph_handles.is_null() || point_x.is_null() || point_y.is_null()
+        || point_z.is_null() || output.is_null()
+        || graph_count == 0 || graph_count > 64 || points_per_graph == 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    let Some(total) = (graph_count as u64).checked_mul(points_per_graph as u64) else {
+        return STATUS_INVALID_ARGUMENT;
+    };
+    if total > MAX_VOLUME_ELEMENTS as u64 || output_length != total {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_density_graph_evaluate_multi_points(
+            graph_handles, graph_count, point_x, point_y, point_z,
+            points_per_graph, output, output_length,
+        )
+    }
+}
+
+/// f32 version used by the Minecraft 26.3 density pipeline.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate_multi_points_f32(
+    graph_handles: *const u64,
+    graph_count: u32,
+    point_x: *const i32, point_y: *const i32, point_z: *const i32,
+    points_per_graph: u32,
+    output: *mut f32,
+    output_length: u64,
+) -> i32 {
+    if graph_handles.is_null() || point_x.is_null() || point_y.is_null()
+        || point_z.is_null() || output.is_null()
+        || graph_count == 0 || graph_count > 64 || points_per_graph == 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    let Some(total) = (graph_count as u64).checked_mul(points_per_graph as u64) else {
+        return STATUS_INVALID_ARGUMENT;
+    };
+    if total > MAX_VOLUME_ELEMENTS as u64 || output_length != total {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_density_graph_evaluate_multi_points_f32(
+            graph_handles, graph_count, point_x, point_y, point_z,
+            points_per_graph, output, output_length,
+        )
+    }
+}
+
+/// Runs the scalar Aquifer decision kernel. This wrapper is exported from the Rust cdylib.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_compute_substance_core(
+    input: *const JpeAquiferCoreInput,
+    output: *mut JpeAquiferCoreOutput,
+) -> i32 {
+    if input.is_null() || output.is_null() {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe { jpe_cpp_aquifer_compute_substance_core(input, output) }
+}
+
+/// Runs a complete Aquifer decision batch through one C ABI call.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_compute_substance_batch(
+    inputs: *const JpeAquiferCoreInput,
+    count: u32,
+    outputs: *mut JpeAquiferCoreOutput,
+) -> i32 {
+    if inputs.is_null() || outputs.is_null() || count == 0 || count as usize > MAX_VOLUME_ELEMENTS {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe { jpe_cpp_aquifer_compute_substance_batch(inputs, count, outputs) }
+}
+
+/// Returns the exact Minecraft 26.3 Aquifer positional offsets for XOROSHIRO mode.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_xoroshiro_offsets(
+    seed_lo: u64, seed_hi: u64,
+    grid_x: i32, grid_y: i32, grid_z: i32,
+    offset_x: *mut i32, offset_y: *mut i32, offset_z: *mut i32,
+) -> i32 {
+    if offset_x.is_null() || offset_y.is_null() || offset_z.is_null() {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_aquifer_xoroshiro_offsets(
+            seed_lo, seed_hi, grid_x, grid_y, grid_z,
+            offset_x, offset_y, offset_z,
+        )
+    }
+}
+
+/// Returns the exact Minecraft 26.3 Aquifer positional offsets for Legacy mode.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_legacy_offsets(
+    factory_seed: u64,
+    grid_x: i32, grid_y: i32, grid_z: i32,
+    offset_x: *mut i32, offset_y: *mut i32, offset_z: *mut i32,
+) -> i32 {
+    if offset_x.is_null() || offset_y.is_null() || offset_z.is_null() {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_aquifer_legacy_offsets(
+            factory_seed, grid_x, grid_y, grid_z,
+            offset_x, offset_y, offset_z,
+        )
+    }
+}
+
+/// Precomputes a packed Aquifer cell-location cache in vanilla x-fast, then z, then y order.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_grid_centers(
+    random_mode: u32, seed_lo: u64, seed_hi: u64,
+    min_grid_x: i32, min_grid_y: i32, min_grid_z: i32,
+    grid_size_x: u32, grid_size_z: u32, cell_count: u32,
+    packed_locations: *mut u64,
+) -> i32 {
+    if random_mode > 1 || grid_size_x == 0 || grid_size_z == 0
+        || cell_count == 0 || cell_count as usize > MAX_VOLUME_ELEMENTS
+        || packed_locations.is_null() {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    let Some(layer_size) = (grid_size_x as u64).checked_mul(grid_size_z as u64) else {
+        return STATUS_INVALID_ARGUMENT;
+    };
+    if layer_size == 0 || layer_size > cell_count as u64
+        || (cell_count as u64) % layer_size != 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_aquifer_grid_centers(
+            random_mode, seed_lo, seed_hi,
+            min_grid_x, min_grid_y, min_grid_z,
+            grid_size_x, grid_size_z, cell_count, packed_locations,
+        )
+    }
+}
+
+/// Computes each voxel's four nearest Aquifer centers and Java-int squared distances.
+/// Output arrays each contain sample_count * 4 entries in sample-major order.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_nearest_four(
+    random_mode: u32, seed_lo: u64, seed_hi: u64,
+    block_x: *const i32, block_y: *const i32, block_z: *const i32,
+    sample_count: u32,
+    center_x: *mut i32, center_y: *mut i32, center_z: *mut i32,
+    squared_distances: *mut i32,
+) -> i32 {
+    if random_mode > 1 || sample_count == 0 || sample_count as usize > MAX_VOLUME_ELEMENTS
+        || block_x.is_null() || block_y.is_null() || block_z.is_null()
+        || center_x.is_null() || center_y.is_null() || center_z.is_null()
+        || squared_distances.is_null() {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    unsafe {
+        jpe_cpp_aquifer_nearest_four(
+            random_mode, seed_lo, seed_hi,
+            block_x, block_y, block_z, sample_count,
+            center_x, center_y, center_z, squared_distances,
+        )
+    }
 }
 
 #[repr(C)]
@@ -676,6 +1077,294 @@ mod tests {
     use super::*;
 
     #[test]
+    fn aquifer_status_cache_batches_preserve_first_inserted_status() {
+        let handle = jpe_runtime_aquifer_status_cache_create(8);
+        assert_ne!(handle, 0);
+
+        let keys = [0_u64, 42, u64::MAX, 42];
+        let input = [
+            JpeAquiferFluidStatus { fluid_level: -64, fluid_type: 3 },
+            JpeAquiferFluidStatus { fluid_level: 80, fluid_type: 7 },
+            JpeAquiferFluidStatus { fluid_level: i32::MIN, fluid_type: u32::MAX },
+            // A duplicate must not overwrite the first cached FluidStatus.
+            JpeAquiferFluidStatus { fluid_level: 999, fluid_type: 99 },
+        ];
+
+        let mut before = [JpeAquiferFluidStatus { fluid_level: 123, fluid_type: 456 }; 4];
+        let mut found = [9_u8; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_status_cache_lookup_batch(
+                handle, keys.as_ptr(), keys.len() as u32,
+                before.as_mut_ptr(), found.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        assert_eq!(found, [0, 0, 0, 0]);
+        assert!(before.iter().all(|v| v.fluid_level == 123 && v.fluid_type == 456));
+
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_status_cache_insert_batch(
+                handle, keys.as_ptr(), input.as_ptr(), keys.len() as u32,
+            )
+        }, STATUS_OK);
+
+        let query_keys = [u64::MAX, 42, 0, 777];
+        let mut output = [JpeAquiferFluidStatus::default(); 4];
+        let mut found = [0_u8; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_status_cache_lookup_batch(
+                handle, query_keys.as_ptr(), query_keys.len() as u32,
+                output.as_mut_ptr(), found.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        assert_eq!(found, [1, 1, 1, 0]);
+        assert_eq!(output[0].fluid_level, i32::MIN);
+        assert_eq!(output[0].fluid_type, u32::MAX);
+        assert_eq!(output[1].fluid_level, 80);
+        assert_eq!(output[1].fluid_type, 7);
+        assert_eq!(output[2].fluid_level, -64);
+        assert_eq!(output[2].fluid_type, 3);
+
+        assert_eq!(jpe_runtime_aquifer_status_cache_destroy(handle), STATUS_OK);
+        assert_eq!(jpe_runtime_aquifer_status_cache_destroy(handle), STATUS_INVALID_ARGUMENT);
+        assert_eq!(jpe_runtime_aquifer_status_cache_create(0), 0);
+    }
+
+    #[test]
+    fn aquifer_status_cache_rejects_capacity_overflow_transactionally() {
+        let handle = jpe_runtime_aquifer_status_cache_create(3);
+        assert_ne!(handle, 0);
+        let keys = [10_u64, 11];
+        let statuses = [
+            JpeAquiferFluidStatus { fluid_level: 32, fluid_type: 1 },
+            JpeAquiferFluidStatus { fluid_level: 64, fluid_type: 2 },
+        ];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_status_cache_insert_batch(
+                handle, keys.as_ptr(), statuses.as_ptr(), 2,
+            )
+        }, STATUS_OK);
+
+        // Only one free slot remains. The two-key batch must not partially commit key 12.
+        let overflow_keys = [12_u64, 13];
+        let overflow_statuses = [
+            JpeAquiferFluidStatus { fluid_level: 96, fluid_type: 3 },
+            JpeAquiferFluidStatus { fluid_level: 128, fluid_type: 4 },
+        ];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_status_cache_insert_batch(
+                handle, overflow_keys.as_ptr(), overflow_statuses.as_ptr(), 2,
+            )
+        }, STATUS_CPP_FAILURE);
+
+        let query_keys = [10_u64, 11, 12, 13];
+        let mut output = [JpeAquiferFluidStatus::default(); 4];
+        let mut found = [0_u8; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_status_cache_lookup_batch(
+                handle, query_keys.as_ptr(), 4, output.as_mut_ptr(), found.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        assert_eq!(found, [1, 1, 0, 0]);
+        assert_eq!(jpe_runtime_aquifer_status_cache_destroy(handle), STATUS_OK);
+    }
+
+    #[test]
+    fn aquifer_xoroshiro_offsets_match_audited_reference_vectors() {
+        let cases = [
+            (0x0123_4567_89ab_cdef_u64, 0xfedc_ba98_7654_3210_u64, 1, 2, 3, [4, 0, 1]),
+            (0_u64, 0_u64, 0, 0, 0, [0, 2, 7]),
+            (0x9e37_79b9_7f4a_7c15_u64, 0x6a09_e667_f3bc_c909_u64, -17, -64, 33, [1, 1, 8]),
+            (123_456_789_u64, 987_654_321_u64, -2, -1, -3, [5, 7, 2]),
+        ];
+        for (seed_lo, seed_hi, x, y, z, expected) in cases {
+            let mut actual = [i32::MIN; 3];
+            assert_eq!(unsafe {
+                jpe_runtime_aquifer_xoroshiro_offsets(
+                    seed_lo, seed_hi, x, y, z,
+                    &mut actual[0], &mut actual[1], &mut actual[2],
+                )
+            }, STATUS_OK);
+            assert_eq!(actual, expected);
+        }
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_xoroshiro_offsets(
+                0, 0, 0, 0, 0,
+                std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            )
+        }, STATUS_INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn aquifer_legacy_offsets_match_audited_reference_vectors() {
+        let cases = [
+            (0x0123_4567_89ab_cdef_u64, 1, 2, 3, [3, 3, 1]),
+            (0_u64, 0, 0, 0, [0, 7, 9]),
+            (987_654_321_u64, -17, -64, 33, [0, 0, 3]),
+            (0x9e37_79b9_7f4a_7c15_u64, -2, -1, -3, [6, 1, 7]),
+        ];
+        for (seed, x, y, z, expected) in cases {
+            let mut actual = [i32::MIN; 3];
+            assert_eq!(unsafe {
+                jpe_runtime_aquifer_legacy_offsets(
+                    seed, x, y, z,
+                    &mut actual[0], &mut actual[1], &mut actual[2],
+                )
+            }, STATUS_OK);
+            assert_eq!(actual, expected);
+        }
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_legacy_offsets(
+                0, 0, 0, 0,
+                std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
+            )
+        }, STATUS_INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn aquifer_nearest_four_matches_independent_vanilla_candidate_order() {
+        let cases = [
+            (0_u32, 0x0123_4567_89ab_cdef_u64, 0xfedc_ba98_7654_3210_u64,
+                [0, 15, -1, -17], [-64, -1, 0, 23], [0, 15, -1, -33]),
+            (1_u32, 0x9e37_79b9_7f4a_7c15_u64, 0_u64,
+                [1, 16, -16, i32::MIN], [2, -13, 25, i32::MAX], [3, -17, 31, i32::MIN]),
+        ];
+        for (mode, seed_lo, seed_hi, xs, ys, zs) in cases {
+            let mut cx = [0_i32; 16];
+            let mut cy = [0_i32; 16];
+            let mut cz = [0_i32; 16];
+            let mut distances = [0_i32; 16];
+            assert_eq!(unsafe {
+                jpe_runtime_aquifer_nearest_four(
+                    mode, seed_lo, seed_hi,
+                    xs.as_ptr(), ys.as_ptr(), zs.as_ptr(), 4,
+                    cx.as_mut_ptr(), cy.as_mut_ptr(), cz.as_mut_ptr(), distances.as_mut_ptr(),
+                )
+            }, STATUS_OK);
+
+            for sample in 0..4 {
+                let anchor_x = xs[sample].wrapping_sub(5) >> 4;
+                let anchor_y = ys[sample].wrapping_add(1).div_euclid(12);
+                let anchor_z = zs[sample].wrapping_sub(5) >> 4;
+                let mut expected: Vec<(i32, i32, i32, i32)> = Vec::new();
+                for dx in 0..=1 {
+                    for dy in -1..=1 {
+                        for dz in 0..=1 {
+                            let gx = anchor_x.wrapping_add(dx);
+                            let gy = anchor_y.wrapping_add(dy);
+                            let gz = anchor_z.wrapping_add(dz);
+                            let mut offsets = [0_i32; 3];
+                            let status = unsafe {
+                                if mode == 0 {
+                                    jpe_runtime_aquifer_xoroshiro_offsets(
+                                        seed_lo, seed_hi, gx, gy, gz,
+                                        &mut offsets[0], &mut offsets[1], &mut offsets[2],
+                                    )
+                                } else {
+                                    jpe_runtime_aquifer_legacy_offsets(
+                                        seed_lo, gx, gy, gz,
+                                        &mut offsets[0], &mut offsets[1], &mut offsets[2],
+                                    )
+                                }
+                            };
+                            assert_eq!(status, STATUS_OK);
+                            let x = gx.wrapping_mul(16).wrapping_add(offsets[0]);
+                            let y = gy.wrapping_mul(12).wrapping_add(offsets[1]);
+                            let z = gz.wrapping_mul(16).wrapping_add(offsets[2]);
+                            let ddx = x.wrapping_sub(xs[sample]);
+                            let ddy = y.wrapping_sub(ys[sample]);
+                            let ddz = z.wrapping_sub(zs[sample]);
+                            let d = ddx.wrapping_mul(ddx)
+                                .wrapping_add(ddy.wrapping_mul(ddy))
+                                .wrapping_add(ddz.wrapping_mul(ddz));
+                            let at = expected.iter().position(|item| d <= item.3)
+                                .unwrap_or(expected.len());
+                            expected.insert(at, (x, y, z, d));
+                            if expected.len() > 4 { expected.pop(); }
+                        }
+                    }
+                }
+                for neighbor in 0..4 {
+                    let index = sample * 4 + neighbor;
+                    assert_eq!(
+                        (cx[index], cy[index], cz[index], distances[index]),
+                        expected[neighbor],
+                        "mode={mode} sample={sample} neighbor={neighbor}",
+                    );
+                }
+            }
+        }
+
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_nearest_four(
+                2, 0, 0, std::ptr::null(), std::ptr::null(), std::ptr::null(), 1,
+                std::ptr::null_mut(), std::ptr::null_mut(),
+                std::ptr::null_mut(), std::ptr::null_mut(),
+            )
+        }, STATUS_INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn aquifer_grid_center_cache_matches_random_offsets_and_vanilla_packing() {
+        const SIZE_X: u32 = 5;
+        const SIZE_Z: u32 = 5;
+        const SIZE_Y: u32 = 33;
+        const COUNT: usize = (SIZE_X * SIZE_Z * SIZE_Y) as usize;
+        for mode in 0..=1_u32 {
+            let seed_lo = 0x0123_4567_89ab_cdef_u64;
+            let seed_hi = 0xfedc_ba98_7654_3210_u64;
+            let min_x = -2;
+            let min_y = -17;
+            let min_z = 3;
+            let mut actual = vec![0_u64; COUNT];
+            assert_eq!(unsafe {
+                jpe_runtime_aquifer_grid_centers(
+                    mode, seed_lo, seed_hi, min_x, min_y, min_z,
+                    SIZE_X, SIZE_Z, COUNT as u32, actual.as_mut_ptr(),
+                )
+            }, STATUS_OK);
+
+            for index in 0..COUNT {
+                let x_index = (index as u32) % SIZE_X;
+                let z_index = ((index as u32) / SIZE_X) % SIZE_Z;
+                let y_index = (index as u32) / (SIZE_X * SIZE_Z);
+                let gx = min_x.wrapping_add(x_index as i32);
+                let gy = min_y.wrapping_add(y_index as i32);
+                let gz = min_z.wrapping_add(z_index as i32);
+                let mut offsets = [0_i32; 3];
+                let status = unsafe {
+                    if mode == 0 {
+                        jpe_runtime_aquifer_xoroshiro_offsets(
+                            seed_lo, seed_hi, gx, gy, gz,
+                            &mut offsets[0], &mut offsets[1], &mut offsets[2],
+                        )
+                    } else {
+                        jpe_runtime_aquifer_legacy_offsets(
+                            seed_lo, gx, gy, gz,
+                            &mut offsets[0], &mut offsets[1], &mut offsets[2],
+                        )
+                    }
+                };
+                assert_eq!(status, STATUS_OK);
+                let x = gx.wrapping_mul(16).wrapping_add(offsets[0]);
+                let y = gy.wrapping_mul(12).wrapping_add(offsets[1]);
+                let z = gz.wrapping_mul(16).wrapping_add(offsets[2]);
+                let expected = (((x as u32 as u64) & 0x3ff_ffff) << 38)
+                    | (((z as u32 as u64) & 0x3ff_ffff) << 12)
+                    | ((y as u32 as u64) & 0xfff);
+                assert_eq!(actual[index], expected, "mode={mode} cache_index={index}");
+            }
+        }
+
+        let mut untouched = [0xfeed_face_dead_beef_u64; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_grid_centers(
+                2, 0, 0, 0, 0, 0, 2, 2, 4, untouched.as_mut_ptr(),
+            )
+        }, STATUS_INVALID_ARGUMENT);
+        assert!(untouched.iter().all(|value| *value == 0xfeed_face_dead_beef));
+    }
+
+    #[test]
     fn density_graph_compiles_caches_and_evaluates_a_full_volume() {
         let nodes = [
             JpeDensityNode { opcode: DENSITY_X, input_a: DENSITY_NO_INPUT,
@@ -722,6 +1411,141 @@ mod tests {
                 output.as_mut_ptr(), 1,
             )
         }, 2);
+    }
+
+    #[test]
+    fn density_graph_evaluates_arbitrary_points_in_input_order_f64_and_f32() {
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_X, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_Y, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_Z, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 2.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 0,
+                input_b: 3, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_MUL, input_a: 4,
+                input_b: 1, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 5,
+                input_b: 2, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 6, 0xA91F_263)
+        };
+        assert_ne!(graph, 0);
+
+        let xs = [17_i32, -31, 0, 2048, i32::MIN, i32::MAX, -5];
+        let ys = [-9_i32, 12, 0, -64, 17, -3, 29];
+        let zs = [3_i32, -7, 41, -128, -11, 23, i32::MAX];
+        let mut actual = [f64::NAN; 7];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_points(
+                graph, xs.as_ptr(), ys.as_ptr(), zs.as_ptr(), 7,
+                actual.as_mut_ptr(), 7,
+            )
+        }, STATUS_OK);
+        for i in 0..7 {
+            let expected = (xs[i] as f64 + 2.0) * ys[i] as f64 + zs[i] as f64;
+            assert_eq!(actual[i], expected, "f64 arbitrary point index={i}");
+        }
+
+        let mut actual_f32 = [f32::NAN; 7];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_points_f32(
+                graph, xs.as_ptr(), ys.as_ptr(), zs.as_ptr(), 7,
+                actual_f32.as_mut_ptr(), 7,
+            )
+        }, STATUS_OK);
+        for i in 0..7 {
+            let expected = (xs[i] as f32 + 2.0_f32) * ys[i] as f32 + zs[i] as f32;
+            assert_eq!(actual_f32[i].to_bits(), expected.to_bits(), "f32 arbitrary point index={i}");
+        }
+
+        // All input and output lengths are exact, and the C ABI rejects partial batches.
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_points(
+                graph, xs.as_ptr(), ys.as_ptr(), zs.as_ptr(), 7,
+                actual.as_mut_ptr(), 6,
+            )
+        }, STATUS_INVALID_ARGUMENT);
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_points(
+                graph, std::ptr::null(), ys.as_ptr(), zs.as_ptr(), 7,
+                actual.as_mut_ptr(), 7,
+            )
+        }, STATUS_INVALID_ARGUMENT);
+
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+    }
+
+    #[test]
+    fn density_graph_evaluates_multiple_samplers_and_point_sets_in_one_call() {
+        let add_nodes = [
+            JpeDensityNode { opcode: DENSITY_X, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_Y, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 0,
+                input_b: 1, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+        ];
+        let mul_nodes = [
+            JpeDensityNode { opcode: DENSITY_X, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_Y, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_MUL, input_a: 0,
+                input_b: 1, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+        ];
+        let add_graph = unsafe {
+            jpe_runtime_density_graph_compile(add_nodes.as_ptr(), 3, 2, 0xA91F_001)
+        };
+        let mul_graph = unsafe {
+            jpe_runtime_density_graph_compile(mul_nodes.as_ptr(), 3, 2, 0xA91F_002)
+        };
+        assert_ne!(add_graph, 0);
+        assert_ne!(mul_graph, 0);
+
+        // Two sampler-major point sets. Each sampler receives distinct coordinates.
+        let handles = [add_graph, mul_graph];
+        let xs = [2_i32, -4, 7, 8];
+        let ys = [3_i32, 5, 6, -3];
+        let zs = [0_i32, 1, 2, 0];
+        let mut output64 = [f64::NAN; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_multi_points(
+                handles.as_ptr(), 2,
+                xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
+                2, output64.as_mut_ptr(), 4,
+            )
+        }, STATUS_OK);
+        assert_eq!(output64, [5.0, 1.0, 42.0, -24.0]);
+
+        let mut output32 = [f32::NAN; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_multi_points_f32(
+                handles.as_ptr(), 2,
+                xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
+                2, output32.as_mut_ptr(), 4,
+            )
+        }, STATUS_OK);
+        assert_eq!(output32.map(f32::to_bits), [5.0_f32, 1.0, 42.0, -24.0].map(f32::to_bits));
+
+        // Every handle is resolved before the evaluator writes output.
+        let invalid_handles = [add_graph, 0_u64];
+        let mut untouched = [123.25_f64; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_multi_points(
+                invalid_handles.as_ptr(), 2,
+                xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
+                2, untouched.as_mut_ptr(), 4,
+            )
+        }, STATUS_CPP_FAILURE);
+        assert_eq!(untouched, [123.25_f64; 4]);
+
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(add_graph) }, STATUS_OK);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(mul_graph) }, STATUS_OK);
     }
 
     #[test]
@@ -2141,6 +2965,87 @@ mod tests {
 
         // Keep a non-fluid status fixture available to guard at(y) semantics.
         assert_eq!(air.fluid_type, WATER);
+    }
+
+    #[test]
+    fn aquifer_batch_matches_scalar_and_rejects_invalid_batches_transactionally() {
+        const AIR: u32 = 0;
+        const WATER: u32 = 1;
+        const LAVA: u32 = 2;
+        let water = JpeAquiferFluidStatus { fluid_level: 20, fluid_type: WATER };
+        let lava = JpeAquiferFluidStatus { fluid_level: 20, fluid_type: LAVA };
+        let base = JpeAquiferCoreInput {
+            block_y: 10,
+            density: -1.0,
+            barrier_noise: 0.0,
+            distance_sqr: [0, 1, 4, 9],
+            closest: [water, water, water, water],
+            global_fluid_below_type: AIR,
+            air_type: AIR,
+            water_type: WATER,
+            lava_type: LAVA,
+            debug_disable_fluid_generation: 0,
+        };
+        let inputs = [
+            base,
+            JpeAquiferCoreInput { density: 0.25, ..base },
+            JpeAquiferCoreInput {
+                closest: [water, lava, water, water],
+                global_fluid_below_type: LAVA,
+                ..base
+            },
+            JpeAquiferCoreInput {
+                debug_disable_fluid_generation: 1,
+                ..base
+            },
+        ];
+        let mut batch = [JpeAquiferCoreOutput::default(); 4];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_compute_substance_batch(
+                inputs.as_ptr(), inputs.len() as u32, batch.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+
+        for index in 0..inputs.len() {
+            let mut scalar = JpeAquiferCoreOutput::default();
+            assert_eq!(unsafe {
+                jpe_runtime_aquifer_compute_substance_core(&inputs[index], &mut scalar)
+            }, STATUS_OK);
+            assert_eq!(batch[index].has_block_state, scalar.has_block_state, "voxel {index}");
+            assert_eq!(batch[index].block_state_type, scalar.block_state_type, "voxel {index}");
+            assert_eq!(
+                batch[index].should_schedule_fluid_update,
+                scalar.should_schedule_fluid_update,
+                "voxel {index}",
+            );
+        }
+
+        // Invalid data anywhere in a batch must not leave earlier output slots
+        // partially overwritten.
+        let mut invalid = inputs;
+        invalid[3].distance_sqr[2] = -1;
+        let sentinel = JpeAquiferCoreOutput {
+            has_block_state: 77,
+            block_state_type: 88,
+            should_schedule_fluid_update: 99,
+        };
+        let mut untouched = [sentinel; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_compute_substance_batch(
+                invalid.as_ptr(), invalid.len() as u32, untouched.as_mut_ptr(),
+            )
+        }, STATUS_INVALID_ARGUMENT);
+        assert!(untouched.iter().all(|value| {
+            value.has_block_state == 77
+                && value.block_state_type == 88
+                && value.should_schedule_fluid_update == 99
+        }));
+
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_compute_substance_batch(
+                inputs.as_ptr(), 0, batch.as_mut_ptr(),
+            )
+        }, STATUS_INVALID_ARGUMENT);
     }
 
     #[test]

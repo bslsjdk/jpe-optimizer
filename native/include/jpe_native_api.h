@@ -150,6 +150,73 @@ JPE_API int32_t jpe_runtime_density_graph_evaluate(
     int32_t step_x, int32_t step_y, int32_t step_z,
     double *output, uint64_t output_length
 );
+
+/* Evaluate non-grid-aligned points in input order. One native call handles the
+ * complete batch; output[i] corresponds to (point_x[i], point_y[i], point_z[i]). */
+JPE_API int32_t jpe_runtime_density_graph_evaluate_points(
+    uint64_t graph_handle,
+    const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
+    uint32_t point_count, double *output, uint64_t output_length
+);
+JPE_API int32_t jpe_runtime_density_graph_evaluate_points_f32(
+    uint64_t graph_handle,
+    const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
+    uint32_t point_count, float *output, uint64_t output_length
+);
+/* Evaluate multiple compiled sampler graphs in one call. Arrays use
+ * sampler-major [graph][point] order, including independent coordinates per graph. */
+JPE_API int32_t jpe_runtime_density_graph_evaluate_multi_points(
+    const uint64_t *graph_handles, uint32_t graph_count,
+    const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
+    uint32_t points_per_graph, double *output, uint64_t output_length
+);
+JPE_API int32_t jpe_runtime_density_graph_evaluate_multi_points_f32(
+    const uint64_t *graph_handles, uint32_t graph_count,
+    const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
+    uint32_t points_per_graph, float *output, uint64_t output_length
+);
+/* Internal C++ helpers; Rust publishes the stable jpe_runtime_* exports. */
+JPE_API uint64_t jpe_cpp_density_graph_compile(
+    const JpeDensityNode *nodes, uint32_t node_count, uint32_t root_node,
+    uint64_t configuration_fingerprint
+);
+JPE_API int32_t jpe_cpp_density_graph_evaluate(
+    uint64_t graph_handle,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    double *output, uint64_t output_length
+);
+JPE_API int32_t jpe_cpp_density_graph_evaluate_f32(
+    uint64_t graph_handle,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    float *output, uint64_t output_length
+);
+JPE_API int32_t jpe_cpp_density_graph_release(uint64_t graph_handle);
+JPE_API int32_t jpe_cpp_density_graph_evaluate_points(
+    uint64_t graph_handle,
+    const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
+    uint32_t point_count, double *output, uint64_t output_length
+);
+JPE_API int32_t jpe_cpp_density_graph_evaluate_points_f32(
+    uint64_t graph_handle,
+    const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
+    uint32_t point_count, float *output, uint64_t output_length
+);
+/* Internal multi-sampler helpers. Input/output arrays use [sampler][point] order;
+ * each sampler has an independent coordinate set of points_per_graph entries. */
+JPE_API int32_t jpe_cpp_density_graph_evaluate_multi_points(
+    const uint64_t *graph_handles, uint32_t graph_count,
+    const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
+    uint32_t points_per_graph, double *output, uint64_t output_length
+);
+JPE_API int32_t jpe_cpp_density_graph_evaluate_multi_points_f32(
+    const uint64_t *graph_handles, uint32_t graph_count,
+    const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
+    uint32_t points_per_graph, float *output, uint64_t output_length
+);
 /* Strict IEEE-754 single-precision evaluation for Minecraft 26.3 density nodes. */
 JPE_API int32_t jpe_runtime_density_graph_evaluate_f32(
     uint64_t graph_handle,
@@ -157,6 +224,20 @@ JPE_API int32_t jpe_runtime_density_graph_evaluate_f32(
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
     float *output, uint64_t output_length
+);
+
+/* Evaluate arbitrary non-grid-aligned points in input order. Output length must
+ * equal point_count; each output maps to the coordinate triple at the same index.
+ * The output range must not overlap any input coordinate range. */
+JPE_API int32_t jpe_runtime_density_graph_evaluate_points(
+    uint64_t graph_handle,
+    const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
+    uint32_t point_count, double *output, uint64_t output_length
+);
+JPE_API int32_t jpe_runtime_density_graph_evaluate_points_f32(
+    uint64_t graph_handle,
+    const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
+    uint32_t point_count, float *output, uint64_t output_length
 );
 /* Releases one retained handle. Active evaluations keep their immutable plan alive. */
 JPE_API int32_t jpe_runtime_density_graph_release(uint64_t graph_handle);
@@ -170,6 +251,20 @@ typedef struct JpeAquiferFluidStatus {
     int32_t fluid_level;
     uint32_t fluid_type;
 } JpeAquiferFluidStatus;
+
+/* Per-Aquifer, fixed-capacity FluidStatus cache. Keys are packed BlockPos.asLong
+ * values for aquifer cell centers. First insertion wins, matching compute-if-absent.
+ * The cache supports concurrent batch lookups/inserts. */
+JPE_API uint64_t jpe_runtime_aquifer_status_cache_create(uint32_t maximum_entries);
+JPE_API int32_t jpe_runtime_aquifer_status_cache_destroy(uint64_t handle);
+JPE_API int32_t jpe_runtime_aquifer_status_cache_lookup_batch(
+    uint64_t handle, const uint64_t* keys, uint32_t count,
+    JpeAquiferFluidStatus* statuses, uint8_t* found
+);
+JPE_API int32_t jpe_runtime_aquifer_status_cache_insert_batch(
+    uint64_t handle, const uint64_t* keys,
+    const JpeAquiferFluidStatus* statuses, uint32_t count
+);
 
 typedef struct JpeAquiferCoreInput {
     int32_t block_y;
@@ -195,6 +290,33 @@ typedef struct JpeAquiferCoreOutput {
 JPE_API int32_t jpe_runtime_aquifer_compute_substance_core(
     const JpeAquiferCoreInput *input, JpeAquiferCoreOutput *output
 );
+/* Batch form for a complete chunk fill pass. Inputs and outputs are contiguous
+ * and must not overlap; count must be in [1, 1,048,576]. No allocation or
+ * per-voxel ABI crossing occurs. The full input range is validated before writes. */
+JPE_API int32_t jpe_runtime_aquifer_compute_substance_batch(
+    const JpeAquiferCoreInput *inputs, uint32_t count,
+    JpeAquiferCoreOutput *outputs
+);
+
+/* Internal C++ kernels linked by the Rust runtime. Public jpe_runtime_* symbols
+ * are exported by Rust wrappers so the cdylib exposes a stable ABI. */
+JPE_API int32_t jpe_cpp_aquifer_compute_substance_core(
+    const JpeAquiferCoreInput *input, JpeAquiferCoreOutput *output
+);
+JPE_API uint64_t jpe_cpp_aquifer_status_cache_create(uint32_t maximum_entries);
+JPE_API int32_t jpe_cpp_aquifer_status_cache_destroy(uint64_t handle);
+JPE_API int32_t jpe_cpp_aquifer_status_cache_lookup_batch(
+    uint64_t handle, const uint64_t* keys, uint32_t count,
+    JpeAquiferFluidStatus* statuses, uint8_t* found
+);
+JPE_API int32_t jpe_cpp_aquifer_status_cache_insert_batch(
+    uint64_t handle, const uint64_t* keys,
+    const JpeAquiferFluidStatus* statuses, uint32_t count
+);
+JPE_API int32_t jpe_cpp_aquifer_compute_substance_batch(
+    const JpeAquiferCoreInput *inputs, uint32_t count,
+    JpeAquiferCoreOutput *outputs
+);
 
 typedef struct JpeAquiferCellLocation {
     int32_t x;
@@ -205,7 +327,7 @@ typedef struct JpeAquiferCellLocation {
 typedef struct JpeAquiferNearestFour {
     uint32_t index[4];
     int32_t distance_sqr[4];
-};
+} JpeAquiferNearestFour;
 
 /* Select the four nearest of the twelve Minecraft 26.3 aquifer neighbor cells.
  * Equal distances retain Minecraft's insertion behavior (later equal candidates
@@ -214,6 +336,39 @@ JPE_API int32_t jpe_runtime_aquifer_find_nearest_four(
     int32_t block_x, int32_t block_y, int32_t block_z,
     const JpeAquiferCellLocation *candidates, uint32_t candidate_count,
     JpeAquiferNearestFour *output
+);
+
+/* Exact positional-random offsets used by Minecraft 26.3 Aquifer cells.
+ * random mode 0 is XOROSHIRO; mode 1 is Legacy. */
+JPE_API int32_t jpe_runtime_aquifer_xoroshiro_offsets(
+    uint64_t seed_lo, uint64_t seed_hi,
+    int32_t grid_x, int32_t grid_y, int32_t grid_z,
+    int32_t *offset_x, int32_t *offset_y, int32_t *offset_z
+);
+JPE_API int32_t jpe_runtime_aquifer_legacy_offsets(
+    uint64_t factory_seed,
+    int32_t grid_x, int32_t grid_y, int32_t grid_z,
+    int32_t *offset_x, int32_t *offset_y, int32_t *offset_z
+);
+
+/* Precompute the full packed location cache. The number of Y layers is
+ * derived from cell_count / (grid_size_x * grid_size_z). */
+JPE_API int32_t jpe_runtime_aquifer_grid_centers(
+    uint32_t random_mode, uint64_t seed_lo, uint64_t seed_hi,
+    int32_t min_grid_x, int32_t min_grid_y, int32_t min_grid_z,
+    uint32_t grid_size_x, uint32_t grid_size_z, uint32_t cell_count,
+    uint64_t *packed_locations
+);
+
+/* Batch nearest-four lookup. Input arrays contain sample_count coordinates.
+ * Each output array needs sample_count * 4 entries; outputs are sample-major.
+ * Input and output arrays must be non-overlapping. Distances preserve Java int32 wrap. */
+JPE_API int32_t jpe_runtime_aquifer_nearest_four(
+    uint32_t random_mode, uint64_t seed_lo, uint64_t seed_hi,
+    const int32_t *block_x, const int32_t *block_y, const int32_t *block_z,
+    uint32_t sample_count,
+    int32_t *center_x, int32_t *center_y, int32_t *center_z,
+    int32_t *squared_distances
 );
 
 #ifdef __cplusplus

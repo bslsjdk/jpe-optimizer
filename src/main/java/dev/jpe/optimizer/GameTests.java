@@ -19,6 +19,11 @@ import net.minecraft.world.level.block.Rotation;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
+import net.minecraft.world.level.levelgen.XoroshiroRandomSource;
+import net.minecraft.world.level.levelgen.LegacyRandomSource;
+import net.minecraft.world.level.levelgen.PositionalRandomFactory;
+import dev.jpe.optimizer.mixin.XoroshiroPositionalRandomFactoryAccessor;
+import dev.jpe.optimizer.mixin.LegacyPositionalRandomFactoryAccessor;
 import net.minecraft.world.level.levelgen.synth.PerlinNoise;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.StructurePiece;
@@ -60,6 +65,11 @@ public final class GameTests {
 
     public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> PALETTE_HASH_CONFIGURATION =
             TEST_FUNCTIONS.register("palette_hash_configuration", () -> GameTests::paletteHashConfiguration);
+    
+    public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> AQUIFER_RANDOM_NATIVE_PARITY =
+            TEST_FUNCTIONS.register("aquifer_random_native_parity", () -> GameTests::aquiferRandomNativeParity);
+    public static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> DENSITY_GRAPH_POINT_BATCH =
+            TEST_FUNCTIONS.register("density_graph_point_batch", () -> GameTests::densityGraphPointBatch);
 
     public static void registerFunctions(net.neoforged.bus.api.IEventBus modEventBus) {
         TEST_FUNCTIONS.register(modEventBus);
@@ -104,6 +114,343 @@ public final class GameTests {
                 Identifier.parse("jpe_optimizer:palette_hash_configuration"),
                 new FunctionGameTestInstance(PALETTE_HASH_CONFIGURATION.getKey(), data)
         );
+        event.registerTest(
+                Identifier.parse("jpe_optimizer:aquifer_random_native_parity"),
+                new FunctionGameTestInstance(AQUIFER_RANDOM_NATIVE_PARITY.getKey(), data)
+        );
+        event.registerTest(
+                Identifier.parse("jpe_optimizer:density_graph_point_batch"),
+                new FunctionGameTestInstance(DENSITY_GRAPH_POINT_BATCH.getKey(), data)
+        );
+    }
+
+    /** Verifies sparse non-grid-aligned density sampling through one native FFM batch call. */
+    private static void densityGraphPointBatch(GameTestHelper helper) {
+        String library = System.getProperty("jpe.nativeLibraryPath");
+        if (library == null || library.isBlank()) {
+            throw new AssertionError("Density graph point batch requires jpe.nativeLibraryPath");
+        }
+        try (NativeRuntime runtime = NativeRuntime.load(java.nio.file.Path.of(library))) {
+            if (!runtime.supportsDensityGraphPoints()) {
+                throw new AssertionError("Native arbitrary-point density graph ABI is unavailable: "
+                        + runtime.densityGraphPointsDiagnostic());
+            }
+            List<NativeRuntime.DensityNode> nodes = List.of(
+                    NativeRuntime.DensityNode.x(),
+                    NativeRuntime.DensityNode.y(),
+                    NativeRuntime.DensityNode.z(),
+                    NativeRuntime.DensityNode.constant(2.0),
+                    NativeRuntime.DensityNode.add(0, 3),
+                    NativeRuntime.DensityNode.multiply(4, 1),
+                    NativeRuntime.DensityNode.add(5, 2)
+            );
+            long graph = runtime.compileDensityGraph(nodes, 6, 0xA91F_263L);
+            int[] xs = {17, -31, 0, 2048, -512, 77, 5};
+            int[] ys = {-9, 12, 0, -64, 33, -3, 29};
+            int[] zs = {3, -7, 41, -128, 11, 23, -19};
+            double[] values64 = new double[xs.length];
+            runtime.evaluateDensityGraphPoints(graph, xs, ys, zs, values64);
+            float[] values32 = new float[xs.length];
+            runtime.evaluateDensityGraphPointsF32(graph, xs, ys, zs, values32);
+
+            for (int i = 0; i < xs.length; i++) {
+                double expected64 = (xs[i] + 2.0) * ys[i] + zs[i];
+                if (values64[i] != expected64) {
+                    throw new AssertionError("Native arbitrary-point f64 mismatch at " + i
+                            + ": expected=" + expected64 + ", actual=" + values64[i]);
+                }
+                float add = (float) xs[i] + 2.0F;
+                float multiply = add * (float) ys[i];
+                float expected32 = multiply + (float) zs[i];
+                if (Float.floatToRawIntBits(values32[i]) != Float.floatToRawIntBits(expected32)) {
+                    throw new AssertionError("Native arbitrary-point f32 mismatch at " + i
+                            + ": expected=" + expected32 + ", actual=" + values32[i]);
+                }
+            }
+            if (!runtime.supportsDensityGraphMultiPointsF32()) {
+                throw new AssertionError("Native multi-sampler density graph ABI is unavailable");
+            }
+            long addGraph = runtime.compileDensityGraph(List.of(
+                    NativeRuntime.DensityNode.x(),
+                    NativeRuntime.DensityNode.y(),
+                    NativeRuntime.DensityNode.add(0, 1)
+            ), 2, 0xA91F_264L);
+            long multiplyGraph = runtime.compileDensityGraph(List.of(
+                    NativeRuntime.DensityNode.x(),
+                    NativeRuntime.DensityNode.y(),
+                    NativeRuntime.DensityNode.multiply(0, 1)
+            ), 2, 0xA91F_265L);
+            long[] samplerHandles = {addGraph, multiplyGraph};
+            int[][] samplerX = {{2, -4}, {7, 8}};
+            int[][] samplerY = {{3, 5}, {6, -3}};
+            int[][] samplerZ = {{0, 0}, {0, 0}};
+            float[][] samplerValues = {new float[2], new float[2]};
+            runtime.evaluateDensityGraphMultiPointsF32(
+                    samplerHandles, samplerX, samplerY, samplerZ, samplerValues);
+            float[] expectedMulti = {5.0F, 1.0F, 42.0F, -24.0F};
+            for (int i = 0; i < expectedMulti.length; i++) {
+                int graphIndex = i / 2;
+                int pointIndex = i % 2;
+                if (Float.floatToRawIntBits(samplerValues[graphIndex][pointIndex])
+                        != Float.floatToRawIntBits(expectedMulti[i])) {
+                    throw new AssertionError("Native multi-sampler density mismatch at flat index " + i
+                            + ": expected=" + expectedMulti[i]
+                            + ", actual=" + samplerValues[graphIndex][pointIndex]);
+                }
+            }
+            JPEOptimizer.LOGGER.info(
+                    "JPE_DENSITY_GRAPH_POINT_BATCH samples={} f64Exact=true f32Exact=true irregularCoordinates=true multiSamplerGraphs=2 multiSamplerExact=true",
+                    xs.length);
+        } catch (Exception failure) {
+            throw new AssertionError("Native arbitrary-point density graph parity failed", failure);
+        }
+        helper.succeed();
+    }
+
+    /**
+     * Compares complete native Aquifer grid-cache generation against the real
+     * Minecraft positional factories for both supported random algorithms.
+     */
+    private static void aquiferRandomNativeParity(GameTestHelper helper) {
+        String library = System.getProperty("jpe.nativeLibraryPath");
+        if (library == null || library.isBlank()) {
+            throw new AssertionError("Aquifer parity requires jpe.nativeLibraryPath");
+        }
+        try (NativeRuntime runtime = NativeRuntime.load(java.nio.file.Path.of(library))) {
+            if (!runtime.supportsAquiferGridCenters()) {
+                throw new AssertionError("Native Aquifer grid-center ABI is unavailable");
+            }
+            long xorLo = 0x0123456789abcdefL;
+            long xorHi = 0xfedcba9876543210L;
+            PositionalRandomFactory xorFactory =
+                    new XoroshiroRandomSource(xorLo, xorHi).forkPositional();
+            var xorAccessor = (XoroshiroPositionalRandomFactoryAccessor) (Object) xorFactory;
+            verifyAquiferGridCache(runtime, 0,
+                    xorAccessor.jpe$seedLo(), xorAccessor.jpe$seedHi(), xorFactory, "xoroshiro");
+
+            long legacySeed = 0x9e3779b97f4a7c15L;
+            PositionalRandomFactory legacyFactory =
+                    new LegacyRandomSource(legacySeed).forkPositional();
+            var legacyAccessor = (LegacyPositionalRandomFactoryAccessor) (Object) legacyFactory;
+            verifyAquiferGridCache(runtime, 1,
+                    legacyAccessor.jpe$seed(), 0L, legacyFactory, "legacy");
+            verifyAquiferNearestFour(runtime, 0,
+                    xorAccessor.jpe$seedLo(), xorAccessor.jpe$seedHi(), xorFactory, "xoroshiro");
+            verifyAquiferNearestFour(runtime, 1,
+                    legacyAccessor.jpe$seed(), 0L, legacyFactory, "legacy");
+            verifyAquiferSubstanceBatch(runtime);
+            verifyAquiferStatusCache(runtime);
+        } catch (Exception failure) {
+            throw new AssertionError("Native Aquifer grid-cache parity failed", failure);
+        }
+        helper.succeed();
+    }
+
+    private static void verifyAquiferStatusCache(NativeRuntime runtime) {
+        if (!runtime.supportsAquiferStatusCache()) {
+            throw new AssertionError("Native Aquifer FluidStatus cache ABI is unavailable");
+        }
+        long handle = runtime.createAquiferStatusCache(8);
+        try {
+            long keyA = BlockPos.asLong(17, -48, -9);
+            long keyB = BlockPos.asLong(-33, 64, 27);
+            long keyMissing = BlockPos.asLong(1000, 0, -1000);
+            runtime.insertAquiferStatuses(
+                    handle,
+                    new long[]{keyA, keyB, keyA},
+                    new int[]{-40, 80, 999},
+                    new int[]{1, 2, 99});
+            NativeRuntime.AquiferStatusBatch result = runtime.lookupAquiferStatuses(
+                    handle, new long[]{keyB, keyA, keyMissing});
+            if (!java.util.Arrays.equals(result.found(), new boolean[]{true, true, false})
+                    || result.fluidLevels()[0] != 80 || result.fluidTypes()[0] != 2
+                    || result.fluidLevels()[1] != -40 || result.fluidTypes()[1] != 1) {
+                throw new AssertionError("Native Aquifer FluidStatus cache lookup/first-writer mismatch");
+            }
+        } finally {
+            runtime.destroyAquiferStatusCache(handle);
+        }
+        JPEOptimizer.LOGGER.info(
+                "JPE_AQUIFER_STATUS_CACHE batchLookup=true firstWriterWins=true missingLookup=true");
+    }
+
+    private static void verifyAquiferSubstanceBatch(NativeRuntime runtime) {
+        if (!runtime.supportsAquiferSubstanceBatch()) {
+            throw new AssertionError("Native Aquifer substance batch API is unavailable");
+        }
+        final int air = 0, water = 1, lava = 2;
+        int[] blockY = {10, 10, 10};
+        double[] density = {0.25, -1.0, -1.0};
+        float[] barrierNoise = {0.0F, 0.0F, 0.0F};
+        int[] distances = {
+                0, 1, 4, 9,
+                0, 1, 4, 9,
+                0, 1, 4, 9
+        };
+        int[] fluidLevels = {
+                20, 20, 20, 20,
+                20, 20, 20, 20,
+                20, 20, 20, 20
+        };
+        int[] fluidTypes = {
+                water, water, water, water,
+                water, water, water, water,
+                water, water, water, water
+        };
+        int[] globalBelowTypes = {air, air, lava};
+        // Debug suppression is a world setting, so keep it constant for this entire batch.
+        NativeRuntime.AquiferSubstanceBatch normal = runtime.aquiferSubstanceBatch(
+                blockY, density, barrierNoise, distances, fluidLevels, fluidTypes,
+                globalBelowTypes, air, water, lava, false);
+
+        if (normal.hasBlockState()[0] || normal.shouldScheduleFluidUpdate()[0]) {
+            throw new AssertionError("Aquifer batch positive-density decision mismatch: hasBlockState="
+                    + normal.hasBlockState()[0] + ", blockStateType=" + normal.blockStateTypes()[0]
+                    + ", shouldSchedule=" + normal.shouldScheduleFluidUpdate()[0]);
+        }
+        if (!normal.hasBlockState()[1] || normal.blockStateTypes()[1] != water
+                || normal.shouldScheduleFluidUpdate()[1]) {
+            throw new AssertionError("Aquifer batch equal-water decision mismatch: hasBlockState="
+                    + normal.hasBlockState()[1] + ", blockStateType=" + normal.blockStateTypes()[1]
+                    + ", shouldSchedule=" + normal.shouldScheduleFluidUpdate()[1]);
+        }
+        if (!normal.hasBlockState()[2] || normal.blockStateTypes()[2] != water
+                || !normal.shouldScheduleFluidUpdate()[2]) {
+            throw new AssertionError("Aquifer batch global lava-adjacency decision mismatch: hasBlockState="
+                    + normal.hasBlockState()[2] + ", blockStateType=" + normal.blockStateTypes()[2]
+                    + ", shouldSchedule=" + normal.shouldScheduleFluidUpdate()[2]);
+        }
+
+        NativeRuntime.AquiferSubstanceBatch debug = runtime.aquiferSubstanceBatch(
+                new int[]{10}, new double[]{-1.0}, new float[]{0.0F},
+                new int[]{0, 1, 4, 9}, new int[]{20, 20, 20, 20},
+                new int[]{water, water, water, water}, new int[]{lava},
+                air, water, lava, true);
+        if (!debug.hasBlockState()[0] || debug.blockStateTypes()[0] != air
+                || !debug.shouldScheduleFluidUpdate()[0]) {
+            throw new AssertionError("Aquifer batch debug-fluid suppression mismatch: hasBlockState="
+                    + debug.hasBlockState()[0] + ", blockStateType=" + debug.blockStateTypes()[0]
+                    + ", shouldSchedule=" + debug.shouldScheduleFluidUpdate()[0]);
+        }
+        JPEOptimizer.LOGGER.info(
+                "JPE_AQUIFER_SUBSTANCE_BATCH normalSamples=3 debugSamples=1 batchDowncalls=2 expectedDecisions=true");
+    }
+
+    private static void verifyAquiferNearestFour(NativeRuntime runtime, int mode,
+                                                     long seedLo, long seedHi,
+                                                     PositionalRandomFactory factory, String label) {
+        if (!runtime.supportsAquiferNearestFour()) {
+            throw new AssertionError("Native Aquifer nearest-four API is unavailable");
+        }
+        int[] blockX = {0, 15, -1, -17, 1, 16, -16, Integer.MIN_VALUE, Integer.MAX_VALUE};
+        int[] blockY = {-64, -1, 0, 23, 2, -13, 25, Integer.MAX_VALUE, Integer.MIN_VALUE};
+        int[] blockZ = {0, 15, -1, -33, 3, -17, 31, Integer.MIN_VALUE, Integer.MAX_VALUE};
+        NativeRuntime.AquiferNearestFour actual =
+                runtime.aquiferNearestFour(mode, seedLo, seedHi, blockX, blockY, blockZ);
+
+        for (int sample = 0; sample < blockX.length; sample++) {
+            int anchorX = (blockX[sample] - 5) >> 4;
+            int anchorY = Math.floorDiv(blockY[sample] + 1, 12);
+            int anchorZ = (blockZ[sample] - 5) >> 4;
+            int[] bestX = new int[4];
+            int[] bestY = new int[4];
+            int[] bestZ = new int[4];
+            int[] bestDistance = {Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE};
+
+            // Independent Java reference: exact vanilla candidate traversal and later-equal insertion.
+            for (int dx = 0; dx <= 1; dx++) {
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dz = 0; dz <= 1; dz++) {
+                        int gridX = anchorX + dx;
+                        int gridY = anchorY + dy;
+                        int gridZ = anchorZ + dz;
+                        RandomSource random = factory.at(gridX, gridY, gridZ);
+                        int centerX = gridX * 16 + random.nextInt(10);
+                        int centerY = gridY * 12 + random.nextInt(9);
+                        int centerZ = gridZ * 16 + random.nextInt(10);
+                        int deltaX = centerX - blockX[sample];
+                        int deltaY = centerY - blockY[sample];
+                        int deltaZ = centerZ - blockZ[sample];
+                        int distance = deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
+
+                        int insertion = 4;
+                        for (int rank = 0; rank < 4; rank++) {
+                            if (distance <= bestDistance[rank]) {
+                                insertion = rank;
+                                break;
+                            }
+                        }
+                        if (insertion < 4) {
+                            for (int rank = 3; rank > insertion; rank--) {
+                                bestX[rank] = bestX[rank - 1];
+                                bestY[rank] = bestY[rank - 1];
+                                bestZ[rank] = bestZ[rank - 1];
+                                bestDistance[rank] = bestDistance[rank - 1];
+                            }
+                            bestX[insertion] = centerX;
+                            bestY[insertion] = centerY;
+                            bestZ[insertion] = centerZ;
+                            bestDistance[insertion] = distance;
+                        }
+                    }
+                }
+            }
+
+            for (int rank = 0; rank < 4; rank++) {
+                int index = sample * 4 + rank;
+                if (actual.centerX()[index] != bestX[rank]
+                        || actual.centerY()[index] != bestY[rank]
+                        || actual.centerZ()[index] != bestZ[rank]
+                        || actual.squaredDistances()[index] != bestDistance[rank]) {
+                    throw new AssertionError("Aquifer " + label + " nearest-four mismatch sample="
+                            + sample + " rank=" + rank
+                            + " expected=(" + bestX[rank] + "," + bestY[rank] + "," + bestZ[rank]
+                            + ";" + bestDistance[rank] + ") actual=("
+                            + actual.centerX()[index] + "," + actual.centerY()[index] + ","
+                            + actual.centerZ()[index] + ";" + actual.squaredDistances()[index] + ")");
+                }
+            }
+        }
+        JPEOptimizer.LOGGER.info(
+                "JPE_AQUIFER_NEAREST_FOUR_PARITY mode={} samples={} neighborsPerSample=4 exact=true",
+                label, blockX.length);
+    }
+
+    private static void verifyAquiferGridCache(NativeRuntime runtime, int mode,
+                                                long seedLo, long seedHi,
+                                                PositionalRandomFactory factory, String label) {
+        final int minGridX = -2;
+        final int minGridY = -17;
+        final int minGridZ = 3;
+        final int sizeX = 5;
+        final int sizeY = 33;
+        final int sizeZ = 5;
+        final int count = sizeX * sizeY * sizeZ;
+        long[] actual = new long[count];
+        runtime.aquiferGridCenters(mode, seedLo, seedHi,
+                minGridX, minGridY, minGridZ, sizeX, sizeZ, actual);
+
+        for (int index = 0; index < count; index++) {
+            int xIndex = index % sizeX;
+            int zIndex = (index / sizeX) % sizeZ;
+            int yIndex = index / (sizeX * sizeZ);
+            int gridX = minGridX + xIndex;
+            int gridY = minGridY + yIndex;
+            int gridZ = minGridZ + zIndex;
+            RandomSource random = factory.at(gridX, gridY, gridZ);
+            int x = gridX * 16 + random.nextInt(10);
+            int y = gridY * 12 + random.nextInt(9);
+            int z = gridZ * 16 + random.nextInt(10);
+            long expected = BlockPos.asLong(x, y, z);
+            if (actual[index] != expected) {
+                throw new AssertionError("Aquifer " + label + " cache mismatch at flat index " + index
+                        + " grid=(" + gridX + "," + gridY + "," + gridZ + ")"
+                        + " expected=" + expected + " actual=" + actual[index]);
+            }
+        }
+        JPEOptimizer.LOGGER.info(
+                "JPE_AQUIFER_GRID_CACHE_PARITY mode={} cells={} cacheOrder=x-fast,z,y packedBlockPos=true exact=true",
+                label, count);
     }
 
     private static void paletteHashConfiguration(GameTestHelper helper) {

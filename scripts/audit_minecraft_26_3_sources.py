@@ -31,6 +31,14 @@ PATCHED_JAR = Path("build/moddev/artifacts") / f"minecraft-patched-{NEOFORGE_VER
 NESTED_SERVER_JAR = f"META-INF/versions/{VERSION}/server-{VERSION}.jar"
 TARGET_CLASSES = (
     "net/minecraft/world/level/levelgen/NoiseBasedChunkGenerator",
+    "net/minecraft/world/level/levelgen/Aquifer",
+    "net/minecraft/world/level/levelgen/RandomState",
+    "net/minecraft/world/level/levelgen/NoiseGeneratorSettings",
+    "net/minecraft/world/level/levelgen/PositionalRandomFactory",
+    "net/minecraft/world/level/levelgen/LegacyRandomSource",
+    "net/minecraft/world/level/levelgen/XoroshiroRandomSource",
+    "net/minecraft/util/RandomSource",
+    "net/minecraft/util/Mth",
     "net/minecraft/world/level/biome/BiomeManager",
     "net/minecraft/world/level/levelgen/NoiseChunk",
     "net/minecraft/world/level/levelgen/densityfunction/DensitySampler",
@@ -113,6 +121,9 @@ def make_subset(source_jar: Path, subset_jar: Path) -> dict[str, str]:
     missing = sorted(expected - hashes.keys())
     if missing:
         raise RuntimeError(f"{source_jar} is missing target classes: {missing}")
+    aquifer_implementation = "net/minecraft/world/level/levelgen/Aquifer$NoiseBasedAquifer.class"
+    if aquifer_implementation not in hashes:
+        raise RuntimeError(f"{source_jar} is missing nested Aquifer.NoiseBasedAquifer")
     return hashes
 
 
@@ -215,6 +226,83 @@ def class_method_inventory(data: bytes) -> dict[tuple[str, str], dict[str, objec
     return methods
 
 
+def class_field_inventory(data: bytes) -> dict[tuple[str, str], int]:
+    """Read field names, descriptors, and access flags from a JVM class file."""
+    import struct
+
+    offset = 0
+
+    def u1() -> int:
+        nonlocal offset
+        value = data[offset]
+        offset += 1
+        return value
+
+    def u2() -> int:
+        nonlocal offset
+        value = struct.unpack_from(">H", data, offset)[0]
+        offset += 2
+        return value
+
+    def u4() -> int:
+        nonlocal offset
+        value = struct.unpack_from(">I", data, offset)[0]
+        offset += 4
+        return value
+
+    def take(length: int) -> bytes:
+        nonlocal offset
+        value = data[offset:offset + length]
+        if len(value) != length:
+            raise ValueError("Truncated class file")
+        offset += length
+        return value
+
+    if u4() != 0xCAFEBABE:
+        raise ValueError("Invalid class-file magic")
+    u2(); u2()
+    cp_count = u2()
+    cp: list[object] = [None] * cp_count
+    i = 1
+    while i < cp_count:
+        tag = u1()
+        if tag == 1:
+            length = u2()
+            cp[i] = take(length).decode("utf-8", errors="replace")
+        elif tag in (3, 4):
+            take(4)
+        elif tag in (5, 6):
+            take(8)
+            i += 1
+        elif tag in (7, 8, 16, 19, 20):
+            cp[i] = u2()
+        elif tag in (9, 10, 11, 12, 17, 18):
+            take(4)
+        elif tag == 15:
+            take(3)
+        else:
+            raise ValueError(f"Unknown constant-pool tag {tag}")
+        i += 1
+
+    def utf(index: int) -> str:
+        value = cp[index]
+        return value if isinstance(value, str) else ""
+
+    u2(); u2(); u2()
+    for _ in range(u2()):
+        u2()
+    fields: dict[tuple[str, str], int] = {}
+    for _ in range(u2()):
+        access = u2()
+        name = utf(u2())
+        descriptor = utf(u2())
+        for _ in range(u2()):
+            u2()
+            take(u4())
+        fields[(name, descriptor)] = access
+    return fields
+
+
 def compare_method_inventories(
     vanilla_jar: Path, patched_jar: Path, class_names: list[str]
 ) -> list[str]:
@@ -231,6 +319,39 @@ def compare_method_inventories(
                     if methods[expected]["access"] & 0x000A != 0x000A:
                         raise RuntimeError(f"{label} BiomeManager.getFiddledDistance is not private static")
                 lines.append("  verified exact private static target getFiddledDistance(JIIIDDD)D")
+            if class_name == "net/minecraft/world/level/levelgen/Aquifer$NoiseBasedAquifer.class":
+                old_fields = class_field_inventory(vanilla.read(class_name))
+                new_fields = class_field_inventory(patched.read(class_name))
+                lines.append(
+                    f"  Aquifer fields vanilla={len(old_fields)}, patched={len(new_fields)}; "
+                    f"added={len(set(new_fields) - set(old_fields))}, "
+                    f"removed={len(set(old_fields) - set(new_fields))}"
+                )
+                for label, fields in (("vanilla", old_fields), ("NeoForge-patched", new_fields)):
+                    for (field_name, descriptor), access in sorted(fields.items()):
+                        lines.append(
+                            f"  {label} Aquifer field {field_name}:{descriptor} access=0x{access:04x}"
+                        )
+                for label, methods in (("vanilla", old), ("NeoForge-patched", new)):
+                    substance_methods = [
+                        (signature, details) for signature, details in methods.items()
+                        if signature[0] == "computeSubstance"
+                    ]
+                    if not substance_methods:
+                        raise RuntimeError(f"{label} Aquifer.NoiseBasedAquifer is missing computeSubstance")
+                    for (name, descriptor), details in substance_methods:
+                        lines.append(
+                            f"  verified {label} Aquifer method {name}{descriptor}: "
+                            f"Code bytes={details['code_length']} SHA-256={details['code_hash']}"
+                        )
+                # Record every FluidStatus-related method signature in both artifacts.
+                for label, methods in (("vanilla", old), ("NeoForge-patched", new)):
+                    for (name, descriptor), details in sorted(methods.items()):
+                        if "fluidstatus" in name.lower() or "fluid" in name.lower():
+                            lines.append(
+                                f"  {label} Aquifer fluid method {name}{descriptor}: "
+                                f"Code bytes={details['code_length']} SHA-256={details['code_hash']}"
+                            )
             added = sorted(set(new) - set(old))
             removed = sorted(set(old) - set(new))
             common = sorted(set(old) & set(new))

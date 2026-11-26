@@ -268,7 +268,7 @@ bool valid_volume(uint32_t sx, uint32_t sy, uint32_t sz,
 }
 } // namespace
 
-extern "C" uint64_t jpe_runtime_density_graph_compile(
+extern "C" uint64_t jpe_cpp_density_graph_compile(
     const JpeDensityNode* nodes, uint32_t node_count, uint32_t root_node,
     uint64_t configuration_fingerprint
 ) {
@@ -1077,7 +1077,142 @@ int32_t evaluate_density_graph(
         output, output_length, 0);
 }
 
-extern "C" int32_t jpe_runtime_density_graph_evaluate(
+template <typename Scalar>
+int32_t evaluate_density_graph_points(
+    uint64_t graph_handle,
+    const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
+    uint32_t point_count, Scalar* output, uint64_t output_length
+) {
+    if (point_x == nullptr || point_y == nullptr || point_z == nullptr || output == nullptr
+        || point_count == 0 || point_count > kMaxVolumeElements || output_length != point_count) return 1;
+    std::shared_ptr<CompiledGraph> graph;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        const auto found = g_handles.find(graph_handle);
+        if (found == g_handles.end()) return 2;
+        graph = found->second;
+    }
+
+    // Reuse the complete volume evaluator for one-point frames. This preserves
+    // the existing interpolation, range-choice, warped-Perlin, and Java numeric
+    // behavior while allowing arbitrary, non-grid-aligned Aquifer sample sites.
+    // Its thread-local scratch retains capacity between points and graph calls.
+    try {
+        for (uint32_t i = 0; i < point_count; ++i) {
+            const int32_t status = evaluate_density_graph_impl<Scalar>(
+                graph, graph->root,
+                1, 1, 1,
+                point_x[i], point_y[i], point_z[i],
+                1, 1, 1,
+                &output[i], 1, 0);
+            if (status != 0) return status;
+        }
+        return 0;
+    } catch (...) {
+        return 3;
+    }
+}
+
+template <typename Scalar>
+int32_t evaluate_density_graph_multi_points(
+    const uint64_t* graph_handles,
+    uint32_t graph_count,
+    const int32_t* point_x,
+    const int32_t* point_y,
+    const int32_t* point_z,
+    uint32_t points_per_graph,
+    Scalar* output,
+    uint64_t output_length
+) {
+    if (graph_handles == nullptr || point_x == nullptr || point_y == nullptr
+        || point_z == nullptr || output == nullptr
+        || graph_count == 0 || graph_count > 64
+        || points_per_graph == 0 || points_per_graph > kMaxVolumeElements) return 1;
+
+    const uint64_t total = static_cast<uint64_t>(graph_count) * points_per_graph;
+    if (total > kMaxVolumeElements || output_length != total) return 1;
+
+    std::vector<std::shared_ptr<CompiledGraph>> graphs;
+    try {
+        graphs.reserve(graph_count);
+        {
+            // Resolve and retain every immutable plan under one registry lock.
+            // No output is touched unless all handles are valid.
+            std::lock_guard<std::mutex> lock(g_mutex);
+            for (uint32_t graph_index = 0; graph_index < graph_count; ++graph_index) {
+                if (graph_handles[graph_index] == 0) return 2;
+                const auto found = g_handles.find(graph_handles[graph_index]);
+                if (found == g_handles.end()) return 2;
+                graphs.push_back(found->second);
+            }
+        }
+
+        // Coordinates and outputs are sampler-major: [graph][point].
+        // Each sampler may have its own irregular point set, but the entire
+        // request crosses the language boundary only once.
+        for (uint32_t graph_index = 0; graph_index < graph_count; ++graph_index) {
+            const auto& graph = graphs[graph_index];
+            const uint64_t base = static_cast<uint64_t>(graph_index) * points_per_graph;
+            for (uint32_t point_index = 0; point_index < points_per_graph; ++point_index) {
+                const uint64_t index = base + point_index;
+                const int32_t status = evaluate_density_graph_impl<Scalar>(
+                    graph, graph->root,
+                    1, 1, 1,
+                    point_x[index], point_y[index], point_z[index],
+                    1, 1, 1,
+                    &output[index], 1, 0);
+                if (status != 0) return status;
+            }
+        }
+        return 0;
+    } catch (...) {
+        return 3;
+    }
+}
+
+extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_points(
+    const uint64_t* graph_handles,
+    uint32_t graph_count,
+    const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
+    uint32_t points_per_graph,
+    double* output, uint64_t output_length
+) {
+    return evaluate_density_graph_multi_points<double>(
+        graph_handles, graph_count, point_x, point_y, point_z,
+        points_per_graph, output, output_length);
+}
+
+extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_points_f32(
+    const uint64_t* graph_handles,
+    uint32_t graph_count,
+    const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
+    uint32_t points_per_graph,
+    float* output, uint64_t output_length
+) {
+    return evaluate_density_graph_multi_points<float>(
+        graph_handles, graph_count, point_x, point_y, point_z,
+        points_per_graph, output, output_length);
+}
+
+extern "C" int32_t jpe_cpp_density_graph_evaluate_points(
+    uint64_t graph_handle,
+    const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
+    uint32_t point_count, double* output, uint64_t output_length
+) {
+    return evaluate_density_graph_points<double>(
+        graph_handle, point_x, point_y, point_z, point_count, output, output_length);
+}
+
+extern "C" int32_t jpe_cpp_density_graph_evaluate_points_f32(
+    uint64_t graph_handle,
+    const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
+    uint32_t point_count, float* output, uint64_t output_length
+) {
+    return evaluate_density_graph_points<float>(
+        graph_handle, point_x, point_y, point_z, point_count, output, output_length);
+}
+
+extern "C" int32_t jpe_cpp_density_graph_evaluate(
     uint64_t graph_handle,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
@@ -1088,7 +1223,7 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate(
         min_x, min_y, min_z, step_x, step_y, step_z, output, output_length);
 }
 
-extern "C" int32_t jpe_runtime_density_graph_evaluate_f32(
+extern "C" int32_t jpe_cpp_density_graph_evaluate_f32(
     uint64_t graph_handle,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
@@ -1099,7 +1234,7 @@ extern "C" int32_t jpe_runtime_density_graph_evaluate_f32(
         min_x, min_y, min_z, step_x, step_y, step_z, output, output_length);
 }
 
-extern "C" int32_t jpe_runtime_density_graph_release(uint64_t graph_handle) {
+extern "C" int32_t jpe_cpp_density_graph_release(uint64_t graph_handle) {
     std::lock_guard<std::mutex> lock(g_mutex);
     const auto found = g_handles.find(graph_handle);
     if (found == g_handles.end()) return 2;
