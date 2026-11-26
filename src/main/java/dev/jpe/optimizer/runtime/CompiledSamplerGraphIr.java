@@ -74,8 +74,8 @@ public final class CompiledSamplerGraphIr {
             String note = switch (op) {
                 case MUL_ZERO_SHORT_CIRCUIT, DIV_ZERO_SHORT_CIRCUIT ->
                         "Preserve left-first evaluation; left == +/-0 returns +0 without evaluating right";
-                case MIN_RIGHT_BOUND -> "Preserve rightMinValue guard and Java Math.min(float,float)";
-                case MAX_RIGHT_BOUND -> "Preserve rightMaxValue guard and Java Math.max(float,float)";
+                case MIN_RIGHT_BOUND -> "Volume semantics: replace left only when right < left; NaN and ties preserve left";
+                case MAX_RIGHT_BOUND -> "Volume semantics: replace left only when right > left; NaN and ties preserve left";
                 case CONST_ADD_RIGHT -> "Exact left + right-float operation; preserve the sampler's float32 constant";
                 case CONST_SUB_LEFT -> "Exact left-float - right operation; preserve operand order and float32 constant";
                 case CONST_MUL_RIGHT -> "Exact left * right-float operation; no generic binary zero shortcut";
