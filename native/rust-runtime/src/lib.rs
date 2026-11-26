@@ -3433,7 +3433,7 @@ mod tests {
 
         let precision_nodes = [JpeDensityNode { opcode: DENSITY_GRADIENT_CLAMPED_Y,
             input_a: 16_777_216, input_b: 16_777_217, reserved: 16_777_217,
-            immediate: f64::from_bits(0x0000_0000_3f80_0000) }];
+            immediate: f64::from_bits(0x3f80_0000_3f80_0000) }];
         let precision_handle = unsafe { jpe_runtime_density_graph_compile(precision_nodes.as_ptr(), 1, 0, 10, 0x6A4F) };
         assert_ne!(precision_handle, 0);
         let mut precise = [0.0_f32; 1];
