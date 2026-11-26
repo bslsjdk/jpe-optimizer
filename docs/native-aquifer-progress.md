@@ -13,9 +13,21 @@ The C++ runtime currently contains:
 - Batched 12-candidate nearest-four selection. It preserves the x=0..1, y=-1..1, z=0..1 visitation order, Java int32 squared-distance wrap, and later-equal-candidate insertion.
 - Batched packed location-cache generation in vanilla x-fast, then z, then y order using the BlockPos long packing layout.
 - Scalar Aquifer pressure/substance decision logic and a batch wrapper that validates the full batch before writing outputs.
-- A per-Aquifer native `FluidStatus` cache keyed by packed `BlockPos.asLong` cell-center keys. It has fixed capacity, open-address lookup, per-cache locking, batch lookup/insert, and first-writer-wins insertion semantics matching `computeIfAbsent`.
+- A per-Aquifer native `FluidStatus` cache keyed by packed `BlockPos.asLong` cell-center keys. It has fixed capacity, open-address lookup, per-cache locking, batch lookup/insert, first-writer-wins insertion semantics matching `computeIfAbsent`, and all-or-nothing capacity rejection for inserts.
 
 The Rust runtime exposes those APIs, including native `FluidStatus` cache create/destroy/lookup/insert handles. Java's `NativeRuntime` has FFM entry points for grid-center cache prefill, nearest-four search, substance decisions, and `FluidStatus` cache operations. Per-worker FFM scratch buffers are reused for nearest-four, substance, and status-cache batches.
+
+## Source-audit coverage
+
+The 26.3 dual-artifact source-audit target list now includes `Aquifer` and its
+`NoiseBasedAquifer` nested implementation, `RandomState`, `NoiseGeneratorSettings`,
+both audited positional RNG implementations, `PositionalRandomFactory`,
+`RandomSource`, and `Mth`. The audit requires the exact nested Aquifer implementation
+in both source JARs, checks that `computeSubstance` exists, and records the bytecode
+length and SHA-256 fingerprints of the Aquifer decision methods in both Mojang's
+vanilla artifact and the NeoForge-patched artifact. That newly expanded audit remains
+subject to the latest CI result; adding classes to the inventory is not itself proof
+that decompilation/parity has passed.
 
 ## Minecraft integration currently enabled only in CI
 
