@@ -745,6 +745,7 @@ mod tests {
             step_x: i32, step_y: i32, step_z: i32,
             output: *mut f32, output_length: u64,
         ) -> i32;
+        fn jpe_cpp_density_graph_set_test_tile_limit(max_samples: u32);
         fn jpe_cpp_blend_density_volume_vector_sort_reference(
             height_data: *const JpeBlendingDataView, height_data_count: u32,
             density_data: *const JpeBlendingDataView, density_data_count: u32,
@@ -1043,6 +1044,45 @@ mod tests {
             println!(
                 "JPE_DENSITY_GRAPH_TILE_BENCH dims={}x{}x{} nodes={} tiled_median_ms={:.3} scalar_median_ms={:.3} speedup={:.3}x",
                 sx, sy, sz, nodes.len(), tiled_median, scalar_median, scalar_median / tiled_median
+            );
+
+            // Same-process ABBA comparison isolates the tile ceiling from CI-run
+            // variance. Both paths execute the same graph and all 1,225 chunk samples.
+            let mut tile_512_ms = Vec::with_capacity(21);
+            let mut tile_1225_ms = Vec::with_capacity(21);
+            let mut tile_output = vec![0.0_f32; output.len()];
+            for round in 0..21 {
+                let order = if round % 2 == 0 { [512_u32, 1225_u32] } else { [1225_u32, 512_u32] };
+                for tile_limit in order {
+                    unsafe { jpe_cpp_density_graph_set_test_tile_limit(tile_limit); }
+                    let start = Instant::now();
+                    for _ in 0..32 {
+                        assert_eq!(unsafe {
+                            jpe_runtime_density_graph_evaluate(
+                                handle, sx as u32, sy as u32, sz as u32,
+                                0, -64, 0, 4, 8, 4,
+                                tile_output.as_mut_ptr(), tile_output.len() as u64,
+                            )
+                        }, STATUS_OK);
+                    }
+                    let per_call_ms = start.elapsed().as_secs_f64() * 1000.0 / 32.0;
+                    if tile_limit == 512 {
+                        tile_512_ms.push(per_call_ms);
+                    } else {
+                        tile_1225_ms.push(per_call_ms);
+                    }
+                    assert_eq!(tile_output, scalar_output,
+                        "tile limit {tile_limit} must preserve exact full-chunk results");
+                }
+            }
+            unsafe { jpe_cpp_density_graph_set_test_tile_limit(0); }
+            tile_512_ms.sort_by(f64::total_cmp);
+            tile_1225_ms.sort_by(f64::total_cmp);
+            let median_512 = tile_512_ms[10];
+            let median_1225 = tile_1225_ms[10];
+            println!(
+                "JPE_DENSITY_GRAPH_TILE_SIZE_ABBA dims={}x{}x{} nodes={} tile512_median_ms={:.6} tile1225_median_ms={:.6} speedup_1225_over_512={:.3}x",
+                sx, sy, sz, nodes.len(), median_512, median_1225, median_512 / median_1225
             );
     
     
