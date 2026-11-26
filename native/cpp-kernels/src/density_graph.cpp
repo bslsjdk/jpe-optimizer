@@ -497,20 +497,33 @@ struct DensityEvaluationScratch {
     std::vector<Scalar> interpolation_y_fractions;
     std::vector<Scalar> interpolation_z_fractions;
 
-    void prepare(uint32_t slot_count, size_t volume, bool has_perlin,
+    void prepare(uint32_t slot_count, uint32_t root_slot, size_t volume, Scalar* output,
+                 bool has_perlin,
                  bool needs_x_coordinates, bool needs_y_coordinates, bool needs_z_coordinates,
                  uint32_t size_x, uint32_t size_y, uint32_t size_z,
                  int32_t min_x, int32_t min_y, int32_t min_z,
                  int32_t step_x, int32_t step_y, int32_t step_z) {
-        if (slot_count != 0 && volume > slot_storage.max_size() / slot_count) {
+        if (output == nullptr || slot_count == 0 || root_slot >= slot_count) {
+            throw std::invalid_argument("invalid density graph root output slot");
+        }
+        // The root register is the caller-owned output buffer. This removes one
+        // full-volume scratch register and the final scratch-to-output copy.
+        const uint32_t scratch_slot_count = slot_count - 1;
+        if (scratch_slot_count != 0 && volume > slot_storage.max_size() / scratch_slot_count) {
             throw std::length_error("density graph scratch size overflow");
         }
-        slot_storage.resize(static_cast<size_t>(slot_count) * volume);
+        slot_storage.resize(static_cast<size_t>(scratch_slot_count) * volume);
         slots.resize(slot_count);
         for (uint32_t i = 0; i < slot_count; ++i) {
-            Scalar* slot_data = slot_storage.empty()
-                    ? nullptr
-                    : slot_storage.data() + static_cast<size_t>(i) * volume;
+            Scalar* slot_data;
+            if (i == root_slot) {
+                slot_data = output;
+            } else {
+                const size_t physical_slot = i < root_slot ? i : i - 1;
+                slot_data = slot_storage.empty()
+                        ? nullptr
+                        : slot_storage.data() + physical_slot * volume;
+            }
             slots[i] = DensitySlotView<Scalar>{slot_data, volume};
         }
         if (has_perlin) perlin.resize(volume);
@@ -566,7 +579,9 @@ int32_t evaluate_density_graph_impl(
     try {
         const size_t volume = static_cast<size_t>(output_length);
         auto& scratch = density_evaluation_scratch<Scalar>(recursion_depth);
-        scratch.prepare(graph->slot_count, volume, graph->has_perlin,
+        const uint32_t root_slot = graph->node_slots[root_node];
+        if (root_slot == kNoInput || root_slot >= graph->slot_count) return 1;
+        scratch.prepare(graph->slot_count, root_slot, volume, output, graph->has_perlin,
                 graph->needs_x_coordinates, graph->needs_y_coordinates, graph->needs_z_coordinates,
                 size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z);
         auto& slots = scratch.slots;
@@ -990,8 +1005,7 @@ int32_t evaluate_density_graph_impl(
             }
         }
 
-        const auto& root_values = slots[graph->node_slots[root_node]];
-        std::copy(root_values.begin(), root_values.end(), output);
+        // The root slot already points at output; no final volume copy is needed.
         return 0;
     } catch (...) {
         return 3;
