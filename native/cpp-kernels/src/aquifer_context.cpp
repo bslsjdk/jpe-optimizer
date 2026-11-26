@@ -1,5 +1,6 @@
 #include "jpe_native_api.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
