@@ -89,6 +89,8 @@ jobs:
             jpe_runtime_aquifer_compute_substance_batch \
             jpe_runtime_aquifer_compute_fluid_status_batch \
             jpe_runtime_aquifer_context_compute_fluid_status_batch \
+            jpe_runtime_aquifer_context_configure_global_fluid_picker \
+            jpe_runtime_aquifer_context_compute_fluid_status_points_batch \
             jpe_runtime_aquifer_grid_centers \
             jpe_runtime_aquifer_nearest_four; do
             if ! grep -Fxq "$symbol" build-native-export-symbols.txt; then

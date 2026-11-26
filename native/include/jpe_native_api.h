@@ -325,6 +325,29 @@ JPE_API int32_t jpe_runtime_aquifer_context_compute_fluid_status_batch(
     uint32_t count,
     JpeAquiferFluidStatus* outputs
 );
+/* Configure the immutable vanilla 26.3 global FluidPicker once per Aquifer context. */
+JPE_API int32_t jpe_runtime_aquifer_context_configure_global_fluid_picker(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    int32_t sea_level,
+    int32_t min_y,
+    uint32_t default_fluid_type,
+    uint32_t default_fluid_is_air,
+    uint32_t debug_disable_fluid_generation
+);
+/* Fully native FluidStatus generation from aquifer cell-center coordinates.
+ * C++ evaluates the required density graphs and global FluidPicker, then caches results.
+ * cache_keys must equal BlockPos.asLong(x,y,z). */
+JPE_API int32_t jpe_runtime_aquifer_context_compute_fluid_status_points_batch(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    const uint64_t* cache_keys,
+    const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
+    uint32_t count,
+    JpeAquiferFluidStatus* outputs
+);
 
 /* Per-Aquifer, fixed-capacity FluidStatus cache. Keys are packed BlockPos.asLong
  * values for aquifer cell centers. First insertion wins, matching compute-if-absent.
@@ -398,6 +421,25 @@ JPE_API int32_t jpe_cpp_aquifer_context_compute_fluid_status_batch(
     uint64_t expected_semantic_fingerprint,
     const uint64_t* cache_keys,
     const JpeAquiferFluidStatusInput* inputs,
+    uint32_t count,
+    JpeAquiferFluidStatus* outputs
+);
+JPE_API int32_t jpe_cpp_aquifer_context_configure_global_fluid_picker(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    int32_t sea_level,
+    int32_t min_y,
+    uint32_t default_fluid_type,
+    uint32_t default_fluid_is_air,
+    uint32_t debug_disable_fluid_generation
+);
+JPE_API int32_t jpe_cpp_aquifer_context_compute_fluid_status_points_batch(
+    uint64_t context_handle,
+    const uint8_t* expected_world_fingerprint,
+    uint64_t expected_semantic_fingerprint,
+    const uint64_t* cache_keys,
+    const int32_t* point_x, const int32_t* point_y, const int32_t* point_z,
     uint32_t count,
     JpeAquiferFluidStatus* outputs
 );

@@ -217,6 +217,25 @@ unsafe extern "C" {
         count: u32,
         outputs: *mut JpeAquiferFluidStatus,
     ) -> i32;
+    fn jpe_cpp_aquifer_context_configure_global_fluid_picker(
+        context_handle: u64,
+        expected_world_fingerprint: *const u8,
+        expected_semantic_fingerprint: u64,
+        sea_level: i32,
+        min_y: i32,
+        default_fluid_type: u32,
+        default_fluid_is_air: u32,
+        debug_disable_fluid_generation: u32,
+    ) -> i32;
+    fn jpe_cpp_aquifer_context_compute_fluid_status_points_batch(
+        context_handle: u64,
+        expected_world_fingerprint: *const u8,
+        expected_semantic_fingerprint: u64,
+        cache_keys: *const u64,
+        point_x: *const i32, point_y: *const i32, point_z: *const i32,
+        count: u32,
+        outputs: *mut JpeAquiferFluidStatus,
+    ) -> i32;
     fn jpe_cpp_aquifer_compute_substance_batch(
         inputs: *const JpeAquiferCoreInput,
         count: u32,
@@ -529,6 +548,70 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_context_compute_fluid_status_batch(
         jpe_cpp_aquifer_context_compute_fluid_status_batch(
             context_handle, expected_world_fingerprint, expected_semantic_fingerprint,
             cache_keys, inputs, count, outputs,
+        )
+    })) {
+        Ok(STATUS_OK) => STATUS_OK,
+        Ok(STATUS_INVALID_ARGUMENT) => STATUS_INVALID_ARGUMENT,
+        Ok(_) => STATUS_CPP_FAILURE,
+        Err(_) => STATUS_RUST_PANIC,
+    }
+}
+
+/// Installs the immutable global FluidPicker rule for this world's context.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_context_configure_global_fluid_picker(
+    context_handle: u64,
+    expected_world_fingerprint: *const u8,
+    expected_semantic_fingerprint: u64,
+    sea_level: i32,
+    min_y: i32,
+    default_fluid_type: u32,
+    default_fluid_is_air: u32,
+    debug_disable_fluid_generation: u32,
+) -> i32 {
+    if context_handle == 0 || expected_world_fingerprint.is_null()
+        || expected_semantic_fingerprint == 0 || default_fluid_is_air > 1
+        || debug_disable_fluid_generation > 1 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        jpe_cpp_aquifer_context_configure_global_fluid_picker(
+            context_handle, expected_world_fingerprint, expected_semantic_fingerprint,
+            sea_level, min_y, default_fluid_type, default_fluid_is_air,
+            debug_disable_fluid_generation,
+        )
+    })) {
+        Ok(STATUS_OK) => STATUS_OK,
+        Ok(STATUS_INVALID_ARGUMENT) => STATUS_INVALID_ARGUMENT,
+        Ok(_) => STATUS_CPP_FAILURE,
+        Err(_) => STATUS_RUST_PANIC,
+    }
+}
+
+/// Computes and caches FluidStatus values with native sampler graphs and the vanilla picker.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_context_compute_fluid_status_points_batch(
+    context_handle: u64,
+    expected_world_fingerprint: *const u8,
+    expected_semantic_fingerprint: u64,
+    cache_keys: *const u64,
+    point_x: *const i32,
+    point_y: *const i32,
+    point_z: *const i32,
+    count: u32,
+    outputs: *mut JpeAquiferFluidStatus,
+) -> i32 {
+    const MAX_AQUIFER_STATUS_BATCH: u32 = 65_536;
+    if context_handle == 0 || expected_world_fingerprint.is_null()
+        || expected_semantic_fingerprint == 0 || cache_keys.is_null()
+        || point_x.is_null() || point_y.is_null() || point_z.is_null()
+        || outputs.is_null() || count == 0 || count > MAX_AQUIFER_STATUS_BATCH {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        jpe_cpp_aquifer_context_compute_fluid_status_points_batch(
+            context_handle, expected_world_fingerprint, expected_semantic_fingerprint,
+            cache_keys, point_x, point_y, point_z, count, outputs,
         )
     })) {
         Ok(STATUS_OK) => STATUS_OK,
@@ -3637,6 +3720,143 @@ mod tests {
 
         assert_eq!(unsafe { jpe_runtime_aquifer_context_destroy(context) }, STATUS_OK);
         assert_eq!(unsafe { jpe_runtime_aquifer_context_destroy(context) }, STATUS_INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn aquifer_context_generates_status_from_native_graphs_and_picker() {
+        let graph_values = [0.0_f64, -0.2, 0.0, 0.0, 0.0, 10.0];
+        let mut handles = [0_u64; 6];
+        for i in 0..6_u32 {
+            let node = [JpeDensityNode {
+                opcode: DENSITY_CONST,
+                input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT,
+                reserved: 0,
+                immediate: graph_values[i as usize],
+                auxiliary: 0.0,
+                tertiary: 0.0,
+            }];
+            handles[i as usize] = unsafe {
+                jpe_runtime_density_graph_compile(
+                    node.as_ptr(), 1, 0, 0xA91F_2632_0000 + i as u64,
+                )
+            };
+            assert_ne!(handles[i as usize], 0);
+        }
+        let fingerprint = [0x6B_u8; 32];
+        let info = JpeAquiferContextCreateInfo {
+            density_graph_handles: handles,
+            world_fingerprint: fingerprint,
+            semantic_fingerprint: 0xA91F_2632_0001,
+            seed_lo: 11,
+            seed_hi: 22,
+            random_mode: 0,
+            air_type: 100,
+            water_type: 200,
+            lava_type: 300,
+            max_status_cache_entries: 256,
+            reserved: 0,
+        };
+        let context = unsafe { jpe_runtime_aquifer_context_create(&info) };
+        assert_ne!(context, 0);
+        for handle in handles {
+            assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
+        }
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_configure_global_fluid_picker(
+                context, fingerprint.as_ptr(), info.semantic_fingerprint,
+                63, -2032, 200, 0, 0,
+            )
+        }, STATUS_OK);
+        // Reconfiguration with different worldgen parameters must fail closed.
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_configure_global_fluid_picker(
+                context, fingerprint.as_ptr(), info.semantic_fingerprint,
+                64, -2032, 200, 0, 0,
+            )
+        }, STATUS_INVALID_ARGUMENT);
+
+        let keys = [0_u64, 0_u64];
+        let xs = [0_i32, 0_i32];
+        let ys = [0_i32, 0_i32];
+        let zs = [0_i32, 0_i32];
+        let mut output = [JpeAquiferFluidStatus::default(); 2];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_compute_fluid_status_points_batch(
+                context, fingerprint.as_ptr(), info.semantic_fingerprint,
+                keys.as_ptr(), xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
+                2, output.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        let expected = JpeAquiferFluidStatus { fluid_level: 10, fluid_type: 200 };
+        assert_eq!(output, [expected; 2]);
+
+        // Packed BlockPos keys are validated against all three coordinate arrays.
+        let wrong_key = [1_u64, 1_u64];
+        let sentinel = [JpeAquiferFluidStatus { fluid_level: 123, fluid_type: 456 }; 2];
+        output = sentinel;
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_compute_fluid_status_points_batch(
+                context, fingerprint.as_ptr(), info.semantic_fingerprint,
+                wrong_key.as_ptr(), xs.as_ptr(), ys.as_ptr(), zs.as_ptr(),
+                2, output.as_mut_ptr(),
+            )
+        }, STATUS_INVALID_ARGUMENT);
+        assert_eq!(output, sentinel);
+        assert_eq!(unsafe { jpe_runtime_aquifer_context_destroy(context) }, STATUS_OK);
+
+        // Debug fluid generation returns vanilla's empty global status and below-min-Y sentinel.
+        let mut debug_handles = [0_u64; 6];
+        for i in 0..6_u32 {
+            let node = [JpeDensityNode {
+                opcode: DENSITY_CONST,
+                input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT,
+                reserved: 0,
+                immediate: graph_values[i as usize],
+                auxiliary: 0.0,
+                tertiary: 0.0,
+            }];
+            debug_handles[i as usize] = unsafe {
+                jpe_runtime_density_graph_compile(
+                    node.as_ptr(), 1, 0, 0xA91F_2633_0000 + i as u64,
+                )
+            };
+            assert_ne!(debug_handles[i as usize], 0);
+        }
+        let debug_info = JpeAquiferContextCreateInfo {
+            density_graph_handles: debug_handles,
+            world_fingerprint: [0x6C; 32],
+            semantic_fingerprint: 0xA91F_2633_0001,
+            ..info
+        };
+        let debug_context = unsafe { jpe_runtime_aquifer_context_create(&debug_info) };
+        assert_ne!(debug_context, 0);
+        for handle in debug_handles {
+            assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
+        }
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_configure_global_fluid_picker(
+                debug_context, debug_info.world_fingerprint.as_ptr(),
+                debug_info.semantic_fingerprint, 63, -2032, 200, 0, 1,
+            )
+        }, STATUS_OK);
+        let debug_key = [0_u64];
+        let debug_x = [0_i32];
+        let debug_y = [0_i32];
+        let debug_z = [0_i32];
+        let mut debug_output = [JpeAquiferFluidStatus::default(); 1];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_compute_fluid_status_points_batch(
+                debug_context, debug_info.world_fingerprint.as_ptr(),
+                debug_info.semantic_fingerprint, debug_key.as_ptr(),
+                debug_x.as_ptr(), debug_y.as_ptr(), debug_z.as_ptr(),
+                1, debug_output.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        assert_eq!(debug_output[0].fluid_level, -32512);
+        assert_eq!(debug_output[0].fluid_type, debug_info.air_type);
+        assert_eq!(unsafe { jpe_runtime_aquifer_context_destroy(debug_context) }, STATUS_OK);
     }
 
     #[test]
