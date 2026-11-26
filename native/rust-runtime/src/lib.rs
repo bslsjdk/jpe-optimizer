@@ -117,6 +117,16 @@ unsafe extern "C" {
         step_x: i32, step_y: i32, step_z: i32,
         output: *mut f32, output_length: u64,
     ) -> i32;
+    fn jpe_runtime_density_graph_evaluate_points(
+        graph_handle: u64,
+        point_x: *const i32, point_y: *const i32, point_z: *const i32,
+        point_count: u32, output: *mut f64, output_length: u64,
+    ) -> i32;
+    fn jpe_runtime_density_graph_evaluate_points_f32(
+        graph_handle: u64,
+        point_x: *const i32, point_y: *const i32, point_z: *const i32,
+        point_count: u32, output: *mut f32, output_length: u64,
+    ) -> i32;
     fn jpe_runtime_density_graph_release(graph_handle: u64) -> i32;
     fn jpe_cpp_aquifer_compute_substance_core(
         input: *const JpeAquiferCoreInput,
@@ -1205,6 +1215,73 @@ mod tests {
                 output.as_mut_ptr(), 1,
             )
         }, 2);
+    }
+
+    #[test]
+    fn density_graph_evaluates_arbitrary_points_in_input_order_f64_and_f32() {
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_X, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_Y, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_Z, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 2.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 0,
+                input_b: 3, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_MUL, input_a: 4,
+                input_b: 1, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_ADD, input_a: 5,
+                input_b: 2, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+        ];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 6, 0xA91F_263)
+        };
+        assert_ne!(graph, 0);
+
+        let xs = [17_i32, -31, 0, 2048, i32::MIN, i32::MAX, -5];
+        let ys = [-9_i32, 12, 0, -64, 17, -3, 29];
+        let zs = [3_i32, -7, 41, -128, -11, 23, i32::MAX];
+        let mut actual = [f64::NAN; 7];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_points(
+                graph, xs.as_ptr(), ys.as_ptr(), zs.as_ptr(), 7,
+                actual.as_mut_ptr(), 7,
+            )
+        }, STATUS_OK);
+        for i in 0..7 {
+            let expected = (xs[i] as f64 + 2.0) * ys[i] as f64 + zs[i] as f64;
+            assert_eq!(actual[i], expected, "f64 arbitrary point index={i}");
+        }
+
+        let mut actual_f32 = [f32::NAN; 7];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_points_f32(
+                graph, xs.as_ptr(), ys.as_ptr(), zs.as_ptr(), 7,
+                actual_f32.as_mut_ptr(), 7,
+            )
+        }, STATUS_OK);
+        for i in 0..7 {
+            let expected = (xs[i] as f32 + 2.0_f32) * ys[i] as f32 + zs[i] as f32;
+            assert_eq!(actual_f32[i].to_bits(), expected.to_bits(), "f32 arbitrary point index={i}");
+        }
+
+        // All input and output lengths are exact, and the C ABI rejects partial batches.
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_points(
+                graph, xs.as_ptr(), ys.as_ptr(), zs.as_ptr(), 7,
+                actual.as_mut_ptr(), 6,
+            )
+        }, STATUS_INVALID_ARGUMENT);
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_points(
+                graph, std::ptr::null(), ys.as_ptr(), zs.as_ptr(), 7,
+                actual.as_mut_ptr(), 7,
+            )
+        }, STATUS_INVALID_ARGUMENT);
+
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
     }
 
     #[test]
