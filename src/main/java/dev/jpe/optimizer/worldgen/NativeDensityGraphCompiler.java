@@ -726,11 +726,6 @@ public final class NativeDensityGraphCompiler {
                         result = append(NativeRuntime.DensityNode.clamp(input, minimum, maximum));
                     }
                     case "NoiseFunction" -> {
-                        if (!DensityFunctions.zero().equals(component(function, "shiftX"))
-                                || !DensityFunctions.zero().equals(component(function, "shiftY"))
-                                || !DensityFunctions.zero().equals(component(function, "shiftZ"))) {
-                            throw new UnsupportedOperationException("Domain-warped noise is not yet lowered");
-                        }
                         Noise noise;
                         synchronized (LOCK) {
                             Map<NoiseFunction, Noise> captured = CAPTURED_NOISE.get(context);
@@ -742,8 +737,22 @@ public final class NativeDensityGraphCompiler {
                         }
                         double xzScale = ((Number) component(function, "xzScale")).doubleValue();
                         double yScale = ((Number) component(function, "yScale")).doubleValue();
-                        result = append(NativeRuntime.DensityNode.perlinStack(
-                                preparedHandle, xzScale, yScale, 1.0F));
+                        DensityFunction shiftX = (DensityFunction) component(function, "shiftX");
+                        DensityFunction shiftY = (DensityFunction) component(function, "shiftY");
+                        DensityFunction shiftZ = (DensityFunction) component(function, "shiftZ");
+                        if (DensityFunctions.zero().equals(shiftX)
+                                && DensityFunctions.zero().equals(shiftY)
+                                && DensityFunctions.zero().equals(shiftZ)) {
+                            result = append(NativeRuntime.DensityNode.perlinStack(
+                                    preparedHandle, xzScale, yScale, 1.0F));
+                        } else {
+                            int shiftXIndex = lower(shiftX);
+                            int shiftYIndex = lower(shiftY);
+                            int shiftZIndex = lower(shiftZ);
+                            result = append(NativeRuntime.DensityNode.perlinStackWarped(
+                                    preparedHandle, xzScale, yScale,
+                                    shiftXIndex, shiftYIndex, shiftZIndex));
+                        }
                     }
                     default -> throw new UnsupportedOperationException("Unsupported density node " + kind);
                 }
