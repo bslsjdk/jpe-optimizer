@@ -299,6 +299,12 @@ public final class NativeDensityGraphCompiler {
                         };
                         result = append(node);
                     }
+                    case "InterpolatedFunction" -> {
+                        int input = lower((DensityFunction) component(function, "input"));
+                        int cellSizeXz = ((Number) component(function, "cellSizeXz")).intValue();
+                        int cellSizeY = ((Number) component(function, "cellSizeY")).intValue();
+                        result = append(NativeRuntime.DensityNode.interpolated(input, cellSizeXz, cellSizeY));
+                    }
                     case "LerpFunction" -> {
                         int alpha = lower((DensityFunction) component(function, "alpha"));
                         int first = lower((DensityFunction) component(function, "first"));
