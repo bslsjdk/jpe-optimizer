@@ -10,6 +10,7 @@ import it.unimi.dsi.fastutil.floats.FloatList;
 import net.minecraft.core.Holder;
 import net.minecraft.world.level.levelgen.NoiseChunk;
 import net.minecraft.world.level.levelgen.RandomState;
+import net.minecraft.world.level.levelgen.Beardifier;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBufferPool;
 import net.minecraft.world.level.levelgen.densityfunction.DensityFunction;
 import net.minecraft.world.level.levelgen.densityfunction.DensityFunctions;
@@ -107,7 +108,8 @@ public final class NativeDensityGraphCompiler {
         // BlendDensityFunction is a pass-through only for a genuinely empty Blender.
         // Non-empty legacy chunks must use vanilla's context-bound blend sampler.
         if (!noiseChunkAccess.jpe$getBlender().isEmpty()) return null;
-        long handle = graphHandle(root, randomState, context, true, runtime);
+        boolean beardifierEmpty = noiseChunkAccess.jpe$getBeardifier() == Beardifier.EMPTY;
+        long handle = graphHandle(root, randomState, context, true, beardifierEmpty, runtime);
         if (handle == 0L) return null;
 
         DensityBufferPool pool = noiseChunkAccess.jpe$getBufferPool();
@@ -133,6 +135,7 @@ public final class NativeDensityGraphCompiler {
             RandomState randomState,
             DensityFunction.CompileContext context,
             boolean blenderEmpty,
+            boolean beardifierEmpty,
             NativeRuntime runtime
     ) {
         synchronized (LOCK) {
@@ -152,7 +155,7 @@ public final class NativeDensityGraphCompiler {
                 existing.runtime().releaseDensityGraph(existing.handle());
             }
 
-            Builder builder = new Builder(context, blenderEmpty);
+            Builder builder = new Builder(context, blenderEmpty, beardifierEmpty);
             int rootIndex;
             try {
                 rootIndex = builder.lower(root);
@@ -224,13 +227,15 @@ public final class NativeDensityGraphCompiler {
     private static final class Builder {
         private final DensityFunction.CompileContext context;
         private final boolean blenderEmpty;
+        private final boolean beardifierEmpty;
         private final List<NativeRuntime.DensityNode> nodes = new ArrayList<>();
         private final IdentityHashMap<DensityFunction, Integer> indices = new IdentityHashMap<>();
         private final IdentityHashMap<DensityFunction, Boolean> active = new IdentityHashMap<>();
 
-        private Builder(DensityFunction.CompileContext context, boolean blenderEmpty) {
+        private Builder(DensityFunction.CompileContext context, boolean blenderEmpty, boolean beardifierEmpty) {
             this.context = context;
             this.blenderEmpty = blenderEmpty;
+            this.beardifierEmpty = beardifierEmpty;
         }
 
         private int append(NativeRuntime.DensityNode node) {
@@ -262,6 +267,25 @@ public final class NativeDensityGraphCompiler {
                             throw new UnsupportedOperationException("Legacy chunk blending requires a native blender node");
                         }
                         result = lower((DensityFunction) component(function, "input"));
+                    }
+                    case "SimpleDensityFunction" -> {
+                        String simpleName = function.toString();
+                        float value = switch (simpleName) {
+                            case "BLEND_ALPHA" -> {
+                                if (!blenderEmpty) throw new UnsupportedOperationException("Non-empty blend alpha");
+                                yield 1.0F;
+                            }
+                            case "BLEND_OFFSET" -> {
+                                if (!blenderEmpty) throw new UnsupportedOperationException("Non-empty blend offset");
+                                yield 0.0F;
+                            }
+                            case "BEARDIFIER" -> {
+                                if (!beardifierEmpty) throw new UnsupportedOperationException("Non-empty beardifier");
+                                yield 0.0F;
+                            }
+                            default -> throw new UnsupportedOperationException("Unsupported simple density function " + simpleName);
+                        };
+                        result = append(NativeRuntime.DensityNode.constant(value));
                     }
                     case "ConstantFunction" -> {
                         Number value = (Number) component(function, "value");
