@@ -236,6 +236,18 @@ unsafe extern "C" {
         count: u32,
         outputs: *mut JpeAquiferFluidStatus,
     ) -> i32;
+    fn jpe_cpp_aquifer_context_compute_substance_volume_f32(
+        context_handle: u64,
+        expected_world_fingerprint: *const u8,
+        expected_semantic_fingerprint: u64,
+        skip_sampling_above_y: i32,
+        size_x: u32, size_y: u32, size_z: u32,
+        min_x: i32, min_y: i32, min_z: i32,
+        step_x: i32, step_y: i32, step_z: i32,
+        density_values: *const f32,
+        density_count: u32,
+        outputs: *mut JpeAquiferCoreOutput,
+    ) -> i32;
     fn jpe_cpp_aquifer_compute_substance_batch(
         inputs: *const JpeAquiferCoreInput,
         count: u32,
@@ -612,6 +624,49 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_context_compute_fluid_status_points
         jpe_cpp_aquifer_context_compute_fluid_status_points_batch(
             context_handle, expected_world_fingerprint, expected_semantic_fingerprint,
             cache_keys, point_x, point_y, point_z, count, outputs,
+        )
+    })) {
+        Ok(STATUS_OK) => STATUS_OK,
+        Ok(STATUS_INVALID_ARGUMENT) => STATUS_INVALID_ARGUMENT,
+        Ok(_) => STATUS_CPP_FAILURE,
+        Err(_) => STATUS_RUST_PANIC,
+    }
+}
+
+/// Runs the full native computeSubstance pass over a DensityVolume.
+/// Linear ordering matches DensityVolume.indexUnchecked: Y, then X, then Z.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_aquifer_context_compute_substance_volume_f32(
+    context_handle: u64,
+    expected_world_fingerprint: *const u8,
+    expected_semantic_fingerprint: u64,
+    skip_sampling_above_y: i32,
+    size_x: u32, size_y: u32, size_z: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    step_x: i32, step_y: i32, step_z: i32,
+    density_values: *const f32,
+    density_count: u32,
+    outputs: *mut JpeAquiferCoreOutput,
+) -> i32 {
+    const MAX_VOLUME_VOXELS: u64 = 1_048_576;
+    let Some(total) = (size_x as u64)
+        .checked_mul(size_y as u64)
+        .and_then(|n| n.checked_mul(size_z as u64)) else {
+        return STATUS_INVALID_ARGUMENT;
+    };
+    if context_handle == 0 || expected_world_fingerprint.is_null()
+        || expected_semantic_fingerprint == 0 || size_x == 0 || size_y == 0 || size_z == 0
+        || step_x <= 0 || step_y <= 0 || step_z <= 0
+        || density_values.is_null() || outputs.is_null()
+        || total == 0 || total > MAX_VOLUME_VOXELS || density_count as u64 != total {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        jpe_cpp_aquifer_context_compute_substance_volume_f32(
+            context_handle, expected_world_fingerprint, expected_semantic_fingerprint,
+            skip_sampling_above_y, size_x, size_y, size_z,
+            min_x, min_y, min_z, step_x, step_y, step_z,
+            density_values, density_count, outputs,
         )
     })) {
         Ok(STATUS_OK) => STATUS_OK,
@@ -3768,6 +3823,56 @@ mod tests {
             )
         }, STATUS_INVALID_ARGUMENT);
         assert_eq!(point_statuses, untouched);
+
+        // The full volume pass returns above-surface global fluid directly,
+        // skips positive-density voxels, and executes one negative-density voxel
+        // through native nearest-four, FluidStatus, barrier and core decisions.
+        let volume_densities = [-1.0_f32, 1.0_f32];
+        let mut volume_outputs = [JpeAquiferCoreOutput::default(); 2];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_compute_substance_volume_f32(
+                context, expected_fingerprint.as_ptr(), expected_semantic_fingerprint,
+                -1, 2, 1, 1, 64, 0, 0, 1, 1, 1,
+                volume_densities.as_ptr(), 2, volume_outputs.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        assert_eq!(volume_outputs[0].has_block_state, 1);
+        assert_eq!(volume_outputs[0].block_state_type, info.water_type);
+        assert_eq!(volume_outputs[0].should_schedule_fluid_update, 0);
+        assert_eq!(volume_outputs[1].has_block_state, 0);
+        assert_eq!(volume_outputs[1].block_state_type, info.air_type);
+        assert_eq!(volume_outputs[1].should_schedule_fluid_update, 0);
+
+        let active_density = [-1.0_f32];
+        let mut active_output = [JpeAquiferCoreOutput::default(); 1];
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_compute_substance_volume_f32(
+                context, expected_fingerprint.as_ptr(), expected_semantic_fingerprint,
+                0, 1, 1, 1, 64, 0, 0, 1, 1, 1,
+                active_density.as_ptr(), 1, active_output.as_mut_ptr(),
+            )
+        }, STATUS_OK);
+        assert_eq!(active_output[0].has_block_state, 1);
+        assert_eq!(active_output[0].block_state_type, info.air_type);
+        assert_eq!(active_output[0].should_schedule_fluid_update, 0);
+
+        // Invalid volume dimensions are rejected before touching output.
+        let untouched_volume = [JpeAquiferCoreOutput {
+            has_block_state: 77,
+            block_state_type: 88,
+            should_schedule_fluid_update: 99,
+        }; 1];
+        active_output = untouched_volume;
+        assert_eq!(unsafe {
+            jpe_runtime_aquifer_context_compute_substance_volume_f32(
+                context, expected_fingerprint.as_ptr(), expected_semantic_fingerprint,
+                0, 2, 1, 1, 64, 0, 0, 1, 1, 1,
+                active_density.as_ptr(), 1, active_output.as_mut_ptr(),
+            )
+        }, STATUS_INVALID_ARGUMENT);
+        assert_eq!(active_output[0].has_block_state, 77);
+        assert_eq!(active_output[0].block_state_type, 88);
+        assert_eq!(active_output[0].should_schedule_fluid_update, 99);
 
         assert_eq!(unsafe { jpe_runtime_aquifer_context_destroy(context) }, STATUS_OK);
         assert_eq!(unsafe { jpe_runtime_aquifer_context_destroy(context) }, STATUS_INVALID_ARGUMENT);
