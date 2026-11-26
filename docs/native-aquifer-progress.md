@@ -13,8 +13,9 @@ The C++ runtime currently contains:
 - Batched 12-candidate nearest-four selection. It preserves the x=0..1, y=-1..1, z=0..1 visitation order, Java int32 squared-distance wrap, and later-equal-candidate insertion.
 - Batched packed location-cache generation in vanilla x-fast, then z, then y order using the BlockPos long packing layout.
 - Scalar Aquifer pressure/substance decision logic and a batch wrapper that validates the full batch before writing outputs.
+- A per-Aquifer native `FluidStatus` cache keyed by packed `BlockPos.asLong` cell-center keys. It has fixed capacity, open-address lookup, per-cache locking, batch lookup/insert, and first-writer-wins insertion semantics matching `computeIfAbsent`.
 
-The Rust runtime exposes those APIs. Java's `NativeRuntime` has FFM entry points for grid-center cache prefill and nearest-four search. Per-worker FFM scratch buffers are reused for nearest-four arrays.
+The Rust runtime exposes those APIs, including native `FluidStatus` cache create/destroy/lookup/insert handles. Java's `NativeRuntime` has FFM entry points for grid-center cache prefill, nearest-four search, substance decisions, and `FluidStatus` cache operations. Per-worker FFM scratch buffers are reused for nearest-four, substance, and status-cache batches.
 
 ## Minecraft integration currently enabled only in CI
 
@@ -37,7 +38,7 @@ This is not a complete native Aquifer or native chunk-fill implementation.
 
 - The constructor still creates the Aquifer object and Java only hands the cache array and factory seed state to the bridge.
 - The production per-voxel Aquifer `computeSubstance` path still runs in Java. The new FFM nearest-four method is currently a validated runtime API and GameTest target, not yet called from the production chunk-fill path.
-- FluidStatus construction and caching remain in Java.
+- The FluidStatus **storage/cache infrastructure** now exists in C++, but Java has not yet been removed from producing FluidStatus values. The cache FFM API and Rust tests validate storage, first-writer-wins, missing-key lookup, and capacity behavior; the 13-surface-sample FluidStatus computation itself is not yet native.
 - The 13 surface-level samples per cell and the surface, exclusion, floodedness, spread, and lava sampler evaluations are not yet moved into the native Aquifer volume pipeline.
 - Global FluidPicker behavior, barrier-noise sampling, block-state selection, update scheduling, and modded fluid-state tokens are not yet fully integrated into a native full-volume contract.
 - No full Aquifer speedup, reduction in total world-generation Java allocations, or complete world-generation parity is claimed.
@@ -46,7 +47,7 @@ This is not a complete native Aquifer or native chunk-fill implementation.
 
 1. Compile the six Aquifer density samplers into immutable native plans during world startup and retain their handles with the same world/RandomState fingerprint discipline as density graphs.
 2. Add a native arbitrary-point/batch density evaluation path so C++ can sample the 13 surface positions and six FluidStatus inputs without Java producing per-block samples.
-3. Implement per-volume Aquifer context preparation in C++: location cache, per-cell FluidStatus cache, quart-surface cache, lazy barrier-noise values, and global-fluid lookup tokens.
+3. Implement per-volume Aquifer context preparation in C++: fill the native per-cell FluidStatus cache from native sampler evaluations, add the quart-surface cache, lazy barrier-noise values, and global-fluid lookup tokens.
 4. Add a complete full-volume API returning parallel outputs: keep-terrain/null marker, opaque block-state token, and fluid-update flag. Preserve the exact early-exit order and Java float/double conversion behavior.
 5. Connect that output to the chunk fill once per volume. Java should only map opaque tokens to BlockState and commit block/heightmap writes; it must not run per-voxel nearest-neighbor search, status generation, pressure, or density sampling.
 6. Validate raw Aquifer decisions and final chunk block-state hashes against vanilla across both RNG algorithms, negative coordinates, fluid interfaces, caves, debug-fluid mode, and modded registry states. Keep strict mode fail-closed until this passes.
