@@ -457,7 +457,7 @@ public final class NativeDensityGraphCompiler {
                         Number value = (Number) component(function, "value");
                         result = constant(value.floatValue());
                     }
-                    case "Spline" -> result = lowerSpline(member(function, "spline"));
+                    case "SplineFunction" -> result = lowerSpline(member(function, "spline"));
                     case "BinaryFunction" -> {
                         String operation = component(function, "type").toString();
                         int left = lower((DensityFunction) component(function, "left"));
