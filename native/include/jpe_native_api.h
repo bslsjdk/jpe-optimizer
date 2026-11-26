@@ -203,6 +203,16 @@ JPE_API int32_t jpe_runtime_aquifer_compute_substance_batch(
     JpeAquiferCoreOutput *outputs
 );
 
+/* Internal C++ kernels linked by the Rust runtime. Public jpe_runtime_* symbols
+ * are exported by Rust wrappers so the cdylib exposes a stable ABI. */
+JPE_API int32_t jpe_cpp_aquifer_compute_substance_core(
+    const JpeAquiferCoreInput *input, JpeAquiferCoreOutput *output
+);
+JPE_API int32_t jpe_cpp_aquifer_compute_substance_batch(
+    const JpeAquiferCoreInput *inputs, uint32_t count,
+    JpeAquiferCoreOutput *outputs
+);
+
 typedef struct JpeAquiferCellLocation {
     int32_t x;
     int32_t y;
