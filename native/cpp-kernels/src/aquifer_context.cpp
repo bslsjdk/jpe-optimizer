@@ -185,6 +185,11 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_fluid_status_batch(
                        context->world_fingerprint.size()) != 0) {
         return 1;
     }
+    // Fluid registry tokens are scoped to this context. Do not accept an input
+    // batch compiled against another world's lava token table.
+    for (uint32_t i = 0; i < count; ++i) {
+        if (inputs[i].lava_type != context->lava_type) return 1;
+    }
 
     // All intermediate state stays native. Caller output is copied only after
     // the cache has been filled and a final first-writer-wins lookup succeeds.
