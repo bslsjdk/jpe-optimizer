@@ -70,6 +70,10 @@ public abstract class NoiseBasedChunkGeneratorMixin {
             WorldgenMetrics.beginDoFill();
         }
         long densityStart = profile ? System.nanoTime() : 0L;
+        long densityAllocatedBefore = profile ? WorldgenMetrics.currentThreadAllocatedBytes() : -1L;
+        long densityAllocatedBytes = -1L;
+        long blockFillAllocatedBytes = -1L;
+        long fillAllocatedBefore = -1L;
         long densityNanos = 0L;
         long fillStart = 0L;
         long sampledAquiferNanos = 0L;
@@ -82,7 +86,10 @@ public abstract class NoiseBasedChunkGeneratorMixin {
             try (ScopedDensityBuffer densityBuffer = finalDensity.sampleVolume(volume)) {
             if (profile) {
                 densityNanos = System.nanoTime() - densityStart;
+                densityAllocatedBytes = WorldgenMetrics.allocatedDelta(
+                        densityAllocatedBefore, WorldgenMetrics.currentThreadAllocatedBytes());
                 fillStart = System.nanoTime();
+                fillAllocatedBefore = WorldgenMetrics.currentThreadAllocatedBytes();
             }
 
             int sizeY = volume.sizeY();
@@ -165,6 +172,10 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                     }
                 }
             }
+            if (profile) {
+                blockFillAllocatedBytes = WorldgenMetrics.allocatedDelta(
+                        fillAllocatedBefore, WorldgenMetrics.currentThreadAllocatedBytes());
+            }
             }
         } finally {
             if (profile) {
@@ -175,7 +186,8 @@ public abstract class NoiseBasedChunkGeneratorMixin {
         if (profile) {
             WorldgenMetrics.record(densityNanos, System.nanoTime() - fillStart, volume.size(),
                     sampledAquiferNanos, sampledPlacementNanos, timingSampleCount,
-                    aquiferCallsExecuted, aquiferCallsSkipped);
+                    aquiferCallsExecuted, aquiferCallsSkipped,
+                    densityAllocatedBytes, blockFillAllocatedBytes);
         }
     }
 

@@ -309,6 +309,10 @@ public final class ContinuousWorldgenBenchmark {
                     DensityBufferMetrics.snapshot(), densityBuffersBefore);
             StructureSpatialIndex.Metrics structureAfter = StructureSpatialIndex.metricsSnapshot();
             long doFillCalls = worldgenAfter.calls() - worldgenBefore.calls();
+            long doFillDensityAllocatedBytes = worldgenAfter.densityAllocatedBytes()
+                    - worldgenBefore.densityAllocatedBytes();
+            long doFillBlockAllocatedBytes = worldgenAfter.blockFillAllocatedBytes()
+                    - worldgenBefore.blockFillAllocatedBytes();
             long sampledAquiferNanos = worldgenAfter.sampledAquiferNanos() - worldgenBefore.sampledAquiferNanos();
             long sampledPlacementNanos = worldgenAfter.sampledPlacementNanos() - worldgenBefore.sampledPlacementNanos();
             long timingSamples = worldgenAfter.timingSamples() - worldgenBefore.timingSamples();
@@ -348,6 +352,7 @@ public final class ContinuousWorldgenBenchmark {
                             + "avgGetChunkFutureCallMs={} maxGetChunkFutureCallMs={} elapsedSeconds={} "
                             + "serverThreadCpuMs={} processCpuMs={} serverThreadAllocatedMiB={} liveThreadsAllocatedMiB={} gcCollections={} gcMs={} "
                             + "doFillCalls={} doFillDensityMs={} doFillBlockMs={} doFillSamples={} "
+                            + "doFillDensityAllocatedMiB={} doFillBlockAllocatedMiB={} "
                             + "sampledAquiferMs={} sampledPlacementMs={} timingSamples={} "
                             + "structureQueries={} structureIndexBuilds={} structureIndexedPieces={} "
                             + "structureCandidateChecks={} structureVanillaLinearChecks={} "
@@ -380,6 +385,8 @@ public final class ContinuousWorldgenBenchmark {
                     format((worldgenAfter.densitySampleNanos() - worldgenBefore.densitySampleNanos()) / 1_000_000.0),
                     format((worldgenAfter.blockFillNanos() - worldgenBefore.blockFillNanos()) / 1_000_000.0),
                     worldgenAfter.samples() - worldgenBefore.samples(),
+                    format(doFillDensityAllocatedBytes >= 0 ? doFillDensityAllocatedBytes / 1048576.0 : -1.0),
+                    format(doFillBlockAllocatedBytes >= 0 ? doFillBlockAllocatedBytes / 1048576.0 : -1.0),
                     format(sampledAquiferNanos / 1_000_000.0),
                     format(sampledPlacementNanos / 1_000_000.0), timingSamples,
                     structureAfter.queries() - structureBefore.queries(),
