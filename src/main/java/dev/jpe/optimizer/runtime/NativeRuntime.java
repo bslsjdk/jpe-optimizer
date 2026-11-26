@@ -598,6 +598,10 @@ public final class NativeRuntime implements AutoCloseable {
         if (fingerprintIsZero) throw new IllegalArgumentException("World fingerprint must not be all zero");
         for (long handle : graphHandles) {
             if (handle == 0L) throw new IllegalArgumentException("Aquifer sampler graph handles must be non-zero");
+            if (!densityGraphHandles.containsKey(handle)) {
+                throw new IllegalArgumentException(
+                        "Aquifer sampler graph handle is not owned by this NativeRuntime: " + handle);
+            }
         }
 
         lifecycle.readLock().lock();
