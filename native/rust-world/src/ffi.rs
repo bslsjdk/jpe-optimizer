@@ -2014,7 +2014,15 @@ mod tests {
         // A pipeline needs a live renderer of the caller's own thread.
         assert_eq!(jpe_pipeline_create(unknown, 1, 8, std::ptr::null()), 0);
         let r = jpe_world_renderer_create(RENDER_BACKEND_AUTO);
-        assert_ne!(r, 0);
+        if r == 0 {
+            // `AUTO` means the best *native* backend; the CPU reference renderer
+            // is not reachable over the ABI, so on a machine with no driver at all
+            // these pipeline checks cannot bind a pipeline. A skip here, a failure
+            // in the GPU jobs (`JPE_REQUIRE_RENDER_BACKENDS=1`).
+            require_or_skip("no native render backend could be created here");
+            eprintln!("no native render backend here, skipping pipeline contract checks");
+            return;
+        }
         assert_eq!(jpe_pipeline_create(r, 1, 8, std::ptr::null()), 0);
         assert_eq!(jpe_pipeline_create(unknown, 1, 8, std::ptr::null()), 0);
         let other = std::thread::spawn(move || jpe_pipeline_create(r, 1, 8, std::ptr::null()));

@@ -222,6 +222,13 @@ dependent.
 - **Section-level meshing only.** Faces hidden by a newly arrived neighbour are
   removed correctly, but there is no merging of coplanar quads across sections and
   no per-face UV atlas packing beyond the stage-3 test atlas.
+- **The CPU reference renderer is not exposed over the Java ABI.** `AUTO` means
+  "best native backend", so on a machine with no driver the `jpe_pipeline_*` tests
+  and the harness pipeline section skip (and fail, not skip, whenever
+  `JPE_REQUIRE_RENDER_BACKENDS=1`, which the two GPU jobs set). The equivalent
+  pipeline coverage without a GPU runs at Rust level against
+  `render::headless::HeadlessRenderer`, which is where the lifecycle assertions
+  actually live.
 - `cargo fmt --check` and `cargo clippy` could not be run in this sandbox (the
   rustup mirror returns 404 for the `rustfmt`/`clippy` components), so they remain
   advisory CI steps here; nothing in this document claims they passed.
