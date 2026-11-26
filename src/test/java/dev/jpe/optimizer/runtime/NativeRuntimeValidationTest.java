@@ -83,6 +83,23 @@ class NativeRuntimeValidationTest {
     }
 
     @Test
+    void densityGraphGradientEncodesAllTilingModes() {
+        for (int tiling = 0; tiling <= 2; tiling++) {
+            NativeRuntime.DensityNode node =
+                    NativeRuntime.DensityNode.gradient(1, tiling, -64, -40, 0.0F, 1.0F);
+            assertEquals(25, node.opcode());
+            assertEquals(1, node.inputA());
+            assertEquals(tiling, node.inputB());
+            assertEquals(Float.floatToRawIntBits(0.0F), node.reserved());
+            assertEquals(-64.0D, node.immediate());
+            assertEquals(-40.0D, node.auxiliary());
+            assertEquals(1.0D, node.tertiary());
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> NativeRuntime.DensityNode.gradient(0, 3, 0, 1, 0.0F, 1.0F));
+    }
+
+    @Test
     void densityGraphPerlinNodePreservesDoublePrecisionScales() {
         double xzScale = Math.nextUp(0.1D);
         double yScale = Math.nextDown(0.2D);
