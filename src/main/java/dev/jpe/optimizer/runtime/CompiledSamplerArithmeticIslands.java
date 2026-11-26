@@ -120,6 +120,11 @@ public final class CompiledSamplerArithmeticIslands {
                 || op == CompiledSamplerGraphIr.Op.ABS
                 || op == CompiledSamplerGraphIr.Op.SQUARE
                 || op == CompiledSamplerGraphIr.Op.CUBE
+                || op == CompiledSamplerGraphIr.Op.SQRT
+                || op == CompiledSamplerGraphIr.Op.LOG
+                || op == CompiledSamplerGraphIr.Op.RECIPROCAL
+                || op == CompiledSamplerGraphIr.Op.SIGN
+                || op == CompiledSamplerGraphIr.Op.SQUEEZE
                 || op == CompiledSamplerGraphIr.Op.MIN_RIGHT_BOUND
                 || op == CompiledSamplerGraphIr.Op.MAX_RIGHT_BOUND;
     }
