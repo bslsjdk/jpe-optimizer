@@ -31,12 +31,12 @@ PATCHED_JAR = Path("build/moddev/artifacts") / f"minecraft-patched-{NEOFORGE_VER
 NESTED_SERVER_JAR = f"META-INF/versions/{VERSION}/server-{VERSION}.jar"
 TARGET_CLASSES = (
     "net/minecraft/world/level/levelgen/NoiseBasedChunkGenerator",
-    "net/minecraft/world/level/levelgen/ChunkGenerator",
+    "net/minecraft/world/level/chunk/ChunkGenerator",
     "net/minecraft/world/level/levelgen/SurfaceSystem",
     "net/minecraft/world/level/levelgen/SurfaceRules",
     "net/minecraft/world/level/biome/BiomeManager",
     "net/minecraft/world/level/biome/BiomeSource",
-    "net/minecraft/world/level/WorldGenRegion",
+    "net/minecraft/server/level/WorldGenRegion",
     "net/minecraft/world/level/chunk/ChunkAccess",
     "net/minecraft/world/level/chunk/ProtoChunk",
     "net/minecraft/world/level/chunk/ChunkGeneratorStructureState",
@@ -536,7 +536,7 @@ def source_inspection(vanilla_root: Path, patched_root: Path) -> list[str]:
 def bytecode_inspection(vanilla_jar: Path, patched_jar: Path) -> list[str]:
     """Disassemble exact critical classes from both official and NeoForge-patched jars."""
     classes = [
-        "net.minecraft.world.level.levelgen.ChunkGenerator",
+        "net.minecraft.world.level.chunk.ChunkGenerator",
         "net.minecraft.world.level.levelgen.SurfaceSystem",
         "net.minecraft.world.level.levelgen.SurfaceRules",
         "net.minecraft.world.level.biome.BiomeSource",
