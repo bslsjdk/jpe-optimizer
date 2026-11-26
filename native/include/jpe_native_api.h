@@ -196,6 +196,26 @@ JPE_API int32_t jpe_runtime_aquifer_compute_substance_core(
     const JpeAquiferCoreInput *input, JpeAquiferCoreOutput *output
 );
 
+typedef struct JpeAquiferCellLocation {
+    int32_t x;
+    int32_t y;
+    int32_t z;
+} JpeAquiferCellLocation;
+
+typedef struct JpeAquiferNearestFour {
+    uint32_t index[4];
+    int32_t distance_sqr[4];
+};
+
+/* Select the four nearest of the twelve Minecraft 26.3 aquifer neighbor cells.
+ * Equal distances retain Minecraft's insertion behavior (later equal candidates
+ * are inserted before earlier ones). */
+JPE_API int32_t jpe_runtime_aquifer_find_nearest_four(
+    int32_t block_x, int32_t block_y, int32_t block_z,
+    const JpeAquiferCellLocation *candidates, uint32_t candidate_count,
+    JpeAquiferNearestFour *output
+);
+
 #ifdef __cplusplus
 }
 #endif
