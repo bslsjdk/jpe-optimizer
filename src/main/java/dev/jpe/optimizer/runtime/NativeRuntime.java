@@ -521,7 +521,7 @@ public final class NativeRuntime implements AutoCloseable {
                     "jpe_runtime_aquifer_context_evaluate_samplers_f32")
                     .map(symbol -> linker.downcallHandle(symbol,
                             FunctionDescriptor.of(ValueLayout.JAVA_INT,
-                                    ValueLayout.JAVA_LONG,
+                                    ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
                                     ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
                                     ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)))
                     .orElse(null);
