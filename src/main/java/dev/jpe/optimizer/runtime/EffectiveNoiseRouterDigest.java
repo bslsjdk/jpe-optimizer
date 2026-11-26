@@ -30,10 +30,18 @@ public final class EffectiveNoiseRouterDigest {
         if (router == null || ops == null) return Optional.empty();
         try {
             Optional<JsonElement> encoded = NoiseRouter.CODEC.encodeStart(ops, router).result();
-            if (encoded.isEmpty()) return Optional.empty();
-            byte[] canonical = canonicalJson(encoded.orElseThrow()).getBytes(StandardCharsets.UTF_8);
-            return Optional.of(MessageDigest.getInstance("SHA-256").digest(canonical));
+            return encoded.flatMap(EffectiveNoiseRouterDigest::digestEncoded);
         } catch (RuntimeException | NoSuchAlgorithmException failure) {
+            return Optional.empty();
+        }
+    }
+
+    static Optional<byte[]> digestEncoded(JsonElement encoded) {
+        if (encoded == null) return Optional.empty();
+        try {
+            byte[] canonical = canonicalJson(encoded).getBytes(StandardCharsets.UTF_8);
+            return Optional.of(MessageDigest.getInstance("SHA-256").digest(canonical));
+        } catch (NoSuchAlgorithmException impossible) {
             return Optional.empty();
         }
     }
