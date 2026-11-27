@@ -981,7 +981,7 @@ int32_t evaluate_density_graph_impl(
                         static_cast<int32_t>(corner_min_z),
                         static_cast<int32_t>(cell_xz), static_cast<int32_t>(cell_y),
                         static_cast<int32_t>(cell_xz),
-                        corner_values.data(), corner_length, recursion_depth + 1);
+                        corner_values.data(), corner_length, beardifier_context, recursion_depth + 1);
                     if (corner_status != 0) return corner_status;
 
                     const Scalar inv_xz = static_cast<Scalar>(1.0F / static_cast<float>(cell_xz));
@@ -1325,7 +1325,7 @@ int32_t evaluate_density_graph_multi_points(
                     1, 1, 1,
                     point_x[index], point_y[index], point_z[index],
                     1, 1, 1,
-                    &output[index], 1, 0);
+                    &output[index], 1, nullptr, 0);
                 if (status != 0) return status;
             }
         }
