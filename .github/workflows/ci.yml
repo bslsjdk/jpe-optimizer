@@ -146,14 +146,13 @@ jobs:
           fi
           exit "$test_status"
 
-      - name: Compare Java and strict native worlds (340 FULL chunks each, 20-second generation deadline)
+      - name: Generate 340 FULL chunks with strict native C++ worldgen (20-second deadline)
         if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         env:
-          # Each mode gets a fresh server process and world directory, identical seed/settings,
-          # and the same measured chunk coordinates. Java is the baseline; native is fail-closed.
+          # One fresh server process. Strict native worldgen is required; Java fallback is disabled.
           JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector
         run: |
-          mkdir -p build/worldgen-parity build/native-density-graph-cache
+          mkdir -p build/native-worldgen build/native-density-graph-cache
           set -euo pipefail
 
           run_worldgen_batch() {
@@ -164,7 +163,7 @@ jobs:
               engine_options="-Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphStrict=true -Djpe.nativeAquiferSubstanceEnabled=true -Djpe.nativeAquiferSubstanceStrict=true -Djpe.nativeDensityGraphCacheDir=${GITHUB_WORKSPACE}/build/native-density-graph-cache -Djpe.nativeLibraryPath=${GITHUB_WORKSPACE}/native/rust-runtime/target/release/libjpe_runtime.so"
             fi
 
-            echo "===== WORLDGEN PARITY BATCH: ${label} (${mode}) ====="
+            echo "===== NATIVE WORLDGEN BATCH: ${label} (${mode}) ====="
             rm -rf run
             mkdir -p run
             printf '%s\n' 'eula=true' > run/eula.txt
@@ -193,7 +192,7 @@ jobs:
               set -o pipefail
               timeout --signal=TERM --kill-after=5s 90s \
                 env JAVA_TOOL_OPTIONS="$1" gradle runServer --no-daemon --stacktrace 2>&1 | tee "$2"
-            ' _ "--add-modules=jdk.incubator.vector ${engine_options} -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=1 -Djpe.benchmark.deadlineSeconds=20 -Djpe.benchmark.digestFile=${GITHUB_WORKSPACE}/build/worldgen-parity/${label}.csv -Djpe.worldgenMetrics=true" "build/worldgen-parity/${label}.log" &
+            ' _ "--add-modules=jdk.incubator.vector ${engine_options} -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=1 -Djpe.benchmark.deadlineSeconds=20 -Djpe.benchmark.digestFile=${GITHUB_WORKSPACE}/build/native-worldgen/${label}.csv -Djpe.worldgenMetrics=true" "build/native-worldgen/${label}.log" &
             batch_pid=$!
             (
               sleep 90
@@ -207,46 +206,32 @@ jobs:
             wait "${watchdog_pid}" 2>/dev/null || true
 
             if [[ "${batch_status}" -ne 0 ]]; then
-              echo "::error title=Worldgen parity batch failed::${label} batch exited with status ${batch_status}; expected at most 90 seconds including fresh-server startup; measured generation deadline is 20 seconds."
+              echo "::error title=Native worldgen batch failed::${label} batch exited with status ${batch_status}; expected at most 90 seconds including fresh-server startup; measured generation deadline is 20 seconds."
               echo "===== ${label} batch progress diagnostics ====="
               grep -E 'JPE continuous worldgen|JPE_CONTINUOUS_WORLDGEN_BENCH|JPE chunk block-state digest' \
-                "build/worldgen-parity/${label}.log" | tail -n 100 || true
+                "build/native-worldgen/${label}.log" | tail -n 100 || true
               echo "===== ${label} final log tail ====="
-              tail -n 120 "build/worldgen-parity/${label}.log" || true
+              tail -n 120 "build/native-worldgen/${label}.log" || true
               return "${batch_status}"
             fi
 
             grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*completedChunks=340.*failedChunks=0.*doFillCalls=([3-9][0-9]{2,}|[1-9][0-9]{3,})' \
-              "build/worldgen-parity/${label}.log"
-            test "$(wc -l < "build/worldgen-parity/${label}.csv")" -eq 341
-            grep -F 'JPE chunk block-state digest snapshot written:' "build/worldgen-parity/${label}.log"
+              "build/native-worldgen/${label}.log"
+            test "$(wc -l < "build/native-worldgen/${label}.csv")" -eq 341
+            grep -F 'JPE chunk block-state digest snapshot written:' "build/native-worldgen/${label}.log"
           }
 
-          # Same seed, generator settings, mods, chunk coordinates and FULL status.
-          # The Java batch disables native worldgen; the second batch requires strict native execution.
-          run_worldgen_batch java java
+          # Generate only strict-native chunks. No Java baseline world is generated.
           run_worldgen_batch native native
 
-          grep -F 'Persistent density graph cache environment prepared' build/worldgen-parity/native.log
-          grep -F 'Native density graph compiled for' build/worldgen-parity/native.log
-          grep -F 'Native density graph evaluated for' build/worldgen-parity/native.log
-          grep -F 'JPE_NATIVE_AQUIFER_CONTEXT_READY' build/worldgen-parity/native.log
-          grep -F 'JPE_NATIVE_AQUIFER_SUBSTANCE_VOLUME' build/worldgen-parity/native.log
-          ! grep -F 'Native Aquifer full-volume parity mismatch' build/worldgen-parity/native.log
-          ! grep -F 'Native density graph evaluation failed' build/worldgen-parity/native.log
-          ! grep -F 'Native density graph parity mismatch' build/worldgen-parity/native.log
-
-          # Compare only after both fresh worlds have finished generating all 340 FULL chunks.
-          if diff -u build/worldgen-parity/java.csv build/worldgen-parity/native.csv \
-              > build/worldgen-parity/digest-diff.txt; then
-            echo "JPE_WORLDGEN_DIGEST_COMPARE result=match chunks=340 scope=all-block-states"
-            printf '%s\n' 'All 340 Java/native chunk block-state digests match.' \
-              > build/worldgen-parity/digest-result.txt
-          else
-            echo "JPE_WORLDGEN_DIGEST_COMPARE result=mismatch chunks=340"
-            cat build/worldgen-parity/digest-diff.txt
-            exit 1
-          fi
+          grep -F 'Persistent density graph cache environment prepared' build/native-worldgen/native.log
+          grep -F 'Native density graph compiled for' build/native-worldgen/native.log
+          grep -F 'Native density graph evaluated for' build/native-worldgen/native.log
+          grep -F 'JPE_NATIVE_AQUIFER_CONTEXT_READY' build/native-worldgen/native.log
+          grep -F 'JPE_NATIVE_AQUIFER_SUBSTANCE_VOLUME' build/native-worldgen/native.log
+          ! grep -F 'Native Aquifer full-volume parity mismatch' build/native-worldgen/native.log
+          ! grep -F 'Native density graph evaluation failed' build/native-worldgen/native.log
+          ! grep -F 'Native density graph parity mismatch' build/native-worldgen/native.log
 
       - name: Warm-launch persistent density graph cache (fresh server process)
         if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
