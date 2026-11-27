@@ -237,7 +237,7 @@ public final class NativeDensityGraphCompiler {
         final NativeRuntime runtime;
         try {
             runtime = NativePerlinNoiseBackend.runtimeForDensityGraph();
-        } catch (IOException | RuntimeException | LinkageError unavailable) {
+        } catch (RuntimeException | LinkageError unavailable) {
             if (strictMode()) {
                 throw new IllegalStateException("Strict native sampler preparation: runtime unavailable", unavailable);
             }
@@ -738,7 +738,7 @@ public final class NativeDensityGraphCompiler {
                     : Path.of(configuredDirectory);
             return new PersistentCacheKey(
                     directory.resolve(HexFormat.of().formatHex(fingerprint) + ".dgraph"), fingerprint);
-        } catch (RuntimeException | LinkageError unavailable) {
+        } catch (IOException | RuntimeException | LinkageError unavailable) {
             // If the resolved router, mod inventory, or game directory is not
             // available in full, persistent reuse is unsafe. Compile normally.
             JPEOptimizer.LOGGER.debug(
