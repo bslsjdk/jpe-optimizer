@@ -30,7 +30,7 @@ import net.minecraft.world.level.levelgen.synth.PerlinNoise;
  * Completed jobs must be explicitly released before this runtime can be closed.
  */
 public final class NativeRuntime implements AutoCloseable {
-    public static final int EXPECTED_ABI_VERSION = 8;
+    public static final int EXPECTED_ABI_VERSION = 9;
     private static final long PERLIN_LAYER_SIZE = 56L;
 
     public static final int JOB_COMPLETE = 0;
@@ -2125,6 +2125,14 @@ public final class NativeRuntime implements AutoCloseable {
                 throw new IllegalArgumentException("Invalid density slice parameters");
             }
             return new DensityNode(32, input, axis, 0, coordinate, 0.0, 0.0);
+        }
+
+        /** Finds the highest positive-density sample in a column, scanning down by stepSize. */
+        public static DensityNode findTopSurface(int density, int upperBound, int lowerBound, int stepSize) {
+            if (density < 0 || upperBound < 0 || stepSize <= 0) {
+                throw new IllegalArgumentException("Invalid find-top-surface parameters");
+            }
+            return new DensityNode(34, density, upperBound, lowerBound, stepSize, 0.0, 0.0);
         }
     }
 
