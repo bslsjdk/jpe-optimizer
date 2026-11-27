@@ -363,11 +363,12 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                     BlockState vanillaState = aquifer.computeSubstance(
                             blockX, blockY, blockZ, density.get(index));
                     boolean vanillaSchedule = aquifer.shouldScheduleFluidUpdate();
-                    boolean nativeHasState = nativeResults.hasBlockState(index);
+                    long packedResult = nativeResults.packedResult(index);
+                    boolean nativeHasState = (packedResult & (1L << 32)) != 0L;
                     BlockState nativeState = nativeHasState
-                            ? nativeAquifer.blockStateForToken(nativeResults.blockStateToken(index))
+                            ? nativeAquifer.blockStateForToken((int) packedResult)
                             : null;
-                    boolean nativeSchedule = nativeResults.shouldScheduleFluidUpdate(index);
+                    boolean nativeSchedule = (packedResult & (1L << 33)) != 0L;
                     if ((vanillaState == null) != !nativeHasState
                             || (vanillaState != null && !vanillaState.equals(nativeState))
                             || vanillaSchedule != nativeSchedule) {
