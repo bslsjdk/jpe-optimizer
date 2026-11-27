@@ -232,7 +232,7 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
             case kShiftBPerlinStack: {
                 const double handle = node.immediate;
                 if (node.input_a != kNoInput || node.input_b != kNoInput
-                    || node.reserved != std::bit_cast<uint32_t>(4.0F)
+                    || node.reserved != 0x40800000U
                     || !std::isfinite(handle) || handle < 1.0 || handle > 9007199254740991.0
                     || std::floor(handle) != handle || node.auxiliary != 0.25 || node.tertiary != 0.25) return false;
                 break;
@@ -1031,17 +1031,17 @@ int32_t evaluate_density_graph_impl(
                     const uint32_t transposed_x = size_z;
                     const uint32_t transposed_y = size_x;
                     const uint64_t transposed_count = static_cast<uint64_t>(transposed_x) * transposed_y;
-                    std::vector<float> transposed(static_cast<size_t>(transposed_count));
+                    if (transposed_count > perlin_scratch.size()) return 1;
                     const int32_t status = jpe_cpp_perlin_stack_evaluate(
                         graph->prepared_handles[i], node.auxiliary, node.tertiary,
                         decode_float(node.reserved), transposed_x, transposed_y, 1,
                         min_z, min_x, 0, step_z, step_x, 0,
-                        transposed.data(), transposed_count, kAllowZeroPerlinSteps);
+                        perlin_scratch.data(), transposed_count, kAllowZeroPerlinSteps);
                     if (status != 0) return status;
                     size_t out = 0;
                     for (uint32_t z = 0; z < size_z; ++z) {
                         for (uint32_t x = 0; x < size_x; ++x) {
-                            const Scalar value = static_cast<Scalar>(transposed[static_cast<size_t>(z) * size_x + x]);
+                            const Scalar value = static_cast<Scalar>(perlin_scratch[static_cast<size_t>(z) * size_x + x]);
                             std::fill_n(values.data() + out, size_y, value);
                             out += size_y;
                         }
