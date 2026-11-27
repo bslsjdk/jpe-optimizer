@@ -108,6 +108,7 @@ struct ArithmeticInstruction {
     uint32_t output;
     float parameter_a;
     float parameter_b;
+    uint32_t input_c; /* only RANGE_CHOICE uses a third operand */
 };
 
 float java_math_min(float a, float b) noexcept {
@@ -256,13 +257,31 @@ void build_execution_plan(CompiledGraph& graph) {
             case JPE_DENSITY_INTERPOLATED:
                 graph.interpolateds.push_back({i, node.input_a, node.input_b, node.reserved});
                 break;
+            case JPE_DENSITY_RANGE_CHOICE: {
+                uint64_t packed = 0;
+                std::memcpy(&packed, &node.immediate, sizeof(packed));
+                const uint32_t min_bits = static_cast<uint32_t>(packed >> 32);
+                const uint32_t max_bits = static_cast<uint32_t>(packed);
+                float minimum = 0.0f, maximum = 0.0f;
+                std::memcpy(&minimum, &min_bits, sizeof(minimum));
+                std::memcpy(&maximum, &max_bits, sizeof(maximum));
+                // Comparing as float is only equivalent when the double bounds are
+                // exactly representable; vanilla's range_choice data always is.
+                if (static_cast<double>(minimum) != static_cast<double>(static_cast<float>(minimum))
+                    || static_cast<double>(maximum) != static_cast<double>(static_cast<float>(maximum))) {
+                    throw std::invalid_argument("RangeChoice bounds must be exactly float-representable");
+                }
+                graph.arithmetic.push_back({node.opcode, node.input_a, node.input_b, i,
+                                            minimum, maximum, node.reserved});
+                break;
+            }
             case JPE_DENSITY_ADD:
             case JPE_DENSITY_MUL:
             case JPE_DENSITY_SUB:
             case JPE_DENSITY_DIV:
             case JPE_DENSITY_MIN:
             case JPE_DENSITY_MAX:
-                graph.arithmetic.push_back({node.opcode, node.input_a, node.input_b, i, 0.0f, 0.0f});
+                graph.arithmetic.push_back({node.opcode, node.input_a, node.input_b, i, 0.0f, 0.0f, 0});
                 break;
             case JPE_DENSITY_NEGATE:
             case JPE_DENSITY_ABS:
@@ -273,11 +292,11 @@ void build_execution_plan(CompiledGraph& graph) {
             case JPE_DENSITY_RECIPROCAL:
             case JPE_DENSITY_SIGN:
             case JPE_DENSITY_SQUEEZE:
-                graph.arithmetic.push_back({node.opcode, node.input_a, kNoInput, i, 0.0f, 0.0f});
+                graph.arithmetic.push_back({node.opcode, node.input_a, kNoInput, i, 0.0f, 0.0f, 0});
                 break;
             case JPE_DENSITY_LEAKY_RELU:
                 graph.arithmetic.push_back({node.opcode, node.input_a, kNoInput, i,
-                    static_cast<float>(node.immediate), 0.0f});
+                    static_cast<float>(node.immediate), 0.0f, 0});
                 break;
             case JPE_DENSITY_CLAMP: {
                 uint64_t packed = 0;
@@ -287,7 +306,7 @@ void build_execution_plan(CompiledGraph& graph) {
                 float minimum = 0.0f, maximum = 0.0f;
                 std::memcpy(&minimum, &min_bits, sizeof(minimum));
                 std::memcpy(&maximum, &max_bits, sizeof(maximum));
-                graph.arithmetic.push_back({node.opcode, node.input_a, kNoInput, i, minimum, maximum});
+                graph.arithmetic.push_back({node.opcode, node.input_a, kNoInput, i, minimum, maximum, 0});
                 break;
             }
             default:
@@ -469,6 +488,10 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                 if (node.input_a >= i || node.input_b == 0 || node.reserved == 0
                     || node.immediate != 0.0) return false;
                 if (node.input_b > 64 || node.reserved > 64) return false;
+                break;
+            case JPE_DENSITY_RANGE_CHOICE:
+                if (node.input_a >= i || node.input_b >= i || node.reserved >= i) return false;
+                if (!std::isfinite(node.immediate)) return false;
                 break;
             default:
                 return false;
@@ -1187,6 +1210,21 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
                 for (uint32_t sample = 0; sample < count; ++sample) {
                     const float value = left[sample];
                     destination[sample] = value > 0.0f ? value : negative_factor * value;
+                }
+            } else if (instruction.opcode == JPE_DENSITY_RANGE_CHOICE) {
+                const float* input_lane = tile_values.data()
+                    + static_cast<size_t>(instruction.input_a) * tile_capacity;
+                const float* in_range_lane = tile_values.data()
+                    + static_cast<size_t>(instruction.input_b) * tile_capacity;
+                const float* out_range_lane = tile_values.data()
+                    + static_cast<size_t>(instruction.input_c) * tile_capacity;
+                const float minimum = instruction.parameter_a;
+                const float maximum = instruction.parameter_b;
+                for (uint32_t sample = 0; sample < count; ++sample) {
+                    const float value = input_lane[sample];
+                    // Vanilla keeps the in-range branch only for min <= v < max; NaN falls through.
+                    destination[sample] = (value >= minimum && value < maximum)
+                        ? in_range_lane[sample] : out_range_lane[sample];
                 }
             } else {
                 for (uint32_t sample = 0; sample < count; ++sample) {

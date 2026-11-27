@@ -132,7 +132,12 @@ enum {
      * reserved = cellSizeY, immediate = 0. When the requested volume already sits
      * on the cell grid the node passes the child through unchanged, which is what
      * makes nested interpolation terminate. */
-    JPE_DENSITY_INTERPOLATED = 29
+    JPE_DENSITY_INTERPOLATED = 29,
+    /* Vanilla RangeChoiceFunction: input_a=input, input_b=whenInRange,
+     * reserved=whenOutOfRange, immediate packs minInclusive/maxExclusive as two
+     * raw float32 words. Both bounds must be exactly float-representable, which
+     * the compiler enforces; vanilla's data pack only uses such values. */
+    JPE_DENSITY_RANGE_CHOICE = 30
 };
 /* One world-prepared noise plan. Layers must already be expanded by the caller:
  * each layer's xz_scale/y_scale includes the outer NoiseFunction scale times the

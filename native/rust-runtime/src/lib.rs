@@ -73,6 +73,7 @@ const DENSITY_GRADIENT_CLAMPED_Z: u32 = 26;
 const DENSITY_NOISE: u32 = 27;
 const DENSITY_NOISE_TRANSPOSED: u32 = 28;
 const DENSITY_INTERPOLATED: u32 = 29;
+const DENSITY_RANGE_CHOICE: u32 = 30;
 #[cfg(test)]
 static CACHE_TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -1233,6 +1234,55 @@ mod tests {
         // Coordinates are (0,0,0), (0,8,0), (0,0,4), ... in z/x/y order.
         let expected = [0.0f32, 8.0, 0.0, 8.0, 0.0, 8.0, 0.0, 8.0];
         assert_eq!(out, expected, "cell-grid volumes must pass the child through");
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, 0);
+    }
+
+    #[test]
+    fn density_graph_range_choice_matches_vanilla_half_open_interval() {
+        let pack = |min: f32, max: f32| {
+            let bits = ((min.to_bits() as u64) << 32) | max.to_bits() as u64;
+            f64::from_bits(bits)
+        };
+        // in-range branch 10, out-of-range branch 20, bounds [0, 1).
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.5 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 10.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 20.0 },
+            JpeDensityNode { opcode: DENSITY_RANGE_CHOICE, input_a: 0,
+                input_b: 1, reserved: 2, immediate: pack(0.0, 1.0) },
+        ];
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), 4, 3, 10, 0x3C3C)
+        };
+        assert_ne!(handle, 0);
+        let mut out = [0.0f32; 1];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                handle, 1, 1, 1, 0, 0, 0, 1, 1, 1, out.as_mut_ptr(), 1,
+            )
+        }, 0);
+        assert_eq!(out[0], 10.0, "0.5 must select the in-range branch");
+
+        // 1.0 is exclusive, NaN compares false: both must select the out-of-range branch.
+        for probe in [1.0f64, f64::NAN] {
+            let mut variant = nodes;
+            variant[0].immediate = probe;
+            let other = unsafe {
+                jpe_runtime_density_graph_compile(variant.as_ptr(), 4, 3, 10, 0x3C3C)
+            };
+            assert_ne!(other, 0);
+            let mut value = [0.0f32; 1];
+            assert_eq!(unsafe {
+                jpe_runtime_density_graph_evaluate(
+                    other, 1, 1, 1, 0, 0, 0, 1, 1, 1, value.as_mut_ptr(), 1,
+                )
+            }, 0);
+            assert_eq!(value[0], 20.0, "probe {probe} must select the out-of-range branch");
+            assert_eq!(unsafe { jpe_runtime_density_graph_release(other) }, 0);
+        }
         assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, 0);
     }
 
