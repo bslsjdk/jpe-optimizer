@@ -13,7 +13,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* ABI v10. Axis coordinates use min + index * step with Java int wrap semantics. */
+/* ABI v11. Axis coordinates use min + index * step with Java int wrap semantics. */
 JPE_API uint32_t jpe_runtime_abi_version(void);
 /* requested=0 selects all process-visible CPUs; positive values are capped to that count. */
 /* Zero selects available CPUs. Repeating the active count is safe after startup;
