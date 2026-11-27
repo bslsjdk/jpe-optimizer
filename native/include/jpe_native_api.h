@@ -151,7 +151,8 @@ enum {
     /* FIND_TOP_SURFACE: input_a=density; input_b=upperBound; reserved=signed lowerBound; immediate=positive integer stepSize. */
     JPE_DENSITY_FIND_TOP_SURFACE = 34,
     /* SMEARED_PERLIN_STACK: immediate=prepared SmearedPerlin stack handle; scales are baked per layer. */
-    JPE_DENSITY_SMEARED_PERLIN_STACK = 35
+    JPE_DENSITY_SMEARED_PERLIN_STACK = 35,
+    JPE_DENSITY_BEARDIFIER = 36
 };
 /* Returns a retained compiled-plan handle, or zero for an invalid graph. */
 JPE_API uint64_t jpe_runtime_density_graph_compile(
@@ -191,6 +192,18 @@ JPE_API int32_t jpe_runtime_density_graph_evaluate_multi_points_f32(
     const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
     uint32_t points_per_graph, float *output, uint64_t output_length
 );
+
+/* Internal Beardifier context hooks used by the C++ density graph evaluator. */
+JPE_API uint64_t jpe_cpp_beardifier_context_create(const JpeBeardifierContextCreateInfo* info);
+JPE_API int32_t jpe_cpp_beardifier_context_destroy(uint64_t context_handle);
+JPE_API int32_t jpe_cpp_density_graph_evaluate_f32_with_beardifier(
+    uint64_t graph_handle, uint64_t beardifier_context_handle,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    float* output, uint64_t output_length
+);
+
 /* Internal C++ helpers; Rust publishes the stable jpe_runtime_* exports. */
 JPE_API uint64_t jpe_cpp_density_graph_compile(
     const JpeDensityNode *nodes, uint32_t node_count, uint32_t root_node,
