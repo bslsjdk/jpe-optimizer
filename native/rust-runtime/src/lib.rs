@@ -554,7 +554,7 @@ pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate_f32_with_beardifier(
     step_x: i32, step_y: i32, step_z: i32,
     output: *mut f32, output_length: u64,
 ) -> i32 {
-    if graph_handle == 0 || beardifier_context_handle == 0 || output.is_null()
+    if graph_handle == 0 || output.is_null()
         || size_x == 0 || size_y == 0 || size_z == 0
         || step_x == 0 || step_y == 0 || step_z == 0 {
         return STATUS_INVALID_ARGUMENT;
@@ -4577,7 +4577,7 @@ mod tests {
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_compute_density_and_substance_volume_f32(
                 context, fingerprint.as_ptr(), info.semantic_fingerprint,
-                final_density_graph, 0,
+                final_density_graph, 0, 0,
                 2, 2, 2, -16, -64, 32, 1, 1, 1,
                 fused.as_mut_ptr(),
             )
@@ -4605,7 +4605,7 @@ mod tests {
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_compute_density_and_substance_volume_f32(
                 context, fingerprint.as_ptr(), info.semantic_fingerprint,
-                final_density_graph, 0,
+                final_density_graph, 0, 0,
                 1, 1, 1, -16, -64, 32, 1, 1, 1,
                 fused_small.as_mut_ptr(),
             )
