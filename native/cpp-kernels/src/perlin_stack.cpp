@@ -66,6 +66,7 @@ struct LayerWorkspace {
     std::vector<int32_t> x_lattice1;
     std::vector<int32_t> y_floors;
     std::vector<float> y_relative;
+    std::vector<float> y_relative_fudged;
     std::vector<float> y_alpha;
     int32_t z_floor = 0;
     float z_relative = 0.0F;
@@ -107,8 +108,8 @@ extern "C" int32_t jpe_cpp_perlin_add_volume(
     float* output, uint64_t output_length, uint32_t flags
 ) noexcept;
 
-extern "C" int32_t jpe_cpp_perlin_add_stack_fused(
-    const JpePerlinLayer* layers, uint32_t layer_count,
+static int32_t perlin_add_stack_fused_impl(
+    const JpePerlinLayer* layers, const double* fudge_y_scales, uint32_t layer_count,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
@@ -116,6 +117,11 @@ extern "C" int32_t jpe_cpp_perlin_add_stack_fused(
 ) noexcept {
     if (!validate_stack(layers, layer_count, size_x, size_y, size_z,
                         step_x, step_y, step_z, output, output_length, flags)) return 1;
+    if (fudge_y_scales != nullptr) {
+        for (uint32_t i = 0; i < layer_count; ++i) {
+            if (!std::isfinite(fudge_y_scales[i]) || fudge_y_scales[i] <= 0.0) return 1;
+        }
+    }
 
     const bool far_lands = (flags & 1U) != 0U;
     thread_local std::vector<LayerWorkspace> workspaces;
@@ -135,6 +141,7 @@ extern "C" int32_t jpe_cpp_perlin_add_stack_fused(
         if (ws.y_floors.size() < size_y) {
             ws.y_floors.resize(size_y);
             ws.y_relative.resize(size_y);
+            ws.y_relative_fudged.resize(size_y);
             ws.y_alpha.resize(size_y);
         }
         for (uint32_t ix = 0; ix < size_x; ++ix) {
@@ -149,14 +156,27 @@ extern "C" int32_t jpe_cpp_perlin_add_stack_fused(
             ws.x_lattice1[ix] = static_cast<int32_t>(permute_sum(layer.permutation, floor_x, 1));
         }
         for (uint32_t iy = 0; iy < size_y; ++iy) {
-            const double y = wrap_coordinate(
-                static_cast<double>(axis_coordinate(min_y, iy, step_y)) * layer.y_scale,
-                far_lands) + layer.offset_y;
+            // SmearedPerlinNoise computes its smear threshold from the unwrapped,
+            // pre-offset input coordinate, but samples the lattice after wrapping
+            // and applying the per-instance Y offset.
+            const double input_y =
+                static_cast<double>(axis_coordinate(min_y, iy, step_y)) * layer.y_scale;
+            const double y = wrap_coordinate(input_y, far_lands) + layer.offset_y;
             const int32_t floor_y = floor_to_i32(y);
-            const float relative_y = static_cast<float>(y - static_cast<double>(floor_y));
+            const double relative_y_exact = y - static_cast<double>(floor_y);
+            const float relative_y = static_cast<float>(relative_y_exact);
             ws.y_floors[iy] = floor_y;
             ws.y_relative[iy] = relative_y;
             ws.y_alpha[iy] = smoothstep(relative_y);
+            if (fudge_y_scales != nullptr) {
+                const double fudge_limit = input_y >= 0.0 && input_y < relative_y_exact
+                        ? input_y : relative_y_exact;
+                const double fudge_y = std::floor(
+                        fudge_limit / fudge_y_scales[li] + 1.0E-7F) * fudge_y_scales[li];
+                ws.y_relative_fudged[iy] = static_cast<float>(relative_y_exact - fudge_y);
+            } else {
+                ws.y_relative_fudged[iy] = relative_y;
+            }
         }
     }
 
@@ -211,7 +231,9 @@ extern "C" int32_t jpe_cpp_perlin_add_stack_fused(
                     corner(layer.permutation, static_cast<uint32_t>(xy11) + floor_z + 1U, relative_x - 1.0F, relative_z - 1.0F, corner_xz[li][7], corner_y[li][7]);
 
                     while (iy < size_y && ws.y_floors[iy] == floor_y) {
-                        const float relative_y = ws.y_relative[iy];
+                        // SmearedPerlinNoise offsets the gradient-dot Y coordinate,
+                        // but retains the original relative Y for interpolation alpha.
+                        const float relative_y = ws.y_relative_fudged[iy];
                         const float relative_y1 = relative_y - 1.0F;
                         const float x000 = corner_xz[li][0] + corner_y[li][0] * relative_y;
                         const float x100 = corner_xz[li][1] + corner_y[li][1] * relative_y;
@@ -242,6 +264,31 @@ extern "C" int32_t jpe_cpp_perlin_add_stack_fused(
     return 0;
 }
 
+
+extern "C" int32_t jpe_cpp_perlin_add_stack_fused(
+    const JpePerlinLayer* layers, uint32_t layer_count,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    float* output, uint64_t output_length, uint32_t flags
+) noexcept {
+    return perlin_add_stack_fused_impl(layers, nullptr, layer_count,
+        size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z,
+        output, output_length, flags);
+}
+
+extern "C" int32_t jpe_cpp_perlin_add_smeared_stack_fused(
+    const JpePerlinLayer* layers, const double* fudge_y_scales, uint32_t layer_count,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    float* output, uint64_t output_length, uint32_t flags
+) noexcept {
+    if (fudge_y_scales == nullptr) return 1;
+    return perlin_add_stack_fused_impl(layers, fudge_y_scales, layer_count,
+        size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z,
+        output, output_length, flags);
+}
 
 extern "C" int32_t jpe_cpp_perlin_add_stack(
     const JpePerlinLayer* layers, uint32_t layer_count,
