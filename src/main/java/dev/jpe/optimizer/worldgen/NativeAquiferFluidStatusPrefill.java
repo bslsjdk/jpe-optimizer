@@ -346,6 +346,7 @@ public final class NativeAquiferFluidStatusPrefill {
         public NativeRuntime.AquiferSubstanceVolumeResult computeDensityAndSubstanceVolumeF32(
                 AquiferNoiseBasedAccessor aquifer,
                 long finalDensityGraphHandle,
+                long beardifierContextHandle,
                 DensityVolume volume
         ) {
             ensureOpen();
@@ -354,7 +355,8 @@ public final class NativeAquiferFluidStatusPrefill {
             }
             return context.runtime.computeDensityAndAquiferSubstanceVolumeF32(
                     context.handle(), context.fingerprint, SEMANTIC_FINGERPRINT,
-                    finalDensityGraphHandle, aquifer.jpe$getSkipSamplingAboveY(), volume);
+                    finalDensityGraphHandle, beardifierContextHandle,
+                    aquifer.jpe$getSkipSamplingAboveY(), volume);
         }
 
         public BlockState blockStateForToken(int token) {
