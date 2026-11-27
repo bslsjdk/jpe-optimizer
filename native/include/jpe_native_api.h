@@ -154,6 +154,51 @@ enum {
     JPE_DENSITY_SMEARED_PERLIN_STACK = 35,
     JPE_DENSITY_BEARDIFIER = 36
 };
+
+/* Minecraft 26.3 Beardifier records copied into an immutable per-chunk native context. */
+typedef struct JpeBeardifierRigid {
+    int32_t min_x, min_y, min_z;
+    int32_t max_x, max_y, max_z;
+    int32_t ground_level_delta;
+    uint32_t terrain_adjustment; /* 0=NONE, 1=BURY, 2=BEARD_THIN, 3=BEARD_BOX, 4=ENCAPSULATE */
+} JpeBeardifierRigid;
+
+typedef struct JpeBeardifierJunction {
+    int32_t source_x, source_ground_y, source_z;
+} JpeBeardifierJunction;
+
+typedef struct JpeBeardifierContextCreateInfo {
+    const JpeBeardifierRigid* pieces;
+    uint32_t piece_count;
+    uint32_t reserved0;
+    const JpeBeardifierJunction* junctions;
+    uint32_t junction_count;
+    uint32_t has_affected_box;
+    const float* beard_kernel;
+    uint32_t beard_kernel_count;
+    uint32_t reserved1;
+    int32_t min_x, min_y, min_z;
+    int32_t max_x, max_y, max_z;
+    uint32_t reserved2;
+    uint32_t reserved3;
+} JpeBeardifierContextCreateInfo;
+
+#if defined(__cplusplus)
+static_assert(sizeof(JpeBeardifierRigid) == 32, "JpeBeardifierRigid ABI layout mismatch");
+static_assert(sizeof(JpeBeardifierJunction) == 12, "JpeBeardifierJunction ABI layout mismatch");
+static_assert(sizeof(JpeBeardifierContextCreateInfo) == 80, "JpeBeardifierContextCreateInfo ABI layout mismatch");
+#endif
+
+JPE_API uint64_t jpe_runtime_beardifier_context_create(const JpeBeardifierContextCreateInfo* info);
+JPE_API int32_t jpe_runtime_beardifier_context_destroy(uint64_t context_handle);
+JPE_API int32_t jpe_runtime_density_graph_evaluate_f32_with_beardifier(
+    uint64_t graph_handle, uint64_t beardifier_context_handle,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    float* output, uint64_t output_length
+);
+
 /* Returns a retained compiled-plan handle, or zero for an invalid graph. */
 JPE_API uint64_t jpe_runtime_density_graph_compile(
     const JpeDensityNode *nodes, uint32_t node_count, uint32_t root_node,
