@@ -227,10 +227,13 @@ public final class GameTests {
                              runtime.computeAquiferSubstanceVolumeF32(
                                      context, worldFingerprint, 0xA91F_2630_0001L,
                                      -1, testVolume, testDensity)) {
+                    if (volumeResult.size() != 2) {
+                        throw new AssertionError("Native full-volume Aquifer result size mismatch: "
+                                + volumeResult.size());
+                    }
                     long first = volumeResult.packedResult(0);
                     long second = volumeResult.packedResult(1);
-                    if (volumeResult.size() != 2
-                            || (first & (1L << 32)) == 0L
+                    if ((first & (1L << 32)) == 0L
                             || (int) first != 200
                             || (first & (1L << 33)) != 0L
                             || (second & (1L << 32)) != 0L
