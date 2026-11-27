@@ -21,7 +21,8 @@
 
 use super::egl::{dlopen_first, EglContext, EGL_OPENGL_API, EGL_OPENGL_ES_API};
 use super::{
-    Backend, Capabilities, DrawBatch, FramePixels, Mat4, MeshHandle, RenderError, MAT4_IDENTITY,
+    Backend, Capabilities, DrawBatch, FramePixels, Mat4, MeshHandle, PresentStatus,
+    PresentSupport, RenderError, SurfaceDesc, MAT4_IDENTITY,
 };
 use crate::mesh::{MeshData, Vertex};
 use std::ffi::{c_char, c_void, CStr};
@@ -116,6 +117,7 @@ gl_fns! {
     glDisable: fn(u32) -> ();
     glDepthFunc: fn(u32) -> ();
     glFinish: fn() -> ();
+    glFlush: fn() -> ();
     glPixelStorei: fn(u32, i32) -> ();
     glGenVertexArrays: fn(i32, *mut u32) -> ();
     glBindVertexArray: fn(u32) -> ();
@@ -317,6 +319,11 @@ pub struct GlCore {
     meshes: Vec<Option<GlMesh>>,
     next_handle: u64,
     target: Option<GlTarget>,
+    /// When set, frames render into the default framebuffer (`0`) of the host's
+    /// already-current context instead of an owned FBO. The value is the drawable
+    /// pixel extent. This is the Minecraft-sharing path: the engine never owns a
+    /// window; the context owner swaps.
+    external: Option<[u32; 2]>,
     pending: Vec<DrawBatch>,
     last_frame: Option<FramePixels>,
 }
@@ -422,6 +429,7 @@ impl GlCore {
                 meshes: Vec::new(),
                 next_handle: 1,
                 target: None,
+                external: None,
                 pending: Vec::new(),
                 last_frame: None,
             })
@@ -536,6 +544,13 @@ impl GlCore {
     pub fn begin_frame_core(&mut self, extent: [u32; 2]) -> Result<(), RenderError> {
         if extent[0] == 0 || extent[1] == 0 {
             return Err(RenderError::InvalidMesh);
+        }
+        if let Some(external) = self.external.as_mut() {
+            // Host owns the drawable; record the extent and reset the queue. No
+            // FBO is created, so end_frame draws into framebuffer 0.
+            *external = extent;
+            self.pending.clear();
+            return Ok(());
         }
         self.ensure_target(extent)?;
         self.pending.clear();
@@ -659,17 +674,23 @@ impl GlCore {
     }
 
     pub fn end_frame_core(&mut self) -> Result<(), RenderError> {
-        let Some(target) = self.target.as_ref() else {
-            return Err(RenderError::InvalidMesh);
+        // External surface draws into the host's default framebuffer (0); the
+        // offscreen path draws into this renderer's owned FBO.
+        let (framebuffer, width, height) = if let Some(ext) = self.external {
+            (0u32, ext[0], ext[1])
+        } else {
+            let Some(target) = self.target.as_ref() else {
+                return Err(RenderError::InvalidMesh);
+            };
+            (target.framebuffer, target.extent[0], target.extent[1])
         };
-        let (width, height) = (target.extent[0], target.extent[1]);
         let gl = &self.gl;
         let view_proj = self.view_proj;
 
-        // SAFETY: draws the validated pending batches into the owned FBO and
-        // reads the colour buffer back into host memory.
+        // SAFETY: draws the validated pending batches into the current framebuffer
+        // and (for the offscreen path) leaves its colour buffer readable.
         unsafe {
-            (gl.glBindFramebuffer)(GL_FRAMEBUFFER, target.framebuffer);
+            (gl.glBindFramebuffer)(GL_FRAMEBUFFER, framebuffer);
             (gl.glViewport)(0, 0, width as i32, height as i32);
             (gl.glDisable)(GL_CULL_FACE);
             (gl.glEnable)(GL_DEPTH_TEST);
@@ -727,11 +748,16 @@ impl GlCore {
     /// contents (nothing clears it until the next `begin_frame`), so no redraw
     /// is required.
     pub fn capture_core(&mut self) -> Result<FramePixels, RenderError> {
-        let Some(target) = self.target.as_ref() else {
-            return Err(RenderError::Unsupported("no completed frame to read"));
+        // External surface: read the host's default framebuffer. Offscreen: read
+        // this renderer's owned FBO (which still holds the previous frame).
+        let (framebuffer, width, height) = if let Some(ext) = self.external {
+            (0u32, ext[0], ext[1])
+        } else {
+            let Some(target) = self.target.as_ref() else {
+                return Err(RenderError::Unsupported("no completed frame to read"));
+            };
+            (target.framebuffer, target.extent[0], target.extent[1])
         };
-        let (width, height) = (target.extent[0], target.extent[1]);
-        let framebuffer = target.framebuffer;
         let gl = &self.gl;
 
         let mut bottom_up = vec![0u8; (width as usize) * (height as usize) * 4];
@@ -770,6 +796,57 @@ impl GlCore {
 
     pub fn read_pixels_core(&mut self) -> Result<FramePixels, RenderError> {
         self.capture_core()
+    }
+
+    // --- presentation (external GL context = the Minecraft-sharing path) -----
+
+    /// GL/GLES can present only into a host-supplied current context.
+    pub fn present_support_core(&self) -> PresentSupport {
+        PresentSupport::ExternalGl
+    }
+
+    /// Draw subsequent frames into the default framebuffer of the context that is
+    /// already current on this thread. This does not create a window, FBO or
+    /// swapchain; the host that owns the context swaps the results.
+    pub fn attach_surface_core(&mut self, desc: SurfaceDesc) -> Result<(), RenderError> {
+        match desc {
+            SurfaceDesc::ExternalGlCurrent { width, height } => {
+                if width == 0 || height == 0 {
+                    return Err(RenderError::InvalidMesh);
+                }
+                // Drop any offscreen target so begin/end take the framebuffer-0 path.
+                self.destroy_target();
+                self.external = Some([width, height]);
+                Ok(())
+            }
+            SurfaceDesc::NativeWindow { .. } => Err(RenderError::Unsupported(
+                "gl: native window surface; attach the host's current GL context instead",
+            )),
+        }
+    }
+
+    pub fn resize_surface_core(&mut self, extent: [u32; 2]) -> Result<(), RenderError> {
+        if extent[0] == 0 || extent[1] == 0 {
+            return Err(RenderError::InvalidMesh);
+        }
+        match self.external.as_mut() {
+            Some(current) => {
+                *current = extent;
+                Ok(())
+            }
+            None => Err(RenderError::Unsupported("resize before attach_surface")),
+        }
+    }
+
+    pub fn present_core(&mut self) -> Result<PresentStatus, RenderError> {
+        if self.external.is_none() {
+            return Err(RenderError::Unsupported("present before attach_surface"));
+        }
+        // SAFETY: this renderer's (or the host's external) GL context is current
+        // on this thread. glFlush hands the finished frame to the driver; the
+        // context owner performs the buffer swap.
+        unsafe { (self.gl.glFlush)(); }
+        Ok(PresentStatus::Presented)
     }
 }
 

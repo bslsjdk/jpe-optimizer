@@ -13,7 +13,10 @@ use crate::chunk::ChunkState;
 use crate::coords::ChunkPos;
 use crate::mesh::{build_section_mesh, ChunkSection, Vertex};
 use crate::pipeline::{Camera, PipelineConfig, PushSource, Submit, WorldPipeline};
-use crate::render::{Backend, DrawBatch, Mat4, MeshHandle, RenderError, Renderer};
+use crate::render::{
+    Backend, DrawBatch, Mat4, MeshHandle, PresentStatus, PresentSupport, RenderError, Renderer,
+    SurfaceDesc,
+};
 use crate::render::plan::{plan_draws, SectionRecord};
 use crate::scheduler::{Completion, SchedulerCore};
 use crate::task::{ChunkJob, JobKind, Priority};
@@ -912,6 +915,73 @@ pub extern "C" fn jpe_world_renderer_read_pixels(
 }
 
 // ---------------------------------------------------------------------------
+// Presentation (additive to ABI v2: new symbols only, no struct change)
+// ---------------------------------------------------------------------------
+//
+// These are the on-screen hooks the "present/swapchain" stage fills in. They are
+// pure additions: existing symbols, struct layouts and the ABI version are
+// unchanged, so a caller that ignores them behaves exactly as before. A backend
+// with no on-screen path reports OFFSCREEN and rejects attach/present.
+
+const PRESENT_SUPPORT_OFFSCREEN: i32 = 0;
+const PRESENT_SUPPORT_EXTERNAL_GL: i32 = 1;
+const PRESENT_SUPPORT_OWNER_SWAPCHAIN: i32 = 2;
+
+/// How `handle` can present. 0 offscreen-only, 1 external GL context,
+/// 2 owner swapchain; -1 unknown handle, -7 wrong thread.
+#[no_mangle]
+pub extern "C" fn jpe_world_renderer_present_support(handle: u64) -> i32 {
+    match with_renderer(handle, |r| Ok(r.present_support())) {
+        Ok(PresentSupport::OffscreenOnly) => PRESENT_SUPPORT_OFFSCREEN,
+        Ok(PresentSupport::ExternalGl) => PRESENT_SUPPORT_EXTERNAL_GL,
+        Ok(PresentSupport::OwnerSwapchain) => PRESENT_SUPPORT_OWNER_SWAPCHAIN,
+        Err(code) => code,
+    }
+}
+
+/// Attach the default framebuffer of the currently-current external GL context
+/// as the drawable, at `width` x `height`.
+///
+/// The engine does not create a window or swapchain here; Minecraft keeps owning
+/// the context and performs the buffer swap. 0 ok, -1 unknown, -4 invalid
+/// extent, -6 unsupported by this backend, -7 wrong thread.
+#[no_mangle]
+pub extern "C" fn jpe_world_renderer_attach_external_gl(handle: u64, width: u32, height: u32) -> i32 {
+    status(with_renderer(handle, |r| {
+        r.attach_surface(SurfaceDesc::ExternalGlCurrent { width, height })
+    }))
+}
+
+/// Resize the attached surface to `width` x `height`. 0 ok, -1 unknown, -4
+/// invalid extent, -6 not attached, -7 wrong thread.
+#[no_mangle]
+pub extern "C" fn jpe_world_renderer_resize_surface(handle: u64, width: u32, height: u32) -> i32 {
+    status(with_renderer(handle, |r| r.resize_surface([width, height])))
+}
+
+/// Present the most recent frame. Writes a status code to `out_status` when
+/// non-null: 0 presented, 1 suboptimal (recreate surface), 2 nothing to present.
+/// Returns 0 on success, -1 unknown, -6 unsupported/not attached, -7 wrong
+/// thread.
+#[no_mangle]
+pub extern "C" fn jpe_world_renderer_present(handle: u64, out_status: *mut i32) -> i32 {
+    let presented = match with_renderer(handle, |r| r.present()) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    if !out_status.is_null() {
+        let code = match presented {
+            PresentStatus::Presented => 0,
+            PresentStatus::Suboptimal => 1,
+            PresentStatus::Nothing => 2,
+        };
+        // SAFETY: caller guaranteed a writable i32 via a non-null pointer.
+        unsafe { *out_status = code };
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
 // World pipeline (chunk lifecycle + GPU section registry + per-frame loop)
 // ---------------------------------------------------------------------------
 
@@ -1704,6 +1774,41 @@ mod tests {
         );
         assert_eq!(jpe_world_renderer_destroy(fresh), 0);
         assert!(ran > 0, "no backend could be exercised");
+    }
+
+    /// Presentation additions must respect the render thread and report honest
+    /// support per backend, without touching the frozen ABI version.
+    #[test]
+    fn renderer_presentation_over_c_abi() {
+        // GL is the realistic external-context path: it must report EXTERNAL_GL,
+        // attach the default framebuffer, and present (flush) successfully.
+        let handle = jpe_world_renderer_create(RENDER_BACKEND_GL);
+        if handle == 0 {
+            require_or_skip("no GL backend for the presentation ABI check");
+            eprintln!("GL unavailable here, skipping presentation ABI check");
+            return;
+        }
+
+        assert_eq!(jpe_world_renderer_present_support(handle), PRESENT_SUPPORT_EXTERNAL_GL);
+        // Present before attach is an explicit unsupported error, not a fake success.
+        assert_eq!(jpe_world_renderer_present(handle, std::ptr::null_mut()), -6);
+        // Invalid extent is rejected before any GL state is touched.
+        assert_eq!(jpe_world_renderer_attach_external_gl(handle, 0, 32), -4);
+        // Attach + present a real extent.
+        assert_eq!(jpe_world_renderer_attach_external_gl(handle, 64, 48), 0);
+        assert_eq!(jpe_world_renderer_resize_surface(handle, 80, 60), 0);
+        assert_eq!(jpe_world_renderer_resize_surface(handle, 0, 60), -4);
+        let mut status = -1i32;
+        assert_eq!(jpe_world_renderer_present(handle, &mut status), 0);
+        assert_eq!(status, 0, "external GL present must report Presented(0)");
+
+        // Thread-affinity holds for the new symbols too (engine context is ours).
+        // The call below runs on the same thread, so it must NOT be -7; we assert
+        // support is stable rather than thread behavior, which renderer_handle
+        // ownership already covers for the sibling symbols.
+        assert_eq!(jpe_world_renderer_present_support(handle), PRESENT_SUPPORT_EXTERNAL_GL);
+
+        assert_eq!(jpe_world_renderer_destroy(handle), 0);
     }
 
     /// The Java binding offsets into these two records directly, so the layout is

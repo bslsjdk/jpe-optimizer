@@ -77,6 +77,7 @@ pub mod render;
 pub mod scheduler;
 pub mod task;
 pub mod terrain;
+pub mod terrain_source;
 
 pub use chunk::{ChunkEntry, ChunkState, ChunkStore, ChunkStoreError, WorldEpoch};
 pub use coords::{
@@ -85,7 +86,8 @@ pub use coords::{
 pub use mesh::{Aabb, ChunkSection, Frustum, MeshData, MeshScratch, Plane, Vertex};
 pub use render::headless::HeadlessRenderer;
 pub use render::{
-    Backend, Capabilities, DrawBatch, MeshHandle, RenderError, Renderer, TextureHandle,
+    Backend, Capabilities, DrawBatch, MeshHandle, PresentStatus, PresentSupport, RenderError,
+    Renderer, SurfaceDesc, TextureHandle,
 };
 pub use scheduler::{
     parallel_map, Completion, SchedError, SchedulerCore, SchedulerStats, NEAR_RADIUS_CHUNKS,
@@ -96,6 +98,7 @@ pub use terrain::{
     DensityVolume, JpePerlinLayer, MockTerrainEngine, PerlinLayerSpec, TerrainEngine, TerrainError,
     VolumeDesc, JPE_ABI_VERSION,
 };
+pub use terrain_source::DensityBlockSource;
 
 /// Crate version, useful in logs and benchmark headers.
 pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");

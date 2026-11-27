@@ -245,6 +245,34 @@ public final class RustWorldBridge implements AutoCloseable {
                 options.width(), options.height()));
     }
 
+    // --- presentation (additive, ABI v2) ------------------------------------
+    //
+    // These marshal onto the engine thread like every other call. A real
+    // external-GL attach only succeeds when the host's GL context is current on
+    // that thread, which is a render-thread ownership change deferred to the
+    // present/context integration; the FFI surface is ready so that change is a
+    // wiring step, not a rewrite.
+
+    /** {@link JpeWorldNative#PRESENT_OFFSCREEN}/{@code _EXTERNAL_GL}/{@code _OWNER_SWAPCHAIN}. */
+    public int presentSupport() {
+        return call(() -> world.rendererPresentSupport(rendererHandle));
+    }
+
+    /** Attach the host's current GL context default framebuffer. 0 on success. */
+    public int attachExternalGl(int width, int height) {
+        return call(() -> world.rendererAttachExternalGl(rendererHandle, width, height));
+    }
+
+    /** Resize the attached surface. 0 on success. */
+    public int resizeSurface(int width, int height) {
+        return call(() -> world.rendererResizeSurface(rendererHandle, width, height));
+    }
+
+    /** Present the last frame; returns a PRESENT_* status or a negative error code. */
+    public int present() {
+        return call(() -> world.rendererPresent(rendererHandle));
+    }
+
     public int unloadOutside(int centerX, int centerZ, int radius) {
         return call(() -> world.pipelineUnloadOutsideStatus(pipelineHandle, centerX, centerZ, radius));
     }

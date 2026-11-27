@@ -7,7 +7,10 @@
 //! capabilities.
 
 use super::glcore::{GlCore, Profile};
-use super::{Backend, Capabilities, DrawBatch, FramePixels, MeshHandle, RenderError, Renderer};
+use super::{
+    Backend, Capabilities, DrawBatch, FramePixels, MeshHandle, PresentStatus, PresentSupport,
+    RenderError, Renderer, SurfaceDesc,
+};
 use crate::mesh::MeshData;
 
 pub const BACKEND: Backend = Backend::Gles;
@@ -68,6 +71,18 @@ impl Renderer for GlesRenderer {
     }
     fn read_pixels(&mut self) -> Result<FramePixels, RenderError> {
         self.core.read_pixels_core()
+    }
+    fn present_support(&self) -> PresentSupport {
+        self.core.present_support_core()
+    }
+    fn attach_surface(&mut self, desc: SurfaceDesc) -> Result<(), RenderError> {
+        self.core.attach_surface_core(desc)
+    }
+    fn resize_surface(&mut self, extent: [u32; 2]) -> Result<(), RenderError> {
+        self.core.resize_surface_core(extent)
+    }
+    fn present(&mut self) -> Result<PresentStatus, RenderError> {
+        self.core.present_core()
     }
 }
 

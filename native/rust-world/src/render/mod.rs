@@ -239,6 +239,49 @@ impl FramePixels {
     }
 }
 
+/// How a renderer can put frames on a real on-screen surface.
+///
+/// This is the seam the "present/swapchain" stage fills in. Offscreen backends
+/// (and the tests) never need it; a live Minecraft host does, because it must
+/// show the engine's output in Minecraft's own window instead of an offscreen
+/// FBO that nobody sees.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum PresentSupport {
+    /// No on-screen path; frames only ever land in an offscreen target.
+    OffscreenOnly,
+    /// Can draw into an already-current *external* GL/GLES context's default
+    /// framebuffer. The context owner (Minecraft) performs the buffer swap, so
+    /// the engine never owns a window or swapchain — the realistic GL path.
+    ExternalGl,
+    /// Can own a native window surface and present via its own swapchain
+    /// (Vulkan `vkQueuePresentKHR`). Needs a platform window handle.
+    OwnerSwapchain,
+}
+
+/// Result of [`Renderer::present`].
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum PresentStatus {
+    /// The frame was handed to the surface/host for display.
+    Presented,
+    /// The surface needs recreating (e.g. swapchain out of date after a resize);
+    /// the caller should resize and retry.
+    Suboptimal,
+    /// Nothing to present (no frame since the last present).
+    Nothing,
+}
+
+/// Descriptor for [`Renderer::attach_surface`].
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum SurfaceDesc {
+    /// Draw into the default framebuffer (`0`) of the GL/GLES context that is
+    /// already current on this thread. The host that owns the context swaps.
+    ExternalGlCurrent { width: u32, height: u32 },
+    /// A native window handle the backend should build a surface/swapchain for
+    /// (Xlib/Wayland/Win32). `handle` is backend-specific; not implemented by
+    /// the bundled host yet.
+    NativeWindow { handle: u64, width: u32, height: u32 },
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum RenderError {
     /// The backend cannot run here (missing driver, library, extension).
@@ -293,6 +336,29 @@ pub trait Renderer {
     /// paid for only when a frame is actually inspected (pixel tests, GameTest).
     fn read_pixels(&mut self) -> Result<FramePixels, RenderError> {
         Err(RenderError::Unsupported("pixel readback"))
+    }
+
+    /// How this backend can present on screen. Default: offscreen only.
+    fn present_support(&self) -> PresentSupport {
+        PresentSupport::OffscreenOnly
+    }
+
+    /// Attach a drawable surface so subsequent [`Renderer::end_frame`] output is
+    /// shown there. Backends without an on-screen path reject this.
+    fn attach_surface(&mut self, _desc: SurfaceDesc) -> Result<(), RenderError> {
+        Err(RenderError::Unsupported("presentation surface"))
+    }
+
+    /// Recreate the surface target at a new pixel `extent` (window resize).
+    fn resize_surface(&mut self, _extent: [u32; 2]) -> Result<(), RenderError> {
+        Err(RenderError::Unsupported("presentation surface"))
+    }
+
+    /// Show the most recent frame. For an external-GL surface this flushes the
+    /// context and lets the owner swap; for an owner swapchain it calls
+    /// `vkQueuePresentKHR`.
+    fn present(&mut self) -> Result<PresentStatus, RenderError> {
+        Err(RenderError::Unsupported("presentation"))
     }
 }
 

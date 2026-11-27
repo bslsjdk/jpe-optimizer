@@ -146,6 +146,10 @@ public final class JpeWorldNative implements AutoCloseable {
     private final MethodHandle hRendererDrawVisible;
     private final MethodHandle hRendererEndFrame;
     private final MethodHandle hRendererReadPixels;
+    private final MethodHandle hRendererPresentSupport;
+    private final MethodHandle hRendererAttachExternalGl;
+    private final MethodHandle hRendererResizeSurface;
+    private final MethodHandle hRendererPresent;
 
     private final MethodHandle hPipelineCreate;
     private final MethodHandle hPipelineDestroy;
@@ -223,6 +227,14 @@ public final class JpeWorldNative implements AutoCloseable {
                 FunctionDescriptor.of(i32, i64));
         this.hRendererReadPixels = down(linker, lookup, "jpe_world_renderer_read_pixels",
                 FunctionDescriptor.of(i32, i64, ptr, i64, ptr, ptr));
+        this.hRendererPresentSupport = down(linker, lookup, "jpe_world_renderer_present_support",
+                FunctionDescriptor.of(i32, i64));
+        this.hRendererAttachExternalGl = down(linker, lookup, "jpe_world_renderer_attach_external_gl",
+                FunctionDescriptor.of(i32, i64, i32, i32));
+        this.hRendererResizeSurface = down(linker, lookup, "jpe_world_renderer_resize_surface",
+                FunctionDescriptor.of(i32, i64, i32, i32));
+        this.hRendererPresent = down(linker, lookup, "jpe_world_renderer_present",
+                FunctionDescriptor.of(i32, i64, ptr));
 
         this.hPipelineCreate = down(linker, lookup, "jpe_pipeline_create",
                 FunctionDescriptor.of(i64, i64, i64, i32, ptr));
@@ -641,6 +653,57 @@ public final class JpeWorldNative implements AutoCloseable {
                         + ", expected " + width + "x" + height);
             }
             return dst.toArray(ValueLayout.JAVA_BYTE);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Presentation (additive, same ABI v2)
+    // -----------------------------------------------------------------------
+
+    /** Presentation capability codes mirrored from {@code ffi.rs}. */
+    public static final int PRESENT_OFFSCREEN = 0;
+    public static final int PRESENT_EXTERNAL_GL = 1;
+    public static final int PRESENT_OWNER_SWAPCHAIN = 2;
+
+    /** Present status codes written by {@link #rendererPresent}. */
+    public static final int PRESENTED = 0;
+    public static final int PRESENT_SUBOPTIMAL = 1;
+    public static final int PRESENT_NOTHING = 2;
+
+    /**
+     * How this renderer can present: {@link #PRESENT_OFFSCREEN},
+     * {@link #PRESENT_EXTERNAL_GL} or {@link #PRESENT_OWNER_SWAPCHAIN}.
+     */
+    public int rendererPresentSupport(long handle) {
+        return invokeInt(hRendererPresentSupport, handle);
+    }
+
+    /**
+     * Attach the default framebuffer of the currently-current GL context as the
+     * drawable. Returns 0 on success or a negative status on error.
+     */
+    public int rendererAttachExternalGl(long handle, int width, int height) {
+        return invokeInt(hRendererAttachExternalGl, handle, width, height);
+    }
+
+    /** Resize the attached surface. Returns 0 on success or a negative status. */
+    public int rendererResizeSurface(long handle, int width, int height) {
+        return invokeInt(hRendererResizeSurface, handle, width, height);
+    }
+
+    /**
+     * Present the most recent frame. Returns the {@code PRESENTED}/
+     * {@code PRESENT_SUBOPTIMAL}/{@code PRESENT_NOTHING} status, or a negative
+     * code on error (e.g. presentation unsupported by this backend).
+     */
+    public int rendererPresent(long handle) {
+        try (Arena a = Arena.ofConfined()) {
+            MemorySegment status = a.allocate(ValueLayout.JAVA_INT);
+            int rc = invokeInt(hRendererPresent, handle, status);
+            if (rc != 0) {
+                return rc;
+            }
+            return status.get(ValueLayout.JAVA_INT, 0);
         }
     }
 
