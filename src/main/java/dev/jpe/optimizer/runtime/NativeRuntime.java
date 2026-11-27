@@ -2102,6 +2102,14 @@ public final class NativeRuntime implements AutoCloseable {
             return new DensityNode(7, -1, -1, Float.floatToRawIntBits(amplitude),
                     (double) preparedHandle, xzScale, yScale);
         }
+        /** Minecraft 26.3 ShiftB samples the same noise with X/Z transposed and Y fixed at zero. */
+        public static DensityNode shiftBPerlinStack(long preparedHandle) {
+            if (preparedHandle <= 0 || preparedHandle > 9_007_199_254_740_991L) {
+                throw new IllegalArgumentException("Invalid prepared ShiftB Perlin stack");
+            }
+            return new DensityNode(33, -1, -1, Float.floatToRawIntBits(4.0F),
+                    (double) preparedHandle, 0.25, 0.25);
+        }
         public static DensityNode perlinStackWarped(long preparedHandle, double xzScale, double yScale,
                                                      int shiftX, int shiftY, int shiftZ) {
             if (preparedHandle <= 0 || preparedHandle > 9_007_199_254_740_991L
