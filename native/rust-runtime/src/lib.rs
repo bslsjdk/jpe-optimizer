@@ -2024,7 +2024,8 @@ mod tests {
         const SIZE_Y: u32 = 17;
         const SIZE_Z: u32 = 2;
         const LENGTH: usize = (SIZE_X * SIZE_Y * SIZE_Z) as usize;
-        let mut direct = [f32::NAN; LENGTH];
+        // The fused stack API accumulates into its output buffer; mirror the graph's zeroed scratch.
+        let mut direct = [0.0_f32; LENGTH];
         let mut graph_output = [f32::NAN; LENGTH];
 
         assert_eq!(unsafe {
