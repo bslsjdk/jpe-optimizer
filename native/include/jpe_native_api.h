@@ -149,7 +149,9 @@ enum {
     /* SLICE: input_a=child graph root; input_b=axis (0=X,1=Y,2=Z); immediate=fixed int coordinate. */
     JPE_DENSITY_SLICE = 32,
     /* FIND_TOP_SURFACE: input_a=density; input_b=upperBound; reserved=signed lowerBound; immediate=positive integer stepSize. */
-    JPE_DENSITY_FIND_TOP_SURFACE = 34
+    JPE_DENSITY_FIND_TOP_SURFACE = 34,
+    /* SMEARED_PERLIN_STACK: immediate=prepared SmearedPerlin stack handle; scales are baked per layer. */
+    JPE_DENSITY_SMEARED_PERLIN_STACK = 35
 };
 /* Returns a retained compiled-plan handle, or zero for an invalid graph. */
 JPE_API uint64_t jpe_runtime_density_graph_compile(
