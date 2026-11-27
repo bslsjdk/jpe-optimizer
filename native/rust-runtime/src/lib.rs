@@ -6,7 +6,7 @@ use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-const ABI_VERSION: u32 = 9;
+const ABI_VERSION: u32 = 10;
 const STATUS_OK: i32 = 0;
 const STATUS_INVALID_ARGUMENT: i32 = 1;
 const STATUS_CPP_FAILURE: i32 = 2;
@@ -949,6 +949,16 @@ pub struct JpePerlinLayer {
 }
 
 unsafe extern "C" {
+    fn jpe_cpp_smeared_perlin_stack_prepare(
+        layers: *const JpePerlinLayer, fudge_y_scales: *const f64, layer_count: u32,
+    ) -> u64;
+    fn jpe_cpp_smeared_perlin_stack_evaluate(
+        handle: u64,
+        size_x: u32, size_y: u32, size_z: u32,
+        min_x: i32, min_y: i32, min_z: i32,
+        step_x: i32, step_y: i32, step_z: i32,
+        output: *mut f32, output_length: u64, flags: u32,
+    ) -> i32;
     fn jpe_cpp_perlin_stack_prepare(layers: *const JpePerlinLayer, layer_count: u32) -> u64;
     fn jpe_cpp_perlin_stack_evaluate(
         handle: u64, xz_scale: f64, y_scale: f64, amplitude: f32,
@@ -1041,6 +1051,57 @@ pub unsafe extern "C" fn jpe_runtime_prepare_perlin_stack(
         if descriptors.iter().any(|layer| layer.permutation.is_null()) { return 0; }
         unsafe { jpe_cpp_perlin_stack_prepare(layers, layer_count) }
     })).unwrap_or(0)
+}
+
+/// Prepares a SmearedPerlin stack with its per-octave Y smear thresholds.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_prepare_smeared_perlin_stack(
+    layers: *const JpePerlinLayer, fudge_y_scales: *const f64, layer_count: u32,
+) -> u64 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if layers.is_null() || fudge_y_scales.is_null() || layer_count == 0 || layer_count > 64 {
+            return 0;
+        }
+        let descriptors = unsafe { slice::from_raw_parts(layers, layer_count as usize) };
+        let fudge = unsafe { slice::from_raw_parts(fudge_y_scales, layer_count as usize) };
+        if descriptors.iter().any(|layer| layer.permutation.is_null())
+            || fudge.iter().any(|value| !value.is_finite() || *value <= 0.0) {
+            return 0;
+        }
+        unsafe { jpe_cpp_smeared_perlin_stack_prepare(layers, fudge_y_scales, layer_count) }
+    })).unwrap_or(0)
+}
+
+/// Evaluates a prepared SmearedPerlin stack. Scales and amplitudes were baked
+/// into its immutable octave descriptors during preparation.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_evaluate_prepared_smeared_perlin_stack(
+    handle: u64,
+    size_x: u32, size_y: u32, size_z: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    step_x: i32, step_y: i32, step_z: i32,
+    output: *mut f32, output_length: u64, flags: u32,
+) -> i32 {
+    if handle == 0 || output.is_null() || size_x == 0 || size_y == 0 || size_z == 0
+        || step_x == 0 || step_y == 0 || step_z == 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    let expected = match (size_x as u64).checked_mul(size_y as u64)
+        .and_then(|n| n.checked_mul(size_z as u64)) {
+        Some(value) => value, None => return STATUS_INVALID_ARGUMENT,
+    };
+    if expected != output_length || expected > MAX_VOLUME_ELEMENTS as u64 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        jpe_cpp_smeared_perlin_stack_evaluate(
+            handle, size_x, size_y, size_z, min_x, min_y, min_z,
+            step_x, step_y, step_z, output, output_length, flags)
+    })) {
+        Ok(STATUS_OK) => STATUS_OK,
+        Ok(code) => code,
+        Err(_) => STATUS_RUST_PANIC,
+    }
 }
 
 /// Evaluates a prepared stack. No layer descriptors or permutation arrays cross
