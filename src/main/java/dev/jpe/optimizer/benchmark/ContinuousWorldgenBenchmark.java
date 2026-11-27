@@ -40,6 +40,9 @@ public final class ContinuousWorldgenBenchmark {
     private static final int WARMUP_ROWS = 3;
     private static final int MEASURED_ROWS = 20;
     private static final int MAX_DRAIN_TICKS = 400;
+    // Keep enough work queued to use the chunk workers without flooding the server.
+    private static final int MAX_IN_FLIGHT_CHUNKS = Math.max(
+            FRONTIER_WIDTH, Integer.getInteger("jpe.benchmark.maxInFlightChunks", FRONTIER_WIDTH * 4));
     private static final int WARMUP_START_CHUNK_X = 4096;
     private static final int MEASURE_START_CHUNK_X = 8192;
     private static final int START_CHUNK_Z = 4096;
@@ -149,7 +152,8 @@ public final class ContinuousWorldgenBenchmark {
             maxLoadedChunks.accumulateAndGet(level.getChunkSource().getLoadedChunksCount(), Math::max);
 
             if (measurementStartNanos == 0L) {
-                if (warmupRowsIssued < WARMUP_ROWS && tick >= nextIssueTick) {
+                if (warmupRowsIssued < WARMUP_ROWS && tick >= nextIssueTick
+                        && inFlight.get() < MAX_IN_FLIGHT_CHUNKS) {
                     issueFrontierRow(false);
                     warmupRowsIssued++;
                     nextIssueTick = tick + TICKS_PER_CHUNK_COLUMN;
@@ -164,7 +168,8 @@ public final class ContinuousWorldgenBenchmark {
                 return;
             }
 
-            if (measuredRowsIssued < MEASURED_ROWS && tick >= nextIssueTick) {
+            if (measuredRowsIssued < MEASURED_ROWS && tick >= nextIssueTick
+                    && inFlight.get() < MAX_IN_FLIGHT_CHUNKS) {
                 issueFrontierRow(true);
                 measuredRowsIssued++;
                 nextIssueTick = tick + TICKS_PER_CHUNK_COLUMN;
