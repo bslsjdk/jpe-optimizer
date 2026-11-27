@@ -135,7 +135,9 @@ enum {
     /* PERLIN_STACK_WARP: input_a/input_b/reserved=shift X/Y/Z node indices; amplitude is 1.0. */
     JPE_DENSITY_PERLIN_STACK_WARP = 31,
     /* SLICE: input_a=child graph root; input_b=axis (0=X,1=Y,2=Z); immediate=fixed int coordinate. */
-    JPE_DENSITY_SLICE = 32
+    JPE_DENSITY_SLICE = 32,
+    /* FIND_TOP_SURFACE: input_a=density; input_b=upperBound; reserved=signed lowerBound; immediate=positive integer stepSize. */
+    JPE_DENSITY_FIND_TOP_SURFACE = 34
 };
 /* Returns a retained compiled-plan handle, or zero for an invalid graph. */
 JPE_API uint64_t jpe_runtime_density_graph_compile(
