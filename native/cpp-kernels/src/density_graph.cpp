@@ -1,4 +1,5 @@
 #include "jpe_native_api.h"
+#include "jpe_beardifier_context.hpp"
 
 #include <algorithm>
 #include <array>
@@ -55,6 +56,7 @@ constexpr uint32_t kRound = 28, kLog = 29, kDistanceToPoint = 30, kPerlinStackWa
 constexpr uint32_t kShiftBPerlinStack = 33;
 constexpr uint32_t kFindTopSurface = 34;
 constexpr uint32_t kSmearedPerlinStack = 35;
+constexpr uint32_t kBeardifier = 36;
 
 struct CompiledGraph {
     uint64_t fingerprint = 0;
@@ -67,6 +69,7 @@ struct CompiledGraph {
     std::vector<uint32_t> node_slots;
     uint32_t slot_count = 0;
     bool has_perlin = false;
+    bool has_beardifier = false;
     bool needs_x_coordinates = false;
     bool needs_y_coordinates = false;
     bool needs_z_coordinates = false;
@@ -266,6 +269,10 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                     || node.immediate > static_cast<double>(INT32_MAX)
                     || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
                 break;
+            case kBeardifier:
+                if (node.input_a != kNoInput || node.input_b != kNoInput || node.reserved != 0
+                    || node.immediate != 0.0 || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
+                break;
             case kFindTopSurface:
                 if (node.input_a >= i || node.input_b >= i
                     || !std::isfinite(node.immediate) || node.immediate < 1.0
@@ -376,6 +383,12 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
                     else graph->needs_z_coordinates = true;
                     break;
                 case kInterpolated:
+                    graph->needs_x_coordinates = true;
+                    graph->needs_y_coordinates = true;
+                    graph->needs_z_coordinates = true;
+                    break;
+                case kBeardifier:
+                    graph->has_beardifier = true;
                     graph->needs_x_coordinates = true;
                     graph->needs_y_coordinates = true;
                     graph->needs_z_coordinates = true;
@@ -627,6 +640,7 @@ int32_t evaluate_density_graph_impl(
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
     Scalar* output, uint64_t output_length,
+    const JpeBeardifierContext* beardifier_context,
     uint32_t recursion_depth
 ) {
     if (output == nullptr || root_node >= graph->nodes.size()
@@ -1026,6 +1040,22 @@ int32_t evaluate_density_graph_impl(
                     }
                     break;
                 }
+                case kBeardifier: {
+                    if (beardifier_context == nullptr) return 2;
+                    size_t out = 0;
+                    for (uint32_t z = 0; z < size_z; ++z) {
+                        const int32_t world_z = wrapped_coordinate(min_z, z, step_z);
+                        for (uint32_t x = 0; x < size_x; ++x) {
+                            const int32_t world_x = wrapped_coordinate(min_x, x, step_x);
+                            for (uint32_t y = 0; y < size_y; ++y) {
+                                const int32_t world_y = wrapped_coordinate(min_y, y, step_y);
+                                values[out++] = static_cast<Scalar>(
+                                    jpe_cpp_beardifier_context_sample(*beardifier_context, world_x, world_y, world_z));
+                            }
+                        }
+                    }
+                    break;
+                }
                 case kFindTopSurface: {
                     // This node is column-valued: compute one surface Y per X/Z
                     // column, then broadcast it through the requested Y volume.
@@ -1044,7 +1074,7 @@ int32_t evaluate_density_graph_impl(
                             int32_t status = evaluate_density_graph_impl<Scalar>(
                                 graph, node.input_b, 1, 1, 1,
                                 world_x, 0, world_z, 0, 0, 0,
-                                &upper_value, 1, recursion_depth + 1);
+                                &upper_value, 1, beardifier_context, recursion_depth + 1);
                             if (status != 0) return status;
                             if (!std::isfinite(static_cast<double>(upper_value))) return 1;
                             const double rounded_upper = std::floor(static_cast<double>(upper_value));
@@ -1055,7 +1085,7 @@ int32_t evaluate_density_graph_impl(
                                 status = evaluate_density_graph_impl<Scalar>(
                                     graph, node.input_a, 1, 1, 1,
                                     world_x, static_cast<int32_t>(y), world_z, 0, 0, 0,
-                                    &density_value, 1, recursion_depth + 1);
+                                    &density_value, 1, beardifier_context, recursion_depth + 1);
                                 if (status != 0) return status;
                                 if (density_value > Scalar(0)) {
                                     surface_y = static_cast<int32_t>(y);
@@ -1090,7 +1120,7 @@ int32_t evaluate_density_graph_impl(
                         graph, node.input_a, size_x, size_y, size_z,
                         sliced_min_x, sliced_min_y, sliced_min_z,
                         sliced_step_x, sliced_step_y, sliced_step_z,
-                        sliced_values.data(), output_length, recursion_depth + 1);
+                        sliced_values.data(), output_length, beardifier_context, recursion_depth + 1);
                     if (status != 0) return status;
                     std::copy(sliced_values.begin(), sliced_values.end(), values.begin());
                     break;
@@ -1190,7 +1220,7 @@ int32_t evaluate_density_graph(
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
-    Scalar* output, uint64_t output_length
+    Scalar* output, uint64_t output_length, uint64_t beardifier_context_handle = 0
 ) {
     if (output == nullptr || !valid_volume(size_x, size_y, size_z,
             step_x, step_y, step_z, output_length)) return 1;
@@ -1201,10 +1231,15 @@ int32_t evaluate_density_graph(
         if (found == g_handles.end()) return 2;
         graph = found->second;
     }
+    std::shared_ptr<const JpeBeardifierContext> beardifier_context;
+    if (graph->has_beardifier) {
+        beardifier_context = jpe_cpp_beardifier_context_acquire(beardifier_context_handle);
+        if (!beardifier_context) return 2;
+    }
     return evaluate_density_graph_impl<Scalar>(
         graph, graph->root, size_x, size_y, size_z,
         min_x, min_y, min_z, step_x, step_y, step_z,
-        output, output_length, 0);
+        output, output_length, beardifier_context.get(), 0);
 }
 
 template <typename Scalar>
@@ -1234,7 +1269,7 @@ int32_t evaluate_density_graph_points(
                 1, 1, 1,
                 point_x[i], point_y[i], point_z[i],
                 1, 1, 1,
-                &output[i], 1, 0);
+                &output[i], 1, nullptr, 0);
             if (status != 0) return status;
         }
         return 0;
@@ -1362,6 +1397,19 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_f32(
 ) {
     return evaluate_density_graph<float>(graph_handle, size_x, size_y, size_z,
         min_x, min_y, min_z, step_x, step_y, step_z, output, output_length);
+}
+
+extern "C" int32_t jpe_cpp_density_graph_evaluate_f32_with_beardifier(
+    uint64_t graph_handle, uint64_t beardifier_context_handle,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    float* output, uint64_t output_length
+) {
+    if (beardifier_context_handle == 0) return 1;
+    return evaluate_density_graph<float>(graph_handle, size_x, size_y, size_z,
+        min_x, min_y, min_z, step_x, step_y, step_z, output, output_length,
+        beardifier_context_handle);
 }
 
 extern "C" int32_t jpe_cpp_density_graph_retain(uint64_t graph_handle) {
