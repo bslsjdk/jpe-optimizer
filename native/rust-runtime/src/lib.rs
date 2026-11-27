@@ -868,7 +868,6 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_context_compute_density_and_substan
     };
     if context_handle == 0 || expected_world_fingerprint.is_null()
         || expected_semantic_fingerprint == 0 || final_density_graph_handle == 0
-        || beardifier_context_handle == 0
         || outputs.is_null() || size_x == 0 || size_y == 0 || size_z == 0
         || step_x <= 0 || step_y <= 0 || step_z <= 0
         || total == 0 || total > MAX_VOLUME_VOXELS {
@@ -2415,7 +2414,7 @@ mod tests {
     }
 
     #[test]
-    fn exports_expected_abi_version() { assert_eq!(jpe_runtime_abi_version(), 10); }
+    fn exports_expected_abi_version() { assert_eq!(jpe_runtime_abi_version(), 11); }
 
     #[test]
     fn worker_configuration_is_idempotent_after_scheduler_start() {
