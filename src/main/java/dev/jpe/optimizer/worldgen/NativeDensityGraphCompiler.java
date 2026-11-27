@@ -36,6 +36,7 @@ import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
 import net.minecraft.world.level.levelgen.densityfunction.ScopedDensityBuffer;
 import net.minecraft.world.level.levelgen.densityfunction.generator.NoiseFunction;
 import net.minecraft.world.level.levelgen.synth.Noise;
+import net.minecraft.world.level.levelgen.synth.NormalNoise;
 
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
@@ -220,6 +221,34 @@ public final class NativeDensityGraphCompiler {
     ) {
         synchronized (LOCK) {
             CAPTURED_NOISE.computeIfAbsent(context, ignored -> new HashMap<>()).put(function, noise);
+        }
+    }
+
+    /**
+     * The vanilla compiler rewrites density-function children before compiling them.
+     * A rewritten NoiseFunction can therefore be a different record instance from the
+     * one observed by the capture mixin. Resolve that leaf through the same per-world
+     * CompileContext instead of rejecting an otherwise valid graph.
+     *
+     * CompileContext owns RandomState's seeded noise memo, so this returns the exact
+     * world-seeded Noise associated with the function's Holder. Keep the lookup and
+     * memoization under LOCK because several graph roots may be lowered concurrently.
+     */
+    private static Noise resolveCapturedNoise(
+            NoiseFunction function, DensityFunction.CompileContext context
+    ) {
+        synchronized (LOCK) {
+            Map<NoiseFunction, Noise> captured = CAPTURED_NOISE.get(context);
+            Noise noise = captured == null ? null : captured.get(function);
+            if (noise != null) return noise;
+
+            Holder<NormalNoise> parameters = function.noise();
+            noise = context.createNoiseSampler(parameters);
+            CAPTURED_NOISE.computeIfAbsent(context, ignored -> new HashMap<>()).put(function, noise);
+            JPEOptimizer.LOGGER.debug(
+                    "Resolved uncaptured rewritten NoiseFunction through its vanilla CompileContext (noise={})",
+                    parameters);
+            return noise;
         }
     }
 
@@ -1384,14 +1413,7 @@ public final class NativeDensityGraphCompiler {
                         result = append(NativeRuntime.DensityNode.slice(input, axis, coordinate));
                     }
                     case "NoiseFunction" -> {
-                        Noise noise;
-                        synchronized (LOCK) {
-                            Map<NoiseFunction, Noise> captured = CAPTURED_NOISE.get(context);
-                            noise = captured == null ? null : captured.get((NoiseFunction) function);
-                        }
-                        if (noise == null) {
-                            throw new UnsupportedOperationException("Noise sampler was not captured by vanilla compilation");
-                        }
+                        Noise noise = resolveCapturedNoise((NoiseFunction) function, context);
                         long preparedHandle = NativePerlinNoiseBackend.preparedStackHandleForDensityGraph(noise);
                         if (preparedHandle == 0L) {
                             throw new UnsupportedOperationException("Noise sampler is not a supported Perlin stack");
