@@ -48,6 +48,8 @@ public final class ContinuousWorldgenBenchmark {
     private static final int WARMUP_ROWS = 3;
     private static final int MEASURED_ROWS = 20;
     private static final int MAX_DRAIN_TICKS = 400;
+    private static final int MEASUREMENT_DEADLINE_SECONDS = Math.max(1,
+            Integer.getInteger("jpe.benchmark.deadlineSeconds", 20));
     private static final int WARMUP_START_CHUNK_X = 4096;
     private static final int MEASURE_START_CHUNK_X = 8192;
     private static final int START_CHUNK_Z = 4096;
@@ -113,7 +115,7 @@ public final class ContinuousWorldgenBenchmark {
         private int measuredRowsIssued;
         private int drainTicks;
         private long lastTickNanos;
-        private long measurementStartNanos;
+        private volatile long measurementStartNanos;
         private long serverCpuBefore = -1L;
         private long processCpuBefore = -1L;
         private long allocatedBefore = -1L;
@@ -127,6 +129,7 @@ public final class ContinuousWorldgenBenchmark {
         private DensityBufferMetrics.Snapshot densityBuffersBefore;
         private StructureSpatialIndex.Metrics structureBefore;
         private volatile boolean finished;
+        private volatile boolean deadlineExceeded;
 
         private State(MinecraftServer server) {
             this.server = server;
@@ -299,6 +302,7 @@ public final class ContinuousWorldgenBenchmark {
                 return;
             }
             measurementStartNanos = now;
+            startMeasurementDeadlineWatchdog();
             maxInFlight.set(0);
             maxPendingTasks.set(0);
             maxLoadedChunks.set(0);
@@ -321,6 +325,40 @@ public final class ContinuousWorldgenBenchmark {
                     MEASURED_ROWS, FRONTIER_WIDTH, MEASURED_ROWS * FRONTIER_WIDTH,
                     TICKS_PER_CHUNK_COLUMN, level.getSeed()
             );
+        }
+
+        /**
+         * Enforces the measured FULL-chunk generation budget independently of server ticks.
+         * A blocked server tick must not be able to keep a slow native batch alive indefinitely.
+         */
+        private void startMeasurementDeadlineWatchdog() {
+            Thread watchdog = new Thread(() -> {
+                long deadlineNanos = measurementStartNanos
+                        + MEASUREMENT_DEADLINE_SECONDS * 1_000_000_000L;
+                while (!finished) {
+                    long remaining = deadlineNanos - System.nanoTime();
+                    if (remaining <= 0L) {
+                        if (!finished) {
+                            deadlineExceeded = true;
+                            finished = true;
+                            JPEOptimizer.LOGGER.error(
+                                    "JPE worldgen measurement exceeded {}s deadline: completed={} failed={} inFlight={} rowsIssued={}/{}",
+                                    MEASUREMENT_DEADLINE_SECONDS, measuredCompleted.get(), measuredFailed.get(),
+                                    inFlight.get(), measuredRowsIssued, MEASURED_ROWS);
+                            server.halt(false);
+                        }
+                        return;
+                    }
+                    try {
+                        Thread.sleep(Math.min(100L, Math.max(1L, remaining / 1_000_000L)));
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+            }, "jpe-worldgen-deadline-watchdog");
+            watchdog.setDaemon(true);
+            watchdog.start();
         }
 
         private void finish() {
