@@ -30,7 +30,7 @@ import net.minecraft.world.level.levelgen.synth.PerlinNoise;
  * Completed jobs must be explicitly released before this runtime can be closed.
  */
 public final class NativeRuntime implements AutoCloseable {
-    public static final int EXPECTED_ABI_VERSION = 7;
+    public static final int EXPECTED_ABI_VERSION = 8;
     private static final long PERLIN_LAYER_SIZE = 56L;
 
     public static final int JOB_COMPLETE = 0;
@@ -1222,13 +1222,7 @@ public final class NativeRuntime implements AutoCloseable {
          */
         public long packedResult(int index) {
             ensureIndex(index);
-            long offset = (long) index * 12L;
-            int hasBlockState = values.get(ValueLayout.JAVA_INT, offset);
-            int blockStateToken = values.get(ValueLayout.JAVA_INT, offset + 4L);
-            int scheduleFluidUpdate = values.get(ValueLayout.JAVA_INT, offset + 8L);
-            return (blockStateToken & 0xffff_ffffL)
-                    | (hasBlockState != 0 ? (1L << 32) : 0L)
-                    | (scheduleFluidUpdate != 0 ? (1L << 33) : 0L);
+            return values.get(ValueLayout.JAVA_LONG, (long) index * Long.BYTES);
         }
 
         private void ensureIndex(int index) {
