@@ -161,10 +161,10 @@ jobs:
             local mode="$2"
             local engine_options=""
             if [[ "$mode" == "native" ]]; then
-              engine_options="-Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphStrict=true -Djpe.nativeAquiferSubstanceEnabled=true -Djpe.nativeAquiferSubstanceStrict=true -Djpe.nativeDensityGraphCacheDir=\${GITHUB_WORKSPACE}/build/native-density-graph-cache -Djpe.nativeLibraryPath=\${GITHUB_WORKSPACE}/native/rust-runtime/target/release/libjpe_runtime.so"
+              engine_options="-Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphStrict=true -Djpe.nativeAquiferSubstanceEnabled=true -Djpe.nativeAquiferSubstanceStrict=true -Djpe.nativeDensityGraphCacheDir=${GITHUB_WORKSPACE}/build/native-density-graph-cache -Djpe.nativeLibraryPath=${GITHUB_WORKSPACE}/native/rust-runtime/target/release/libjpe_runtime.so"
             fi
 
-            echo "===== WORLDGEN PARITY BATCH: \${label} (\${mode}) ====="
+            echo "===== WORLDGEN PARITY BATCH: ${label} (${mode}) ====="
             rm -rf run
             mkdir -p run
             printf '%s\n' 'eula=true' > run/eula.txt
@@ -183,13 +183,13 @@ jobs:
           max-tick-time=-1
           sync-chunk-writes=false
           PROPERTIES
-            JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector \${engine_options} -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=1 -Djpe.benchmark.digestFile=\${GITHUB_WORKSPACE}/build/worldgen-parity/\${label}.csv -Djpe.worldgenMetrics=true" \
-              gradle runServer --no-daemon --stacktrace 2>&1 | tee "build/worldgen-parity/\${label}.log"
+            JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector ${engine_options} -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=1 -Djpe.benchmark.digestFile=${GITHUB_WORKSPACE}/build/worldgen-parity/${label}.csv -Djpe.worldgenMetrics=true" \
+              gradle runServer --no-daemon --stacktrace 2>&1 | tee "build/worldgen-parity/${label}.log"
 
             grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*completedChunks=340.*failedChunks=0.*doFillCalls=([3-9][0-9]{2,}|[1-9][0-9]{3,})' \
-              "build/worldgen-parity/\${label}.log"
-            test "$(wc -l < "build/worldgen-parity/\${label}.csv")" -eq 341
-            grep -F 'JPE chunk block-state digest snapshot written:' "build/worldgen-parity/\${label}.log"
+              "build/worldgen-parity/${label}.log"
+            test "$(wc -l < "build/worldgen-parity/${label}.csv")" -eq 341
+            grep -F 'JPE chunk block-state digest snapshot written:' "build/worldgen-parity/${label}.log"
           }
 
           # Same seed, generator settings, mods, chunk coordinates and FULL status.
