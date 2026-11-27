@@ -5,8 +5,10 @@ concurrency:
   cancel-in-progress: true
 
 on:
+  # Feature branches are validated by pull_request; only main gets push CI.
+  # This prevents duplicate full-world generation on every PR branch commit.
   push:
-    branches: [main, "work/**"]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
