@@ -2219,6 +2219,14 @@ public final class NativeRuntime implements AutoCloseable {
             }
             return new DensityNode(34, density, upperBound, lowerBound, stepSize, 0.0, 0.0);
         }
+
+        /** Evaluates one immutable Minecraft SmearedPerlin octave stack. */
+        public static DensityNode smearedPerlinStack(long preparedHandle) {
+            if (preparedHandle <= 0L || preparedHandle > 9_007_199_254_740_991L) {
+                throw new IllegalArgumentException("Invalid prepared SmearedPerlin handle");
+            }
+            return new DensityNode(35, -1, -1, 0, (double) preparedHandle, 0.0, 0.0);
+        }
     }
 
     public boolean supportsDensityGraph() {
