@@ -75,7 +75,7 @@ import java.util.concurrent.ExecutionException;
  * graph, leaving the existing vanilla sampler untouched.
  */
 public final class NativeDensityGraphCompiler {
-    private static final long CONFIGURATION_FINGERPRINT = 0x4A50452603000005L;
+    private static final long CONFIGURATION_FINGERPRINT = 0x4A50452603000006L;
     private static final Object LOCK = new Object();
 
     // Density graphs repeatedly read the same record components while lowering
