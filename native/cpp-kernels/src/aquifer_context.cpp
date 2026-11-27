@@ -834,7 +834,6 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_density_and_substance
     constexpr uint64_t kMaxVolumeElements = 1024ULL * 1024ULL;
     if (context_handle == 0 || expected_world_fingerprint == nullptr
         || expected_semantic_fingerprint == 0 || final_density_graph_handle == 0
-        || beardifier_context_handle == 0
         || outputs == nullptr || size_x == 0 || size_y == 0 || size_z == 0
         || step_x <= 0 || step_y <= 0 || step_z <= 0) return 1;
 
