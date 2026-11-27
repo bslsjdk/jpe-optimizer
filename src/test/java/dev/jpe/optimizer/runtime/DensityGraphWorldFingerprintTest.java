@@ -101,6 +101,6 @@ class DensityGraphWorldFingerprintTest {
     void refusesDuplicateModIds() {
         assertThrows(IllegalArgumentException.class, () -> create(List.of(
                 new DensityGraphWorldFingerprint.ModVersion("example", "1.0", "1".repeat(64)),
-                new DensityGraphWorldFingerprint.ModVersion("example", "2.0"))));
+                new DensityGraphWorldFingerprint.ModVersion("example", "2.0", "2".repeat(64)))));
     }
 }
