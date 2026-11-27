@@ -146,7 +146,7 @@ jobs:
           fi
           exit "$test_status"
 
-      - name: Compare Java and strict native worlds (340 FULL chunks each, 5-minute batch deadline)
+      - name: Compare Java and strict native worlds (340 FULL chunks each, 20-second generation deadline)
         if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         env:
           # Each mode gets a fresh server process and world directory, identical seed/settings,
@@ -186,12 +186,12 @@ jobs:
             # A 340-chunk FULL batch must not occupy a runner indefinitely.
             # This is a wall-clock limit for the whole fresh-server batch, not a tick count.
             local batch_status=0
-            timeout --signal=TERM --kill-after=15s 300s \
-              env JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector ${engine_options} -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=1 -Djpe.benchmark.digestFile=${GITHUB_WORKSPACE}/build/worldgen-parity/${label}.csv -Djpe.worldgenMetrics=true" \
+            timeout --signal=TERM --kill-after=10s 90s \
+              env JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector ${engine_options} -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=1 -Djpe.benchmark.deadlineSeconds=20 -Djpe.benchmark.digestFile=${GITHUB_WORKSPACE}/build/worldgen-parity/${label}.csv -Djpe.worldgenMetrics=true" \
               gradle runServer --no-daemon --stacktrace 2>&1 | tee "build/worldgen-parity/${label}.log" || batch_status=$?
 
             if [[ "${batch_status}" -ne 0 ]]; then
-              echo "::error title=Worldgen parity batch failed::${label} batch exited with status ${batch_status}; expected at most 300 seconds."
+              echo "::error title=Worldgen parity batch failed::${label} batch exited with status ${batch_status}; expected at most 90 seconds including fresh-server startup; measured generation deadline is 20 seconds."
               echo "===== ${label} batch progress diagnostics ====="
               grep -E 'JPE continuous worldgen|JPE_CONTINUOUS_WORLDGEN_BENCH|JPE chunk block-state digest' \
                 "build/worldgen-parity/${label}.log" | tail -n 100 || true
