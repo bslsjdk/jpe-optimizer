@@ -186,9 +186,25 @@ jobs:
             # A 340-chunk FULL batch must not occupy a runner indefinitely.
             # This is a wall-clock limit for the whole fresh-server batch, not a tick count.
             local batch_status=0
-            timeout --signal=TERM --kill-after=10s 90s \
-              env JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector ${engine_options} -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=1 -Djpe.benchmark.deadlineSeconds=20 -Djpe.benchmark.digestFile=${GITHUB_WORKSPACE}/build/worldgen-parity/${label}.csv -Djpe.worldgenMetrics=true" \
-              gradle runServer --no-daemon --stacktrace 2>&1 | tee "build/worldgen-parity/${label}.log" || batch_status=$?
+            # Put the Gradle client, its single-use daemon/server JVM, and tee in one
+            # dedicated process group. The outer watchdog kills the entire group so an
+            # orphaned server JVM cannot keep the log pipe open after the deadline.
+            setsid bash -c '
+              set -o pipefail
+              timeout --signal=TERM --kill-after=5s 90s \
+                env JAVA_TOOL_OPTIONS="$1" gradle runServer --no-daemon --stacktrace 2>&1 | tee "$2"
+            ' _ "--add-modules=jdk.incubator.vector ${engine_options} -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=1 -Djpe.benchmark.deadlineSeconds=20 -Djpe.benchmark.digestFile=${GITHUB_WORKSPACE}/build/worldgen-parity/${label}.csv -Djpe.worldgenMetrics=true" "build/worldgen-parity/${label}.log" &
+            batch_pid=$!
+            (
+              sleep 90
+              kill -TERM -- "-${batch_pid}" 2>/dev/null || true
+              sleep 5
+              kill -KILL -- "-${batch_pid}" 2>/dev/null || true
+            ) &
+            watchdog_pid=$!
+            wait "${batch_pid}" || batch_status=$?
+            kill "${watchdog_pid}" 2>/dev/null || true
+            wait "${watchdog_pid}" 2>/dev/null || true
 
             if [[ "${batch_status}" -ne 0 ]]; then
               echo "::error title=Worldgen parity batch failed::${label} batch exited with status ${batch_status}; expected at most 90 seconds including fresh-server startup; measured generation deadline is 20 seconds."
