@@ -5,3 +5,5 @@ native/cpp-kernels/build/
 *.dylib
 *.dll
 build/
+.mc-server/
+.gradle/

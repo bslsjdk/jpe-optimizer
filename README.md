@@ -85,8 +85,13 @@ Minecraft 26.3 evaluates Density Functions and noises with single-precision floa
 ## Standalone density graph server
 `scripts/run-density-server.sh` starts a JDK-only HTTP service that compiles native density programs, evaluates chunk-sized volumes, and compares the result with a Java scalar reference. It needs neither Minecraft nor Gradle, only the built `libjpe_runtime`; the dashboard at `http://127.0.0.1:8787/` renders a volume slice and reports parity and p50/p95. See [docs/density-graph-server.md](docs/density-graph-server.md).
 
+## Real Minecraft server
+
+`scripts/run-mc-server.sh` installs a NeoForge 26.3 dedicated server, copies the built jar into `mods/`, starts it, and force-loads a 16x16 chunk square. The jar carries `libjpe_runtime.so` under `META-INF/natives`; `NativeLibraryLoader` unpacks it on first use, so the server needs neither a checkout nor `-Djpe.nativeLibraryPath`. A successful boot logs `Native runtime ready: path=...` followed by `Done (...)`. See [docs/minecraft-server-verification.md](docs/minecraft-server-verification.md) for the exact prerequisites, the build workaround for containers, and the current native-coverage boundary.
+
 ## Commands
 - `scripts/run-density-server.sh`
+- `scripts/run-mc-server.sh`
 - `gradle test`
 - `gradle benchmark`
 - `gradle vectorBenchmark`
