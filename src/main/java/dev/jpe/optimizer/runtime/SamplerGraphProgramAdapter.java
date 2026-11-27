@@ -35,12 +35,26 @@ public final class SamplerGraphProgramAdapter {
          */
         DensityGraphIr.Node lower(CompiledSamplerGraphIr.Node source, int[] childIndices,
                                   DensityGraphPayloadCapture tables);
+
+        /**
+         * True when the node is a pure wrapper whose value is exactly its first
+         * child, so the adapter can alias the child index and emit nothing.
+         * Caching is always transparent; context binding only when the bound
+         * context does not override the key, which the provider can observe.
+         */
+        default boolean transparent(CompiledSamplerGraphIr.Node source) { return false; }
     }
 
+    /**
+     * @param sourceNodes adapted node index to the sampler node id it came from, or
+     *                    {@code -1} for a constant the lowering emitted on its own.
+     *                    Diagnostics need it because the adapter renumbers the graph.
+     */
     public record Result(DensityGraphIr graph, int nativeNodes, int opaqueNodes,
-                         List<String> opaqueClasses) {
+                         List<String> opaqueClasses, int[] sourceNodes) {
         public Result {
             opaqueClasses = List.copyOf(opaqueClasses);
+            sourceNodes = sourceNodes.clone();
         }
         public boolean complete() { return opaqueNodes == 0; }
     }
@@ -97,8 +111,14 @@ public final class SamplerGraphProgramAdapter {
             for (int i = 0; i < childIndices.length; ++i) {
                 childIndices[i] = nativeIndex.get(node.children().get(i));
             }
+            if (childIndices.length == 1 && isTransparent(node, provider)) {
+                // Pure wrapper: alias the child instead of paying a native node.
+                nativeIndex.put(node.id(), childIndices[0]);
+                continue;
+            }
             DensityGraphIr.Node lowered;
             int before = nodes.size();
+            String failureReason = null;
             try {
                 lowered = lowerNode(node, childIndices, tables, provider, nodes);
             } catch (RuntimeException unsupported) {
@@ -109,6 +129,8 @@ public final class SamplerGraphProgramAdapter {
                     throw new IllegalArgumentException("Sampler node " + node.id() + " ("
                             + node.sourceClass() + ") cannot be lowered: " + unsupported.getMessage(), unsupported);
                 }
+                failureReason = unsupported.getClass().getSimpleName()
+                        + (unsupported.getMessage() == null ? "" : ": " + unsupported.getMessage());
                 lowered = null;
             }
             int index = nodes.size();
@@ -117,7 +139,10 @@ public final class SamplerGraphProgramAdapter {
                 int second = childIndices.length > 1 ? childIndices[1] : DensityGraphIr.NO_INPUT;
                 lowered = DensityGraphIr.Node.opaque(first, second);
                 diagnostics.add(new DensityGraphIr.Diagnostic(index, node.sourceClass(),
-                        "No exact native lowering for " + node.op(), toList(childIndices)));
+                        failureReason == null
+                                ? "No exact native lowering for " + node.op()
+                                : node.op() + " failed: " + failureReason,
+                        toList(childIndices)));
                 opaqueClasses.add(node.sourceClass());
             }
             nodes.add(lowered);
@@ -126,7 +151,17 @@ public final class SamplerGraphProgramAdapter {
 
         DensityGraphIr ir = new DensityGraphIr(nodes, diagnostics, nativeIndex.get(graph.rootId()),
                 configurationFingerprint, tables.build());
-        return new Result(ir, nodes.size() - diagnostics.size(), diagnostics.size(), opaqueClasses);
+        int[] sourceNodes = new int[nodes.size()];
+        java.util.Arrays.fill(sourceNodes, -1);
+        for (var entry : nativeIndex.entrySet()) sourceNodes[entry.getValue()] = entry.getKey();
+        return new Result(ir, nodes.size() - diagnostics.size(), diagnostics.size(), opaqueClasses,
+                sourceNodes);
+    }
+
+    /** Cache nodes are always value-preserving; other wrappers must prove it. */
+    private static boolean isTransparent(CompiledSamplerGraphIr.Node node, PayloadProvider provider) {
+        if (node.op() == CompiledSamplerGraphIr.Op.CACHE_BOUNDARY) return true;
+        return provider != null && provider.transparent(node);
     }
 
     private static List<Integer> toList(int[] values) {
@@ -170,8 +205,31 @@ public final class SamplerGraphProgramAdapter {
                     axis(node), readInt(node, "fromCoordinate"), readInt(node, "minCoordinate"),
                     readInt(node, "maxCoordinate"), readFloat(node, "fromValue"),
                     readFloat(node, "coordinateFactor"));
-            case MUL_ZERO_SHORT_CIRCUIT, DIV_ZERO_SHORT_CIRCUIT ->
-                    throw new IllegalArgumentException("zero short circuit is not representable");
+            // The zero shortcut only exists in sampleValue. A whole-volume fill runs
+            // the plain multiply/divide above, and that is the only path a plan feeds.
+            case MUL_ZERO_SHORT_CIRCUIT -> binary(node, children, DensityGraphIr.MUL);
+            case DIV_ZERO_SHORT_CIRCUIT -> binary(node, children, DensityGraphIr.DIV);
+            case SLICE_X, SLICE_Y, SLICE_Z -> DensityGraphIr.Node.slice(
+                    node.op() == CompiledSamplerGraphIr.Op.SLICE_X ? 0
+                            : node.op() == CompiledSamplerGraphIr.Op.SLICE_Y ? 1 : 2,
+                    only(children),
+                    readInt(node, node.op() == CompiledSamplerGraphIr.Op.SLICE_X ? "x"
+                            : node.op() == CompiledSamplerGraphIr.Op.SLICE_Y ? "y" : "z"));
+            case INTERPOLATED -> DensityGraphIr.Node.interpolated(only(children),
+                    readInt(node, "cellSizeXz"), readInt(node, "cellSizeY"));
+            case RANGE_CHOICE -> DensityGraphIr.Node.rangeChoice(children[0], children[1], children[2],
+                    readFloat(node, "minInclusive"), readFloat(node, "maxExclusive"));
+            case LERP -> DensityGraphIr.Node.lerp(children[0], children[1], children[2]);
+            case LERP_CONST_FIRST -> DensityGraphIr.Node.lerp(children[0],
+                    constant(node, "first", emitted), children[1]);
+            case LERP_CONST_SECOND -> DensityGraphIr.Node.lerp(children[0], children[1],
+                    constant(node, "second", emitted));
+            // These need the live object behind the node; the payload provider owns them.
+            case NOISE, NOISE_SHIFTED, NOISE_TRANSPOSED, SPLINE, INTERVAL_SELECT ->
+                    throw new IllegalArgumentException(
+                    node.op() + " requires a payload provider that can read the live sampler");
+            case BLEND -> throw new IllegalArgumentException(
+                    "blend region is active; the native plan carries no blender");
             case CACHE_BOUNDARY -> throw new IllegalArgumentException("cache lifetime is a Java boundary");
             case CONTEXT_BOUNDARY -> throw new IllegalArgumentException("context binding is a Java boundary");
             case OPAQUE -> throw new IllegalArgumentException("inventory already marked it opaque");

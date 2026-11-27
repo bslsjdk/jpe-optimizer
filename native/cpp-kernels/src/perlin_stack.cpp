@@ -7,7 +7,7 @@
 #include <limits>
 #include <vector>
 
-static_assert(sizeof(JpePerlinLayer) == 72, "JpePerlinLayer C ABI size mismatch");
+static_assert(sizeof(JpePerlinLayer) == 80, "JpePerlinLayer C ABI size mismatch");
 static_assert(alignof(JpePerlinLayer) == 8, "JpePerlinLayer C ABI alignment mismatch");
 static_assert(offsetof(JpePerlinLayer, permutation) == 0, "JpePerlinLayer.permutation offset mismatch");
 static_assert(offsetof(JpePerlinLayer, offset_x) == 8, "JpePerlinLayer.offset_x offset mismatch");
@@ -19,6 +19,7 @@ static_assert(offsetof(JpePerlinLayer, amplitude) == 48, "JpePerlinLayer.amplitu
 static_assert(offsetof(JpePerlinLayer, fudge_y_scale) == 56, "JpePerlinLayer.fudge_y_scale offset mismatch");
 static_assert(offsetof(JpePerlinLayer, flags) == 64, "JpePerlinLayer.flags offset mismatch");
 static_assert(offsetof(JpePerlinLayer, reserved) == 68, "JpePerlinLayer.reserved offset mismatch");
+static_assert(offsetof(JpePerlinLayer, frequency) == 72, "JpePerlinLayer.frequency offset mismatch");
 
 namespace {
 constexpr int kGradientX[16] = {1,-1,1,-1,1,-1,1,-1,0,0,0,0,1,0,-1,0};
@@ -310,6 +311,115 @@ extern "C" int32_t jpe_cpp_perlin_add_stack(
                 output, output_length, flags
             );
         if (status != 0) return status;
+    }
+    return 0;
+}
+
+namespace {
+inline float grad_dot(const uint8_t* p, uint32_t hash, float x, float y, float z) noexcept {
+    const uint32_t gradient = static_cast<uint32_t>(p[hash & 255U]) & 15U;
+    return static_cast<float>(kGradientX[gradient]) * x
+         + static_cast<float>(kGradientY[gradient]) * y
+         + static_cast<float>(kGradientZ[gradient]) * z;
+}
+
+/*
+ * Vanilla's scalar path: PerlinNoise.get / SmearedPerlinNoise.get through
+ * Mth.lerp3. This is a different rounding order from the volume kernels above,
+ * which interpolate Y inside each corner; the scalar path lerps X first. Both
+ * are reproduced exactly, because a shifted noise samples through this one.
+ */
+inline float perlin_scalar(const JpePerlinLayer& layer, double _x, double _y, double _z,
+                           bool far_lands) noexcept {
+    const double x = wrap_coordinate(_x, far_lands) + layer.offset_x;
+    const double y = wrap_coordinate(_y, far_lands) + layer.offset_y;
+    const double z = wrap_coordinate(_z, far_lands) + layer.offset_z;
+    const int32_t floor_x = floor_to_i32(x);
+    const int32_t floor_y = floor_to_i32(y);
+    const int32_t floor_z = floor_to_i32(z);
+    const float relative_x = static_cast<float>(x - static_cast<double>(floor_x));
+    const double relative_y_double = y - static_cast<double>(floor_y);
+    const float relative_z = static_cast<float>(z - static_cast<double>(floor_z));
+    float relative_y = static_cast<float>(relative_y_double);
+    if ((layer.flags & 1U) != 0U) {
+        const double fudge_limit = (_y >= 0.0 && _y < relative_y_double) ? _y : relative_y_double;
+        const int32_t fudge_steps = floor_to_i32(
+            fudge_limit / layer.fudge_y_scale + static_cast<double>(1.0E-7F));
+        relative_y = static_cast<float>(relative_y_double
+            - static_cast<double>(fudge_steps) * layer.fudge_y_scale);
+    }
+
+    const uint8_t* p = layer.permutation;
+    const int32_t x0 = static_cast<int32_t>(permute_sum(p, floor_x));
+    const int32_t x1 = static_cast<int32_t>(permute_sum(p, floor_x, 1));
+    const int32_t xy00 = static_cast<int32_t>(permute_sum(p, x0, floor_y));
+    const int32_t xy01 = static_cast<int32_t>(permute_sum(p, x0, floor_y, 1));
+    const int32_t xy10 = static_cast<int32_t>(permute_sum(p, x1, floor_y));
+    const int32_t xy11 = static_cast<int32_t>(permute_sum(p, x1, floor_y, 1));
+    const float relative_y1 = relative_y - 1.0F;
+    const float relative_z1 = relative_z - 1.0F;
+    const uint32_t z0 = static_cast<uint32_t>(floor_z);
+    const uint32_t z1 = z0 + 1U;
+
+    const float d000 = grad_dot(p, static_cast<uint32_t>(xy00) + z0, relative_x, relative_y, relative_z);
+    const float d100 = grad_dot(p, static_cast<uint32_t>(xy10) + z0, relative_x - 1.0F, relative_y, relative_z);
+    const float d010 = grad_dot(p, static_cast<uint32_t>(xy01) + z0, relative_x, relative_y1, relative_z);
+    const float d110 = grad_dot(p, static_cast<uint32_t>(xy11) + z0, relative_x - 1.0F, relative_y1, relative_z);
+    const float d001 = grad_dot(p, static_cast<uint32_t>(xy00) + z1, relative_x, relative_y, relative_z1);
+    const float d101 = grad_dot(p, static_cast<uint32_t>(xy10) + z1, relative_x - 1.0F, relative_y, relative_z1);
+    const float d011 = grad_dot(p, static_cast<uint32_t>(xy01) + z1, relative_x, relative_y1, relative_z1);
+    const float d111 = grad_dot(p, static_cast<uint32_t>(xy11) + z1, relative_x - 1.0F, relative_y1, relative_z1);
+
+    const float alpha_x = smoothstep(relative_x);
+    const float alpha_y = smoothstep(static_cast<float>(relative_y_double));
+    const float alpha_z = smoothstep(relative_z);
+    const float lower = lerp(alpha_y, lerp(alpha_x, d000, d100), lerp(alpha_x, d010, d110));
+    const float upper = lerp(alpha_y, lerp(alpha_x, d001, d101), lerp(alpha_x, d011, d111));
+    return lerp(alpha_z, lower, upper);
+}
+} // namespace
+
+/*
+ * Vanilla NoiseFunction.ShiftedXzSampler: the plan carries un-folded outer scales
+ * and each layer's frequency, because vanilla multiplies the shifted coordinate
+ * by the frequency before the Perlin lattice. Folding would round differently.
+ */
+extern "C" int32_t jpe_cpp_perlin_add_stack_shifted(
+    const JpePerlinLayer* layers, uint32_t layer_count,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    const float* shift_x, const float* shift_z,
+    float* output, uint64_t output_length, uint32_t flags
+) noexcept {
+    if (!validate_stack(layers, layer_count, size_x, size_y, size_z,
+                        step_x, step_y, step_z, output, output_length)) return 1;
+    if (shift_x == nullptr || shift_z == nullptr) return 1;
+    const bool far_lands = (flags & 1U) != 0U;
+
+    uint64_t index = 0;
+    for (uint32_t iz = 0; iz < size_z; ++iz) {
+        const int32_t block_z = axis_coordinate(min_z, iz, step_z);
+        for (uint32_t ix = 0; ix < size_x; ++ix) {
+            const int32_t block_x = axis_coordinate(min_x, ix, step_x);
+            for (uint32_t iy = 0; iy < size_y; ++iy) {
+                const int32_t block_y = axis_coordinate(min_y, iy, step_y);
+                const double shifted_x = static_cast<double>(block_x);
+                const double shifted_z = static_cast<double>(block_z);
+                const double offset_x = static_cast<double>(shift_x[index]);
+                const double offset_z = static_cast<double>(shift_z[index]);
+                float value = 0.0F;
+                for (uint32_t li = 0; li < layer_count; ++li) {
+                    const JpePerlinLayer& layer = layers[li];
+                    const double x = (shifted_x * layer.xz_scale + offset_x) * layer.frequency;
+                    const double y = (static_cast<double>(block_y) * layer.y_scale) * layer.frequency;
+                    const double z = (shifted_z * layer.xz_scale + offset_z) * layer.frequency;
+                    value = value + layer.amplitude * perlin_scalar(layer, x, y, z, far_lands);
+                }
+                output[index] = value;
+                ++index;
+            }
+        }
     }
     return 0;
 }

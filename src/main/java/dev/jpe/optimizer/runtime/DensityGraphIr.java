@@ -9,7 +9,7 @@ public final class DensityGraphIr {
     public static final int MAX_NODES = 65_536;
     public static final int NO_INPUT = -1;
 
-    public static final int CONST = 1, X = 2, Y = 3, Z = 4, ADD = 5, MUL = 6, OPAQUE = 7, SUB = 8, INPUT = 9, DIV = 10, CLAMP = 11, MIN = 12, MAX = 13, NEGATE = 14, ABS = 15, SQUARE = 16, CUBE = 17, SQRT = 18, LOG = 19, RECIPROCAL = 20, SIGN = 21, SQUEEZE = 22, LEAKY_RELU = 23, GRADIENT_CLAMPED_X = 24, GRADIENT_CLAMPED_Y = 25, GRADIENT_CLAMPED_Z = 26, NOISE = 27, NOISE_TRANSPOSED = 28, INTERPOLATED = 29, RANGE_CHOICE = 30, LERP = 31, POW = 32, SPLINE = 33, SLICE_X = 34, SLICE_Y = 35, SLICE_Z = 36, ROUND = 37, INTERVAL_SELECT = 38, FIND_TOP_SURFACE = 39, DISTANCE_TO_POINT = 40, BLEND_DENSITY = 41, END_ISLAND = 42;
+    public static final int CONST = 1, X = 2, Y = 3, Z = 4, ADD = 5, MUL = 6, OPAQUE = 7, SUB = 8, INPUT = 9, DIV = 10, CLAMP = 11, MIN = 12, MAX = 13, NEGATE = 14, ABS = 15, SQUARE = 16, CUBE = 17, SQRT = 18, LOG = 19, RECIPROCAL = 20, SIGN = 21, SQUEEZE = 22, LEAKY_RELU = 23, GRADIENT_CLAMPED_X = 24, GRADIENT_CLAMPED_Y = 25, GRADIENT_CLAMPED_Z = 26, NOISE = 27, NOISE_TRANSPOSED = 28, INTERPOLATED = 29, RANGE_CHOICE = 30, LERP = 31, POW = 32, SPLINE = 33, SLICE_X = 34, SLICE_Y = 35, SLICE_Z = 36, ROUND = 37, INTERVAL_SELECT = 38, FIND_TOP_SURFACE = 39, DISTANCE_TO_POINT = 40, BLEND_DENSITY = 41, END_ISLAND = 42, NOISE_SHIFTED_XZ = 43;
 
     /** RoundFunction.Type ordinals, in vanilla declaration order. */
     public static final int ROUND_FLOOR = 0, ROUND_ROUND = 1, ROUND_CEIL = 2, ROUND_TRUNCATE = 3;
@@ -78,6 +78,15 @@ public final class DensityGraphIr {
         public static Node noise(int planSlot) {
             if (planSlot < 0 || planSlot > 63) throw new IllegalArgumentException("Noise slot must be in [0, 63]");
             return new Node(NOISE, planSlot, NO_INPUT, 0, 0.0);
+        }
+        /**
+         * Vanilla NoiseFunction.ShiftedXzSampler: sample the plan at
+         * (x * xz_scale + shiftX, y * y_scale, z * xz_scale + shiftZ).
+         */
+        public static Node noiseShifted(int planSlot, int shiftX, int shiftZ) {
+            if (planSlot < 0 || planSlot > 63) throw new IllegalArgumentException("Noise slot must be in [0, 63]");
+            if (shiftX < 0 || shiftZ < 0) throw new IllegalArgumentException("Shift inputs must be non-negative");
+            return new Node(NOISE_SHIFTED_XZ, planSlot, shiftX, shiftZ, 0.0);
         }
         /** ShiftB: sample the transposed (z,x,0) plane and broadcast along Y. */
         public static Node noiseTransposed(int planSlot) {
@@ -174,6 +183,40 @@ public final class DensityGraphIr {
 
     public record IntervalSelect(int inputNode, int firstThreshold, int thresholdCount, int firstBranch) {}
 
+    /**
+     * One expanded Perlin layer. The outer NoiseFunction scale is already folded
+     * into {@code xzScale}/{@code yScale}, and the layer amplitude is already
+     * folded into {@code amplitude}, matching what vanilla's
+     * {@code NoiseStack.addToVolume} hands each layer.
+     */
+    public record NoiseLayer(byte[] permutation, double offsetX, double offsetY, double offsetZ,
+                             double xzScale, double yScale, float amplitude,
+                             double fudgeYScale, boolean smeared, double frequency) {
+        public NoiseLayer {
+            Objects.requireNonNull(permutation, "permutation");
+            if (permutation.length != 256) {
+                throw new IllegalArgumentException("A Perlin permutation must have 256 entries");
+            }
+        }
+        /** Plain layer: the scales are already folded with the layer frequency. */
+        public NoiseLayer(byte[] permutation, double offsetX, double offsetY, double offsetZ,
+                          double xzScale, double yScale, float amplitude,
+                          double fudgeYScale, boolean smeared) {
+            this(permutation, offsetX, offsetY, offsetZ, xzScale, yScale, amplitude,
+                    fudgeYScale, smeared, 0.0);
+        }
+    }
+
+    /** One ordered noise stack; node slots index this table. */
+    public record NoisePlan(List<NoiseLayer> layers) {
+        public NoisePlan {
+            layers = List.copyOf(layers);
+            if (layers.isEmpty() || layers.size() > 64) {
+                throw new IllegalArgumentException("A noise plan must have between 1 and 64 layers");
+            }
+        }
+    }
+
     /** metric: 0 euclidean, 1 squared, 2 manhattan, 3 chebyshev. */
     public record DistancePoint(int x, int y, int z, int metric) {
         public DistancePoint {
@@ -208,17 +251,27 @@ public final class DensityGraphIr {
     public record Payload(List<SplineNode> splines, List<SplinePoint> splinePoints,
                           List<IntervalSelect> intervalSelects, float[] intervalThresholds,
                           int[] intervalBranches, List<DistancePoint> distancePoints,
-                          BlendRegion blend, byte[] endIslandPermutation) {
+                          BlendRegion blend, byte[] endIslandPermutation,
+                          List<NoisePlan> noisePlans) {
         public Payload {
             splines = List.copyOf(splines);
             splinePoints = List.copyOf(splinePoints);
             intervalSelects = List.copyOf(intervalSelects);
             distancePoints = List.copyOf(distancePoints);
+            noisePlans = List.copyOf(noisePlans);
             if (blend == null) blend = BlendRegion.inactive();
+        }
+        /** Payload without a noise table; every NOISE node must then be absent. */
+        public Payload(List<SplineNode> splines, List<SplinePoint> splinePoints,
+                       List<IntervalSelect> intervalSelects, float[] intervalThresholds,
+                       int[] intervalBranches, List<DistancePoint> distancePoints,
+                       BlendRegion blend, byte[] endIslandPermutation) {
+            this(splines, splinePoints, intervalSelects, intervalThresholds, intervalBranches,
+                    distancePoints, blend, endIslandPermutation, List.of());
         }
         public static Payload empty() {
             return new Payload(List.of(), List.of(), List.of(), new float[0], new int[0],
-                    List.of(), BlendRegion.inactive(), null);
+                    List.of(), BlendRegion.inactive(), null, List.of());
         }
     }
 
@@ -348,6 +401,24 @@ public final class DensityGraphIr {
                     if (node.inputA() < 0 || node.inputA() > 63 || node.inputB() != NO_INPUT
                             || node.reserved() != 0 || node.immediate() != 0.0) {
                         throw new IllegalArgumentException("Noise node " + i + " requires a plan slot and no inputs");
+                    }
+                    if (node.inputA() >= payload.noisePlans().size()) {
+                        throw new IllegalArgumentException("Noise node " + i
+                                + " references a missing noise plan slot");
+                    }
+                }
+                case NOISE_SHIFTED_XZ -> {
+                    if (node.inputA() < 0 || node.inputA() > 63 || node.immediate() != 0.0) {
+                        throw new IllegalArgumentException("Shifted noise node " + i + " requires a plan slot");
+                    }
+                    if (node.inputA() >= payload.noisePlans().size()) {
+                        throw new IllegalArgumentException("Shifted noise node " + i
+                                + " references a missing noise plan slot");
+                    }
+                    if (node.inputB() < 0 || node.inputB() >= i
+                            || node.reserved() < 0 || node.reserved() >= i) {
+                        throw new IllegalArgumentException("Shifted noise node " + i
+                                + " requires two earlier shift inputs");
                     }
                 }
                 case INTERPOLATED -> {

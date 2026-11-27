@@ -39,6 +39,41 @@ public final class DensityGraphPayloadCapture {
     private final ArrayList<DensityGraphIr.DistancePoint> distancePoints = new ArrayList<>();
     private DensityGraphIr.BlendRegion blend = DensityGraphIr.BlendRegion.inactive();
     private byte[] endIslandPermutation;
+    private final ArrayList<DensityGraphIr.NoisePlan> noisePlans = new ArrayList<>();
+
+    /**
+     * Appends one noise stack and returns its slot. Identical stacks share a slot,
+     * which matters because a single terrain graph usually samples the same noise
+     * through several arithmetic paths.
+     */
+    public int addNoisePlan(DensityGraphIr.NoisePlan plan) {
+        Objects.requireNonNull(plan, "plan");
+        for (int i = 0; i < noisePlans.size(); ++i) {
+            if (samePlan(noisePlans.get(i), plan)) return i;
+        }
+        if (noisePlans.size() >= 64) {
+            throw new IllegalStateException("A native program carries at most 64 noise plans");
+        }
+        noisePlans.add(plan);
+        return noisePlans.size() - 1;
+    }
+
+    private static boolean samePlan(DensityGraphIr.NoisePlan left, DensityGraphIr.NoisePlan right) {
+        if (left.layers().size() != right.layers().size()) return false;
+        for (int i = 0; i < left.layers().size(); ++i) {
+            DensityGraphIr.NoiseLayer a = left.layers().get(i);
+            DensityGraphIr.NoiseLayer b = right.layers().get(i);
+            if (a.offsetX() != b.offsetX() || a.offsetY() != b.offsetY() || a.offsetZ() != b.offsetZ()
+                    || a.xzScale() != b.xzScale() || a.yScale() != b.yScale()
+                    || Float.compare(a.amplitude(), b.amplitude()) != 0
+                    || a.fudgeYScale() != b.fudgeYScale() || a.smeared() != b.smeared()
+                    || a.frequency() != b.frequency()
+                    || !java.util.Arrays.equals(a.permutation(), b.permutation())) {
+                return false;
+            }
+        }
+        return true;
+    }
 
     /** Reserves a spline table slot before its coordinate node has an index. */
     public int reserveSpline() {
@@ -172,7 +207,7 @@ public final class DensityGraphPayloadCapture {
 
     public boolean isEmpty() {
         return splines.isEmpty() && intervalSelects.isEmpty() && distancePoints.isEmpty()
-                && !blend.active() && endIslandPermutation == null;
+                && !blend.active() && endIslandPermutation == null && noisePlans.isEmpty();
     }
 
     /** Flattens every reserved table. A reserved but undefined slot is a bug. */
@@ -215,6 +250,6 @@ public final class DensityGraphPayloadCapture {
         for (int i = 0; i < branchArray.length; ++i) branchArray[i] = branches.get(i);
 
         return new DensityGraphIr.Payload(splineNodes, points, selects, thresholdArray, branchArray,
-                List.copyOf(distancePoints), blend, endIslandPermutation);
+                List.copyOf(distancePoints), blend, endIslandPermutation, List.copyOf(noisePlans));
     }
 }

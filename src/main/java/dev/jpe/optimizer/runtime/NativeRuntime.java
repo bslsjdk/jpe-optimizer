@@ -44,7 +44,7 @@ import dev.jpe.optimizer.mixin.BlendingDataAccessor;
  */
 public final class NativeRuntime implements AutoCloseable {
     public static final int EXPECTED_ABI_VERSION = 8;
-    private static final long PERLIN_LAYER_SIZE = 72L;
+    private static final long PERLIN_LAYER_SIZE = 80L;
     private static final MemoryLayout BLENDING_DATA_VIEW_LAYOUT = MemoryLayout.structLayout(
             ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
             MemoryLayout.sequenceLayout(16, ValueLayout.ADDRESS)
@@ -1663,6 +1663,8 @@ public final class NativeRuntime implements AutoCloseable {
                     smeared ? ((SmearedPerlinNoiseAccessor) layerNoise).jpe$fudgeYScale() : 0.0);
             scratch.layerDescriptors.set(ValueLayout.JAVA_INT, base + 64L, smeared ? 1 : 0);
             scratch.layerDescriptors.set(ValueLayout.JAVA_INT, base + 68L, 0);
+            // Plain plans fold the frequency into the scales, so the shifted kernel is unused.
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 72L, 0.0);
         }
     }
 
@@ -1692,6 +1694,7 @@ public final class NativeRuntime implements AutoCloseable {
             scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 56L, 0.0);
             scratch.layerDescriptors.set(ValueLayout.JAVA_INT, base + 64L, 0);
             scratch.layerDescriptors.set(ValueLayout.JAVA_INT, base + 68L, 0);
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 72L, 0.0);
         }
     }
 

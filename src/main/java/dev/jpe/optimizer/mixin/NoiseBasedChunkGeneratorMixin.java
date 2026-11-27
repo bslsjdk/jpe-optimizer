@@ -84,11 +84,15 @@ public abstract class NoiseBasedChunkGeneratorMixin {
         long aquiferCallsSkipped = 0L;
 
         try {
-            try (ScopedDensityBuffer densityBuffer = finalDensity.sampleVolume(volume)) {
-            // Off by default. In shadow mode this compiles the captured graph once and
-            // compares every float; only commit mode may replace the buffer, and only
-            // after an exact match.
-            NativeFinalDensityHooks.afterJavaSample(finalDensity, volume, densityBuffer);
+            // Off by default. Once a plan is trusted, the whole volume comes from the
+            // native program and the Java sampler is never entered; before that, Java
+            // fills the buffer and the hook compares every float bit.
+            ScopedDensityBuffer nativeVolume = NativeFinalDensityHooks.tryNativeVolume(finalDensity, volume);
+            boolean nativeFilled = nativeVolume != null;
+            try (ScopedDensityBuffer densityBuffer = nativeFilled ? nativeVolume : finalDensity.sampleVolume(volume)) {
+            if (!nativeFilled) {
+                NativeFinalDensityHooks.afterJavaSample(finalDensity, volume, densityBuffer);
+            }
             if (profile) {
                 densityNanos = System.nanoTime() - densityStart;
                 densityAllocatedBytes = WorldgenMetrics.allocatedDelta(

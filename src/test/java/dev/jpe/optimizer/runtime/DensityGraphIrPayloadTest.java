@@ -37,7 +37,9 @@ class DensityGraphIrPayloadTest {
                 List.of(new DensityGraphIr.SplinePoint(-1.0f, 0.0f, 1),
                         new DensityGraphIr.SplinePoint(1.0f, 0.0f, 2)),
                 List.of(), new float[0], new int[0], List.of(),
-                DensityGraphIr.BlendRegion.inactive(), null);
+                DensityGraphIr.BlendRegion.inactive(), null,
+                List.of(new DensityGraphIr.NoisePlan(List.of(new DensityGraphIr.NoiseLayer(
+                        new byte[256], 0.0, 0.0, 0.0, 1.0, 1.0, 1.0f, 0.0, false)))));
         DensityGraphIr graph = new DensityGraphIr(nodes, List.of(), 4, 0xABCDL, payload);
         assertEquals(5, graph.nodes().size());
         assertFalse(graph.experimental());

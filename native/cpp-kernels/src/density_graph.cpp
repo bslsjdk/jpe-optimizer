@@ -18,6 +18,15 @@
 
 /* Defined in perlin_stack.cpp. Density graphs reuse the exact ordered-stack
  * kernel instead of introducing a second noise implementation. */
+extern "C" int32_t jpe_cpp_perlin_add_stack_shifted(
+    const JpePerlinLayer* layers, uint32_t layer_count,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    const float* shift_x, const float* shift_z,
+    float* output, uint64_t output_length, uint32_t flags
+) noexcept;
+
 extern "C" int32_t jpe_cpp_perlin_add_stack(
     const JpePerlinLayer *layers, uint32_t layer_count,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
@@ -181,6 +190,17 @@ struct NoisePlanData {
  * broadcast along Y. The plan's layer scales already encode 0.25 / 0.25 / 4.0. */
 struct NoiseBinding { uint32_t node; uint32_t plan_slot; uint32_t transposed; };
 
+/* Vanilla NoiseFunction.ShiftedXzSampler: the plan is sampled at
+ * (blockX * xz_scale + shiftX, blockY * y_scale, blockZ * xz_scale + shiftZ).
+ * The shift children are evaluated over the whole volume first, then the stack
+ * runs with per-sample offsets. */
+struct ShiftedNoiseBinding {
+    uint32_t node;
+    uint32_t plan_slot;
+    uint32_t shift_x;
+    uint32_t shift_z;
+};
+
 /* Vanilla InterpolatedFunction: coarse cell grid plus trilinear expansion. */
 struct InterpolatedBinding {
     uint32_t node;
@@ -251,6 +271,7 @@ struct CompiledGraph {
     std::vector<GradientBinding> gradients;
     std::vector<ArithmeticInstruction> arithmetic;
     std::vector<NoiseBinding> noises;
+    std::vector<ShiftedNoiseBinding> shifted_noises;
     std::vector<NoisePlanData> noise_plans;
     std::vector<InterpolatedBinding> interpolateds;
     std::vector<SplineBinding> splines;
@@ -346,6 +367,10 @@ void build_execution_plan(CompiledGraph& graph) {
             case JPE_DENSITY_NOISE_TRANSPOSED:
                 graph.op_slot[i] = static_cast<uint32_t>(graph.noises.size());
                 graph.noises.push_back({i, node.input_a, 1});
+                break;
+            case JPE_DENSITY_NOISE_SHIFTED_XZ:
+                graph.op_slot[i] = static_cast<uint32_t>(graph.shifted_noises.size());
+                graph.shifted_noises.push_back({i, node.input_a, node.input_b, node.reserved});
                 break;
             case JPE_DENSITY_INTERPOLATED:
                 graph.op_slot[i] = static_cast<uint32_t>(graph.interpolateds.size());
@@ -635,6 +660,10 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                 // Plan-slot range is validated at compile time, where the count is known.
                 if (node.input_b != kNoInput || node.reserved != 0 || node.immediate != 0.0) return false;
                 break;
+            case JPE_DENSITY_NOISE_SHIFTED_XZ:
+                // Plan-slot range is validated at compile time, where the count is known.
+                if (node.input_b >= i || node.reserved >= i || node.immediate != 0.0) return false;
+                break;
             case JPE_DENSITY_INTERPOLATED:
                 if (node.input_a >= i || node.input_b == 0 || node.reserved == 0
                     || node.immediate != 0.0) return false;
@@ -702,7 +731,11 @@ thread_local uint32_t g_interpolate_depth = 0;
 thread_local uint32_t g_reentry_depth = 0;
 constexpr uint32_t kMaxInterpolateDepth = 8;
 constexpr uint32_t kMaxSplineDepth = 16;
-constexpr uint32_t kMaxTopSurfaceDepth = 4;
+// Nested evaluation depth. Top-surface probes and interpolated cell grids each
+// re-enter once; a shifted noise stages two shift volumes, and a shift volume can
+// itself contain an interpolated or shifted node, so the chain is deeper than the
+// probe-only path this limit was sized for.
+constexpr uint32_t kMaxTopSurfaceDepth = 8;
 
 int32_t floor_div(int32_t value, int32_t divisor) noexcept {
     int32_t quotient = value / divisor;
@@ -1006,6 +1039,7 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
         switch (nodes[i].opcode) {
             case JPE_DENSITY_NOISE:
             case JPE_DENSITY_NOISE_TRANSPOSED:
+            case JPE_DENSITY_NOISE_SHIFTED_XZ:
             case JPE_DENSITY_SPLINE:
             case JPE_DENSITY_INTERVAL_SELECT:
             case JPE_DENSITY_DISTANCE_TO_POINT:
@@ -1296,6 +1330,13 @@ extern "C" uint64_t jpe_cpp_density_graph_compile_program(
             // Repoint at graph-owned storage; the caller's buffer may now be freed.
             target.layers[layer].permutation = target.permutations[layer].data();
         }
+    }
+
+    for (const NoiseBinding& binding : graph->noises) {
+        if (binding.plan_slot >= graph->noise_plans.size()) return 0;
+    }
+    for (const ShiftedNoiseBinding& binding : graph->shifted_noises) {
+        if (binding.plan_slot >= graph->noise_plans.size()) return 0;
     }
 
     if (payload.spline_count > 0) {
@@ -1608,7 +1649,7 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
                                      int32_t mx, int32_t my, int32_t mz,
                                      int32_t sx, int32_t sy, int32_t sz,
                                      float* target, uint64_t target_length) -> int32_t {
-        if (g_reentry_depth >= kMaxTopSurfaceDepth) return 1;
+        if (g_reentry_depth >= kMaxTopSurfaceDepth) return 10;
         ++g_reentry_depth;
         const uint32_t saved_limit = g_node_limit;
         g_node_limit = child_node + 1;
@@ -1672,9 +1713,9 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
     const auto in_prefix = [node_limit](uint32_t node) { return node < node_limit; };
     std::vector<float> noise_values;
     if (!graph->noises.empty() && in_prefix(graph->noises.front().node)) {
-        if (graph->noise_plans.empty()) return 1;
+        if (graph->noise_plans.empty()) return 11;
         const uint64_t staged = static_cast<uint64_t>(graph->noise_plans.size()) * volume_length;
-        if (staged > kMaxNoiseFloats) return 1;
+        if (staged > kMaxNoiseFloats) return 12;
         noise_values.resize(static_cast<size_t>(staged));
         for (const NoiseBinding& binding : graph->noises) {
             if (active[binding.node] == 0) continue;
@@ -1711,6 +1752,39 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
         }
     }
 
+    // Shifted noise needs its two shift volumes before the stack runs. Both are
+    // ordinary subgraphs, so each is evaluated over this volume by re-entering the
+    // evaluator with the node index as the sweep limit.
+    std::vector<float> shifted_values;
+    if (!graph->shifted_noises.empty() && in_prefix(graph->shifted_noises.front().node)) {
+        const uint64_t staged = static_cast<uint64_t>(graph->shifted_noises.size()) * volume_length;
+        if (staged > kMaxNoiseFloats) return 13;
+        shifted_values.resize(static_cast<size_t>(staged));
+        std::vector<float> shift_x(static_cast<size_t>(volume_length));
+        std::vector<float> shift_z(static_cast<size_t>(volume_length));
+        for (uint32_t index = 0; index < graph->shifted_noises.size(); ++index) {
+            const ShiftedNoiseBinding& binding = graph->shifted_noises[index];
+            if (binding.node >= node_limit || active[binding.node] == 0) continue;
+            if (binding.plan_slot >= graph->noise_plans.size()) return 14;
+            int32_t status = evaluate_prefix(binding.shift_x, size_x, size_y, size_z,
+                min_x, min_y, min_z, step_x, step_y, step_z,
+                shift_x.data(), volume_length);
+            if (status != 0) return status;
+            status = evaluate_prefix(binding.shift_z, size_x, size_y, size_z,
+                min_x, min_y, min_z, step_x, step_y, step_z,
+                shift_z.data(), volume_length);
+            if (status != 0) return status;
+            const NoisePlanData& plan = graph->noise_plans[binding.plan_slot];
+            float* destination = shifted_values.data()
+                + static_cast<uint64_t>(index) * volume_length;
+            status = jpe_cpp_perlin_add_stack_shifted(
+                plan.layers.data(), static_cast<uint32_t>(plan.layers.size()),
+                size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z,
+                shift_x.data(), shift_z.data(), destination, volume_length, plan.flags);
+            if (status != 0) return 3;
+        }
+    }
+
     // INTERPOLATED evaluates its child on a coarse cell grid, then expands with the
     // same Z->X->Y order vanilla uses. The Y axis is a running sum, not a fresh lerp,
     // because vanilla accumulates valueStep; recomputing it would change the bits.
@@ -1719,10 +1793,10 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
         if (!graph->inputs.empty()) {
             // External volumes are staged at output resolution, so a coarser child
             // grid cannot index them. Refuse rather than silently read the wrong data.
-            return 1;
+            return 15;
         }
         const uint64_t staged = static_cast<uint64_t>(graph->interpolateds.size()) * volume_length;
-        if (staged > kMaxNoiseFloats) return 1;
+        if (staged > kMaxNoiseFloats) return 16;
         interpolated_values.resize(static_cast<size_t>(staged));
         for (uint32_t index = 0; index < graph->interpolateds.size(); ++index) {
             const InterpolatedBinding& binding = graph->interpolateds[index];
@@ -1741,7 +1815,7 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
                                      int32_t mx, int32_t my, int32_t mz,
                                      int32_t rsx, int32_t rsy, int32_t rsz,
                                      float* target, uint64_t target_length) -> int32_t {
-                if (g_interpolate_depth >= kMaxInterpolateDepth) return 1;
+                if (g_interpolate_depth >= kMaxInterpolateDepth) return 17;
                 ++g_interpolate_depth;
                 const uint32_t saved_limit = g_node_limit;
                 g_node_limit = binding.input_node + 1;
@@ -1760,7 +1834,7 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
                 if (status != 0) return status;
                 continue;
             }
-            if (step_x <= 0 || step_y <= 0 || step_z <= 0) return 1;
+            if (step_x <= 0 || step_y <= 0 || step_z <= 0) return 18;
 
             if (step_x != 1 || step_y != 1 || step_z != 1) {
                 // Re-expand to a unit-step block volume first, mirroring vanilla's
@@ -1769,7 +1843,7 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
                 const uint32_t by = size_y * static_cast<uint32_t>(step_y);
                 const uint32_t bz = size_z * static_cast<uint32_t>(step_z);
                 const uint64_t block_length = static_cast<uint64_t>(bx) * by * bz;
-                if (block_length > kMaxNoiseFloats) return 1;
+                if (block_length > kMaxNoiseFloats) return 19;
                 std::vector<float> block_buffer(static_cast<size_t>(block_length));
                 const int32_t status = recurse(
                     bx, by, bz, min_x, min_y, min_z, 1, 1, 1,
@@ -1806,7 +1880,7 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
             const uint32_t grid_y = floor_mod(max_block_y, csy) == 0 ? cell_count_y : cell_count_y + 1;
             const uint32_t grid_z = floor_mod(max_block_z, csz) == 0 ? cell_count_z : cell_count_z + 1;
             const uint64_t cell_length = static_cast<uint64_t>(grid_x) * grid_y * grid_z;
-            if (cell_length > kMaxNoiseFloats) return 1;
+            if (cell_length > kMaxNoiseFloats) return 20;
             std::vector<float> cell_buffer(static_cast<size_t>(cell_length));
             const int32_t status = recurse(
                 grid_x, grid_y, grid_z,
@@ -1885,9 +1959,9 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
     if (!graph->slices.empty() && in_prefix(graph->slices.front().node)) {
         // External input volumes are staged at output resolution, so a reduced
         // child grid could not index them. Refuse instead of reading wrong data.
-        if (!graph->inputs.empty()) return 1;
+        if (!graph->inputs.empty()) return 21;
         const uint64_t staged = static_cast<uint64_t>(graph->slices.size()) * volume_length;
-        if (staged > kMaxNoiseFloats) return 1;
+        if (staged > kMaxNoiseFloats) return 22;
         slice_values.resize(static_cast<size_t>(staged));
         for (uint32_t index = 0; index < graph->slices.size(); ++index) {
             const SliceBinding& binding = graph->slices[index];
@@ -1935,10 +2009,10 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
     if (!graph->top_surfaces.empty() && in_prefix(graph->top_surfaces.front().node)) {
         // Vanilla rejects sizeY != 1 outright, because the result is one height
         // per column.
-        if (size_y != 1) return 1;
-        if (!graph->inputs.empty()) return 1;
+        if (size_y != 1) return 23;
+        if (!graph->inputs.empty()) return 24;
         const uint64_t staged = static_cast<uint64_t>(graph->top_surfaces.size()) * volume_length;
-        if (staged > kMaxNoiseFloats) return 1;
+        if (staged > kMaxNoiseFloats) return 25;
         top_surface_values.resize(static_cast<size_t>(staged));
         const uint64_t column_count = static_cast<uint64_t>(size_x) * size_z;
         std::vector<float> upper(static_cast<size_t>(volume_length));
@@ -1977,10 +2051,10 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
                 std::fill_n(destination, volume_length, static_cast<float>(lower_bound));
                 continue;
             }
-            if (probe_count > 65536) return 1;
+            if (probe_count > 65536) return 26;
             const uint32_t probe_height = static_cast<uint32_t>(probe_count);
             const uint64_t probe_length = static_cast<uint64_t>(size_x) * probe_height * size_z;
-            if (probe_length > kMaxNoiseFloats) return 1;
+            if (probe_length > kMaxNoiseFloats) return 27;
             std::vector<float> probes(static_cast<size_t>(probe_length));
             const int32_t probe_status = evaluate_prefix(
                 binding.density_node, size_x, probe_height, size_z,
@@ -2013,9 +2087,9 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
     // END_ISLAND is column-constant: one island height per (x,z), broadcast along Y.
     std::vector<float> end_island_values;
     if (!graph->end_island_nodes.empty() && in_prefix(graph->end_island_nodes.front())) {
-        if (graph->end_island_permutation.size() != 256) return 1;
+        if (graph->end_island_permutation.size() != 256) return 28;
         const uint64_t staged = static_cast<uint64_t>(graph->end_island_nodes.size()) * volume_length;
-        if (staged > kMaxNoiseFloats) return 1;
+        if (staged > kMaxNoiseFloats) return 29;
         end_island_values.resize(static_cast<size_t>(staged));
         const uint8_t* perms = graph->end_island_permutation.data();
         // Adjacent columns usually share (blockX/8)/2, so a tiny memo removes
@@ -2139,6 +2213,14 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
                     const float alpha = alpha_lane[sample];
                     // Vanilla returns first outright at alpha == 0 and never forms
                     // (second - first), so NaN in second cannot leak through.
+                    //
+                    // The alpha == 1 shortcut vanilla also has must NOT be added here.
+                    // Measured in a live server: returning second outright keeps every
+                    // endpoint within 1e-3 of the plain lerp (so the shortcut looks
+                    // harmless sample by sample) yet the volume parity collapses from
+                    // 1e-6 to 1.3 absolute on 6% of samples. Something downstream
+                    // amplifies the endpoint change; until that is understood, plain
+                    // lerp_f32 is what matches the live sampler.
                     destination[sample] = alpha == 0.0f
                         ? first_lane[sample]
                         : lerp_f32(alpha, first_lane[sample], second_lane[sample]);
@@ -2248,6 +2330,12 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
                     const NoiseBinding& binding = graph->noises[slot];
                     const float* source = noise_values.data()
                         + static_cast<uint64_t>(binding.plan_slot) * volume_length + tile_start;
+                    std::copy_n(source, count, destination);
+                    break;
+                }
+                case JPE_DENSITY_NOISE_SHIFTED_XZ: {
+                    const float* source = shifted_values.data()
+                        + static_cast<uint64_t>(slot) * volume_length + tile_start;
                     std::copy_n(source, count, destination);
                     break;
                 }

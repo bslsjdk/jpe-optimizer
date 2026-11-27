@@ -33,11 +33,18 @@ JPE_API int32_t jpe_runtime_perlin_add_volume(
 typedef struct JpePerlinLayer {
     const uint8_t *permutation;
     double offset_x, offset_y, offset_z;
+    /* Pre-folded scales: outer NoiseFunction scale times the layer frequency.
+     * This is what NoiseStack.addToVolume hands each layer. */
     double xz_scale, y_scale;
     float amplitude;
     double fudge_y_scale;
     uint32_t flags; /* bit 0: SmearedPerlinNoise layer */
     uint32_t reserved;
+    /* Un-folded layer frequency, used only by the shifted kernel. Vanilla's
+     * NoiseStack.get multiplies the already-scaled coordinate by the frequency,
+     * so folding it into xz_scale would round differently. Zero for a plain plan,
+     * in which case xz_scale/y_scale are authoritative. */
+    double frequency;
 } JpePerlinLayer;
 /* Batch a complete ordered stack into one output volume. */
 JPE_API int32_t jpe_runtime_perlin_add_stack(
@@ -171,7 +178,13 @@ enum {
      * program's blend table, and an inactive table is the identity. */
     JPE_DENSITY_BLEND_DENSITY = 41,
     /* Vanilla EndIslandFunction. Uses the program's simplex permutation. */
-    JPE_DENSITY_END_ISLAND = 42
+    JPE_DENSITY_END_ISLAND = 42,
+    /* Vanilla NoiseFunction.ShiftedXzSampler: sample the plan over
+     * (blockX * xz_scale + shiftX, blockY * y_scale, blockZ * xz_scale + shiftZ).
+     * input_a is the plan slot, input_b the shiftX node, reserved the shiftZ node.
+     * The plan must carry un-folded scales plus each layer's frequency, because
+     * vanilla's scalar path multiplies the shifted coordinate by the frequency. */
+    JPE_DENSITY_NOISE_SHIFTED_XZ = 43
 };
 /* One world-prepared noise plan. Layers must already be expanded by the caller:
  * each layer's xz_scale/y_scale includes the outer NoiseFunction scale times the

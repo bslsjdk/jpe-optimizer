@@ -504,6 +504,11 @@ public final class NativePerlinNoiseBackend {
                 candidateVectors, candidateSamples, scalarTailSamples, farLands);
     }
 
+    /** Exposes the immutable layer array so a noise plan can be captured once. */
+    public static Object[] layersOf(NoiseStack stack) {
+        return readNoiseStackLayers(stack);
+    }
+
     private static Object[] readNoiseStackLayers(NoiseStack stack) {
         try {
             Field field = noiseStackLayersField;

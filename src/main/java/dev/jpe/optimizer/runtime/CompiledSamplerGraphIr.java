@@ -44,6 +44,20 @@ public final class CompiledSamplerGraphIr {
         SQUEEZE,
         LEAKY_RELU,
         GRADIENT_CLAMPED,
+        NOISE,
+        NOISE_SHIFTED,
+        NOISE_TRANSPOSED,
+        SPLINE,
+        LERP,
+        LERP_CONST_FIRST,
+        LERP_CONST_SECOND,
+        SLICE_X,
+        SLICE_Y,
+        SLICE_Z,
+        INTERVAL_SELECT,
+        RANGE_CHOICE,
+        INTERPOLATED,
+        BLEND,
         CACHE_BOUNDARY,
         CONTEXT_BOUNDARY,
         OPAQUE
@@ -105,6 +119,18 @@ public final class CompiledSamplerGraphIr {
                 case SQUEEZE -> "Minecraft squeeze: clamp to [-1,1], then x/2 - cube(x)/24 in float32 order";
                 case LEAKY_RELU -> "input > 0 ? input : negativeFactor * input, using the captured float32 factor";
                 case GRADIENT_CLAMPED -> "Clamp integer axis coordinate, perform wrapped int subtraction, then float32 multiply and add";
+                case NOISE -> "One ordered Perlin stack per plan slot; whole-volume pass, then tile lanes read it";
+                case NOISE_SHIFTED ->
+                        "Noise sampled at (x * scale + shiftX, y * scale, z * scale + shiftZ)";
+                case NOISE_TRANSPOSED -> "ShiftB: transposed (z,x,0) plane broadcast along Y";
+                case SPLINE -> "CubicSpline tree flattened into the program's spline table";
+                case LERP, LERP_CONST_FIRST, LERP_CONST_SECOND ->
+                        "Mth.lerp with vanilla's alpha == 0 / alpha == 1 short circuits";
+                case SLICE_X, SLICE_Y, SLICE_Z -> "Pin one axis to a constant block coordinate";
+                case INTERVAL_SELECT -> "Sorted thresholds plus N+1 branch nodes from the interval table";
+                case RANGE_CHOICE -> "Half-open [min, max) selection, evaluated over the whole volume";
+                case INTERPOLATED -> "Coarse cell grid, then vanilla's Z->X->Y expansion with a running Y sum";
+                case BLEND -> "Identity when the bound context carries no Blender";
                 case CACHE_BOUNDARY -> "Do not inline across Minecraft cache identity or volume lifetime";
                 case CONTEXT_BOUNDARY -> "Resolve through SamplerContext; fallback is not an unconditional child";
                 case OPAQUE -> source.limitation().isEmpty()
@@ -226,6 +252,37 @@ public final class CompiledSamplerGraphIr {
             case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$SignSampler" -> Op.SIGN;
             case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$SqueezeSampler" -> Op.SQUEEZE;
             case "net.minecraft.world.level.levelgen.densityfunction.op.UnaryFunction$LeakyReLUSampler" -> Op.LEAKY_RELU;
+            case "net.minecraft.world.level.levelgen.densityfunction.generator.NoiseFunction$Sampler" ->
+                    Op.NOISE;
+            case "net.minecraft.world.level.levelgen.densityfunction.generator.NoiseFunction$ShiftedXzSampler" ->
+                    Op.NOISE_SHIFTED;
+            // Vanilla compiles ShiftB into an anonymous sampler; the enclosing type is stable.
+            case "net.minecraft.world.level.levelgen.densityfunction.generator.ShiftNoiseFunction$ShiftB$1" ->
+                    Op.NOISE_TRANSPOSED;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.SplineFunction$Sampler" ->
+                    Op.SPLINE;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.LerpFunction$Sampler" ->
+                    Op.LERP;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.LerpFunction$ConstFirstSampler" ->
+                    Op.LERP_CONST_FIRST;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.LerpFunction$ConstSecondSampler" ->
+                    Op.LERP_CONST_SECOND;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.SliceFunction$XSampler" ->
+                    Op.SLICE_X;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.SliceFunction$YSampler" ->
+                    Op.SLICE_Y;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.SliceFunction$ZSampler" ->
+                    Op.SLICE_Z;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.IntervalSelectFunction$Sampler" ->
+                    Op.INTERVAL_SELECT;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.IntervalSelectFunction$SingleThresholdSampler" ->
+                    Op.INTERVAL_SELECT;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.RangeChoiceFunction$Sampler" ->
+                    Op.RANGE_CHOICE;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.InterpolatedFunction$Sampler" ->
+                    Op.INTERPOLATED;
+            case "net.minecraft.world.level.levelgen.densityfunction.op.BlendDensityFunction$Sampler" ->
+                    Op.BLEND;
             case "net.minecraft.world.level.levelgen.densityfunction.CachingDensitySampler" ->
                     Op.CACHE_BOUNDARY;
             case "net.minecraft.world.level.levelgen.densityfunction.ContextBoundSampler" ->
