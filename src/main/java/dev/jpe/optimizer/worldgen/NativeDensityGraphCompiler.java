@@ -1024,14 +1024,50 @@ public final class NativeDensityGraphCompiler {
         private AccessorLookupFailure(Throwable cause) { super(cause); }
     }
 
+    private static final ClassValue<ConcurrentHashMap<String, Field>> COMPONENT_FIELDS =
+            new ClassValue<>() {
+                @Override
+                protected ConcurrentHashMap<String, Field> computeValue(Class<?> type) {
+                    return new ConcurrentHashMap<>();
+                }
+            };
+
+    private static Field componentField(Class<?> type, String name) {
+        return COMPONENT_FIELDS.get(type).computeIfAbsent(name, key -> {
+            for (Class<?> current = type; current != null; current = current.getSuperclass()) {
+                try {
+                    Field field = current.getDeclaredField(key);
+                    if (!field.trySetAccessible()) {
+                        throw new AccessorLookupFailure(new IllegalAccessException(
+                                "Unable to access " + current.getName() + "." + key));
+                    }
+                    return field;
+                } catch (NoSuchFieldException ignored) {
+                    // Continue through the superclass chain.
+                }
+            }
+            throw new AccessorLookupFailure(new NoSuchFieldException(type.getName() + "." + key));
+        });
+    }
+
     private static Object component(Object value, String name) {
-        if (value == null || !value.getClass().isRecord()) {
-            throw new UnsupportedOperationException("Expected record component " + name);
+        if (value == null) {
+            throw new UnsupportedOperationException("Missing density component " + name);
         }
         try {
-            return accessor(value.getClass(), name, true).invoke(value);
+            if (value.getClass().isRecord()) {
+                try {
+                    return accessor(value.getClass(), name, true).invoke(value);
+                } catch (AccessorLookupFailure missingRecordComponent) {
+                    // Some Mojang density nodes expose immutable state as fields rather
+                    // than Java record components. Read the exact named field below.
+                }
+            }
+            return componentField(value.getClass(), name).get(value);
         } catch (ReflectiveOperationException | AccessorLookupFailure failure) {
-            throw new UnsupportedOperationException("Unable to read density component " + name, failure);
+            throw new UnsupportedOperationException(
+                    "Unable to read density component " + name + " from " + value.getClass().getName(),
+                    failure);
         }
     }
 
