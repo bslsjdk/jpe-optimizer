@@ -169,6 +169,8 @@ public final class NativeRuntime implements AutoCloseable {
         private int inputCapacity, outputCapacity;
         private MemorySegment substanceInputs, substanceOutputs;
         private int substanceInputCapacity, substanceOutputCapacity;
+        private MemorySegment volumeOutputs;
+        private int volumeOutputCapacity;
         private MemorySegment statusKeys, statusValues, statusFound;
         private int statusCapacity;
         private MemorySegment pointX, pointY, pointZ, pointOutputF32, pointOutputF64;
@@ -230,6 +232,16 @@ public final class NativeRuntime implements AutoCloseable {
                 substanceOutputCapacity = next;
             }
             return new MemorySegment[] {substanceInputs, substanceOutputs};
+        }
+        private MemorySegment ensureVolumeOutputCapacity(int count) {
+            if (volumeOutputCapacity < count) {
+                int next = Math.max(256, volumeOutputCapacity);
+                while (next < count) next = Math.min(1_048_576, Math.multiplyExact(next, 2));
+                long bytes = Math.multiplyExact((long) next, ValueLayout.JAVA_LONG.byteSize());
+                volumeOutputs = arena.allocate(bytes, ValueLayout.JAVA_LONG.byteAlignment());
+                volumeOutputCapacity = next;
+            }
+            return volumeOutputs;
         }
         private MemorySegment[] ensureStatusCapacity(int count) {
             if (statusCapacity < count) {
@@ -1096,7 +1108,7 @@ public final class NativeRuntime implements AutoCloseable {
             scratch = acquireAquiferScratch();
             MemorySegment[] pointBuffers = scratch.ensurePointCapacity(count);
             MemorySegment densityValues = pointBuffers[3];
-            MemorySegment outputValues = scratch.ensureSubstanceCapacity(count)[1];
+            MemorySegment outputValues = scratch.ensureVolumeOutputCapacity(count);
             MemorySegment expectedFingerprint = scratch.ensureContextWorldFingerprint();
             MemorySegment.copy(worldFingerprint, 0, expectedFingerprint,
                     ValueLayout.JAVA_BYTE, 0L, worldFingerprint.length);
@@ -1167,7 +1179,7 @@ public final class NativeRuntime implements AutoCloseable {
         try {
             ensureOpen();
             scratch = acquireAquiferScratch();
-            MemorySegment outputValues = scratch.ensureSubstanceCapacity(count)[1];
+            MemorySegment outputValues = scratch.ensureVolumeOutputCapacity(count);
             MemorySegment expectedFingerprint = scratch.ensureContextWorldFingerprint();
             MemorySegment.copy(worldFingerprint, 0, expectedFingerprint,
                     ValueLayout.JAVA_BYTE, 0L, worldFingerprint.length);
