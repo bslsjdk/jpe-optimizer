@@ -1440,7 +1440,9 @@ public final class NativeDensityGraphCompiler {
                         int density = lower((DensityFunction) component(function, "density"));
                         int upperBound = lower((DensityFunction) component(function, "upperBound"));
                         int lowerBound = ((Number) component(function, "lowerBound")).intValue();
-                        int stepSize = ((Number) component(function, "stepSize")).intValue();
+                        // Minecraft 26.3 names this record component cellHeight (codec key: cell_height).
+                        // It is the vertical stride passed into the FindTopSurface scan.
+                        int stepSize = ((Number) component(function, "cellHeight")).intValue();
                         if (stepSize <= 0) {
                             throw new UnsupportedOperationException("FindTopSurface stepSize must be positive");
                         }
