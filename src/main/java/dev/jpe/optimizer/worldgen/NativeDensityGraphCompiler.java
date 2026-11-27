@@ -35,7 +35,9 @@ import net.minecraft.world.level.levelgen.densityfunction.DensityFunctions;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
 import net.minecraft.world.level.levelgen.densityfunction.ScopedDensityBuffer;
 import net.minecraft.world.level.levelgen.densityfunction.generator.NoiseFunction;
+import net.minecraft.world.level.levelgen.synth.BlendedNoise;
 import net.minecraft.world.level.levelgen.synth.Noise;
+import net.minecraft.world.level.levelgen.synth.NormalNoise;
 
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
@@ -74,7 +76,7 @@ import java.util.concurrent.ExecutionException;
  * graph, leaving the existing vanilla sampler untouched.
  */
 public final class NativeDensityGraphCompiler {
-    private static final long CONFIGURATION_FINGERPRINT = 0x4A50452603000005L;
+    private static final long CONFIGURATION_FINGERPRINT = 0x4A50452603000009L;
     private static final Object LOCK = new Object();
 
     // Density graphs repeatedly read the same record components while lowering
@@ -224,6 +226,34 @@ public final class NativeDensityGraphCompiler {
     }
 
     /**
+     * The vanilla compiler rewrites density-function children before compiling them.
+     * A rewritten NoiseFunction can therefore be a different record instance from the
+     * one observed by the capture mixin. Resolve that leaf through the same per-world
+     * CompileContext instead of rejecting an otherwise valid graph.
+     *
+     * CompileContext owns RandomState's seeded noise memo, so this returns the exact
+     * world-seeded Noise associated with the function's Holder. Keep the lookup and
+     * memoization under LOCK because several graph roots may be lowered concurrently.
+     */
+    private static Noise resolveCapturedNoise(
+            NoiseFunction function, DensityFunction.CompileContext context
+    ) {
+        synchronized (LOCK) {
+            Map<NoiseFunction, Noise> captured = CAPTURED_NOISE.get(context);
+            Noise noise = captured == null ? null : captured.get(function);
+            if (noise != null) return noise;
+
+            Holder<NormalNoise> parameters = function.noise();
+            noise = context.createNoiseSampler(parameters);
+            CAPTURED_NOISE.computeIfAbsent(context, ignored -> new HashMap<>()).put(function, noise);
+            JPEOptimizer.LOGGER.debug(
+                    "Resolved uncaptured rewritten NoiseFunction through its vanilla CompileContext (noise={})",
+                    parameters);
+            return noise;
+        }
+    }
+
+    /**
      * Prepares an immutable native plan for a sampler used by a subsystem such as Aquifer.
      * The plan is compiled once per RandomState/root identity and remains owned by the
      * RandomState cache until that state is reclaimed. It deliberately does not evaluate
@@ -287,10 +317,6 @@ public final class NativeDensityGraphCompiler {
             }
             Beardifier beardifier = samplerContext.getField(Beardifier.CONTEXT_KEY);
             boolean beardifierEmpty = beardifier == null || beardifier == Beardifier.EMPTY;
-            if (!beardifierEmpty) {
-                throw new UnsupportedOperationException(
-                        "Non-empty Beardifier requires a native Beardifier node");
-            }
 
             long[] handles = new long[roots.size()];
             for (int i = 0; i < roots.size(); i++) {
@@ -399,12 +425,104 @@ public final class NativeDensityGraphCompiler {
         }
     }
 
+
+    /**
+     * Copies this NoiseChunk's structure context into a short-lived native handle.
+     * The returned context is never included in the RandomState-shared density graph.
+     */
+    public static long prepareBeardifierContext(NoiseChunk noiseChunk) {
+        if (noiseChunk == null) throw new IllegalArgumentException("NoiseChunk is required");
+        NativeRuntime runtime = NativePerlinNoiseBackend.runtimeForDensityGraph();
+        if (runtime == null) throw new IllegalStateException("Native runtime is unavailable for Beardifier");
+        try {
+            SamplerContext samplerContext = capturedSamplerContext(noiseChunk.cachingSamplers());
+            Beardifier beardifier = samplerContext.getField(Beardifier.CONTEXT_KEY);
+            if (beardifier == null) beardifier = Beardifier.EMPTY;
+
+            List<?> pieces = (List<?>) component(beardifier, "pieces");
+            List<?> junctions = (List<?>) component(beardifier, "junctions");
+            Object affected = component(beardifier, "affectedBox");
+            int[] pieceData = new int[Math.multiplyExact(pieces.size(), 8)];
+            for (int i = 0; i < pieces.size(); i++) {
+                Object rigid = pieces.get(i);
+                Object box = component(rigid, "box");
+                Object adjustment = component(rigid, "terrainAdjustment");
+                Object groundDelta = component(rigid, "groundLevelDelta");
+                int base = i * 8;
+                pieceData[base] = ((Number) member(box, "minX")).intValue();
+                pieceData[base + 1] = ((Number) member(box, "minY")).intValue();
+                pieceData[base + 2] = ((Number) member(box, "minZ")).intValue();
+                pieceData[base + 3] = ((Number) member(box, "maxX")).intValue();
+                pieceData[base + 4] = ((Number) member(box, "maxY")).intValue();
+                pieceData[base + 5] = ((Number) member(box, "maxZ")).intValue();
+                pieceData[base + 6] = ((Number) groundDelta).intValue();
+                String terrain = adjustment.toString();
+                pieceData[base + 7] = switch (terrain) {
+                    case "NONE" -> 0;
+                    case "BURY" -> 1;
+                    case "BEARD_THIN" -> 2;
+                    case "BEARD_BOX" -> 3;
+                    case "ENCAPSULATE" -> 4;
+                    default -> throw new UnsupportedOperationException("Unknown Beardifier terrain adjustment " + terrain);
+                };
+            }
+
+            int[] junctionData = new int[Math.multiplyExact(junctions.size(), 3)];
+            for (int i = 0; i < junctions.size(); i++) {
+                Object junction = junctions.get(i);
+                int base = i * 3;
+                junctionData[base] = ((Number) member(junction, "getSourceX")).intValue();
+                junctionData[base + 1] = ((Number) member(junction, "getSourceGroundY")).intValue();
+                junctionData[base + 2] = ((Number) member(junction, "getSourceZ")).intValue();
+            }
+
+            int[] affectedBox = null;
+            if (affected != null) {
+                affectedBox = new int[] {
+                        ((Number) member(affected, "minX")).intValue(),
+                        ((Number) member(affected, "minY")).intValue(),
+                        ((Number) member(affected, "minZ")).intValue(),
+                        ((Number) member(affected, "maxX")).intValue(),
+                        ((Number) member(affected, "maxY")).intValue(),
+                        ((Number) member(affected, "maxZ")).intValue()
+                };
+            }
+            float[] kernel = null;
+            if (!pieces.isEmpty() || !junctions.isEmpty()) {
+                try {
+                    Field kernelField = Beardifier.class.getDeclaredField("BEARD_KERNEL");
+                    if (!kernelField.trySetAccessible()) {
+                        throw new IllegalStateException("Unable to access Minecraft's Beardifier kernel");
+                    }
+                    kernel = (float[]) kernelField.get(null);
+                    if (kernel == null || kernel.length != 13_824) {
+                        throw new IllegalStateException("Minecraft Beardifier kernel has an unexpected size");
+                    }
+                } catch (ReflectiveOperationException failure) {
+                    throw new IllegalStateException("Unable to extract Minecraft's exact Beardifier kernel", failure);
+                }
+            }
+            return runtime.createBeardifierContext(pieceData, junctionData, affectedBox, kernel);
+        } catch (RuntimeException | LinkageError failure) {
+            throw new IllegalStateException("Unable to prepare native per-chunk Beardifier context: "
+                    + describe(failure), failure);
+        }
+    }
+
+    public static void releaseBeardifierContext(long handle) {
+        if (handle == 0L) return;
+        NativeRuntime runtime = NativePerlinNoiseBackend.runtimeForDensityGraph();
+        if (runtime == null) throw new IllegalStateException("Native runtime disappeared before Beardifier release");
+        runtime.destroyBeardifierContext(handle);
+    }
+
     /**
      * Returns a pooled density buffer filled by one native DAG evaluation, or
      * null when the graph contains an unsupported node or native execution fails.
      */
     public static ScopedDensityBuffer trySampleVolume(
-            DensityFunction root, DensitySampler.Bound vanillaSampler, NoiseChunk noiseChunk, DensityVolume volume
+            DensityFunction root, DensitySampler.Bound vanillaSampler, NoiseChunk noiseChunk,
+            DensityVolume volume, long beardifierContextHandle
     ) {
         NativeRuntime runtime;
         try {
@@ -433,13 +551,6 @@ public final class NativeDensityGraphCompiler {
         }
         Beardifier beardifier = samplerContext.getField(Beardifier.CONTEXT_KEY);
         boolean beardifierEmpty = beardifier == null || beardifier == Beardifier.EMPTY;
-        // The current native DAG lowers BEARDIFIER to zero only for the empty
-        // context. Handles are cached by root identity within RandomState, so
-        // never allow a non-empty context to reuse a graph compiled for empty.
-        // Full native Beardifier lowering is a separate implementation stage.
-        if (!beardifierEmpty) {
-            return fallback("Non-empty Beardifier requires a native Beardifier node");
-        }
         long handle;
         try {
             handle = graphHandle(root, randomState, context, true, beardifierEmpty, runtime);
@@ -451,8 +562,8 @@ public final class NativeDensityGraphCompiler {
         DensityBufferPool pool = noiseChunkAccess.jpe$getBufferPool();
         ScopedDensityBuffer output = pool.acquire(volume.size());
         try {
-            runtime.evaluateDensityGraphF32(
-                    handle,
+            runtime.evaluateDensityGraphF32WithBeardifier(
+                    handle, beardifierContextHandle,
                     volume.sizeX(), volume.sizeY(), volume.sizeZ(),
                     volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
                     volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ(),
@@ -927,7 +1038,7 @@ public final class NativeDensityGraphCompiler {
         List<NativeRuntime.DensityNode> materialized = graph.materialize(runtime);
         Set<Long> temporaryHandles = new HashSet<>();
         for (NativeRuntime.DensityNode node : materialized) {
-            if (node.opcode() == 7 || node.opcode() == 31) {
+            if (node.opcode() == 7 || node.opcode() == 31 || node.opcode() == 33) {
                 temporaryHandles.add((long) node.immediate());
             }
         }
@@ -995,14 +1106,50 @@ public final class NativeDensityGraphCompiler {
         private AccessorLookupFailure(Throwable cause) { super(cause); }
     }
 
+    private static final ClassValue<ConcurrentHashMap<String, Field>> COMPONENT_FIELDS =
+            new ClassValue<>() {
+                @Override
+                protected ConcurrentHashMap<String, Field> computeValue(Class<?> type) {
+                    return new ConcurrentHashMap<>();
+                }
+            };
+
+    private static Field componentField(Class<?> type, String name) {
+        return COMPONENT_FIELDS.get(type).computeIfAbsent(name, key -> {
+            for (Class<?> current = type; current != null; current = current.getSuperclass()) {
+                try {
+                    Field field = current.getDeclaredField(key);
+                    if (!field.trySetAccessible()) {
+                        throw new AccessorLookupFailure(new IllegalAccessException(
+                                "Unable to access " + current.getName() + "." + key));
+                    }
+                    return field;
+                } catch (NoSuchFieldException ignored) {
+                    // Continue through the superclass chain.
+                }
+            }
+            throw new AccessorLookupFailure(new NoSuchFieldException(type.getName() + "." + key));
+        });
+    }
+
     private static Object component(Object value, String name) {
-        if (value == null || !value.getClass().isRecord()) {
-            throw new UnsupportedOperationException("Expected record component " + name);
+        if (value == null) {
+            throw new UnsupportedOperationException("Missing density component " + name);
         }
         try {
-            return accessor(value.getClass(), name, true).invoke(value);
+            if (value.getClass().isRecord()) {
+                try {
+                    return accessor(value.getClass(), name, true).invoke(value);
+                } catch (AccessorLookupFailure missingRecordComponent) {
+                    // Some Mojang density nodes expose immutable state as fields rather
+                    // than Java record components. Read the exact named field below.
+                }
+            }
+            return componentField(value.getClass(), name).get(value);
         } catch (ReflectiveOperationException | AccessorLookupFailure failure) {
-            throw new UnsupportedOperationException("Unable to read density component " + name, failure);
+            throw new UnsupportedOperationException(
+                    "Unable to read density component " + name + " from " + value.getClass().getName(),
+                    failure);
         }
     }
 
@@ -1045,7 +1192,7 @@ public final class NativeDensityGraphCompiler {
             }
             List<NativeRuntime.DensityNode> portableNodes = new ArrayList<>(nodes.size());
             for (NativeRuntime.DensityNode node : nodes) {
-                if (node.opcode() == 7 || node.opcode() == 31) {
+                if (node.opcode() == 7 || node.opcode() == 31 || node.opcode() == 33) {
                     Integer slot = preparedHandleSlots.get((long) node.immediate());
                     if (slot == null) {
                         throw new IllegalStateException("Native Perlin handle has no portable descriptor slot");
@@ -1184,6 +1331,71 @@ public final class NativeDensityGraphCompiler {
             return index;
         }
 
+        /**
+         * Lowers Minecraft 26.3 BlendedNoise from the same seeded FbmSet used by
+         * BlendedNoise.compileSampler(context). Each SmearedPerlin stack is a
+         * native opcode-35 node; the surrounding selector remains the exact
+         * float density DAG (main + 0.5, clamp, then lerp min/max).
+         *
+         * This graph is intentionally not serialized by the current portable
+         * cache format because it does not yet encode SmearedPerlin octave
+         * descriptors and fudgeYScale values. Live native compilation remains
+         * enabled and process-local stack handles are retained by the graph.
+         */
+        private int lowerBlendedNoise(BlendedNoise blendedNoise) {
+            if (capturePortable) {
+                portableGraphSupported = false;
+            }
+
+            BlendedNoise.FbmSet fbms = blendedNoise.createFbmSet(
+                    context.createRandom(BlendedNoise.NOISE_SEED));
+            double xzMultiplier = 684.412D * blendedNoise.xzScale();
+            double yMultiplier = 684.412D * blendedNoise.yScale();
+            double xzFactor = blendedNoise.xzFactor();
+            double yFactor = blendedNoise.yFactor();
+            if (!Double.isFinite(xzMultiplier) || !Double.isFinite(yMultiplier)
+                    || !Double.isFinite(xzFactor) || !Double.isFinite(yFactor)
+                    || xzFactor == 0.0D || yFactor == 0.0D) {
+                throw new UnsupportedOperationException("BlendedNoise has invalid coordinate scales");
+            }
+
+            long minHandle = 0L;
+            long maxHandle = 0L;
+            long mainHandle = 0L;
+            try {
+                minHandle = NativePerlinNoiseBackend.preparedSmearedStackHandleForDensityGraph(
+                        fbms.minLimitNoise(), xzMultiplier, yMultiplier);
+                maxHandle = NativePerlinNoiseBackend.preparedSmearedStackHandleForDensityGraph(
+                        fbms.maxLimitNoise(), xzMultiplier, yMultiplier);
+                mainHandle = NativePerlinNoiseBackend.preparedSmearedStackHandleForDensityGraph(
+                        fbms.mainNoise(), xzMultiplier / xzFactor, yMultiplier / yFactor);
+                if (minHandle == 0L || maxHandle == 0L || mainHandle == 0L) {
+                    throw new UnsupportedOperationException(
+                            "BlendedNoise requires three supported native SmearedPerlin stacks");
+                }
+
+                int minNoise = append(NativeRuntime.DensityNode.smearedPerlinStack(minHandle));
+                int maxNoise = append(NativeRuntime.DensityNode.smearedPerlinStack(maxHandle));
+                int mainNoise = append(NativeRuntime.DensityNode.smearedPerlinStack(mainHandle));
+                int mainOffset = add(mainNoise, constant(0.5F));
+                int blendAlpha = append(NativeRuntime.DensityNode.clamp(mainOffset, 0.0F, 1.0F));
+                return append(NativeRuntime.DensityNode.lerp(blendAlpha, minNoise, maxNoise));
+            } catch (RuntimeException | LinkageError failure) {
+                NativeRuntime runtime = NativePerlinNoiseBackend.runtimeForDensityGraph();
+                if (runtime != null) {
+                    for (long handle : new long[] {minHandle, maxHandle, mainHandle}) {
+                        if (handle == 0L) continue;
+                        try {
+                            runtime.releasePreparedPerlinStack(handle);
+                        } catch (RuntimeException | LinkageError cleanupFailure) {
+                            failure.addSuppressed(cleanupFailure);
+                        }
+                    }
+                }
+                throw failure;
+            }
+        }
+
         private int lower(DensityFunction function) {
             if (function == null) throw new UnsupportedOperationException("Null density function");
             Integer existing = indices.get(function);
@@ -1200,6 +1412,7 @@ public final class NativeDensityGraphCompiler {
                         Holder<DensityFunction> holder = (Holder<DensityFunction>) component(function, "function");
                         result = lower(holder.value());
                     }
+                    case "BlendedNoise" -> result = lowerBlendedNoise((BlendedNoise) function);
                     case "CacheFunction" -> result = lower((DensityFunction) component(function, "input"));
                     case "BlendDensityFunction" -> {
                         if (!blenderEmpty) {
@@ -1209,22 +1422,25 @@ public final class NativeDensityGraphCompiler {
                     }
                     case "SimpleDensityFunction" -> {
                         String simpleName = function.toString();
-                        float value = switch (simpleName) {
-                            case "BLEND_ALPHA" -> {
-                                if (!blenderEmpty) throw new UnsupportedOperationException("Non-empty blend alpha");
-                                yield 1.0F;
-                            }
-                            case "BLEND_OFFSET" -> {
-                                if (!blenderEmpty) throw new UnsupportedOperationException("Non-empty blend offset");
-                                yield 0.0F;
-                            }
-                            case "BEARDIFIER" -> {
-                                if (!beardifierEmpty) throw new UnsupportedOperationException("Non-empty beardifier");
-                                yield 0.0F;
-                            }
-                            default -> throw new UnsupportedOperationException("Unsupported simple density function " + simpleName);
-                        };
-                        result = append(NativeRuntime.DensityNode.constant(value));
+                        if (simpleName.equals("BEARDIFIER")) {
+                            // Context is supplied per chunk at evaluation time. Never bake it into
+                            // the RandomState-shared graph or portable disk cache.
+                            portableGraphSupported = false;
+                            result = append(NativeRuntime.DensityNode.beardifier());
+                        } else {
+                            float value = switch (simpleName) {
+                                case "BLEND_ALPHA" -> {
+                                    if (!blenderEmpty) throw new UnsupportedOperationException("Non-empty blend alpha");
+                                    yield 1.0F;
+                                }
+                                case "BLEND_OFFSET" -> {
+                                    if (!blenderEmpty) throw new UnsupportedOperationException("Non-empty blend offset");
+                                    yield 0.0F;
+                                }
+                                default -> throw new UnsupportedOperationException("Unsupported simple density function " + simpleName);
+                            };
+                            result = append(NativeRuntime.DensityNode.constant(value));
+                        }
                     }
                     case "ConstantFunction" -> {
                         Number value = (Number) component(function, "value");
@@ -1322,7 +1538,7 @@ public final class NativeDensityGraphCompiler {
                         result = append(NativeRuntime.DensityNode.lerp(alpha, first, second));
                     }
                     case "GradientFunction" -> {
-                        String axisName = component(function, "axis").toString();
+                        String axisName = component(function, "axis").toString().toUpperCase(java.util.Locale.ROOT);
                         String tilingName = component(function, "tiling").toString();
                         int tiling = switch (tilingName) {
                             case "CLAMP_TO_EDGE" -> 0;
@@ -1371,8 +1587,21 @@ public final class NativeDensityGraphCompiler {
                         float maximum = ((Number) component(function, "max")).floatValue();
                         result = append(NativeRuntime.DensityNode.clamp(input, minimum, maximum));
                     }
+                    case "FindTopSurfaceFunction" -> {
+                        int density = lower((DensityFunction) component(function, "density"));
+                        int upperBound = lower((DensityFunction) component(function, "upperBound"));
+                        int lowerBound = ((Number) component(function, "lowerBound")).intValue();
+                        // Minecraft 26.3 names this record component cellHeight (codec key: cell_height).
+                        // It is the vertical stride passed into the FindTopSurface scan.
+                        int stepSize = ((Number) component(function, "cellHeight")).intValue();
+                        if (stepSize <= 0) {
+                            throw new UnsupportedOperationException("FindTopSurface stepSize must be positive");
+                        }
+                        result = append(NativeRuntime.DensityNode.findTopSurface(
+                                density, upperBound, lowerBound, stepSize));
+                    }
                     case "SliceFunction" -> {
-                        String axisName = component(function, "axis").toString();
+                        String axisName = component(function, "axis").toString().toUpperCase(java.util.Locale.ROOT);
                         int axis = switch (axisName) {
                             case "X" -> 0;
                             case "Y" -> 1;
@@ -1383,15 +1612,42 @@ public final class NativeDensityGraphCompiler {
                         int input = lower((DensityFunction) component(function, "input"));
                         result = append(NativeRuntime.DensityNode.slice(input, axis, coordinate));
                     }
+                    case "ShiftA", "ShiftB", "Shift" -> {
+                        @SuppressWarnings("unchecked")
+                        Holder<NormalNoise> noiseHolder =
+                                (Holder<NormalNoise>) component(function, "offsetNoise");
+                        Noise noise = context.createNoiseSampler(noiseHolder);
+                        long preparedHandle = NativePerlinNoiseBackend.preparedStackHandleForDensityGraph(noise);
+                        if (preparedHandle == 0L) {
+                            throw new UnsupportedOperationException(
+                                    "Shift noise is not backed by a supported prepared Perlin stack");
+                        }
+                        if (capturePortable && portableGraphSupported) {
+                            Integer stackSlot = perlinStackSlots.get(noise);
+                            if (stackSlot == null) {
+                                PortableDensityGraphCache.PerlinStack descriptor =
+                                        NativePerlinNoiseBackend.portableStackDescriptor(noise);
+                                if (descriptor == null) {
+                                    portableGraphSupported = false;
+                                } else {
+                                    stackSlot = perlinStacks.size();
+                                    perlinStacks.add(descriptor);
+                                    perlinStackSlots.put(noise, stackSlot);
+                                }
+                            }
+                            if (stackSlot != null) preparedHandleSlots.putIfAbsent(preparedHandle, stackSlot);
+                        }
+                        result = switch (kind) {
+                            case "ShiftA" -> append(NativeRuntime.DensityNode.perlinStack(
+                                    preparedHandle, 0.25, 0.0, 4.0F));
+                            case "Shift" -> append(NativeRuntime.DensityNode.perlinStack(
+                                    preparedHandle, 0.25, 0.25, 4.0F));
+                            case "ShiftB" -> append(NativeRuntime.DensityNode.shiftBPerlinStack(preparedHandle));
+                            default -> throw new AssertionError(kind);
+                        };
+                    }
                     case "NoiseFunction" -> {
-                        Noise noise;
-                        synchronized (LOCK) {
-                            Map<NoiseFunction, Noise> captured = CAPTURED_NOISE.get(context);
-                            noise = captured == null ? null : captured.get((NoiseFunction) function);
-                        }
-                        if (noise == null) {
-                            throw new UnsupportedOperationException("Noise sampler was not captured by vanilla compilation");
-                        }
+                        Noise noise = resolveCapturedNoise((NoiseFunction) function, context);
                         long preparedHandle = NativePerlinNoiseBackend.preparedStackHandleForDensityGraph(noise);
                         if (preparedHandle == 0L) {
                             throw new UnsupportedOperationException("Noise sampler is not a supported Perlin stack");

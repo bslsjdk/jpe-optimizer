@@ -6,7 +6,7 @@ use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-const ABI_VERSION: u32 = 7;
+const ABI_VERSION: u32 = 11;
 const STATUS_OK: i32 = 0;
 const STATUS_INVALID_ARGUMENT: i32 = 1;
 const STATUS_CPP_FAILURE: i32 = 2;
@@ -33,6 +33,45 @@ struct JpeDensityNode {
 }
 
 const _: [(); 40] = [(); std::mem::size_of::<JpeDensityNode>()];
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+struct JpeBeardifierRigid {
+    min_x: i32, min_y: i32, min_z: i32,
+    max_x: i32, max_y: i32, max_z: i32,
+    ground_level_delta: i32,
+    terrain_adjustment: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+struct JpeBeardifierJunction {
+    source_x: i32,
+    source_ground_y: i32,
+    source_z: i32,
+}
+
+#[repr(C)]
+struct JpeBeardifierContextCreateInfo {
+    pieces: *const JpeBeardifierRigid,
+    piece_count: u32,
+    reserved0: u32,
+    junctions: *const JpeBeardifierJunction,
+    junction_count: u32,
+    has_affected_box: u32,
+    beard_kernel: *const f32,
+    beard_kernel_count: u32,
+    reserved1: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    max_x: i32, max_y: i32, max_z: i32,
+    reserved2: u32,
+    reserved3: u32,
+}
+
+const _: [(); 32] = [(); std::mem::size_of::<JpeBeardifierRigid>()];
+const _: [(); 12] = [(); std::mem::size_of::<JpeBeardifierJunction>()];
+const _: [(); 80] = [(); std::mem::size_of::<JpeBeardifierContextCreateInfo>()];
+
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -149,6 +188,9 @@ const DENSITY_ABS: u32 = 12;
 const DENSITY_CLAMP: u32 = 22;
 const DENSITY_PERLIN_STACK_WARP: u32 = 31;
 const DENSITY_SLICE: u32 = 32;
+const DENSITY_FIND_TOP_SURFACE: u32 = 34;
+const DENSITY_SMEARED_PERLIN_STACK: u32 = 35;
+const DENSITY_BEARDIFIER: u32 = 36;
 
 unsafe extern "C" {
     fn jpe_cpp_density_graph_compile(
@@ -170,6 +212,17 @@ unsafe extern "C" {
         output: *mut f32, output_length: u64,
     ) -> i32;
     fn jpe_cpp_density_graph_release(graph_handle: u64) -> i32;
+
+    fn jpe_cpp_beardifier_context_create(info: *const JpeBeardifierContextCreateInfo) -> u64;
+    fn jpe_cpp_beardifier_context_destroy(context_handle: u64) -> i32;
+    fn jpe_cpp_density_graph_evaluate_f32_with_beardifier(
+        graph_handle: u64, beardifier_context_handle: u64,
+        size_x: u32, size_y: u32, size_z: u32,
+        min_x: i32, min_y: i32, min_z: i32,
+        step_x: i32, step_y: i32, step_z: i32,
+        output: *mut f32, output_length: u64,
+    ) -> i32;
+
     fn jpe_cpp_density_graph_evaluate_points(
         graph_handle: u64,
         point_x: *const i32, point_y: *const i32, point_z: *const i32,
@@ -246,18 +299,19 @@ unsafe extern "C" {
         step_x: i32, step_y: i32, step_z: i32,
         density_values: *const f32,
         density_count: u32,
-        outputs: *mut JpeAquiferCoreOutput,
+        outputs: *mut u64,
     ) -> i32;
     fn jpe_cpp_aquifer_context_compute_density_and_substance_volume_f32(
         context_handle: u64,
         expected_world_fingerprint: *const u8,
         expected_semantic_fingerprint: u64,
         final_density_graph_handle: u64,
+        beardifier_context_handle: u64,
         skip_sampling_above_y: i32,
         size_x: u32, size_y: u32, size_z: u32,
         min_x: i32, min_y: i32, min_z: i32,
         step_x: i32, step_y: i32, step_z: i32,
-        outputs: *mut JpeAquiferCoreOutput,
+        outputs: *mut u64,
     ) -> i32;
     fn jpe_cpp_aquifer_compute_substance_batch(
         inputs: *const JpeAquiferCoreInput,
@@ -440,6 +494,90 @@ pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate_f32(
             min_x, min_y, min_z, step_x, step_y, step_z,
             output, output_length,
         )
+    }
+}
+
+
+/// Creates an immutable per-chunk structure-bearding context. All input arrays are copied.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_beardifier_context_create(
+    info: *const JpeBeardifierContextCreateInfo,
+) -> u64 {
+    if info.is_null() {
+        return 0;
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        let value = &*info;
+        if value.piece_count > 16_384 || value.junction_count > 65_536
+            || (value.piece_count != 0 && value.pieces.is_null())
+            || (value.junction_count != 0 && value.junctions.is_null())
+            || value.has_affected_box > 1
+            || value.reserved0 != 0 || value.reserved1 != 0
+            || value.reserved2 != 0 || value.reserved3 != 0
+            || (value.has_affected_box != 0
+                && (value.min_x > value.max_x || value.min_y > value.max_y || value.min_z > value.max_z))
+            || ((value.piece_count != 0 || value.junction_count != 0)
+                && (value.beard_kernel.is_null() || value.beard_kernel_count != 13_824))
+        {
+            return 0;
+        }
+        jpe_cpp_beardifier_context_create(info)
+    })) {
+        Ok(handle) => handle,
+        Err(_) => 0,
+    }
+}
+
+/// Releases one per-chunk Beardifier context. Active evaluations retain their context.
+#[no_mangle]
+pub extern "C" fn jpe_runtime_beardifier_context_destroy(context_handle: u64) -> i32 {
+    if context_handle == 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        jpe_cpp_beardifier_context_destroy(context_handle)
+    })) {
+        Ok(STATUS_OK) => STATUS_OK,
+        Ok(STATUS_INVALID_ARGUMENT) => STATUS_INVALID_ARGUMENT,
+        Ok(_) => STATUS_CPP_FAILURE,
+        Err(_) => STATUS_RUST_PANIC,
+    }
+}
+
+/// Evaluates a density volume whose IR may contain the per-chunk Beardifier node.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate_f32_with_beardifier(
+    graph_handle: u64,
+    beardifier_context_handle: u64,
+    size_x: u32, size_y: u32, size_z: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    step_x: i32, step_y: i32, step_z: i32,
+    output: *mut f32, output_length: u64,
+) -> i32 {
+    if graph_handle == 0 || output.is_null()
+        || size_x == 0 || size_y == 0 || size_z == 0
+        || step_x == 0 || step_y == 0 || step_z == 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    let Some(length) = (size_x as u64)
+        .checked_mul(size_y as u64)
+        .and_then(|xy| xy.checked_mul(size_z as u64)) else {
+            return STATUS_INVALID_ARGUMENT;
+        };
+    if length > MAX_VOLUME_ELEMENTS as u64 || output_length != length {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        jpe_cpp_density_graph_evaluate_f32_with_beardifier(
+            graph_handle, beardifier_context_handle,
+            size_x, size_y, size_z, min_x, min_y, min_z,
+            step_x, step_y, step_z, output, output_length,
+        )
+    })) {
+        Ok(STATUS_OK) => STATUS_OK,
+        Ok(STATUS_INVALID_ARGUMENT) => STATUS_INVALID_ARGUMENT,
+        Ok(_) => STATUS_CPP_FAILURE,
+        Err(_) => STATUS_RUST_PANIC,
     }
 }
 
@@ -676,7 +814,7 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_context_compute_substance_volume_f3
     step_x: i32, step_y: i32, step_z: i32,
     density_values: *const f32,
     density_count: u32,
-    outputs: *mut JpeAquiferCoreOutput,
+    outputs: *mut u64,
 ) -> i32 {
     const MAX_VOLUME_VOXELS: u64 = 1_048_576;
     let Some(total) = (size_x as u64)
@@ -715,11 +853,12 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_context_compute_density_and_substan
     expected_world_fingerprint: *const u8,
     expected_semantic_fingerprint: u64,
     final_density_graph_handle: u64,
+    beardifier_context_handle: u64,
     skip_sampling_above_y: i32,
     size_x: u32, size_y: u32, size_z: u32,
     min_x: i32, min_y: i32, min_z: i32,
     step_x: i32, step_y: i32, step_z: i32,
-    outputs: *mut JpeAquiferCoreOutput,
+    outputs: *mut u64,
 ) -> i32 {
     const MAX_VOLUME_VOXELS: u64 = 1_048_576;
     let Some(total) = (size_x as u64)
@@ -737,7 +876,7 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_context_compute_density_and_substan
     match catch_unwind(AssertUnwindSafe(|| unsafe {
         jpe_cpp_aquifer_context_compute_density_and_substance_volume_f32(
             context_handle, expected_world_fingerprint, expected_semantic_fingerprint,
-            final_density_graph_handle, skip_sampling_above_y,
+            final_density_graph_handle, beardifier_context_handle, skip_sampling_above_y,
             size_x, size_y, size_z,
             min_x, min_y, min_z, step_x, step_y, step_z, outputs,
         )
@@ -948,6 +1087,16 @@ pub struct JpePerlinLayer {
 }
 
 unsafe extern "C" {
+    fn jpe_cpp_smeared_perlin_stack_prepare(
+        layers: *const JpePerlinLayer, fudge_y_scales: *const f64, layer_count: u32,
+    ) -> u64;
+    fn jpe_cpp_smeared_perlin_stack_evaluate(
+        handle: u64,
+        size_x: u32, size_y: u32, size_z: u32,
+        min_x: i32, min_y: i32, min_z: i32,
+        step_x: i32, step_y: i32, step_z: i32,
+        output: *mut f32, output_length: u64, flags: u32,
+    ) -> i32;
     fn jpe_cpp_perlin_stack_prepare(layers: *const JpePerlinLayer, layer_count: u32) -> u64;
     fn jpe_cpp_perlin_stack_evaluate(
         handle: u64, xz_scale: f64, y_scale: f64, amplitude: f32,
@@ -1040,6 +1189,57 @@ pub unsafe extern "C" fn jpe_runtime_prepare_perlin_stack(
         if descriptors.iter().any(|layer| layer.permutation.is_null()) { return 0; }
         unsafe { jpe_cpp_perlin_stack_prepare(layers, layer_count) }
     })).unwrap_or(0)
+}
+
+/// Prepares a SmearedPerlin stack with its per-octave Y smear thresholds.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_prepare_smeared_perlin_stack(
+    layers: *const JpePerlinLayer, fudge_y_scales: *const f64, layer_count: u32,
+) -> u64 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if layers.is_null() || fudge_y_scales.is_null() || layer_count == 0 || layer_count > 64 {
+            return 0;
+        }
+        let descriptors = unsafe { slice::from_raw_parts(layers, layer_count as usize) };
+        let fudge = unsafe { slice::from_raw_parts(fudge_y_scales, layer_count as usize) };
+        if descriptors.iter().any(|layer| layer.permutation.is_null())
+            || fudge.iter().any(|value| !value.is_finite() || *value <= 0.0) {
+            return 0;
+        }
+        unsafe { jpe_cpp_smeared_perlin_stack_prepare(layers, fudge_y_scales, layer_count) }
+    })).unwrap_or(0)
+}
+
+/// Evaluates a prepared SmearedPerlin stack. Scales and amplitudes were baked
+/// into its immutable octave descriptors during preparation.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_evaluate_prepared_smeared_perlin_stack(
+    handle: u64,
+    size_x: u32, size_y: u32, size_z: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    step_x: i32, step_y: i32, step_z: i32,
+    output: *mut f32, output_length: u64, flags: u32,
+) -> i32 {
+    if handle == 0 || output.is_null() || size_x == 0 || size_y == 0 || size_z == 0
+        || step_x == 0 || step_y == 0 || step_z == 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    let expected = match (size_x as u64).checked_mul(size_y as u64)
+        .and_then(|n| n.checked_mul(size_z as u64)) {
+        Some(value) => value, None => return STATUS_INVALID_ARGUMENT,
+    };
+    if expected != output_length || expected > MAX_VOLUME_ELEMENTS as u64 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        jpe_cpp_smeared_perlin_stack_evaluate(
+            handle, size_x, size_y, size_z, min_x, min_y, min_z,
+            step_x, step_y, step_z, output, output_length, flags)
+    })) {
+        Ok(STATUS_OK) => STATUS_OK,
+        Ok(code) => code,
+        Err(_) => STATUS_RUST_PANIC,
+    }
 }
 
 /// Evaluates a prepared stack. No layer descriptors or permutation arrays cross
@@ -1820,6 +2020,61 @@ mod tests {
         assert!(untouched.iter().all(|value| *value == 0xfeed_face_dead_beef));
     }
 
+
+    #[test]
+    fn beardifier_density_node_uses_immutable_chunk_context() {
+        let piece = JpeBeardifierRigid {
+            min_x: 0, min_y: 0, min_z: 0,
+            max_x: 0, max_y: 0, max_z: 0,
+            ground_level_delta: 0,
+            terrain_adjustment: 1,
+        };
+        let kernel = [0.0_f32; 13_824];
+        let info = JpeBeardifierContextCreateInfo {
+            pieces: &piece,
+            piece_count: 1,
+            reserved0: 0,
+            junctions: std::ptr::null(),
+            junction_count: 0,
+            has_affected_box: 1,
+            beard_kernel: kernel.as_ptr(),
+            beard_kernel_count: kernel.len() as u32,
+            reserved1: 0,
+            min_x: 0, min_y: 0, min_z: 0,
+            max_x: 0, max_y: 0, max_z: 0,
+            reserved2: 0,
+            reserved3: 0,
+        };
+        let context = unsafe { jpe_runtime_beardifier_context_create(&info) };
+        assert_ne!(context, 0);
+
+        let nodes = [JpeDensityNode {
+            opcode: DENSITY_BEARDIFIER,
+            input_a: DENSITY_NO_INPUT,
+            input_b: DENSITY_NO_INPUT,
+            reserved: 0,
+            immediate: 0.0,
+            auxiliary: 0.0,
+            tertiary: 0.0,
+        }];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), 1, 0, 0x4A50452603000009)
+        };
+        assert_ne!(graph, 0);
+        let mut output = [0.0_f32; 1];
+        let status = unsafe {
+            jpe_runtime_density_graph_evaluate_f32_with_beardifier(
+                graph, context, 1, 1, 1, 0, 0, 0, 1, 1, 1,
+                output.as_mut_ptr(), 1,
+            )
+        };
+        assert_eq!(status, STATUS_OK);
+        assert_eq!(output[0], 1.0);
+
+        assert_eq!(jpe_runtime_density_graph_release(graph), STATUS_OK);
+        assert_eq!(jpe_runtime_beardifier_context_destroy(context), STATUS_OK);
+    }
+
     #[test]
     fn density_graph_compiles_caches_and_evaluates_a_full_volume() {
         let nodes = [
@@ -1867,6 +2122,131 @@ mod tests {
                 output.as_mut_ptr(), 1,
             )
         }, 2);
+    }
+
+    #[test]
+    fn density_graph_find_top_surface_scans_down_and_broadcasts_columns() {
+        // density = 8 - y; from upper bound 20, stride 4, the first
+        // positive sample is y=4 (y=8 is exactly zero).
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_Y, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 8.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_SUB, input_a: 1,
+                input_b: 0, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 20.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_FIND_TOP_SURFACE, input_a: 2,
+                input_b: 3, reserved: (-16_i32) as u32, immediate: 4.0, auxiliary: 0.0, tertiary: 0.0 },
+        ];
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 0x465453)
+        };
+        assert_ne!(handle, 0, "FindTopSurface graph should compile");
+
+        let mut output_f64 = [0.0_f64; 8];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                handle, 2, 2, 2, 10, 0, -4, 1, 1, 1,
+                output_f64.as_mut_ptr(), output_f64.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(output_f64, [4.0; 8]);
+
+        let mut output_f32 = [0.0_f32; 8];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                handle, 2, 2, 2, 10, 0, -4, 1, 1, 1,
+                output_f32.as_mut_ptr(), output_f32.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(output_f32, [4.0; 8]);
+
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
+
+        let invalid = [
+            JpeDensityNode { opcode: DENSITY_Y, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 20.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_FIND_TOP_SURFACE, input_a: 0,
+                input_b: 1, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+        ];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_compile(invalid.as_ptr(), invalid.len() as u32, 2, 0x465453)
+        }, 0, "zero scan stride must be rejected");
+    }
+
+    #[test]
+    fn density_graph_smeared_perlin_stack_matches_prepared_stack_f32() {
+        let permutation: [u8; 256] = std::array::from_fn(|index| index as u8);
+        let layer = JpePerlinLayer {
+            permutation: permutation.as_ptr(),
+            offset_x: 17.25,
+            offset_y: -31.5,
+            offset_z: 8.75,
+            xz_scale: 0.125,
+            y_scale: 0.25,
+            amplitude: 0.875,
+        };
+        let fudge_y_scales = [0.75_f64];
+        let prepared = unsafe {
+            jpe_runtime_prepare_smeared_perlin_stack(
+                &layer, fudge_y_scales.as_ptr(), 1,
+            )
+        };
+        assert_ne!(prepared, 0, "SmearedPerlin stack should prepare");
+
+        let nodes = [JpeDensityNode {
+            opcode: DENSITY_SMEARED_PERLIN_STACK,
+            input_a: DENSITY_NO_INPUT,
+            input_b: DENSITY_NO_INPUT,
+            reserved: 0,
+            immediate: prepared as f64,
+            auxiliary: 0.0,
+            tertiary: 0.0,
+        }];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), 1, 0, 0x534D_4541_5245_4431)
+        };
+        assert_ne!(graph, 0, "SmearedPerlin density graph should compile");
+
+        const SIZE_X: u32 = 3;
+        const SIZE_Y: u32 = 17;
+        const SIZE_Z: u32 = 2;
+        const LENGTH: usize = (SIZE_X * SIZE_Y * SIZE_Z) as usize;
+        // The fused stack API accumulates into its output buffer; mirror the graph's zeroed scratch.
+        let mut direct = [0.0_f32; LENGTH];
+        let mut graph_output = [f32::NAN; LENGTH];
+
+        assert_eq!(unsafe {
+            jpe_runtime_evaluate_prepared_smeared_perlin_stack(
+                prepared,
+                SIZE_X, SIZE_Y, SIZE_Z,
+                -31, -24, 11,
+                2, 1, 3,
+                direct.as_mut_ptr(), direct.len() as u64, 0,
+            )
+        }, STATUS_OK);
+
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph,
+                SIZE_X, SIZE_Y, SIZE_Z,
+                -31, -24, 11,
+                2, 1, 3,
+                graph_output.as_mut_ptr(), graph_output.len() as u64,
+            )
+        }, STATUS_OK);
+
+        assert_eq!(
+            graph_output.map(f32::to_bits),
+            direct.map(f32::to_bits),
+            "Opcode 35 must preserve the prepared SmearedPerlin stack output bit-for-bit",
+        );
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+        assert_eq!(jpe_runtime_release_prepared_perlin_stack(prepared), STATUS_OK);
     }
 
     #[test]
@@ -2034,7 +2414,7 @@ mod tests {
     }
 
     #[test]
-    fn exports_expected_abi_version() { assert_eq!(jpe_runtime_abi_version(), 7); }
+    fn exports_expected_abi_version() { assert_eq!(jpe_runtime_abi_version(), 11); }
 
     #[test]
     fn worker_configuration_is_idempotent_after_scheduler_start() {
@@ -3952,7 +4332,7 @@ mod tests {
         // skips positive-density voxels, and executes one negative-density voxel
         // through native nearest-four, FluidStatus, barrier and core decisions.
         let volume_densities = [-1.0_f32, 1.0_f32];
-        let mut volume_outputs = [JpeAquiferCoreOutput::default(); 2];
+        let mut volume_outputs = [0_u64; 2];
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_compute_substance_volume_f32(
                 context, expected_fingerprint.as_ptr(), expected_semantic_fingerprint,
@@ -3960,15 +4340,15 @@ mod tests {
                 volume_densities.as_ptr(), 2, volume_outputs.as_mut_ptr(),
             )
         }, STATUS_OK);
-        assert_eq!(volume_outputs[0].has_block_state, 1);
-        assert_eq!(volume_outputs[0].block_state_type, info.water_type);
-        assert_eq!(volume_outputs[0].should_schedule_fluid_update, 0);
-        assert_eq!(volume_outputs[1].has_block_state, 0);
-        assert_eq!(volume_outputs[1].block_state_type, info.air_type);
-        assert_eq!(volume_outputs[1].should_schedule_fluid_update, 0);
+        assert_ne!(volume_outputs[0] & (1_u64 << 32), 0);
+        assert_eq!(volume_outputs[0] as u32, info.water_type);
+        assert_eq!(volume_outputs[0] & (1_u64 << 33), 0);
+        assert_eq!(volume_outputs[1] & (1_u64 << 32), 0);
+        assert_eq!(volume_outputs[1] as u32, info.air_type);
+        assert_eq!(volume_outputs[1] & (1_u64 << 33), 0);
 
         let active_density = [-1.0_f32];
-        let mut active_output = [JpeAquiferCoreOutput::default(); 1];
+        let mut active_output = [0_u64; 1];
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_compute_substance_volume_f32(
                 context, expected_fingerprint.as_ptr(), expected_semantic_fingerprint,
@@ -3976,16 +4356,12 @@ mod tests {
                 active_density.as_ptr(), 1, active_output.as_mut_ptr(),
             )
         }, STATUS_OK);
-        assert_eq!(active_output[0].has_block_state, 1);
-        assert_eq!(active_output[0].block_state_type, info.air_type);
-        assert_eq!(active_output[0].should_schedule_fluid_update, 0);
+        assert_ne!(active_output[0] & (1_u64 << 32), 0);
+        assert_eq!(active_output[0] as u32, info.air_type);
+        assert_eq!(active_output[0] & (1_u64 << 33), 0);
 
         // Invalid volume dimensions are rejected before touching output.
-        let untouched_volume = [JpeAquiferCoreOutput {
-            has_block_state: 77,
-            block_state_type: 88,
-            should_schedule_fluid_update: 99,
-        }; 1];
+        let untouched_volume = [88_u64 | (77_u64 << 32) | (99_u64 << 33)];
         active_output = untouched_volume;
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_compute_substance_volume_f32(
@@ -3994,9 +4370,7 @@ mod tests {
                 active_density.as_ptr(), 1, active_output.as_mut_ptr(),
             )
         }, STATUS_INVALID_ARGUMENT);
-        assert_eq!(active_output[0].has_block_state, 77);
-        assert_eq!(active_output[0].block_state_type, 88);
-        assert_eq!(active_output[0].should_schedule_fluid_update, 99);
+        assert_eq!(active_output[0], untouched_volume[0]);
 
         assert_eq!(unsafe { jpe_runtime_aquifer_context_destroy(context) }, STATUS_OK);
         assert_eq!(unsafe { jpe_runtime_aquifer_context_destroy(context) }, STATUS_INVALID_ARGUMENT);
@@ -4198,18 +4572,18 @@ mod tests {
             )
         }, STATUS_OK);
 
-        let mut fused = [JpeAquiferCoreOutput::default(); 8];
+        let mut fused = [0_u64; 8];
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_compute_density_and_substance_volume_f32(
                 context, fingerprint.as_ptr(), info.semantic_fingerprint,
-                final_density_graph, 0,
+                final_density_graph, 0, 0,
                 2, 2, 2, -16, -64, 32, 1, 1, 1,
                 fused.as_mut_ptr(),
             )
         }, STATUS_OK);
 
         let split_density = [-0.2_f32; 8];
-        let mut split = [JpeAquiferCoreOutput::default(); 8];
+        let mut split = [0_u64; 8];
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_compute_substance_volume_f32(
                 context, fingerprint.as_ptr(), info.semantic_fingerprint,
@@ -4220,29 +4594,24 @@ mod tests {
             )
         }, STATUS_OK);
         for index in 0..8 {
-            assert_eq!(fused[index].has_block_state, split[index].has_block_state);
-            assert_eq!(fused[index].block_state_type, split[index].block_state_type);
-            assert_eq!(
-                fused[index].should_schedule_fluid_update,
-                split[index].should_schedule_fluid_update,
-            );
+            assert_eq!(fused[index], split[index], "packed voxel {index}");
         }
 
         // Reuse the same native worker scratch with a smaller volume, then a
         // no-active-voxel volume, then an active voxel again. This catches stale
         // vector lengths/content surviving between successive chunk fills.
-        let mut fused_small = [JpeAquiferCoreOutput::default(); 1];
+        let mut fused_small = [0_u64; 1];
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_compute_density_and_substance_volume_f32(
                 context, fingerprint.as_ptr(), info.semantic_fingerprint,
-                final_density_graph, 0,
+                final_density_graph, 0, 0,
                 1, 1, 1, -16, -64, 32, 1, 1, 1,
                 fused_small.as_mut_ptr(),
             )
         }, STATUS_OK);
 
         let small_density = [-0.2_f32];
-        let mut split_small = [JpeAquiferCoreOutput::default(); 1];
+        let mut split_small = [0_u64; 1];
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_compute_substance_volume_f32(
                 context, fingerprint.as_ptr(), info.semantic_fingerprint,
@@ -4251,15 +4620,10 @@ mod tests {
                 small_density.as_ptr(), 1, split_small.as_mut_ptr(),
             )
         }, STATUS_OK);
-        assert_eq!(fused_small[0].has_block_state, split_small[0].has_block_state);
-        assert_eq!(fused_small[0].block_state_type, split_small[0].block_state_type);
-        assert_eq!(
-            fused_small[0].should_schedule_fluid_update,
-            split_small[0].should_schedule_fluid_update,
-        );
+        assert_eq!(fused_small[0], split_small[0]);
 
         let positive_density = [1.0_f32; 3];
-        let mut positive_outputs = [JpeAquiferCoreOutput::default(); 3];
+        let mut positive_outputs = [0_u64; 3];
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_compute_substance_volume_f32(
                 context, fingerprint.as_ptr(), info.semantic_fingerprint,
@@ -4269,12 +4633,12 @@ mod tests {
             )
         }, STATUS_OK);
         for output in positive_outputs {
-            assert_eq!(output.has_block_state, 0);
-            assert_eq!(output.block_state_type, info.air_type);
-            assert_eq!(output.should_schedule_fluid_update, 0);
+            assert_eq!(output & (1_u64 << 32), 0);
+            assert_eq!(output as u32, info.air_type);
+            assert_eq!(output & (1_u64 << 33), 0);
         }
 
-        let mut reactivated_output = [JpeAquiferCoreOutput::default(); 1];
+        let mut reactivated_output = [0_u64; 1];
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_compute_substance_volume_f32(
                 context, fingerprint.as_ptr(), info.semantic_fingerprint,
@@ -4283,12 +4647,7 @@ mod tests {
                 small_density.as_ptr(), 1, reactivated_output.as_mut_ptr(),
             )
         }, STATUS_OK);
-        assert_eq!(reactivated_output[0].has_block_state, split_small[0].has_block_state);
-        assert_eq!(reactivated_output[0].block_state_type, split_small[0].block_state_type);
-        assert_eq!(
-            reactivated_output[0].should_schedule_fluid_update,
-            split_small[0].should_schedule_fluid_update,
-        );
+        assert_eq!(reactivated_output[0], split_small[0]);
 
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_destroy(context)

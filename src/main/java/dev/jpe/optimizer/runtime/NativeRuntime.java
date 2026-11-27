@@ -30,7 +30,7 @@ import net.minecraft.world.level.levelgen.synth.PerlinNoise;
  * Completed jobs must be explicitly released before this runtime can be closed.
  */
 public final class NativeRuntime implements AutoCloseable {
-    public static final int EXPECTED_ABI_VERSION = 7;
+    public static final int EXPECTED_ABI_VERSION = 11;
     private static final long PERLIN_LAYER_SIZE = 56L;
 
     public static final int JOB_COMPLETE = 0;
@@ -52,9 +52,13 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle preparePerlinStack;
     private final MethodHandle evaluatePreparedPerlinStack;
     private final MethodHandle releasePreparedPerlinStack;
+    private final MethodHandle prepareSmearedPerlinStack;
     private final MethodHandle densityGraphCompile;
     private final MethodHandle densityGraphEvaluate;
     private final MethodHandle densityGraphEvaluateF32;
+    private final MethodHandle densityGraphEvaluateF32WithBeardifier;
+    private final MethodHandle beardifierContextCreate;
+    private final MethodHandle beardifierContextDestroy;
     private final MethodHandle densityGraphEvaluatePoints;
     private final MethodHandle densityGraphEvaluatePointsF32;
     private final MethodHandle densityGraphEvaluateMultiPointsF32;
@@ -108,6 +112,7 @@ public final class NativeRuntime implements AutoCloseable {
         private int permutationCapacity;
         private int outputCapacity;
         private MemorySegment layerDescriptors;
+        private MemorySegment layerFudgeYScales;
         private MemorySegment layerPermutations;
         private MemorySegment[] layerPermutationSegments;
         private byte[][] layerPermutationSources;
@@ -136,6 +141,9 @@ public final class NativeRuntime implements AutoCloseable {
             ensureCapacity(256, outputLength);
             if (layerCapacity < layerCount) {
                 layerDescriptors = arena.allocate(Math.multiplyExact((long) layerCount, PERLIN_LAYER_SIZE), 8);
+                layerFudgeYScales = arena.allocate(
+                        Math.multiplyExact((long) layerCount, ValueLayout.JAVA_DOUBLE.byteSize()),
+                        ValueLayout.JAVA_DOUBLE.byteAlignment());
                 layerPermutations = allocateBytes(arena, Math.multiplyExact(layerCount, 256));
                 layerPermutationSegments = new MemorySegment[layerCount];
                 layerPermutationSources = new byte[layerCount][];
@@ -169,6 +177,8 @@ public final class NativeRuntime implements AutoCloseable {
         private int inputCapacity, outputCapacity;
         private MemorySegment substanceInputs, substanceOutputs;
         private int substanceInputCapacity, substanceOutputCapacity;
+        private MemorySegment volumeOutputs;
+        private int volumeOutputCapacity;
         private MemorySegment statusKeys, statusValues, statusFound;
         private int statusCapacity;
         private MemorySegment pointX, pointY, pointZ, pointOutputF32, pointOutputF64;
@@ -230,6 +240,16 @@ public final class NativeRuntime implements AutoCloseable {
                 substanceOutputCapacity = next;
             }
             return new MemorySegment[] {substanceInputs, substanceOutputs};
+        }
+        private MemorySegment ensureVolumeOutputCapacity(int count) {
+            if (volumeOutputCapacity < count) {
+                int next = Math.max(256, volumeOutputCapacity);
+                while (next < count) next = Math.min(1_048_576, Math.multiplyExact(next, 2));
+                long bytes = Math.multiplyExact((long) next, ValueLayout.JAVA_LONG.byteSize());
+                volumeOutputs = arena.allocate(bytes, ValueLayout.JAVA_LONG.byteAlignment());
+                volumeOutputCapacity = next;
+            }
+            return volumeOutputs;
         }
         private MemorySegment[] ensureStatusCapacity(int count) {
             if (statusCapacity < count) {
@@ -346,7 +366,7 @@ public final class NativeRuntime implements AutoCloseable {
                           MethodHandle status, MethodHandle wait,
                           MethodHandle cancel, MethodHandle release,
                           MethodHandle preparePreparedStack, MethodHandle evaluatePreparedStack,
-                          MethodHandle releasePreparedStack,
+                          MethodHandle releasePreparedStack, MethodHandle prepareSmearedPerlinStack,
                           MethodHandle graphCompile, MethodHandle graphEvaluate, MethodHandle graphEvaluateF32,
                           MethodHandle graphEvaluatePoints, MethodHandle graphEvaluatePointsF32,
                           MethodHandle graphEvaluateMultiPointsF32, MethodHandle graphRelease,
@@ -360,7 +380,9 @@ public final class NativeRuntime implements AutoCloseable {
                           MethodHandle aquiferContextConfigureGlobalFluidPicker,
                           MethodHandle aquiferContextComputeFluidStatusPointsBatch,
                           MethodHandle aquiferContextComputeSubstanceVolumeF32,
-                          MethodHandle aquiferContextComputeDensityAndSubstanceVolumeF32) {
+                          MethodHandle aquiferContextComputeDensityAndSubstanceVolumeF32,
+                          MethodHandle graphEvaluateF32WithBeardifier,
+                          MethodHandle beardifierContextCreate, MethodHandle beardifierContextDestroy) {
         this.configureWorkers = configureWorkers;
         this.workerCount = workerCount;
         this.addF32 = add;
@@ -371,9 +393,13 @@ public final class NativeRuntime implements AutoCloseable {
         this.preparePerlinStack = preparePreparedStack;
         this.evaluatePreparedPerlinStack = evaluatePreparedStack;
         this.releasePreparedPerlinStack = releasePreparedStack;
+        this.prepareSmearedPerlinStack = prepareSmearedPerlinStack;
         this.densityGraphCompile = graphCompile;
         this.densityGraphEvaluate = graphEvaluate;
         this.densityGraphEvaluateF32 = graphEvaluateF32;
+        this.densityGraphEvaluateF32WithBeardifier = graphEvaluateF32WithBeardifier;
+        this.beardifierContextCreate = beardifierContextCreate;
+        this.beardifierContextDestroy = beardifierContextDestroy;
         this.densityGraphEvaluatePoints = graphEvaluatePoints;
         this.densityGraphEvaluatePointsF32 = graphEvaluatePointsF32;
         this.densityGraphEvaluateMultiPointsF32 = graphEvaluateMultiPointsF32;
@@ -472,6 +498,11 @@ public final class NativeRuntime implements AutoCloseable {
             MethodHandle releasePreparedStack = lookup.find("jpe_runtime_release_prepared_perlin_stack")
                     .map(symbol -> linker.downcallHandle(symbol,
                             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG)))
+                    .orElse(null);
+            MethodHandle prepareSmearedPreparedStack = lookup.find("jpe_runtime_prepare_smeared_perlin_stack")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_LONG,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)))
                     .orElse(null);
             if (preparePreparedStack == null || evaluatePreparedStack == null || releasePreparedStack == null) {
                 preparePreparedStack = null;
@@ -620,12 +651,30 @@ public final class NativeRuntime implements AutoCloseable {
                                     ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
                                     ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS)))
                     .orElse(null);
+            MethodHandle beardifierContextCreate = lookup.find("jpe_runtime_beardifier_context_create")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)))
+                    .orElse(null);
+            MethodHandle beardifierContextDestroy = lookup.find("jpe_runtime_beardifier_context_destroy")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG)))
+                    .orElse(null);
+            MethodHandle graphEvaluateF32WithBeardifier =
+                    lookup.find("jpe_runtime_density_graph_evaluate_f32_with_beardifier")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                                    ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)))
+                    .orElse(null);
             MethodHandle aquiferContextComputeDensityAndSubstanceVolumeF32 = lookup.find(
                     "jpe_runtime_aquifer_context_compute_density_and_substance_volume_f32")
                     .map(symbol -> linker.downcallHandle(symbol,
                             FunctionDescriptor.of(ValueLayout.JAVA_INT,
                                     ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
-                                    ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT,
+                                    ValueLayout.JAVA_LONG, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT,
                                     ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
                                     ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
                                     ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
@@ -657,7 +706,7 @@ public final class NativeRuntime implements AutoCloseable {
             int actualWorkers = (int) configureWorkers.invokeExact(requestedWorkers);
             if (actualWorkers < 1) throw new IllegalStateException("Unable to configure native workers: " + actualWorkers);
             return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, perlinStack, submit, submitStack, status, wait, cancel, release,
-                    preparePreparedStack, evaluatePreparedStack, releasePreparedStack,
+                    preparePreparedStack, evaluatePreparedStack, releasePreparedStack, prepareSmearedPreparedStack,
                     graphCompile, graphEvaluate, graphEvaluateF32, graphEvaluatePoints, graphEvaluatePointsF32,
                     graphEvaluateMultiPointsF32, graphRelease, aquiferGridCenters, aquiferNearestFour,
                     aquiferSubstanceBatch, aquiferStatusCacheCreate, aquiferStatusCacheDestroy,
@@ -666,7 +715,8 @@ public final class NativeRuntime implements AutoCloseable {
                     aquiferContextComputeFluidStatusBatch, aquiferContextConfigureGlobalFluidPicker,
                     aquiferContextComputeFluidStatusPointsBatch,
                     aquiferContextComputeSubstanceVolumeF32,
-                    aquiferContextComputeDensityAndSubstanceVolumeF32);
+                    aquiferContextComputeDensityAndSubstanceVolumeF32,
+                     graphEvaluateF32WithBeardifier, beardifierContextCreate, beardifierContextDestroy);
         } catch (Throwable failure) {
             throw new IllegalStateException("Unable to load JPE native runtime from " + absolutePath, failure);
         }
@@ -1096,7 +1146,7 @@ public final class NativeRuntime implements AutoCloseable {
             scratch = acquireAquiferScratch();
             MemorySegment[] pointBuffers = scratch.ensurePointCapacity(count);
             MemorySegment densityValues = pointBuffers[3];
-            MemorySegment outputValues = scratch.ensureSubstanceCapacity(count)[1];
+            MemorySegment outputValues = scratch.ensureVolumeOutputCapacity(count);
             MemorySegment expectedFingerprint = scratch.ensureContextWorldFingerprint();
             MemorySegment.copy(worldFingerprint, 0, expectedFingerprint,
                     ValueLayout.JAVA_BYTE, 0L, worldFingerprint.length);
@@ -1138,6 +1188,7 @@ public final class NativeRuntime implements AutoCloseable {
             byte[] worldFingerprint,
             long semanticFingerprint,
             long finalDensityGraphHandle,
+            long beardifierContextHandle,
             int skipSamplingAboveY,
             net.minecraft.world.level.levelgen.densityfunction.DensityVolume volume
     ) {
@@ -1148,6 +1199,7 @@ public final class NativeRuntime implements AutoCloseable {
         }
         if (contextHandle == 0L || !aquiferContextHandles.contains(contextHandle)
                 || finalDensityGraphHandle == 0L || !densityGraphHandles.containsKey(finalDensityGraphHandle)
+                || beardifierContextHandle == 0L
                 || worldFingerprint.length != 32 || semanticFingerprint == 0L) {
             throw new IllegalArgumentException("Invalid fused native density/Aquifer handles or fingerprint");
         }
@@ -1167,14 +1219,14 @@ public final class NativeRuntime implements AutoCloseable {
         try {
             ensureOpen();
             scratch = acquireAquiferScratch();
-            MemorySegment outputValues = scratch.ensureSubstanceCapacity(count)[1];
+            MemorySegment outputValues = scratch.ensureVolumeOutputCapacity(count);
             MemorySegment expectedFingerprint = scratch.ensureContextWorldFingerprint();
             MemorySegment.copy(worldFingerprint, 0, expectedFingerprint,
                     ValueLayout.JAVA_BYTE, 0L, worldFingerprint.length);
 
             int status = (int) aquiferContextComputeDensityAndSubstanceVolumeF32.invokeExact(
                     contextHandle, expectedFingerprint, semanticFingerprint, finalDensityGraphHandle,
-                    skipSamplingAboveY,
+                    beardifierContextHandle, skipSamplingAboveY,
                     volume.sizeX(), volume.sizeY(), volume.sizeZ(),
                     volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
                     volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ(),
@@ -1222,13 +1274,7 @@ public final class NativeRuntime implements AutoCloseable {
          */
         public long packedResult(int index) {
             ensureIndex(index);
-            long offset = (long) index * 12L;
-            int hasBlockState = values.get(ValueLayout.JAVA_INT, offset);
-            int blockStateToken = values.get(ValueLayout.JAVA_INT, offset + 4L);
-            int scheduleFluidUpdate = values.get(ValueLayout.JAVA_INT, offset + 8L);
-            return (blockStateToken & 0xffff_ffffL)
-                    | (hasBlockState != 0 ? (1L << 32) : 0L)
-                    | (scheduleFluidUpdate != 0 ? (1L << 33) : 0L);
+            return values.get(ValueLayout.JAVA_LONG, (long) index * Long.BYTES);
         }
 
         private void ensureIndex(int index) {
@@ -1694,6 +1740,80 @@ public final class NativeRuntime implements AutoCloseable {
                 && releasePreparedPerlinStack != null;
     }
 
+    /** True when the native runtime supports prepared SmearedPerlin octave stacks. */
+    public boolean supportsPreparedSmearedPerlinStack() {
+        return prepareSmearedPerlinStack != null && releasePreparedPerlinStack != null;
+    }
+
+    /**
+     * Copies SmearedPerlin octave descriptors, fully baking their outer NoiseFunction
+     * scales while preserving each octave's independent fudgeYScale.
+     */
+    public long prepareSmearedPerlinStack(
+            Object[] sourceLayers, double[] fudgeYScales, double xzScale, double yScale
+    ) {
+        if (!supportsPreparedSmearedPerlinStack()) return 0L;
+        lifecycle.readLock().lock();
+        PerlinScratch scratch = null;
+        try {
+            ensureOpen();
+            Objects.requireNonNull(sourceLayers, "sourceLayers");
+            Objects.requireNonNull(fudgeYScales, "fudgeYScales");
+            if (sourceLayers.length == 0 || sourceLayers.length > 64
+                    || fudgeYScales.length != sourceLayers.length
+                    || !Double.isFinite(xzScale) || !Double.isFinite(yScale)) {
+                throw new IllegalArgumentException("Invalid SmearedPerlin stack descriptor");
+            }
+            scratch = acquirePerlinScratch();
+            scratch.ensureStackCapacity(sourceLayers.length, 1);
+            writeSmearedPerlinLayers(sourceLayers, fudgeYScales, xzScale, yScale, scratch);
+            long handle = (long) prepareSmearedPerlinStack.invokeExact(
+                    scratch.layerDescriptors, scratch.layerFudgeYScales, sourceLayers.length);
+            if (handle != 0L) preparedStackHandles.add(handle);
+            return handle;
+        } catch (Throwable failure) {
+            throw rethrow("Unable to prepare native SmearedPerlin stack", failure);
+        } finally {
+            if (scratch != null) scratch.release();
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    private static void writeSmearedPerlinLayers(
+            Object[] sourceLayers, double[] fudgeYScales,
+            double xzScale, double yScale, PerlinScratch scratch
+    ) {
+        for (int i = 0; i < sourceLayers.length; ++i) {
+            NoiseStackLayerAccessor layer = (NoiseStackLayerAccessor)
+                    Objects.requireNonNull(sourceLayers[i], "layer");
+            Noise layerNoise = layer.jpe$noise();
+            if (!(layerNoise instanceof dev.jpe.optimizer.mixin.GradientNoiseAccessor noise)) {
+                throw new IllegalArgumentException("SmearedPerlin layer does not expose GradientNoise data");
+            }
+            byte[] permutation = noise.jpe$perms();
+            double fudge = fudgeYScales[i];
+            if (permutation == null || permutation.length != 256
+                    || !Double.isFinite(fudge) || fudge <= 0.0) {
+                throw new IllegalArgumentException("Invalid SmearedPerlin permutation or fudgeYScale");
+            }
+            if (scratch.layerPermutationSources[i] != permutation) {
+                MemorySegment.copy(permutation, 0, scratch.layerPermutations, ValueLayout.JAVA_BYTE,
+                        (long) i * 256L, 256);
+                scratch.layerPermutationSources[i] = permutation;
+            }
+            double frequency = layer.jpe$frequency();
+            long base = Math.multiplyExact((long) i, PERLIN_LAYER_SIZE);
+            scratch.layerDescriptors.set(ValueLayout.ADDRESS, base, scratch.layerPermutationSegments[i]);
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 8L, noise.jpe$offsetX());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 16L, noise.jpe$offsetY());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 24L, noise.jpe$offsetZ());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 32L, xzScale * frequency);
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 40L, yScale * frequency);
+            scratch.layerDescriptors.set(ValueLayout.JAVA_FLOAT, base + 48L, layer.jpe$amplitude());
+            scratch.layerFudgeYScales.set(ValueLayout.JAVA_DOUBLE, (long) i * 8L, fudge);
+        }
+    }
+
     /** Copies a NoiseStack's immutable octave data into C++ exactly once. */
     public long preparePerlinStack(Object[] sourceLayers) {
         if (!supportsPreparedPerlinStack()) return 0L;
@@ -2096,6 +2216,14 @@ public final class NativeRuntime implements AutoCloseable {
             return new DensityNode(7, -1, -1, Float.floatToRawIntBits(amplitude),
                     (double) preparedHandle, xzScale, yScale);
         }
+        /** Minecraft 26.3 ShiftB samples the same noise with X/Z transposed and Y fixed at zero. */
+        public static DensityNode shiftBPerlinStack(long preparedHandle) {
+            if (preparedHandle <= 0 || preparedHandle > 9_007_199_254_740_991L) {
+                throw new IllegalArgumentException("Invalid prepared ShiftB Perlin stack");
+            }
+            return new DensityNode(33, -1, -1, Float.floatToRawIntBits(4.0F),
+                    (double) preparedHandle, 0.25, 0.25);
+        }
         public static DensityNode perlinStackWarped(long preparedHandle, double xzScale, double yScale,
                                                      int shiftX, int shiftY, int shiftZ) {
             if (preparedHandle <= 0 || preparedHandle > 9_007_199_254_740_991L
@@ -2111,6 +2239,27 @@ public final class NativeRuntime implements AutoCloseable {
                 throw new IllegalArgumentException("Invalid density slice parameters");
             }
             return new DensityNode(32, input, axis, 0, coordinate, 0.0, 0.0);
+        }
+
+        /** Finds the highest positive-density sample in a column, scanning down by stepSize. */
+        public static DensityNode findTopSurface(int density, int upperBound, int lowerBound, int stepSize) {
+            if (density < 0 || upperBound < 0 || stepSize <= 0) {
+                throw new IllegalArgumentException("Invalid find-top-surface parameters");
+            }
+            return new DensityNode(34, density, upperBound, lowerBound, stepSize, 0.0, 0.0);
+        }
+
+        /** Evaluates one immutable Minecraft SmearedPerlin octave stack. */
+        public static DensityNode smearedPerlinStack(long preparedHandle) {
+            if (preparedHandle <= 0L || preparedHandle > 9_007_199_254_740_991L) {
+                throw new IllegalArgumentException("Invalid prepared SmearedPerlin handle");
+            }
+            return new DensityNode(35, -1, -1, 0, (double) preparedHandle, 0.0, 0.0);
+        }
+
+        /** Reads the current chunk's Beardifier context at density graph evaluation time. */
+        public static DensityNode beardifier() {
+            return new DensityNode(36, -1, -1, 0, 0.0, 0.0, 0.0);
         }
     }
 
@@ -2387,6 +2536,122 @@ public final class NativeRuntime implements AutoCloseable {
                 MemorySegment.copy(nativeOutput, ValueLayout.JAVA_FLOAT, 0L, output, 0, Math.toIntExact(length));
             } catch (Throwable failure) {
                 throw rethrow("Unable to evaluate native f32 density graph", failure);
+            }
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+    }
+
+
+    /** Creates an immutable, copied per-chunk Minecraft 26.3 Beardifier context. */
+    public long createBeardifierContext(
+            int[] rigidPieces, int[] junctions, int[] affectedBox, float[] beardKernel
+    ) {
+        Objects.requireNonNull(rigidPieces, "rigidPieces");
+        Objects.requireNonNull(junctions, "junctions");
+        if (beardifierContextCreate == null || beardifierContextDestroy == null
+                || rigidPieces.length % 8 != 0 || junctions.length % 3 != 0
+                || (affectedBox != null && affectedBox.length != 6)) {
+            throw new IllegalArgumentException("Invalid native Beardifier context inputs");
+        }
+        if ((rigidPieces.length != 0 || junctions.length != 0)
+                && (beardKernel == null || beardKernel.length != 13_824)) {
+            throw new IllegalArgumentException("Non-empty Beardifier requires its 13,824-value vanilla kernel");
+        }
+        lifecycle.readLock().lock();
+        try {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment pieces = rigidPieces.length == 0 ? MemorySegment.NULL
+                        : arena.allocate(Math.multiplyExact((long) rigidPieces.length, 4L), 4);
+                for (int i = 0; i < rigidPieces.length; i++) {
+                    pieces.set(ValueLayout.JAVA_INT, (long) i * 4L, rigidPieces[i]);
+                }
+                MemorySegment junctionSegments = junctions.length == 0 ? MemorySegment.NULL
+                        : arena.allocate(Math.multiplyExact((long) junctions.length, 4L), 4);
+                for (int i = 0; i < junctions.length; i++) {
+                    junctionSegments.set(ValueLayout.JAVA_INT, (long) i * 4L, junctions[i]);
+                }
+                MemorySegment kernel = beardKernel == null ? MemorySegment.NULL
+                        : arena.allocate(Math.multiplyExact((long) beardKernel.length, 4L), 4);
+                if (beardKernel != null) {
+                    MemorySegment.copy(beardKernel, 0, kernel, ValueLayout.JAVA_FLOAT, 0, beardKernel.length);
+                }
+                MemorySegment info = arena.allocate(80L, 8);
+                info.set(ValueLayout.ADDRESS, 0L, pieces);
+                info.set(ValueLayout.JAVA_INT, 8L, rigidPieces.length / 8);
+                info.set(ValueLayout.JAVA_INT, 12L, 0);
+                info.set(ValueLayout.ADDRESS, 16L, junctionSegments);
+                info.set(ValueLayout.JAVA_INT, 24L, junctions.length / 3);
+                info.set(ValueLayout.JAVA_INT, 28L, affectedBox == null ? 0 : 1);
+                info.set(ValueLayout.ADDRESS, 32L, kernel);
+                info.set(ValueLayout.JAVA_INT, 40L, beardKernel == null ? 0 : beardKernel.length);
+                info.set(ValueLayout.JAVA_INT, 44L, 0);
+                for (int i = 0; i < 6; i++) {
+                    info.set(ValueLayout.JAVA_INT, 48L + (long) i * 4L,
+                            affectedBox == null ? 0 : affectedBox[i]);
+                }
+                info.set(ValueLayout.JAVA_INT, 72L, 0);
+                info.set(ValueLayout.JAVA_INT, 76L, 0);
+                long handle = (long) beardifierContextCreate.invokeExact(info);
+                if (handle == 0L) throw new IllegalStateException("Native Beardifier context creation was rejected");
+                return handle;
+            } catch (Throwable failure) {
+                throw rethrow("Unable to create native Beardifier context", failure);
+            }
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    public void destroyBeardifierContext(long handle) {
+        if (handle == 0L) return;
+        if (beardifierContextDestroy == null) {
+            throw new IllegalStateException("Native Beardifier context destroy ABI is unavailable");
+        }
+        lifecycle.readLock().lock();
+        try {
+            ensureOpen();
+            int status = (int) beardifierContextDestroy.invokeExact(handle);
+            checkStatus(status, "beardifier-context-destroy");
+        } catch (Throwable failure) {
+            throw rethrow("Unable to destroy native Beardifier context", failure);
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    /** Evaluates a density volume with an explicit per-chunk Beardifier context. */
+    public void evaluateDensityGraphF32WithBeardifier(
+            long graphHandle, long beardifierContextHandle,
+            int sizeX, int sizeY, int sizeZ,
+            int minX, int minY, int minZ,
+            int stepX, int stepY, int stepZ, float[] output
+    ) {
+        if (densityGraphEvaluateF32WithBeardifier == null) {
+            throw new IllegalStateException("Native Beardifier density graph ABI is unavailable");
+        }
+        Objects.requireNonNull(output, "output");
+        long length = Math.multiplyExact(Math.multiplyExact((long) sizeX, sizeY), sizeZ);
+        if (graphHandle == 0L || beardifierContextHandle == 0L
+                || sizeX <= 0 || sizeY <= 0 || sizeZ <= 0
+                || stepX == 0 || stepY == 0 || stepZ == 0
+                || length > output.length || length > 1_048_576L) {
+            throw new IllegalArgumentException("Invalid native Beardifier density graph volume");
+        }
+        lifecycle.readLock().lock();
+        try {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment nativeOutput = arena.allocate(Math.multiplyExact(length, 4L), 4);
+                int status = (int) densityGraphEvaluateF32WithBeardifier.invokeExact(
+                        graphHandle, beardifierContextHandle,
+                        sizeX, sizeY, sizeZ, minX, minY, minZ,
+                        stepX, stepY, stepZ, nativeOutput, length);
+                checkStatus(status, "density-graph-evaluate-f32-with-beardifier");
+                MemorySegment.copy(nativeOutput, ValueLayout.JAVA_FLOAT, 0L, output, 0, Math.toIntExact(length));
+            } catch (Throwable failure) {
+                throw rethrow("Unable to evaluate native density graph with Beardifier", failure);
             }
         } finally {
             lifecycle.readLock().unlock();

@@ -129,8 +129,25 @@ public abstract class NoiseBasedChunkGeneratorMixin {
         long timingSampleCount = 0L;
         long aquiferCallsExecuted = 0L;
         long aquiferCallsSkipped = 0L;
+        long nativeBeardifierContextHandle = 0L;
 
         try {
+            boolean nativeBeardifierRequired = Boolean.getBoolean("jpe.nativeDensityGraphEnabled")
+                    || nativeAquiferVolumeEnabled;
+            if (nativeBeardifierRequired) {
+                try {
+                    nativeBeardifierContextHandle =
+                            NativeDensityGraphCompiler.prepareBeardifierContext(noiseChunk);
+                } catch (RuntimeException | LinkageError failure) {
+                    if (Boolean.getBoolean("jpe.nativeDensityGraphStrict") || nativeAquiferVolumeStrict) {
+                        throw new IllegalStateException(
+                                "Strict native worldgen requires a complete per-chunk Beardifier context", failure);
+                    }
+                    JPEOptimizer.LOGGER.warn(
+                            "Native Beardifier context unavailable; this chunk cannot use the native density graph: {}",
+                            failure.toString());
+                }
+            }
             boolean nativeAquiferFusedVerify = Boolean.getBoolean("jpe.nativeAquiferFusedVerify");
             if (nativeAquiferFusedVerify
                     && (!Boolean.getBoolean("jpe.nativeDensityGraphVerify")
@@ -141,9 +158,11 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                 throw new IllegalStateException(
                         "Fused Aquifer verification requires native density/Aquifer strict parity and the fused ABI");
             }
+            // Strict controls failure/fallback policy, not the cost of the independent
+            // vanilla oracle. Keep full-volume parity opt-in so production generation
+            // does not recompute every Aquifer voxel in Java.
             boolean nativeAquiferVolumeVerify = Boolean.getBoolean("jpe.nativeAquiferSubstanceVerify")
                     || Boolean.getBoolean("jpe.nativeDensityGraphVerify")
-                    || nativeAquiferVolumeStrict
                     || nativeAquiferFusedVerify;
             NativeRuntime.AquiferSubstanceVolumeResult precomputedNativeVolume = null;
 
@@ -161,7 +180,8 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                     }
                     precomputedNativeVolume =
                             nativeAquiferPrepared.computeDensityAndSubstanceVolumeF32(
-                                    noiseAquifer, finalDensityGraphHandle, volume);
+                                    noiseAquifer, finalDensityGraphHandle,
+                                    nativeBeardifierContextHandle, volume);
                 } catch (RuntimeException | LinkageError failure) {
                     if (nativeAquiferVolumeStrict) {
                         throw new IllegalStateException(
@@ -177,7 +197,8 @@ public abstract class NoiseBasedChunkGeneratorMixin {
             ScopedDensityBuffer sampledDensity = null;
             if (precomputedNativeVolume == null || nativeAquiferVolumeVerify) {
                 sampledDensity = NativeDensityGraphCompiler.trySampleVolume(
-                        finalDensityFunction, finalDensity, noiseChunk, volume);
+                        finalDensityFunction, finalDensity, noiseChunk, volume,
+                        nativeBeardifierContextHandle);
                 if (sampledDensity == null) {
                     if (Boolean.getBoolean("jpe.nativeDensityGraphStrict")) {
                         throw new IllegalStateException(
@@ -207,7 +228,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
             try (NativeRuntime.AquiferSubstanceVolumeResult nativeAquiferResults = computedNativeVolume) {
             boolean nativeVolumeAccepted = nativeAquiferResults != null;
             if (nativeVolumeAccepted && (Boolean.getBoolean("jpe.nativeAquiferSubstanceVerify")
-                    || nativeAquiferFusedVerify || nativeAquiferVolumeStrict)) {
+                    || nativeAquiferFusedVerify)) {
                 String mismatch = jpe$verifyNativeAquiferVolume(
                         aquifer, nativeAquiferPrepared, nativeAquiferResults, volume, densityBuffer);
                 if (mismatch != null) {
@@ -226,7 +247,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
             if (nativeVolumeAccepted
                     && REPORTED_NATIVE_AQUIFER_VOLUME_SUCCESS.compareAndSet(false, true)) {
                 boolean verified = Boolean.getBoolean("jpe.nativeAquiferSubstanceVerify")
-                        || nativeAquiferFusedVerify || nativeAquiferVolumeStrict;
+                        || nativeAquiferFusedVerify;
                 JPEOptimizer.LOGGER.info(
                         "JPE_NATIVE_AQUIFER_SUBSTANCE_VOLUME voxels={} verified={} strict={}",
                         nativeAquiferResults.size(), verified, nativeAquiferVolumeStrict);
@@ -331,11 +352,25 @@ public abstract class NoiseBasedChunkGeneratorMixin {
             }
             }
             }
+        } catch (RuntimeException | Error failure) {
+            JPEOptimizer.LOGGER.error(
+                    "JPE chunk terrain fill failed for chunk {} (nativeDensityStrict={}, nativeAquiferStrict={})",
+                    chunk.getPos(),
+                    Boolean.getBoolean("jpe.nativeDensityGraphStrict"),
+                    nativeAquiferVolumeStrict,
+                    failure);
+            throw failure;
         } finally {
             try {
                 if (nativeAquiferPrepared != null) nativeAquiferPrepared.close();
             } finally {
-                if (profile) WorldgenMetrics.endDoFill();
+                try {
+                    if (nativeBeardifierContextHandle != 0L) {
+                        NativeDensityGraphCompiler.releaseBeardifierContext(nativeBeardifierContextHandle);
+                    }
+                } finally {
+                    if (profile) WorldgenMetrics.endDoFill();
+                }
             }
         }
 

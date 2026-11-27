@@ -1,4 +1,5 @@
 #include "jpe_native_api.h"
+#include "jpe_beardifier_context.hpp"
 
 #include <algorithm>
 #include <array>
@@ -18,6 +19,11 @@ extern "C" uint64_t jpe_cpp_perlin_stack_retain(uint64_t) noexcept;
 extern "C" int32_t jpe_cpp_perlin_stack_release(uint64_t) noexcept;
 extern "C" int32_t jpe_cpp_perlin_stack_evaluate(
     uint64_t, double, double, float,
+    uint32_t, uint32_t, uint32_t,
+    int32_t, int32_t, int32_t, int32_t, int32_t, int32_t,
+    float*, uint64_t, uint32_t) noexcept;
+extern "C" int32_t jpe_cpp_smeared_perlin_stack_evaluate(
+    uint64_t,
     uint32_t, uint32_t, uint32_t,
     int32_t, int32_t, int32_t, int32_t, int32_t, int32_t,
     float*, uint64_t, uint32_t) noexcept;
@@ -47,6 +53,21 @@ constexpr uint32_t kSqrt = 16, kHalfNegative = 17, kQuarterNegative = 18;
 constexpr uint32_t kReciprocal = 19, kSign = 20, kPow = 21, kClamp = 22;
 constexpr uint32_t kSqueeze = 23, kLerp = 24, kGradient = 25, kInterpolated = 26, kRangeChoice = 27;
 constexpr uint32_t kRound = 28, kLog = 29, kDistanceToPoint = 30, kPerlinStackWarp = 31, kSlice = 32;
+constexpr uint32_t kShiftBPerlinStack = 33;
+constexpr uint32_t kFindTopSurface = 34;
+constexpr uint32_t kSmearedPerlinStack = 35;
+constexpr uint32_t kBeardifier = 36;
+
+struct EvaluationPlan {
+    // Register and coordinate requirements for one actual evaluation lattice.
+    std::vector<uint32_t> node_slots;
+    std::vector<uint32_t> ordered_nodes;
+    uint32_t slot_count = 0;
+    bool has_perlin = false;
+    bool needs_x_coordinates = false;
+    bool needs_y_coordinates = false;
+    bool needs_z_coordinates = false;
+};
 
 struct CompiledGraph {
     uint64_t fingerprint = 0;
@@ -55,13 +76,10 @@ struct CompiledGraph {
     uint32_t references = 1;
     std::vector<JpeDensityNode> nodes;
     std::vector<uint64_t> prepared_handles;
-    // Immutable liveness plan, computed once at graph compile time.
-    std::vector<uint32_t> node_slots;
-    uint32_t slot_count = 0;
-    bool has_perlin = false;
-    bool needs_x_coordinates = false;
-    bool needs_y_coordinates = false;
-    bool needs_z_coordinates = false;
+    // Recursive children of INTERPOLATED/SLICE/FIND_TOP_SURFACE execute on
+    // their own lattices, so each needs its own liveness/register plan.
+    std::unordered_map<uint32_t, EvaluationPlan> evaluation_plans;
+    bool has_beardifier = false;
 
     ~CompiledGraph() {
         for (uint64_t handle : prepared_handles) {
@@ -228,6 +246,21 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                     || !std::isfinite(amplitude)) return false;
                 break;
             }
+            case kShiftBPerlinStack: {
+                const double handle = node.immediate;
+                if (node.input_a != kNoInput || node.input_b != kNoInput
+                    || node.reserved != 0x40800000U
+                    || !std::isfinite(handle) || handle < 1.0 || handle > 9007199254740991.0
+                    || std::floor(handle) != handle || node.auxiliary != 0.25 || node.tertiary != 0.25) return false;
+                break;
+            }
+            case kSmearedPerlinStack: {
+                const double handle = node.immediate;
+                if (node.input_a != kNoInput || node.input_b != kNoInput || node.reserved != 0
+                    || !std::isfinite(handle) || handle < 1.0 || handle > 9007199254740991.0
+                    || std::floor(handle) != handle || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
+                break;
+            }
             case kPerlinStackWarp: {
                 const double handle = node.immediate;
                 if (node.input_a >= i || node.input_b >= i || node.reserved >= i
@@ -240,6 +273,17 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                 if (node.input_a >= i || node.input_b > 2 || node.reserved != 0
                     || !std::isfinite(node.immediate) || std::floor(node.immediate) != node.immediate
                     || node.immediate < static_cast<double>(INT32_MIN)
+                    || node.immediate > static_cast<double>(INT32_MAX)
+                    || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
+                break;
+            case kBeardifier:
+                if (node.input_a != kNoInput || node.input_b != kNoInput || node.reserved != 0
+                    || node.immediate != 0.0 || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
+                break;
+            case kFindTopSurface:
+                if (node.input_a >= i || node.input_b >= i
+                    || !std::isfinite(node.immediate) || node.immediate < 1.0
+                    || std::floor(node.immediate) != node.immediate
                     || node.immediate > static_cast<double>(INT32_MAX)
                     || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
                 break;
@@ -297,135 +341,169 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
         graph->root = root_node;
         graph->nodes.assign(nodes, nodes + node_count);
 
-        // Only nodes reachable from the requested root can affect the output.
-        // Mark the DAG backwards once so dead branches never retain Perlin
-        // handles, allocate scratch registers, or execute per voxel.
-        std::vector<uint8_t> reachable(node_count, 0);
-        reachable[root_node] = 1;
-        for (uint32_t cursor = root_node + 1; cursor-- > 0;) {
-            if (reachable[cursor] == 0) continue;
-            const JpeDensityNode& node = graph->nodes[cursor];
-            const auto mark = [&](uint32_t input) { reachable[input] = 1; };
-            switch (node.opcode) {
-                case JPE_DENSITY_ADD: case JPE_DENSITY_MUL:
-                case kSub: case kDiv: case kMin: case kMax: case kPow:
-                    mark(node.input_a); mark(node.input_b); break;
-                case kAbs: case kNegate: case kSquare: case kCube: case kSqrt:
-                case kHalfNegative: case kQuarterNegative: case kReciprocal: case kSign:
-                case kClamp: case kSqueeze: case kInterpolated: case kLog:
-                    mark(node.input_a); break;
-                case kLerp: case kRangeChoice:
-                    mark(node.input_a); mark(node.input_b); mark(node.reserved); break;
-                case kRound:
-                    mark(node.input_a); mark(node.input_b); break;
-                case kPerlinStackWarp:
-                    mark(node.input_a); mark(node.input_b); mark(node.reserved); break;
-                case kSlice:
-                    mark(node.input_a); break;
-                default:
-                    break;
+        // Build one liveness/register plan per independently evaluated subgraph.
+        // Recursive operators sample child graphs on a different lattice. Their
+        // children must not be evaluated over this invocation's full target volume.
+        std::vector<uint32_t> pending_roots{root_node};
+        std::vector<uint8_t> planned_roots(node_count, 0);
+        std::vector<uint8_t> reachable_union(node_count, 0);
+
+        while (!pending_roots.empty()) {
+            const uint32_t plan_root = pending_roots.back();
+            pending_roots.pop_back();
+            if (planned_roots[plan_root] != 0) continue;
+            planned_roots[plan_root] = 1;
+
+            std::vector<uint8_t> reachable(node_count, 0);
+            reachable[plan_root] = 1;
+            for (uint32_t cursor = plan_root + 1; cursor-- > 0;) {
+                if (reachable[cursor] == 0) continue;
+                const JpeDensityNode& node = graph->nodes[cursor];
+                const auto mark = [&](uint32_t input) { reachable[input] = 1; };
+                const auto recurse = [&](uint32_t input) { pending_roots.push_back(input); };
+                switch (node.opcode) {
+                    case JPE_DENSITY_ADD: case JPE_DENSITY_MUL:
+                    case kSub: case kDiv: case kMin: case kMax: case kPow:
+                        mark(node.input_a); mark(node.input_b); break;
+                    case kAbs: case kNegate: case kSquare: case kCube: case kSqrt:
+                    case kHalfNegative: case kQuarterNegative: case kReciprocal: case kSign:
+                    case kClamp: case kSqueeze: case kLog:
+                        mark(node.input_a); break;
+                    case kLerp: case kRangeChoice:
+                        mark(node.input_a); mark(node.input_b); mark(node.reserved); break;
+                    case kRound:
+                        mark(node.input_a); mark(node.input_b); break;
+                    case kPerlinStackWarp:
+                        mark(node.input_a); mark(node.input_b); mark(node.reserved); break;
+                    case kInterpolated:
+                    case kSlice:
+                        recurse(node.input_a); break;
+                    case kFindTopSurface:
+                        recurse(node.input_a); recurse(node.input_b); break;
+                    default:
+                        break;
+                }
             }
+
+            EvaluationPlan plan;
+            for (uint32_t i = 0; i <= plan_root; ++i) {
+                if (reachable[i] == 0) continue;
+                reachable_union[i] = 1;
+                plan.ordered_nodes.push_back(i);
+                switch (graph->nodes[i].opcode) {
+                    case JPE_DENSITY_X: plan.needs_x_coordinates = true; break;
+                    case JPE_DENSITY_Y: plan.needs_y_coordinates = true; break;
+                    case JPE_DENSITY_Z: plan.needs_z_coordinates = true; break;
+                    case kDistanceToPoint:
+                        plan.needs_x_coordinates = true;
+                        plan.needs_y_coordinates = true;
+                        plan.needs_z_coordinates = true;
+                        break;
+                    case kGradient:
+                        if (graph->nodes[i].input_a == 0) plan.needs_x_coordinates = true;
+                        else if (graph->nodes[i].input_a == 1) plan.needs_y_coordinates = true;
+                        else plan.needs_z_coordinates = true;
+                        break;
+                    case kInterpolated:
+                    case kBeardifier:
+                        plan.needs_x_coordinates = true;
+                        plan.needs_y_coordinates = true;
+                        plan.needs_z_coordinates = true;
+                        if (graph->nodes[i].opcode == kBeardifier) graph->has_beardifier = true;
+                        break;
+                    case kFindTopSurface:
+                        plan.needs_x_coordinates = true;
+                        plan.needs_z_coordinates = true;
+                        break;
+                    case kSmearedPerlinStack:
+                        plan.needs_x_coordinates = true;
+                        plan.needs_y_coordinates = true;
+                        plan.needs_z_coordinates = true;
+                        plan.has_perlin = true;
+                        break;
+                    case kPerlinStack: case kPerlinStackWarp: case kShiftBPerlinStack:
+                        plan.has_perlin = true;
+                        break;
+                    default:
+                        break;
+                }
+            }
+
+            // Only same-lattice edges participate in this invocation's register
+            // liveness. Recursive child operands have a separate register frame.
+            std::vector<uint32_t> consumers(node_count, 0);
+            for (uint32_t i = 0; i <= plan_root; ++i) {
+                if (reachable[i] == 0) continue;
+                const auto& node = graph->nodes[i];
+                if (node.opcode == JPE_DENSITY_ADD || node.opcode == JPE_DENSITY_MUL
+                    || node.opcode == kSub || node.opcode == kDiv || node.opcode == kMin
+                    || node.opcode == kMax || node.opcode == kPow) {
+                    ++consumers[node.input_a]; ++consumers[node.input_b];
+                } else if ((node.opcode >= kAbs && node.opcode <= kSign)
+                    || node.opcode == kClamp || node.opcode == kSqueeze || node.opcode == kLog) {
+                    ++consumers[node.input_a];
+                } else if (node.opcode == kLerp || node.opcode == kRangeChoice) {
+                    ++consumers[node.input_a]; ++consumers[node.input_b]; ++consumers[node.reserved];
+                } else if (node.opcode == kRound) {
+                    ++consumers[node.input_a]; ++consumers[node.input_b];
+                } else if (node.opcode == kPerlinStackWarp) {
+                    ++consumers[node.input_a]; ++consumers[node.input_b]; ++consumers[node.reserved];
+                }
+            }
+
+            plan.node_slots.resize(node_count, kNoInput);
+            std::vector<uint32_t> free_slots;
+            for (uint32_t i = 0; i <= plan_root; ++i) {
+                if (reachable[i] == 0) continue;
+                uint32_t slot;
+                if (free_slots.empty()) slot = plan.slot_count++;
+                else { slot = free_slots.back(); free_slots.pop_back(); }
+                plan.node_slots[i] = slot;
+
+                const auto release_input = [&](uint32_t input) {
+                    if (input != plan_root && --consumers[input] == 0) {
+                        free_slots.push_back(plan.node_slots[input]);
+                    }
+                };
+                const auto& node = graph->nodes[i];
+                if (node.opcode == JPE_DENSITY_ADD || node.opcode == JPE_DENSITY_MUL
+                    || node.opcode == kSub || node.opcode == kDiv || node.opcode == kMin
+                    || node.opcode == kMax || node.opcode == kPow) {
+                    release_input(node.input_a); release_input(node.input_b);
+                } else if ((node.opcode >= kAbs && node.opcode <= kSign)
+                    || node.opcode == kClamp || node.opcode == kSqueeze || node.opcode == kLog) {
+                    release_input(node.input_a);
+                } else if (node.opcode == kLerp || node.opcode == kRangeChoice) {
+                    release_input(node.input_a);
+                    release_input(node.input_b);
+                    release_input(node.reserved);
+                } else if (node.opcode == kRound) {
+                    release_input(node.input_a);
+                    release_input(node.input_b);
+                } else if (node.opcode == kPerlinStackWarp) {
+                    release_input(node.input_a);
+                    release_input(node.input_b);
+                    release_input(node.reserved);
+                }
+                if (i != plan_root && consumers[i] == 0) free_slots.push_back(slot);
+            }
+            graph->evaluation_plans.emplace(plan_root, std::move(plan));
         }
 
-        for (uint32_t i = 0; i <= root_node; ++i) {
-            if (reachable[i] == 0) continue;
-            switch (graph->nodes[i].opcode) {
-                case JPE_DENSITY_X: graph->needs_x_coordinates = true; break;
-                case JPE_DENSITY_Y: graph->needs_y_coordinates = true; break;
-                case JPE_DENSITY_Z: graph->needs_z_coordinates = true; break;
-                case kDistanceToPoint:
-                    graph->needs_x_coordinates = true;
-                    graph->needs_y_coordinates = true;
-                    graph->needs_z_coordinates = true;
-                    break;
-                case kGradient:
-                    if (graph->nodes[i].input_a == 0) graph->needs_x_coordinates = true;
-                    else if (graph->nodes[i].input_a == 1) graph->needs_y_coordinates = true;
-                    else graph->needs_z_coordinates = true;
-                    break;
-                case kInterpolated:
-                    graph->needs_x_coordinates = true;
-                    graph->needs_y_coordinates = true;
-                    graph->needs_z_coordinates = true;
-                    break;
-                default: break;
-            }
-        }
-
+        // Retain each prepared Perlin stack once per graph, even when it is
+        // reachable only through a separately evaluated recursive subgraph.
         graph->prepared_handles.assign(node_count, 0);
         for (uint32_t i = 0; i < node_count; ++i) {
-            if (reachable[i] == 0
-                || (nodes[i].opcode != kPerlinStack && nodes[i].opcode != kPerlinStackWarp)) continue;
+            if (reachable_union[i] == 0
+                || (nodes[i].opcode != kPerlinStack && nodes[i].opcode != kPerlinStackWarp
+                    && nodes[i].opcode != kShiftBPerlinStack
+                    && nodes[i].opcode != kSmearedPerlinStack)) continue;
             const uint64_t source_handle = static_cast<uint64_t>(nodes[i].immediate);
             const uint64_t retained = jpe_cpp_perlin_stack_retain(source_handle);
             if (retained == 0) return 0;
             graph->prepared_handles[i] = retained;
-            graph->has_perlin = true;
         }
 
-        // Build a deterministic register-allocation schedule once. Evaluation
-        // then needs no per-node liveness scan or free-list manipulation.
-        std::vector<uint32_t> consumers(node_count, 0);
-        for (uint32_t i = 0; i < node_count; ++i) {
-            if (reachable[i] == 0) continue;
-            const auto& node = graph->nodes[i];
-            if (node.opcode == JPE_DENSITY_ADD || node.opcode == JPE_DENSITY_MUL
-                || node.opcode == kSub || node.opcode == kDiv || node.opcode == kMin
-                || node.opcode == kMax || node.opcode == kPow) {
-                ++consumers[node.input_a]; ++consumers[node.input_b];
-            } else if ((node.opcode >= kAbs && node.opcode <= kSign)
-                || node.opcode == kClamp || node.opcode == kSqueeze || node.opcode == kInterpolated || node.opcode == kLog) {
-                ++consumers[node.input_a];
-            } else if (node.opcode == kLerp || node.opcode == kRangeChoice) {
-                ++consumers[node.input_a]; ++consumers[node.input_b]; ++consumers[node.reserved];
-            } else if (node.opcode == kRound) {
-                ++consumers[node.input_a]; ++consumers[node.input_b];
-            } else if (node.opcode == kPerlinStackWarp) {
-                ++consumers[node.input_a]; ++consumers[node.input_b]; ++consumers[node.reserved];
-            } else if (node.opcode == kSlice) {
-                ++consumers[node.input_a];
-            }
-        }
-        graph->node_slots.resize(node_count, kNoInput);
-        std::vector<uint32_t> free_slots;
-        for (uint32_t i = 0; i < node_count; ++i) {
-            if (reachable[i] == 0) {
-                graph->node_slots[i] = kNoInput;
-                continue;
-            }
-            uint32_t slot;
-            if (free_slots.empty()) slot = graph->slot_count++;
-            else { slot = free_slots.back(); free_slots.pop_back(); }
-            graph->node_slots[i] = slot;
-            const auto release_input = [&](uint32_t input) {
-                if (input != root_node && --consumers[input] == 0) {
-                    free_slots.push_back(graph->node_slots[input]);
-                }
-            };
-            const auto& node = graph->nodes[i];
-            if (node.opcode == JPE_DENSITY_ADD || node.opcode == JPE_DENSITY_MUL
-                || node.opcode == kSub || node.opcode == kDiv || node.opcode == kMin
-                || node.opcode == kMax || node.opcode == kPow) {
-                release_input(node.input_a); release_input(node.input_b);
-            } else if ((node.opcode >= kAbs && node.opcode <= kSign)
-                || node.opcode == kClamp || node.opcode == kSqueeze || node.opcode == kInterpolated || node.opcode == kLog) {
-                release_input(node.input_a);
-            } else if (node.opcode == kLerp || node.opcode == kRangeChoice) {
-                release_input(node.input_a);
-                release_input(node.input_b);
-                release_input(node.reserved);
-            } else if (node.opcode == kRound) {
-                release_input(node.input_a);
-                release_input(node.input_b);
-            } else if (node.opcode == kPerlinStackWarp) {
-                release_input(node.input_a);
-                release_input(node.input_b);
-                release_input(node.reserved);
-            } else if (node.opcode == kSlice) {
-                release_input(node.input_a);
-            }
-            if (i != root_node && consumers[i] == 0) free_slots.push_back(slot);
-        }
         uint64_t handle = g_next_handle++;
         if (handle == 0) handle = g_next_handle++;
         g_handles.emplace(handle, graph);
@@ -579,6 +657,7 @@ int32_t evaluate_density_graph_impl(
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
     Scalar* output, uint64_t output_length,
+    const JpeBeardifierContext* beardifier_context,
     uint32_t recursion_depth
 ) {
     if (output == nullptr || root_node >= graph->nodes.size()
@@ -588,18 +667,20 @@ int32_t evaluate_density_graph_impl(
     try {
         const size_t volume = static_cast<size_t>(output_length);
         auto& scratch = density_evaluation_scratch<Scalar>(recursion_depth);
-        const uint32_t root_slot = graph->node_slots[root_node];
-        if (root_slot == kNoInput || root_slot >= graph->slot_count) return 1;
-        scratch.prepare(graph->slot_count, root_slot, volume, output, graph->has_perlin,
-                graph->needs_x_coordinates, graph->needs_y_coordinates, graph->needs_z_coordinates,
+        const auto plan_it = graph->evaluation_plans.find(root_node);
+        if (plan_it == graph->evaluation_plans.end()) return 1;
+        const EvaluationPlan& plan = plan_it->second;
+        const uint32_t root_slot = plan.node_slots[root_node];
+        if (root_slot == kNoInput || root_slot >= plan.slot_count) return 1;
+        scratch.prepare(plan.slot_count, root_slot, volume, output, plan.has_perlin,
+                plan.needs_x_coordinates, plan.needs_y_coordinates, plan.needs_z_coordinates,
                 size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z);
         auto& slots = scratch.slots;
         auto& perlin_scratch = scratch.perlin;
 
-        for (uint32_t i = 0; i <= root_node; ++i) {
+        for (const uint32_t i : plan.ordered_nodes) {
             const JpeDensityNode& node = graph->nodes[i];
-            const uint32_t slot = graph->node_slots[i];
-            if (slot == kNoInput) continue;
+            const uint32_t slot = plan.node_slots[i];
             auto& values = slots[slot];
 
             switch (node.opcode) {
@@ -631,8 +712,8 @@ int32_t evaluate_density_graph_impl(
                 }
                 case JPE_DENSITY_ADD: case JPE_DENSITY_MUL:
                 case kSub: case kDiv: case kMin: case kMax: case kPow: {
-                    const auto& a = slots[graph->node_slots[node.input_a]];
-                    const auto& b = slots[graph->node_slots[node.input_b]];
+                    const auto& a = slots[plan.node_slots[node.input_a]];
+                    const auto& b = slots[plan.node_slots[node.input_b]];
                     for (size_t j = 0; j < volume; ++j) {
                         switch (node.opcode) {
                             case JPE_DENSITY_ADD: values[j] = a[j] + b[j]; break;
@@ -648,7 +729,7 @@ int32_t evaluate_density_graph_impl(
                 }
                 case kAbs: case kNegate: case kSquare: case kCube: case kSqrt:
                 case kHalfNegative: case kQuarterNegative: case kReciprocal: case kSign: {
-                    const auto& a = slots[graph->node_slots[node.input_a]];
+                    const auto& a = slots[plan.node_slots[node.input_a]];
                     for (size_t j = 0; j < volume; ++j) {
                         const Scalar v = a[j];
                         switch (node.opcode) {
@@ -666,7 +747,7 @@ int32_t evaluate_density_graph_impl(
                     break;
                 }
                 case kClamp: {
-                    const auto& a = slots[graph->node_slots[node.input_a]];
+                    const auto& a = slots[plan.node_slots[node.input_a]];
                     const Scalar lo = static_cast<Scalar>(decode_float(node.input_b));
                     const Scalar hi = static_cast<Scalar>(decode_float(node.reserved));
                     for (size_t j = 0; j < volume; ++j) {
@@ -675,7 +756,7 @@ int32_t evaluate_density_graph_impl(
                     break;
                 }
                 case kSqueeze: {
-                    const auto& a = slots[graph->node_slots[node.input_a]];
+                    const auto& a = slots[plan.node_slots[node.input_a]];
                     for (size_t j = 0; j < volume; ++j) {
                         const Scalar v = a[j];
                         const Scalar half = v * Scalar(0.5);
@@ -688,9 +769,9 @@ int32_t evaluate_density_graph_impl(
                     break;
                 }
                 case kLerp: {
-                    const auto& alpha = slots[graph->node_slots[node.input_a]];
-                    const auto& first = slots[graph->node_slots[node.input_b]];
-                    const auto& second = slots[graph->node_slots[node.reserved]];
+                    const auto& alpha = slots[plan.node_slots[node.input_a]];
+                    const auto& first = slots[plan.node_slots[node.input_b]];
+                    const auto& second = slots[plan.node_slots[node.reserved]];
                     for (size_t j = 0; j < volume; ++j) {
                         const Scalar delta = second[j] - first[j];
                         volatile Scalar scaled = alpha[j] * delta;
@@ -781,8 +862,8 @@ int32_t evaluate_density_graph_impl(
                     break;
                 }
                 case kRound: {
-                    const auto& input = slots[graph->node_slots[node.input_a]];
-                    const auto& multiple = slots[graph->node_slots[node.input_b]];
+                    const auto& input = slots[plan.node_slots[node.input_a]];
+                    const auto& multiple = slots[plan.node_slots[node.input_b]];
                     for (size_t j = 0; j < volume; ++j) {
                         const Scalar ratio_value = input[j] / multiple[j];
                         const double ratio = static_cast<double>(ratio_value);
@@ -799,7 +880,7 @@ int32_t evaluate_density_graph_impl(
                     break;
                 }
                 case kLog: {
-                    const auto& input = slots[graph->node_slots[node.input_a]];
+                    const auto& input = slots[plan.node_slots[node.input_a]];
                     for (size_t j = 0; j < volume; ++j) {
                         values[j] = static_cast<Scalar>(std::log(static_cast<double>(input[j])));
                     }
@@ -866,9 +947,9 @@ int32_t evaluate_density_graph_impl(
                     break;
                 }
                 case kRangeChoice: {
-                    const auto& input = slots[graph->node_slots[node.input_a]];
-                    const auto& when_in_range = slots[graph->node_slots[node.input_b]];
-                    const auto& when_out_of_range = slots[graph->node_slots[node.reserved]];
+                    const auto& input = slots[plan.node_slots[node.input_a]];
+                    const auto& when_in_range = slots[plan.node_slots[node.input_b]];
+                    const auto& when_out_of_range = slots[plan.node_slots[node.reserved]];
                     const Scalar minimum = static_cast<Scalar>(node.immediate);
                     const Scalar maximum = static_cast<Scalar>(node.auxiliary);
                     for (size_t j = 0; j < volume; ++j) {
@@ -919,7 +1000,7 @@ int32_t evaluate_density_graph_impl(
                         static_cast<int32_t>(corner_min_z),
                         static_cast<int32_t>(cell_xz), static_cast<int32_t>(cell_y),
                         static_cast<int32_t>(cell_xz),
-                        corner_values.data(), corner_length, recursion_depth + 1);
+                        corner_values.data(), corner_length, beardifier_context, recursion_depth + 1);
                     if (corner_status != 0) return corner_status;
 
                     const Scalar inv_xz = static_cast<Scalar>(1.0F / static_cast<float>(cell_xz));
@@ -978,6 +1059,66 @@ int32_t evaluate_density_graph_impl(
                     }
                     break;
                 }
+                case kBeardifier: {
+                    if (beardifier_context == nullptr) return 2;
+                    size_t out = 0;
+                    for (uint32_t z = 0; z < size_z; ++z) {
+                        const int32_t world_z = wrapped_coordinate(min_z, z, step_z);
+                        for (uint32_t x = 0; x < size_x; ++x) {
+                            const int32_t world_x = wrapped_coordinate(min_x, x, step_x);
+                            for (uint32_t y = 0; y < size_y; ++y) {
+                                const int32_t world_y = wrapped_coordinate(min_y, y, step_y);
+                                values[out++] = static_cast<Scalar>(
+                                    jpe_cpp_beardifier_context_sample(*beardifier_context, world_x, world_y, world_z));
+                            }
+                        }
+                    }
+                    break;
+                }
+                case kFindTopSurface: {
+                    // This node is column-valued: compute one surface Y per X/Z
+                    // column, then broadcast it through the requested Y volume.
+                    const int32_t lower_bound = static_cast<int32_t>(node.reserved);
+                    const int32_t step_size = static_cast<int32_t>(node.immediate);
+                    size_t out = 0;
+                    Scalar upper_value = Scalar(0);
+                    Scalar density_value = Scalar(0);
+                    for (uint32_t z = 0; z < size_z; ++z) {
+                        const int32_t world_z = wrapped_coordinate(min_z, z, step_z);
+                        for (uint32_t x = 0; x < size_x; ++x) {
+                            const int32_t world_x = wrapped_coordinate(min_x, x, step_x);
+                            int32_t surface_y = lower_bound;
+                            // The upper-bound function is a column estimate. Its
+                            // shipped vanilla inputs are X/Z-only; sample at Y=0.
+                            int32_t status = evaluate_density_graph_impl<Scalar>(
+                                graph, node.input_b, 1, 1, 1,
+                                world_x, 0, world_z, 0, 0, 0,
+                                &upper_value, 1, beardifier_context, recursion_depth + 1);
+                            if (status != 0) return status;
+                            if (!std::isfinite(static_cast<double>(upper_value))) return 1;
+                            const double rounded_upper = std::floor(static_cast<double>(upper_value));
+                            if (rounded_upper > static_cast<double>(INT32_MAX)
+                                || rounded_upper < static_cast<double>(INT32_MIN)) return 1;
+                            int64_t y = static_cast<int64_t>(rounded_upper);
+                            while (y >= lower_bound) {
+                                status = evaluate_density_graph_impl<Scalar>(
+                                    graph, node.input_a, 1, 1, 1,
+                                    world_x, static_cast<int32_t>(y), world_z, 0, 0, 0,
+                                    &density_value, 1, beardifier_context, recursion_depth + 1);
+                                if (status != 0) return status;
+                                if (density_value > Scalar(0)) {
+                                    surface_y = static_cast<int32_t>(y);
+                                    break;
+                                }
+                                y -= step_size;
+                            }
+                            for (uint32_t y_index = 0; y_index < size_y; ++y_index) {
+                                values[out++] = static_cast<Scalar>(surface_y);
+                            }
+                        }
+                    }
+                    break;
+                }
                 case kSlice: {
                     auto& sliced_values = scratch.sliced_values;
                     sliced_values.resize(volume);
@@ -998,7 +1139,7 @@ int32_t evaluate_density_graph_impl(
                         graph, node.input_a, size_x, size_y, size_z,
                         sliced_min_x, sliced_min_y, sliced_min_z,
                         sliced_step_x, sliced_step_y, sliced_step_z,
-                        sliced_values.data(), output_length, recursion_depth + 1);
+                        sliced_values.data(), output_length, beardifier_context, recursion_depth + 1);
                     if (status != 0) return status;
                     std::copy(sliced_values.begin(), sliced_values.end(), values.begin());
                     break;
@@ -1015,10 +1156,47 @@ int32_t evaluate_density_graph_impl(
                     for (size_t j = 0; j < volume; ++j) values[j] = static_cast<Scalar>(perlin_scratch[j]);
                     break;
                 }
+                case kSmearedPerlinStack: {
+                    std::fill(perlin_scratch.begin(), perlin_scratch.end(), 0.0F);
+                    const int32_t status = jpe_cpp_smeared_perlin_stack_evaluate(
+                        graph->prepared_handles[i],
+                        size_x, size_y, size_z, min_x, min_y, min_z,
+                        step_x, step_y, step_z,
+                        perlin_scratch.data(), output_length,
+                        (step_x == 0 || step_y == 0 || step_z == 0) ? kAllowZeroPerlinSteps : 0U);
+                    if (status != 0) return status;
+                    for (size_t j = 0; j < volume; ++j) {
+                        values[j] = static_cast<Scalar>(perlin_scratch[j]);
+                    }
+                    break;
+                }
+                case kShiftBPerlinStack: {
+                    // Minecraft 26.3 ShiftB evaluates noise(blockZ*0.25, blockX*0.25, 0)
+                    // and broadcasts that X/Z plane through every Y in the requested volume.
+                    const uint32_t transposed_x = size_z;
+                    const uint32_t transposed_y = size_x;
+                    const uint64_t transposed_count = static_cast<uint64_t>(transposed_x) * transposed_y;
+                    if (transposed_count > perlin_scratch.size()) return 1;
+                    const int32_t status = jpe_cpp_perlin_stack_evaluate(
+                        graph->prepared_handles[i], node.auxiliary, node.tertiary,
+                        decode_float(node.reserved), transposed_x, transposed_y, 1,
+                        min_z, min_x, 0, step_z, step_x, 1,
+                        perlin_scratch.data(), transposed_count, kAllowZeroPerlinSteps);
+                    if (status != 0) return status;
+                    size_t out = 0;
+                    for (uint32_t z = 0; z < size_z; ++z) {
+                        for (uint32_t x = 0; x < size_x; ++x) {
+                            const Scalar value = static_cast<Scalar>(perlin_scratch[static_cast<size_t>(z) * size_x + x]);
+                            std::fill_n(values.data() + out, size_y, value);
+                            out += size_y;
+                        }
+                    }
+                    break;
+                }
                 case kPerlinStackWarp: {
-                    const auto& shift_x = slots[graph->node_slots[node.input_a]];
-                    const auto& shift_y = slots[graph->node_slots[node.input_b]];
-                    const auto& shift_z = slots[graph->node_slots[node.reserved]];
+                    const auto& shift_x = slots[plan.node_slots[node.input_a]];
+                    const auto& shift_y = slots[plan.node_slots[node.input_b]];
+                    const auto& shift_z = slots[plan.node_slots[node.reserved]];
                     // Pass the live DAG slots directly. The batch sampler widens
                     // F32 shifts at use time, avoiding three temporary heap buffers
                     // and a full-volume conversion/copy before Perlin evaluation.
@@ -1061,7 +1239,7 @@ int32_t evaluate_density_graph(
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
-    Scalar* output, uint64_t output_length
+    Scalar* output, uint64_t output_length, uint64_t beardifier_context_handle = 0
 ) {
     if (output == nullptr || !valid_volume(size_x, size_y, size_z,
             step_x, step_y, step_z, output_length)) return 1;
@@ -1072,10 +1250,15 @@ int32_t evaluate_density_graph(
         if (found == g_handles.end()) return 2;
         graph = found->second;
     }
+    std::shared_ptr<const JpeBeardifierContext> beardifier_context;
+    if (graph->has_beardifier) {
+        beardifier_context = jpe_cpp_beardifier_context_acquire(beardifier_context_handle);
+        if (!beardifier_context) return 2;
+    }
     return evaluate_density_graph_impl<Scalar>(
         graph, graph->root, size_x, size_y, size_z,
         min_x, min_y, min_z, step_x, step_y, step_z,
-        output, output_length, 0);
+        output, output_length, beardifier_context.get(), 0);
 }
 
 template <typename Scalar>
@@ -1105,7 +1288,7 @@ int32_t evaluate_density_graph_points(
                 1, 1, 1,
                 point_x[i], point_y[i], point_z[i],
                 1, 1, 1,
-                &output[i], 1, 0);
+                &output[i], 1, nullptr, 0);
             if (status != 0) return status;
         }
         return 0;
@@ -1161,7 +1344,7 @@ int32_t evaluate_density_graph_multi_points(
                     1, 1, 1,
                     point_x[index], point_y[index], point_z[index],
                     1, 1, 1,
-                    &output[index], 1, 0);
+                    &output[index], 1, nullptr, 0);
                 if (status != 0) return status;
             }
         }
@@ -1233,6 +1416,18 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_f32(
 ) {
     return evaluate_density_graph<float>(graph_handle, size_x, size_y, size_z,
         min_x, min_y, min_z, step_x, step_y, step_z, output, output_length);
+}
+
+extern "C" int32_t jpe_cpp_density_graph_evaluate_f32_with_beardifier(
+    uint64_t graph_handle, uint64_t beardifier_context_handle,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    float* output, uint64_t output_length
+) {
+    return evaluate_density_graph<float>(graph_handle, size_x, size_y, size_z,
+        min_x, min_y, min_z, step_x, step_y, step_z, output, output_length,
+        beardifier_context_handle);
 }
 
 extern "C" int32_t jpe_cpp_density_graph_retain(uint64_t graph_handle) {

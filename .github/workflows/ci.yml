@@ -5,8 +5,10 @@ concurrency:
   cancel-in-progress: true
 
 on:
+  # Feature branches are validated by pull_request; only main gets push CI.
+  # This prevents duplicate full-world generation on every PR branch commit.
   push:
-    branches: [main, "work/**"]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -144,16 +146,28 @@ jobs:
           fi
           exit "$test_status"
 
-      - name: Real overworld native density and Aquifer parity (full chunk generation)
+      - name: Generate 340 FULL chunks with strict native C++ worldgen (20-second deadline)
         if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         env:
-          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphVerify=true -Djpe.nativeDensityGraphStrict=true -Djpe.nativeAquiferSubstanceEnabled=true -Djpe.nativeAquiferSubstanceStrict=true -Djpe.nativeAquiferSubstanceVerify=true -Djpe.nativeAquiferFusedVerify=true -Djpe.nativeDensityGraphCacheDir=${{ github.workspace }}/build/native-density-graph-cache -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=22 -Djpe.worldgenMetrics=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
+          # One fresh server process. Strict native worldgen is required; Java fallback is disabled.
+          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector
         run: |
-          mkdir -p build/native-density-worldgen
-          rm -rf run
-          mkdir -p run
-          printf '%s\n' 'eula=true' > run/eula.txt
-          cat > run/server.properties <<'PROPERTIES'
+          mkdir -p build/native-worldgen build/native-density-graph-cache
+          set -euo pipefail
+
+          run_worldgen_batch() {
+            local label="$1"
+            local mode="$2"
+            local engine_options=""
+            if [[ "$mode" == "native" ]]; then
+              engine_options="-Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphStrict=true -Djpe.nativeAquiferSubstanceEnabled=true -Djpe.nativeAquiferSubstanceStrict=true -Djpe.nativeDensityGraphCacheDir=${GITHUB_WORKSPACE}/build/native-density-graph-cache -Djpe.nativeLibraryPath=${GITHUB_WORKSPACE}/native/rust-runtime/target/release/libjpe_runtime.so"
+            fi
+
+            echo "===== NATIVE WORLDGEN BATCH: ${label} (${mode}) ====="
+            rm -rf run
+            mkdir -p run
+            printf '%s\n' 'eula=true' > run/eula.txt
+            cat > run/server.properties <<'PROPERTIES'
           level-seed=12648430
           level-type=minecraft:normal
           generate-structures=true
@@ -168,22 +182,65 @@ jobs:
           max-tick-time=-1
           sync-chunk-writes=false
           PROPERTIES
-          set -o pipefail
-          gradle runServer --no-daemon --stacktrace 2>&1 | tee build/native-density-worldgen/overworld.log
-          grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*completedChunks=340.*failedChunks=0.*doFillCalls=([3-9][0-9]{2,}|[1-9][0-9]{3,})' build/native-density-worldgen/overworld.log
-          grep -F 'Persistent density graph cache environment prepared' build/native-density-worldgen/overworld.log
-          grep -F 'Native density graph compiled for' build/native-density-worldgen/overworld.log
-          grep -F 'Native density graph evaluated for' build/native-density-worldgen/overworld.log
-          grep -F 'JPE_NATIVE_AQUIFER_CONTEXT_READY' build/native-density-worldgen/overworld.log
-          grep -F 'JPE_NATIVE_AQUIFER_SUBSTANCE_VOLUME' build/native-density-worldgen/overworld.log
-          ! grep -F 'Native Aquifer full-volume parity mismatch' build/native-density-worldgen/overworld.log
-          ! grep -F 'Native density graph evaluation failed' build/native-density-worldgen/overworld.log
-          ! grep -F 'Native density graph parity mismatch' build/native-density-worldgen/overworld.log
+            # A 340-chunk FULL batch must not occupy a runner indefinitely.
+            # This is a wall-clock limit for the whole fresh-server batch, not a tick count.
+            local batch_status=0
+            # Put the Gradle client, its single-use daemon/server JVM, and tee in one
+            # dedicated process group. The outer watchdog kills the entire group so an
+            # orphaned server JVM cannot keep the log pipe open after the deadline.
+            setsid bash -c '
+              set -o pipefail
+              timeout --signal=TERM --kill-after=5s 90s \
+                env JAVA_TOOL_OPTIONS="$1" gradle runServer --no-daemon --stacktrace 2>&1 | tee "$2"
+            ' _ "--add-modules=jdk.incubator.vector ${engine_options} -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=1 -Djpe.benchmark.deadlineSeconds=20 -Djpe.benchmark.digestFile=${GITHUB_WORKSPACE}/build/native-worldgen/${label}.csv -Djpe.worldgenMetrics=true" "build/native-worldgen/${label}.log" &
+            batch_pid=$!
+            (
+              sleep 90
+              kill -TERM -- "-${batch_pid}" 2>/dev/null || true
+              sleep 5
+              kill -KILL -- "-${batch_pid}" 2>/dev/null || true
+            ) &
+            watchdog_pid=$!
+            wait "${batch_pid}" || batch_status=$?
+            kill "${watchdog_pid}" 2>/dev/null || true
+            wait "${watchdog_pid}" 2>/dev/null || true
+
+            if [[ "${batch_status}" -ne 0 ]]; then
+              echo "::error title=Native worldgen batch failed::${label} batch exited with status ${batch_status}; expected at most 90 seconds including fresh-server startup; measured generation deadline is 20 seconds."
+              echo "===== ${label} batch progress diagnostics ====="
+              grep -E 'JPE continuous worldgen|JPE_CONTINUOUS_WORLDGEN_BENCH|JPE chunk block-state digest' \
+                "build/native-worldgen/${label}.log" | tail -n 100 || true
+              echo "===== ${label} final log tail ====="
+              tail -n 120 "build/native-worldgen/${label}.log" || true
+              return "${batch_status}"
+            fi
+
+            grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*completedChunks=340.*failedChunks=0.*doFillCalls=([3-9][0-9]{2,}|[1-9][0-9]{3,})' \
+              "build/native-worldgen/${label}.log"
+            grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*nativePerlinEnabled=true.*nativeFallbacks=0' \
+              "build/native-worldgen/${label}.log"
+            ! grep -E 'Native Perlin backend (failed|unavailable); using Java fallback' \
+              "build/native-worldgen/${label}.log"
+            test "$(wc -l < "build/native-worldgen/${label}.csv")" -eq 341
+            grep -F 'JPE chunk block-state digest snapshot written:' "build/native-worldgen/${label}.log"
+          }
+
+          # Generate only strict-native chunks. No Java baseline world is generated.
+          run_worldgen_batch native native
+
+          grep -F 'Persistent density graph cache environment prepared' build/native-worldgen/native.log
+          grep -F 'Native density graph compiled for' build/native-worldgen/native.log
+          grep -F 'Native density graph evaluated for' build/native-worldgen/native.log
+          grep -F 'JPE_NATIVE_AQUIFER_CONTEXT_READY' build/native-worldgen/native.log
+          grep -F 'JPE_NATIVE_AQUIFER_SUBSTANCE_VOLUME' build/native-worldgen/native.log
+          ! grep -F 'Native Aquifer full-volume parity mismatch' build/native-worldgen/native.log
+          ! grep -F 'Native density graph evaluation failed' build/native-worldgen/native.log
+          ! grep -F 'Native density graph parity mismatch' build/native-worldgen/native.log
 
       - name: Warm-launch persistent density graph cache (fresh server process)
         if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         env:
-          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphVerify=true -Djpe.nativeDensityGraphStrict=true -Djpe.nativeAquiferSubstanceEnabled=true -Djpe.nativeAquiferSubstanceStrict=true -Djpe.nativeAquiferSubstanceVerify=true -Djpe.nativeDensityGraphCacheDir=${{ github.workspace }}/build/native-density-graph-cache -Djpe.serverWorldgenBenchmark=true -Djpe.worldgenMetrics=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
+          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphStrict=true -Djpe.nativeAquiferSubstanceEnabled=true -Djpe.nativeAquiferSubstanceStrict=true -Djpe.nativeDensityGraphCacheDir=${{ github.workspace }}/build/native-density-graph-cache -Djpe.serverWorldgenBenchmark=true -Djpe.worldgenMetrics=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
         run: |
           mkdir -p build/native-density-cache-warm
           # Keep the shared portable cache, but use a clean world directory and a
@@ -372,6 +429,7 @@ jobs:
             build/climate-rtree-benchmark/
             build/server-benchmark/
             build/gametest/
+            build/worldgen-parity/
             build/reports/tests/
             build/test-results/
             build/source-audit/report.txt

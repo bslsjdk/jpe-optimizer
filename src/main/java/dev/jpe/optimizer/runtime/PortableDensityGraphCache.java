@@ -25,7 +25,7 @@ import java.util.Optional;
  */
 public final class PortableDensityGraphCache {
     private static final long MAGIC = 0x4A50454447524150L; // "JPEDGRAP"
-    private static final int FORMAT_VERSION = 1;
+    private static final int FORMAT_VERSION = 2;
     private static final int DIGEST_BYTES = 32;
     private static final int MAX_FILE_BYTES = 64 * 1024 * 1024;
     private static final int MAX_NODES = 65_536;
@@ -95,7 +95,7 @@ public final class PortableDensityGraphCache {
                 }
                 List<NativeRuntime.DensityNode> result = new ArrayList<>(nodes.size());
                 for (NativeRuntime.DensityNode node : nodes) {
-                    if (node.opcode() == 7 || node.opcode() == 31) {
+                    if (node.opcode() == 7 || node.opcode() == 31 || node.opcode() == 33) {
                         int slot = slot(node.immediate(), handles.length);
                         result.add(new NativeRuntime.DensityNode(node.opcode(), node.inputA(), node.inputB(),
                                 node.reserved(), handles[slot], node.auxiliary(), node.tertiary()));
@@ -251,7 +251,7 @@ public final class PortableDensityGraphCache {
         }
         for (NativeRuntime.DensityNode node : nodes) {
             if (node == null) throw new IllegalArgumentException("Null density node");
-            if (node.opcode() == 7 || node.opcode() == 31) slot(node.immediate(), stackCount);
+            if (node.opcode() == 7 || node.opcode() == 31 || node.opcode() == 33) slot(node.immediate(), stackCount);
         }
     }
 

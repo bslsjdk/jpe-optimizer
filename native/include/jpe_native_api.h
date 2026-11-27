@@ -13,7 +13,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* ABI v7. Axis coordinates use min + index * step with Java int wrap semantics. */
+/* ABI v11. Axis coordinates use min + index * step with Java int wrap semantics. */
 JPE_API uint32_t jpe_runtime_abi_version(void);
 /* requested=0 selects all process-visible CPUs; positive values are capped to that count. */
 /* Zero selects available CPUs. Repeating the active count is safe after startup;
@@ -52,6 +52,18 @@ JPE_API int32_t jpe_runtime_perlin_add_stack(
 JPE_API uint64_t jpe_runtime_prepare_perlin_stack(const JpePerlinLayer *layers, uint32_t layer_count);
 JPE_API int32_t jpe_runtime_evaluate_prepared_perlin_stack(
     uint64_t handle, double xz_scale, double y_scale, float amplitude,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    float *output, uint64_t output_length, uint32_t flags
+);
+/* Prepared SmearedPerlin stack. Each layer's input scales are already baked
+ * into JpePerlinLayer; fudge_y_scales are the exact per-layer Y smear thresholds. */
+JPE_API uint64_t jpe_runtime_prepare_smeared_perlin_stack(
+    const JpePerlinLayer *layers, const double *fudge_y_scales, uint32_t layer_count
+);
+JPE_API int32_t jpe_runtime_evaluate_prepared_smeared_perlin_stack(
+    uint64_t handle,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
@@ -135,8 +147,58 @@ enum {
     /* PERLIN_STACK_WARP: input_a/input_b/reserved=shift X/Y/Z node indices; amplitude is 1.0. */
     JPE_DENSITY_PERLIN_STACK_WARP = 31,
     /* SLICE: input_a=child graph root; input_b=axis (0=X,1=Y,2=Z); immediate=fixed int coordinate. */
-    JPE_DENSITY_SLICE = 32
+    JPE_DENSITY_SLICE = 32,
+    /* FIND_TOP_SURFACE: input_a=density; input_b=upperBound; reserved=signed lowerBound; immediate=positive integer stepSize. */
+    JPE_DENSITY_FIND_TOP_SURFACE = 34,
+    /* SMEARED_PERLIN_STACK: immediate=prepared SmearedPerlin stack handle; scales are baked per layer. */
+    JPE_DENSITY_SMEARED_PERLIN_STACK = 35,
+    JPE_DENSITY_BEARDIFIER = 36
 };
+
+/* Minecraft 26.3 Beardifier records copied into an immutable per-chunk native context. */
+typedef struct JpeBeardifierRigid {
+    int32_t min_x, min_y, min_z;
+    int32_t max_x, max_y, max_z;
+    int32_t ground_level_delta;
+    uint32_t terrain_adjustment; /* 0=NONE, 1=BURY, 2=BEARD_THIN, 3=BEARD_BOX, 4=ENCAPSULATE */
+} JpeBeardifierRigid;
+
+typedef struct JpeBeardifierJunction {
+    int32_t source_x, source_ground_y, source_z;
+} JpeBeardifierJunction;
+
+typedef struct JpeBeardifierContextCreateInfo {
+    const JpeBeardifierRigid* pieces;
+    uint32_t piece_count;
+    uint32_t reserved0;
+    const JpeBeardifierJunction* junctions;
+    uint32_t junction_count;
+    uint32_t has_affected_box;
+    const float* beard_kernel;
+    uint32_t beard_kernel_count;
+    uint32_t reserved1;
+    int32_t min_x, min_y, min_z;
+    int32_t max_x, max_y, max_z;
+    uint32_t reserved2;
+    uint32_t reserved3;
+} JpeBeardifierContextCreateInfo;
+
+#if defined(__cplusplus)
+static_assert(sizeof(JpeBeardifierRigid) == 32, "JpeBeardifierRigid ABI layout mismatch");
+static_assert(sizeof(JpeBeardifierJunction) == 12, "JpeBeardifierJunction ABI layout mismatch");
+static_assert(sizeof(JpeBeardifierContextCreateInfo) == 80, "JpeBeardifierContextCreateInfo ABI layout mismatch");
+#endif
+
+JPE_API uint64_t jpe_runtime_beardifier_context_create(const JpeBeardifierContextCreateInfo* info);
+JPE_API int32_t jpe_runtime_beardifier_context_destroy(uint64_t context_handle);
+JPE_API int32_t jpe_runtime_density_graph_evaluate_f32_with_beardifier(
+    uint64_t graph_handle, uint64_t beardifier_context_handle,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    float* output, uint64_t output_length
+);
+
 /* Returns a retained compiled-plan handle, or zero for an invalid graph. */
 JPE_API uint64_t jpe_runtime_density_graph_compile(
     const JpeDensityNode *nodes, uint32_t node_count, uint32_t root_node,
@@ -175,6 +237,18 @@ JPE_API int32_t jpe_runtime_density_graph_evaluate_multi_points_f32(
     const int32_t *point_x, const int32_t *point_y, const int32_t *point_z,
     uint32_t points_per_graph, float *output, uint64_t output_length
 );
+
+/* Internal Beardifier context hooks used by the C++ density graph evaluator. */
+JPE_API uint64_t jpe_cpp_beardifier_context_create(const JpeBeardifierContextCreateInfo* info);
+JPE_API int32_t jpe_cpp_beardifier_context_destroy(uint64_t context_handle);
+JPE_API int32_t jpe_cpp_density_graph_evaluate_f32_with_beardifier(
+    uint64_t graph_handle, uint64_t beardifier_context_handle,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    float* output, uint64_t output_length
+);
+
 /* Internal C++ helpers; Rust publishes the stable jpe_runtime_* exports. */
 JPE_API uint64_t jpe_cpp_density_graph_compile(
     const JpeDensityNode *nodes, uint32_t node_count, uint32_t root_node,
@@ -401,7 +475,7 @@ JPE_API int32_t jpe_runtime_aquifer_context_compute_substance_volume_f32(
     int32_t step_x, int32_t step_y, int32_t step_z,
     const float* density_values,
     uint32_t density_count,
-    JpeAquiferCoreOutput* outputs
+    uint64_t* outputs
 );
 /* Fused path evaluates finalDensity and Aquifer decisions entirely in native memory. */
 JPE_API int32_t jpe_runtime_aquifer_context_compute_density_and_substance_volume_f32(
@@ -409,11 +483,12 @@ JPE_API int32_t jpe_runtime_aquifer_context_compute_density_and_substance_volume
     const uint8_t* expected_world_fingerprint,
     uint64_t expected_semantic_fingerprint,
     uint64_t final_density_graph_handle,
+    uint64_t beardifier_context_handle,
     int32_t skip_sampling_above_y,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
-    JpeAquiferCoreOutput* outputs
+    uint64_t* outputs
 );
 JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
     uint64_t context_handle,
@@ -425,7 +500,7 @@ JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
     int32_t step_x, int32_t step_y, int32_t step_z,
     const float* density_values,
     uint32_t density_count,
-    JpeAquiferCoreOutput* outputs
+    uint64_t* outputs
 );
 
 /* Returns 0 on success, 1 for invalid input. A false has_block_state means
@@ -493,7 +568,7 @@ JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
     int32_t step_x, int32_t step_y, int32_t step_z,
     const float* density_values,
     uint32_t density_count,
-    JpeAquiferCoreOutput* outputs
+    uint64_t* outputs
 );
 
 JPE_API int32_t jpe_cpp_aquifer_context_compute_density_and_substance_volume_f32(
@@ -501,11 +576,12 @@ JPE_API int32_t jpe_cpp_aquifer_context_compute_density_and_substance_volume_f32
     const uint8_t* expected_world_fingerprint,
     uint64_t expected_semantic_fingerprint,
     uint64_t final_density_graph_handle,
+    uint64_t beardifier_context_handle,
     int32_t skip_sampling_above_y,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
-    JpeAquiferCoreOutput* outputs
+    uint64_t* outputs
 );
 JPE_API uint64_t jpe_cpp_aquifer_status_cache_create(uint32_t maximum_entries);
 JPE_API int32_t jpe_cpp_aquifer_status_cache_destroy(uint64_t handle);

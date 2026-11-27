@@ -4,6 +4,7 @@ import dev.jpe.optimizer.JPEOptimizer;
 import dev.jpe.optimizer.mixin.DensityBufferAccessor;
 import dev.jpe.optimizer.mixin.GradientNoiseAccessor;
 import dev.jpe.optimizer.mixin.NoiseStackLayerAccessor;
+import dev.jpe.optimizer.mixin.SmearedPerlinNoiseAccessor;
 import net.minecraft.SharedConstants;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
@@ -136,6 +137,37 @@ public final class NativePerlinNoiseBackend {
         NativeRuntime current = runtimeForDensityGraph();
         if (current == null || !current.supportsPreparedPerlinStack()) return 0L;
         return preparedStackHandle(current, stack);
+    }
+
+    /**
+     * Converts one Minecraft 26.3 SmearedPerlin octave stack into a native prepared plan.
+     * Outer sampler scales are baked into each octave so its fudgeYScale remains in the
+     * exact coordinate space used by SmearedPerlinNoise.computeFudgeY.
+     */
+    public static long preparedSmearedStackHandleForDensityGraph(
+            Noise noise, double xzScale, double yScale
+    ) {
+        if (!(noise instanceof NoiseStack stack)
+                || !stack.getClass().getName().endsWith("$SmearedPerlin")
+                || !Double.isFinite(xzScale) || !Double.isFinite(yScale)) return 0L;
+        NativeRuntime current = runtimeForDensityGraph();
+        if (current == null || !current.supportsPreparedSmearedPerlinStack()) return 0L;
+
+        Object[] sourceLayers = readNoiseStackLayers(stack);
+        if (sourceLayers.length == 0 || sourceLayers.length > 64) return 0L;
+        double[] fudgeYScales = new double[sourceLayers.length];
+        for (int i = 0; i < sourceLayers.length; ++i) {
+            if (!(sourceLayers[i] instanceof NoiseStackLayerAccessor layer)) return 0L;
+            Noise layerNoise = layer.jpe$noise();
+            if (layerNoise == null
+                    || !layerNoise.getClass().getName().endsWith("SmearedPerlinNoise")
+                    || !(layerNoise instanceof GradientNoiseAccessor)
+                    || !(layerNoise instanceof SmearedPerlinNoiseAccessor smeared)) return 0L;
+            double fudgeYScale = smeared.jpe$fudgeYScale();
+            if (!Double.isFinite(fudgeYScale) || fudgeYScale <= 0.0) return 0L;
+            fudgeYScales[i] = fudgeYScale;
+        }
+        return current.prepareSmearedPerlinStack(sourceLayers, fudgeYScales, xzScale, yScale);
     }
 
     /**

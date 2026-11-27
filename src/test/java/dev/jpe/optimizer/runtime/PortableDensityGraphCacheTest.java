@@ -107,6 +107,53 @@ class PortableDensityGraphCacheTest {
     }
 
     @Test
+    void roundTripsShiftBPerlinNodeAsPortableStackReference() throws Exception {
+        Path cache = temporaryDirectory.resolve("shift-b.dgraph");
+        byte[] worldFingerprint = fingerprint(0x5B);
+        var stack = sampleGraph().perlinStacks().getFirst();
+        var shiftB = new NativeRuntime.DensityNode(
+                33, -1, -1, Float.floatToRawIntBits(4.0F), 0.0, 0.25, 0.25);
+        var graph = new PortableDensityGraphCache.Graph(List.of(shiftB), 0, List.of(stack));
+
+        PortableDensityGraphCache.write(cache, worldFingerprint, 0x33445566L, graph);
+
+        var loaded = PortableDensityGraphCache.read(cache, worldFingerprint, 0x33445566L).orElseThrow();
+        assertEquals(33, loaded.nodes().getFirst().opcode());
+        assertEquals(0.0, loaded.nodes().getFirst().immediate());
+        assertEquals(0.25, loaded.nodes().getFirst().auxiliary());
+        assertEquals(0.25, loaded.nodes().getFirst().tertiary());
+        assertEquals(1, loaded.perlinStacks().size());
+    }
+
+    @Test
+    void rejectsShiftBNodesWithoutPortableStackDescriptors() {
+        var shiftB = new NativeRuntime.DensityNode(
+                33, -1, -1, Float.floatToRawIntBits(4.0F), 0.0, 0.25, 0.25);
+        assertThrows(IllegalArgumentException.class, () ->
+                new PortableDensityGraphCache.Graph(List.of(shiftB), 0, List.of()));
+    }
+
+    @Test
+    void roundTripsFindTopSurfaceNodeWithoutProcessLocalHandles() throws Exception {
+        Path cache = temporaryDirectory.resolve("find-top-surface.dgraph");
+        byte[] worldFingerprint = fingerprint(0x6C);
+        var density = NativeRuntime.DensityNode.constant(0.25);
+        var upperBound = NativeRuntime.DensityNode.constant(320.0);
+        var findTop = NativeRuntime.DensityNode.findTopSurface(0, 1, -64, 8);
+        var graph = new PortableDensityGraphCache.Graph(
+                List.of(density, upperBound, findTop), 2, List.of());
+
+        PortableDensityGraphCache.write(cache, worldFingerprint, 0x77665544L, graph);
+
+        var loaded = PortableDensityGraphCache.read(cache, worldFingerprint, 0x77665544L).orElseThrow();
+        assertEquals(2, loaded.rootNode());
+        assertEquals(34, loaded.nodes().get(2).opcode());
+        assertEquals(-64, loaded.nodes().get(2).reserved());
+        assertEquals(8.0, loaded.nodes().get(2).immediate());
+        assertTrue(loaded.perlinStacks().isEmpty());
+    }
+
+    @Test
     void rejectsInvalidPortablePerlinSlots() {
         assertThrows(IllegalArgumentException.class, () ->
                 new PortableDensityGraphCache.Graph(List.of(
