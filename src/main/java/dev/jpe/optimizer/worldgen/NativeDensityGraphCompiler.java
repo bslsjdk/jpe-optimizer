@@ -7,6 +7,13 @@ import dev.jpe.optimizer.JPEOptimizer;
 import dev.jpe.optimizer.mixin.NoiseChunkAccessor;
 import dev.jpe.optimizer.runtime.NativePerlinNoiseBackend;
 import dev.jpe.optimizer.runtime.NativeRuntime;
+import dev.jpe.optimizer.runtime.PortableDensityGraphCache;
+import dev.jpe.optimizer.runtime.DensityGraphWorldFingerprint;
+import dev.jpe.optimizer.runtime.EffectiveNoiseRouterDigest;
+import com.mojang.serialization.JsonOps;
+import net.minecraft.world.level.levelgen.NoiseRouter;
+import net.neoforged.fml.ModList;
+import net.neoforged.fml.loading.FMLPaths;
 import it.unimi.dsi.fastutil.floats.FloatList;
 import net.minecraft.core.Holder;
 import net.minecraft.core.Vec3i;
@@ -31,6 +38,17 @@ import java.lang.ref.WeakReference;
 import java.lang.reflect.RecordComponent;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.charset.StandardCharsets;
+import java.nio.ByteBuffer;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.nio.file.Path;
+import java.util.HexFormat;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -40,6 +58,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.stream.Stream;
 import java.util.WeakHashMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -94,6 +114,24 @@ public final class NativeDensityGraphCompiler {
     private static final Map<IdentityWeakReference<RandomState>, StateGraphs> GRAPHS = new HashMap<>();
 
     private record GraphHandle(NativeRuntime runtime, long handle) {}
+    private record PersistentCacheKey(Path path, byte[] fingerprint) {}
+    private record PersistentCacheEnvironment(
+            long worldSeed,
+            byte[] routerDigest,
+            String loaderVersion,
+            List<DensityGraphWorldFingerprint.ModVersion> mods,
+            Path directory
+    ) {
+        private PersistentCacheEnvironment {
+            routerDigest = routerDigest.clone();
+            mods = List.copyOf(mods);
+        }
+
+        @Override
+        public byte[] routerDigest() {
+            return routerDigest.clone();
+        }
+    }
 
     private static final class StateGraphs {
         private final IdentityHashMap<DensityFunction, GraphHandle> handles = new IdentityHashMap<>();
@@ -103,6 +141,10 @@ public final class NativeDensityGraphCompiler {
                 Collections.newSetFromMap(new IdentityHashMap<>());
         private final IdentityHashMap<DensityFunction, CompletableFuture<GraphHandle>> compiling =
                 new IdentityHashMap<>();
+        // The resolved router digest and loaded-mod artifact inventory are stable for
+        // this RandomState. Compute them once, not again for every router root.
+        private boolean persistentCacheEnvironmentResolved;
+        private PersistentCacheEnvironment persistentCacheEnvironment;
         private AquiferSamplerPlans aquiferSamplerPlans;
     }
 
@@ -567,10 +609,64 @@ public final class NativeDensityGraphCompiler {
         try {
             // Reflection-heavy graph lowering and native compilation deliberately run
             // outside LOCK. Other RandomState instances can prepare in parallel.
-            Builder builder = new Builder(context, blenderEmpty, beardifierEmpty);
+            PersistentCacheKey cacheKey = persistentCacheKey(root, randomState, stateGraphs);
+            if (cacheKey != null) {
+                Optional<PortableDensityGraphCache.Graph> cachedGraph = readPersistentGraph(cacheKey);
+                if (cachedGraph.isPresent()) {
+                    try {
+                        long cachedHandle = compilePortableGraph(runtime, cachedGraph.orElseThrow());
+                        if (cachedHandle != 0L) {
+                            JPEOptimizer.LOGGER.info(
+                                    "Persistent native density graph cache hit for {} ({} nodes)",
+                                    root.getClass().getName(), cachedGraph.orElseThrow().nodes().size());
+                            GraphHandle compiled = new GraphHandle(runtime, cachedHandle);
+                            boolean disabledDuringCompile;
+                            synchronized (LOCK) {
+                                IdentityWeakReference<RandomState> lookup = new IdentityWeakReference<>(randomState, null);
+                                StateGraphs current = GRAPHS.get(lookup);
+                                if (current == null) {
+                                    current = stateGraphs;
+                                    GRAPHS.put(new IdentityWeakReference<>(randomState, RANDOM_STATE_QUEUE), current);
+                                }
+                                disabledDuringCompile = current.disabled.contains(root);
+                                if (!disabledDuringCompile) {
+                                    current.handles.put(root, compiled);
+                                    current.compiling.remove(root, pending);
+                                }
+                            }
+                            if (disabledDuringCompile) {
+                                runtime.releaseDensityGraph(cachedHandle);
+                                throw new IllegalStateException(
+                                        "Density graph was disabled while cached native compilation was in progress");
+                            }
+                            pending.complete(compiled);
+                            return cachedHandle;
+                        }
+                    } catch (RuntimeException | LinkageError staleCache) {
+                        JPEOptimizer.LOGGER.warn(
+                                "Persistent native density graph cache entry rejected for {}; rebuilding from Minecraft graph: {}",
+                                root.getClass().getName(), describe(staleCache));
+                    }
+                }
+            }
+
+            Builder builder = new Builder(context, blenderEmpty, beardifierEmpty, cacheKey != null);
             int rootIndex = builder.lower(root);
             if (rootIndex < 0 || builder.nodes.isEmpty()) {
                 throw new UnsupportedOperationException("Density graph lowered to an empty graph");
+            }
+            if (cacheKey != null && builder.portableGraphSupported) {
+                try {
+                    PortableDensityGraphCache.Graph portableGraph = builder.portableGraph(rootIndex);
+                    PortableDensityGraphCache.write(
+                            cacheKey.path(), cacheKey.fingerprint(), CONFIGURATION_FINGERPRINT, portableGraph);
+                } catch (IOException | RuntimeException cacheWriteFailure) {
+                    // Cache construction is optional. A valid live Minecraft graph
+                    // must still compile through the established native path.
+                    JPEOptimizer.LOGGER.warn(
+                            "Unable to write persistent density graph cache for {}: {}",
+                            root.getClass().getName(), describe(cacheWriteFailure));
+                }
             }
             long handle = runtime.compileDensityGraph(builder.nodes, rootIndex, CONFIGURATION_FINGERPRINT);
             if (handle == 0L) {
@@ -619,6 +715,218 @@ public final class NativeDensityGraphCompiler {
                 );
             }
             return 0L;
+        }
+    }
+
+    private static PersistentCacheKey persistentCacheKey(
+            DensityFunction root, RandomState randomState, StateGraphs stateGraphs
+    ) {
+        try {
+            RandomStateAccessor access = (RandomStateAccessor) (Object) randomState;
+            NoiseRouter router = access.jpe$getRouter();
+            String rootKey = routerRootKey(router, root);
+            if (rootKey == null) return null;
+
+            PersistentCacheEnvironment environment;
+            synchronized (stateGraphs) {
+                if (!stateGraphs.persistentCacheEnvironmentResolved) {
+                    // Mark the attempt before doing I/O. Unsupported or unreadable
+                    // environments must not trigger the same full mod scan per root.
+                    stateGraphs.persistentCacheEnvironmentResolved = true;
+                    long started = System.nanoTime();
+                    try {
+                        stateGraphs.persistentCacheEnvironment =
+                                createPersistentCacheEnvironment(router, access.jpe$getSeed());
+                        if (stateGraphs.persistentCacheEnvironment != null) {
+                            JPEOptimizer.LOGGER.info(
+                                    "Persistent density graph cache environment prepared in {} ms ({} loaded mods)",
+                                    (System.nanoTime() - started) / 1_000_000.0,
+                                    stateGraphs.persistentCacheEnvironment.mods().size());
+                        }
+                    } catch (IOException | RuntimeException | LinkageError unavailable) {
+                        JPEOptimizer.LOGGER.debug(
+                                "Persistent density graph cache environment unavailable: {}",
+                                describe(unavailable));
+                    }
+                }
+                environment = stateGraphs.persistentCacheEnvironment;
+            }
+            if (environment == null) return null;
+
+            byte[] fingerprint = DensityGraphWorldFingerprint.create(
+                    environment.worldSeed(), "26.3", "neoforge", environment.loaderVersion(),
+                    "noise-router:" + rootKey, NativeRuntime.EXPECTED_ABI_VERSION,
+                    CONFIGURATION_FINGERPRINT, environment.routerDigest(), environment.mods());
+
+            return new PersistentCacheKey(
+                    environment.directory().resolve(HexFormat.of().formatHex(fingerprint) + ".dgraph"),
+                    fingerprint);
+        } catch (RuntimeException | LinkageError unavailable) {
+            JPEOptimizer.LOGGER.debug(
+                    "Persistent density graph cache key unavailable: {}", describe(unavailable));
+            return null;
+        }
+    }
+
+    private static PersistentCacheEnvironment createPersistentCacheEnvironment(
+            NoiseRouter router, long worldSeed
+    ) throws IOException {
+        Optional<byte[]> routerDigest = EffectiveNoiseRouterDigest.tryCreate(router, JsonOps.INSTANCE);
+        if (routerDigest.isEmpty()) return null;
+
+        List<DensityGraphWorldFingerprint.ModVersion> mods = new ArrayList<>();
+        Map<Path, String> artifactDigests = new HashMap<>();
+        String loaderVersion = null;
+        for (var mod : ModList.get().getMods()) {
+            String id = mod.getModId();
+            String version = mod.getVersion().toString();
+            var owningFile = mod.getOwningFile();
+            if (owningFile == null || owningFile.getFile() == null) return null;
+            Path artifactPath = owningFile.getFile().getFilePath();
+            if (artifactPath == null) return null;
+            artifactPath = artifactPath.toAbsolutePath().normalize();
+            String artifactDigest = artifactDigests.get(artifactPath);
+            if (artifactDigest == null) {
+                artifactDigest = sha256ModArtifact(artifactPath);
+                artifactDigests.put(artifactPath, artifactDigest);
+            }
+            mods.add(new DensityGraphWorldFingerprint.ModVersion(id, version, artifactDigest));
+            if (id.equals("neoforge")) loaderVersion = version;
+        }
+        if (loaderVersion == null) return null;
+
+        String configuredDirectory = System.getProperty("jpe.nativeDensityGraphCacheDir");
+        Path directory = configuredDirectory == null || configuredDirectory.isBlank()
+                ? FMLPaths.GAMEDIR.get().resolve("jpe-optimizer").resolve("density-graphs")
+                : Path.of(configuredDirectory);
+        return new PersistentCacheEnvironment(
+                worldSeed, routerDigest.orElseThrow(), loaderVersion, mods, directory);
+    }
+
+    /**
+     * Hashes the actual loaded mod artifact, not merely its declared version.
+     * Directory-backed development mods are hashed deterministically by relative
+     * path and file contents. Symlinks and unreadable/unknown artifact types
+     * disable persistent reuse rather than weakening the cache identity.
+     */
+    static String sha256ModArtifact(Path artifact) throws IOException {
+        if (Files.isSymbolicLink(artifact)) {
+            throw new IOException("Mod artifact is a symbolic link: " + artifact);
+        }
+        final MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new AssertionError(impossible);
+        }
+
+        if (Files.isRegularFile(artifact, LinkOption.NOFOLLOW_LINKS)) {
+            digest.update((byte) 'F');
+            updateDigestFromFile(digest, artifact);
+            return HexFormat.of().formatHex(digest.digest());
+        }
+        if (!Files.isDirectory(artifact, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Unsupported mod artifact path: " + artifact);
+        }
+
+        digest.update((byte) 'D');
+        try (Stream<Path> walk = Files.walk(artifact)) {
+            List<Path> files = walk.sorted(Comparator.comparing(
+                    path -> artifact.relativize(path).toString())).toList();
+            for (Path file : files) {
+                if (file.equals(artifact)) continue;
+                if (Files.isSymbolicLink(file)) {
+                    throw new IOException("Mod artifact contains a symbolic link: " + file);
+                }
+                if (Files.isDirectory(file, LinkOption.NOFOLLOW_LINKS)) continue;
+                if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
+                    throw new IOException("Unsupported entry in mod artifact: " + file);
+                }
+                byte[] relative = artifact.relativize(file).toString()
+                        .replace(file.getFileSystem().getSeparator(), "/")
+                        .getBytes(StandardCharsets.UTF_8);
+                long expectedSize = Files.size(file);
+                // Length-prefix both the path and payload. Delimiter-only framing
+                // permits ambiguous directory layouts to produce identical input
+                // streams without requiring a SHA-256 collision.
+                digest.update(ByteBuffer.allocate(Integer.BYTES).putInt(relative.length).array());
+                digest.update(relative);
+                digest.update(ByteBuffer.allocate(Long.BYTES).putLong(expectedSize).array());
+                long actualSize = updateDigestFromFile(digest, file);
+                if (actualSize != expectedSize) {
+                    throw new IOException("Mod artifact changed while hashing: " + file);
+                }
+            }
+        }
+        return HexFormat.of().formatHex(digest.digest());
+    }
+
+    private static long updateDigestFromFile(MessageDigest digest, Path file) throws IOException {
+        byte[] buffer = new byte[64 * 1024];
+        long total = 0L;
+        try (InputStream input = Files.newInputStream(file)) {
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                digest.update(buffer, 0, read);
+                total += read;
+            }
+        }
+        return total;
+    }
+
+    private static String routerRootKey(NoiseRouter router, DensityFunction root) {
+        if (router == null || root == null || !router.getClass().isRecord()) return null;
+        List<String> names = new ArrayList<>();
+        try {
+            for (RecordComponent component : router.getClass().getRecordComponents()) {
+                if (DensityFunction.class.isAssignableFrom(component.getType())
+                        && component.getAccessor().invoke(router) == root) {
+                    names.add(component.getName());
+                }
+            }
+        } catch (ReflectiveOperationException | RuntimeException failure) {
+            return null;
+        }
+        if (names.isEmpty()) return null;
+        Collections.sort(names);
+        return String.join("+", names);
+    }
+
+    private static Optional<PortableDensityGraphCache.Graph> readPersistentGraph(PersistentCacheKey key) {
+        try {
+            return PortableDensityGraphCache.read(
+                    key.path(), key.fingerprint(), CONFIGURATION_FINGERPRINT);
+        } catch (IOException | RuntimeException cacheReadFailure) {
+            JPEOptimizer.LOGGER.warn(
+                    "Unable to read persistent density graph cache {}: {}",
+                    key.path(), describe(cacheReadFailure));
+            return Optional.empty();
+        }
+    }
+
+    private static long compilePortableGraph(
+            NativeRuntime runtime, PortableDensityGraphCache.Graph graph
+    ) {
+        List<NativeRuntime.DensityNode> materialized = graph.materialize(runtime);
+        Set<Long> temporaryHandles = new HashSet<>();
+        for (NativeRuntime.DensityNode node : materialized) {
+            if (node.opcode() == 7 || node.opcode() == 31) {
+                temporaryHandles.add((long) node.immediate());
+            }
+        }
+        try {
+            return runtime.compileDensityGraph(
+                    materialized, graph.rootNode(), CONFIGURATION_FINGERPRINT);
+        } finally {
+            // The C++ graph retains its own prepared-stack references.
+            for (long handle : temporaryHandles) {
+                try {
+                    runtime.releasePreparedPerlinStack(handle);
+                } catch (RuntimeException | LinkageError releaseFailure) {
+                    JPEOptimizer.LOGGER.error(
+                            "Unable to release temporary prepared Perlin stack {}", handle, releaseFailure);
+                }
+            }
         }
     }
 
@@ -694,17 +1002,45 @@ public final class NativeDensityGraphCompiler {
         private final DensityFunction.CompileContext context;
         private final boolean blenderEmpty;
         private final boolean beardifierEmpty;
+        private final boolean capturePortable;
+        private boolean portableGraphSupported = true;
         private final List<NativeRuntime.DensityNode> nodes = new ArrayList<>();
         private final IdentityHashMap<DensityFunction, Integer> indices = new IdentityHashMap<>();
         private final IdentityHashMap<DensityFunction, Boolean> active = new IdentityHashMap<>();
         private final IdentityHashMap<Object, Integer> splineIndices = new IdentityHashMap<>();
         private final IdentityHashMap<Object, Boolean> activeSplines = new IdentityHashMap<>();
+        private final IdentityHashMap<Noise, Integer> perlinStackSlots = new IdentityHashMap<>();
+        private final Map<Long, Integer> preparedHandleSlots = new HashMap<>();
+        private final List<PortableDensityGraphCache.PerlinStack> perlinStacks = new ArrayList<>();
         private final Map<Integer, Integer> constantNodes = new HashMap<>();
 
-        private Builder(DensityFunction.CompileContext context, boolean blenderEmpty, boolean beardifierEmpty) {
+        private Builder(DensityFunction.CompileContext context, boolean blenderEmpty,
+                        boolean beardifierEmpty, boolean capturePortable) {
             this.context = context;
             this.blenderEmpty = blenderEmpty;
             this.beardifierEmpty = beardifierEmpty;
+            this.capturePortable = capturePortable;
+        }
+
+        private PortableDensityGraphCache.Graph portableGraph(int rootIndex) {
+            if (!capturePortable || !portableGraphSupported) {
+                throw new IllegalStateException("Portable density graph snapshot is unavailable");
+            }
+            List<NativeRuntime.DensityNode> portableNodes = new ArrayList<>(nodes.size());
+            for (NativeRuntime.DensityNode node : nodes) {
+                if (node.opcode() == 7 || node.opcode() == 31) {
+                    Integer slot = preparedHandleSlots.get((long) node.immediate());
+                    if (slot == null) {
+                        throw new IllegalStateException("Native Perlin handle has no portable descriptor slot");
+                    }
+                    portableNodes.add(new NativeRuntime.DensityNode(
+                            node.opcode(), node.inputA(), node.inputB(), node.reserved(),
+                            slot.doubleValue(), node.auxiliary(), node.tertiary()));
+                } else {
+                    portableNodes.add(node);
+                }
+            }
+            return new PortableDensityGraphCache.Graph(portableNodes, rootIndex, perlinStacks);
         }
 
         private int constant(float value) {
@@ -1036,9 +1372,27 @@ public final class NativeDensityGraphCompiler {
                             Map<NoiseFunction, Noise> captured = CAPTURED_NOISE.get(context);
                             noise = captured == null ? null : captured.get((NoiseFunction) function);
                         }
+                        if (noise == null) {
+                            throw new UnsupportedOperationException("Noise sampler was not captured by vanilla compilation");
+                        }
                         long preparedHandle = NativePerlinNoiseBackend.preparedStackHandleForDensityGraph(noise);
                         if (preparedHandle == 0L) {
                             throw new UnsupportedOperationException("Noise sampler is not a supported Perlin stack");
+                        }
+                        if (capturePortable && portableGraphSupported) {
+                            Integer stackSlot = perlinStackSlots.get(noise);
+                            if (stackSlot == null) {
+                                PortableDensityGraphCache.PerlinStack descriptor =
+                                        NativePerlinNoiseBackend.portableStackDescriptor(noise);
+                                if (descriptor == null) {
+                                    portableGraphSupported = false;
+                                } else {
+                                    stackSlot = perlinStacks.size();
+                                    perlinStacks.add(descriptor);
+                                    perlinStackSlots.put(noise, stackSlot);
+                                }
+                            }
+                            if (stackSlot != null) preparedHandleSlots.putIfAbsent(preparedHandle, stackSlot);
                         }
                         double xzScale = ((Number) component(function, "xzScale")).doubleValue();
                         double yScale = ((Number) component(function, "yScale")).doubleValue();

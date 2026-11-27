@@ -22,14 +22,19 @@ import java.util.Objects;
  */
 public final class DensityGraphWorldFingerprint {
     private static final long MAGIC = 0x4A50455747464E31L; // "JPEWGFN1"
-    private static final int FORMAT_VERSION = 1;
+    private static final int FORMAT_VERSION = 2;
 
     private DensityGraphWorldFingerprint() {}
 
-    public record ModVersion(String id, String version) {
+    public record ModVersion(String id, String version, String artifactSha256) {
         public ModVersion {
             requireText(id, "mod id");
             requireText(version, "mod version");
+            if (artifactSha256 == null || artifactSha256.length() != 64
+                    || !artifactSha256.chars().allMatch(c -> Character.digit(c, 16) >= 0)) {
+                throw new IllegalArgumentException("Mod artifact digest must be a 64-character SHA-256 hex value");
+            }
+            artifactSha256 = artifactSha256.toLowerCase(java.util.Locale.ROOT);
         }
     }
 
@@ -81,6 +86,7 @@ public final class DensityGraphWorldFingerprint {
                 for (ModVersion mod : orderedMods) {
                     writeText(output, mod.id());
                     writeText(output, mod.version());
+                    writeText(output, mod.artifactSha256());
                 }
             }
             return MessageDigest.getInstance("SHA-256").digest(bytes.toByteArray());
