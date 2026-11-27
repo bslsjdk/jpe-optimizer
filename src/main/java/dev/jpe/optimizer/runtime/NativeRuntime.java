@@ -2256,6 +2256,11 @@ public final class NativeRuntime implements AutoCloseable {
             }
             return new DensityNode(35, -1, -1, 0, (double) preparedHandle, 0.0, 0.0);
         }
+
+        /** Reads the current chunk's Beardifier context at density graph evaluation time. */
+        public static DensityNode beardifier() {
+            return new DensityNode(36, -1, -1, 0, 0.0, 0.0, 0.0);
+        }
     }
 
     public boolean supportsDensityGraph() {
