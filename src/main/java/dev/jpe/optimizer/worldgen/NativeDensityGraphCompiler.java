@@ -35,6 +35,7 @@ import net.minecraft.world.level.levelgen.densityfunction.DensityFunctions;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
 import net.minecraft.world.level.levelgen.densityfunction.ScopedDensityBuffer;
 import net.minecraft.world.level.levelgen.densityfunction.generator.NoiseFunction;
+import net.minecraft.world.level.levelgen.synth.BlendedNoise;
 import net.minecraft.world.level.levelgen.synth.Noise;
 import net.minecraft.world.level.levelgen.synth.NormalNoise;
 
@@ -75,7 +76,7 @@ import java.util.concurrent.ExecutionException;
  * graph, leaving the existing vanilla sampler untouched.
  */
 public final class NativeDensityGraphCompiler {
-    private static final long CONFIGURATION_FINGERPRINT = 0x4A50452603000007L;
+    private static final long CONFIGURATION_FINGERPRINT = 0x4A50452603000008L;
     private static final Object LOCK = new Object();
 
     // Density graphs repeatedly read the same record components while lowering
@@ -1249,6 +1250,71 @@ public final class NativeDensityGraphCompiler {
             return index;
         }
 
+        /**
+         * Lowers Minecraft 26.3 BlendedNoise from the same seeded FbmSet used by
+         * BlendedNoise.compileSampler(context). Each SmearedPerlin stack is a
+         * native opcode-35 node; the surrounding selector remains the exact
+         * float density DAG (main + 0.5, clamp, then lerp min/max).
+         *
+         * This graph is intentionally not serialized by the current portable
+         * cache format because it does not yet encode SmearedPerlin octave
+         * descriptors and fudgeYScale values. Live native compilation remains
+         * enabled and process-local stack handles are retained by the graph.
+         */
+        private int lowerBlendedNoise(BlendedNoise blendedNoise) {
+            if (capturePortable) {
+                portableGraphSupported = false;
+            }
+
+            BlendedNoise.FbmSet fbms = blendedNoise.createFbmSet(
+                    context.createRandom(BlendedNoise.NOISE_SEED));
+            double xzMultiplier = 684.412D * blendedNoise.xzScale();
+            double yMultiplier = 684.412D * blendedNoise.yScale();
+            double xzFactor = blendedNoise.xzFactor();
+            double yFactor = blendedNoise.yFactor();
+            if (!Double.isFinite(xzMultiplier) || !Double.isFinite(yMultiplier)
+                    || !Double.isFinite(xzFactor) || !Double.isFinite(yFactor)
+                    || xzFactor == 0.0D || yFactor == 0.0D) {
+                throw new UnsupportedOperationException("BlendedNoise has invalid coordinate scales");
+            }
+
+            long minHandle = 0L;
+            long maxHandle = 0L;
+            long mainHandle = 0L;
+            try {
+                minHandle = NativePerlinNoiseBackend.preparedSmearedStackHandleForDensityGraph(
+                        fbms.minLimitNoise(), xzMultiplier, yMultiplier);
+                maxHandle = NativePerlinNoiseBackend.preparedSmearedStackHandleForDensityGraph(
+                        fbms.maxLimitNoise(), xzMultiplier, yMultiplier);
+                mainHandle = NativePerlinNoiseBackend.preparedSmearedStackHandleForDensityGraph(
+                        fbms.mainNoise(), xzMultiplier / xzFactor, yMultiplier / yFactor);
+                if (minHandle == 0L || maxHandle == 0L || mainHandle == 0L) {
+                    throw new UnsupportedOperationException(
+                            "BlendedNoise requires three supported native SmearedPerlin stacks");
+                }
+
+                int minNoise = append(NativeRuntime.DensityNode.smearedPerlinStack(minHandle));
+                int maxNoise = append(NativeRuntime.DensityNode.smearedPerlinStack(maxHandle));
+                int mainNoise = append(NativeRuntime.DensityNode.smearedPerlinStack(mainHandle));
+                int mainOffset = add(mainNoise, constant(0.5F));
+                int blendAlpha = append(NativeRuntime.DensityNode.clamp(mainOffset, 0.0F, 1.0F));
+                return append(NativeRuntime.DensityNode.lerp(blendAlpha, minNoise, maxNoise));
+            } catch (RuntimeException | LinkageError failure) {
+                NativeRuntime runtime = NativePerlinNoiseBackend.runtimeForDensityGraph();
+                if (runtime != null) {
+                    for (long handle : new long[] {minHandle, maxHandle, mainHandle}) {
+                        if (handle == 0L) continue;
+                        try {
+                            runtime.releasePreparedPerlinStack(handle);
+                        } catch (RuntimeException | LinkageError cleanupFailure) {
+                            failure.addSuppressed(cleanupFailure);
+                        }
+                    }
+                }
+                throw failure;
+            }
+        }
+
         private int lower(DensityFunction function) {
             if (function == null) throw new UnsupportedOperationException("Null density function");
             Integer existing = indices.get(function);
@@ -1265,6 +1331,7 @@ public final class NativeDensityGraphCompiler {
                         Holder<DensityFunction> holder = (Holder<DensityFunction>) component(function, "function");
                         result = lower(holder.value());
                     }
+                    case "BlendedNoise" -> result = lowerBlendedNoise((BlendedNoise) function);
                     case "CacheFunction" -> result = lower((DensityFunction) component(function, "input"));
                     case "BlendDensityFunction" -> {
                         if (!blenderEmpty) {
