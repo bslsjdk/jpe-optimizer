@@ -606,7 +606,7 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
     int32_t step_x, int32_t step_y, int32_t step_z,
     const float* density_values,
     uint32_t density_count,
-    JpeAquiferCoreOutput* outputs
+    uint64_t* outputs
 ) try {
     constexpr uint32_t kMaxVolumeVoxels = 1024U * 1024U;
     constexpr uint32_t kNeighbors = 4U;
@@ -810,7 +810,14 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
         }
     }
 
-    for (size_t i = 0; i < total; ++i) outputs[i] = staged[i];
+    // Compact the stable 12-byte internal decision into the 8-byte Java-facing ABI.
+    // Bits 0..31: registry token; bit 32: has block state; bit 33: fluid update.
+    for (size_t i = 0; i < total; ++i) {
+        const auto& value = staged[i];
+        outputs[i] = static_cast<uint64_t>(value.block_state_type)
+            | (value.has_block_state != 0U ? (uint64_t{1} << 32U) : 0U)
+            | (value.should_schedule_fluid_update != 0U ? (uint64_t{1} << 33U) : 0U);
+    }
     return 0;
 } catch (...) {
     return 2;
@@ -826,7 +833,7 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_density_and_substance
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
-    JpeAquiferCoreOutput* outputs
+    uint64_t* outputs
 ) try {
     constexpr uint64_t kMaxVolumeElements = 1024ULL * 1024ULL;
     if (context_handle == 0 || expected_world_fingerprint == nullptr
