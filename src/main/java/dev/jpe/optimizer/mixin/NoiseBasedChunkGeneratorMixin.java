@@ -141,9 +141,11 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                 throw new IllegalStateException(
                         "Fused Aquifer verification requires native density/Aquifer strict parity and the fused ABI");
             }
+            // Strict controls failure/fallback policy, not the cost of the independent
+            // vanilla oracle. Keep full-volume parity opt-in so production generation
+            // does not recompute every Aquifer voxel in Java.
             boolean nativeAquiferVolumeVerify = Boolean.getBoolean("jpe.nativeAquiferSubstanceVerify")
                     || Boolean.getBoolean("jpe.nativeDensityGraphVerify")
-                    || nativeAquiferVolumeStrict
                     || nativeAquiferFusedVerify;
             NativeRuntime.AquiferSubstanceVolumeResult precomputedNativeVolume = null;
 
@@ -207,7 +209,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
             try (NativeRuntime.AquiferSubstanceVolumeResult nativeAquiferResults = computedNativeVolume) {
             boolean nativeVolumeAccepted = nativeAquiferResults != null;
             if (nativeVolumeAccepted && (Boolean.getBoolean("jpe.nativeAquiferSubstanceVerify")
-                    || nativeAquiferFusedVerify || nativeAquiferVolumeStrict)) {
+                    || nativeAquiferFusedVerify)) {
                 String mismatch = jpe$verifyNativeAquiferVolume(
                         aquifer, nativeAquiferPrepared, nativeAquiferResults, volume, densityBuffer);
                 if (mismatch != null) {
@@ -226,7 +228,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
             if (nativeVolumeAccepted
                     && REPORTED_NATIVE_AQUIFER_VOLUME_SUCCESS.compareAndSet(false, true)) {
                 boolean verified = Boolean.getBoolean("jpe.nativeAquiferSubstanceVerify")
-                        || nativeAquiferFusedVerify || nativeAquiferVolumeStrict;
+                        || nativeAquiferFusedVerify;
                 JPEOptimizer.LOGGER.info(
                         "JPE_NATIVE_AQUIFER_SUBSTANCE_VOLUME voxels={} verified={} strict={}",
                         nativeAquiferResults.size(), verified, nativeAquiferVolumeStrict);
