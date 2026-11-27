@@ -217,21 +217,25 @@ public final class ContinuousWorldgenBenchmark {
             submissionBatchesInFlight.incrementAndGet();
             try {
                 submissionExecutor.execute(() -> {
+                    List<PendingChunk> submitted = new ArrayList<>(FRONTIER_WIDTH);
+                    int scheduledRequests = 0;
                     try {
-                        List<PendingChunk> submitted = new ArrayList<>(FRONTIER_WIDTH);
                         for (int offset = -VIEW_RADIUS_CHUNKS; offset <= VIEW_RADIUS_CHUNKS; offset++) {
                             PendingChunk pending = submitChunk(chunkX, START_CHUNK_Z + offset, measured);
+                            scheduledRequests++;
                             if (pending != null) submitted.add(pending);
                         }
-                        // Register callbacks only after the whole row has been queued.
-                        for (PendingChunk pending : submitted) observeChunk(pending);
                     } catch (Throwable failure) {
-                        if (measured) {
-                            int unscheduled = Math.max(0, FRONTIER_WIDTH - measuredFinished.get());
+                        int unscheduled = Math.max(0, FRONTIER_WIDTH - scheduledRequests);
+                        if (measured && unscheduled != 0) {
                             measuredFailed.addAndGet(unscheduled);
+                            measuredFinished.addAndGet(unscheduled);
                         }
                         JPEOptimizer.LOGGER.error("Unable to submit benchmark frontier row x={}", chunkX, failure);
                     } finally {
+                        // Some futures may already be complete by this point; whenComplete
+                        // still observes them and performs the normal counter/lifecycle path.
+                        for (PendingChunk pending : submitted) observeChunk(pending);
                         submissionBatchesInFlight.decrementAndGet();
                     }
                 });
