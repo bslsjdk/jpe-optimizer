@@ -114,6 +114,24 @@ public final class NativeDensityGraphCompiler {
 
     private record GraphHandle(NativeRuntime runtime, long handle) {}
     private record PersistentCacheKey(Path path, byte[] fingerprint) {}
+    private record PersistentCacheEnvironment(
+            NoiseRouter router,
+            long worldSeed,
+            byte[] routerDigest,
+            String loaderVersion,
+            List<DensityGraphWorldFingerprint.ModVersion> mods,
+            Path directory
+    ) {
+        private PersistentCacheEnvironment {
+            routerDigest = routerDigest.clone();
+            mods = List.copyOf(mods);
+        }
+
+        @Override
+        public byte[] routerDigest() {
+            return routerDigest.clone();
+        }
+    }
 
     private static final class StateGraphs {
         private final IdentityHashMap<DensityFunction, GraphHandle> handles = new IdentityHashMap<>();
@@ -123,6 +141,10 @@ public final class NativeDensityGraphCompiler {
                 Collections.newSetFromMap(new IdentityHashMap<>());
         private final IdentityHashMap<DensityFunction, CompletableFuture<GraphHandle>> compiling =
                 new IdentityHashMap<>();
+        // The resolved router digest and loaded-mod artifact inventory are stable for
+        // this RandomState. Compute them once, not again for every router root.
+        private boolean persistentCacheEnvironmentResolved;
+        private PersistentCacheEnvironment persistentCacheEnvironment;
         private AquiferSamplerPlans aquiferSamplerPlans;
     }
 
@@ -587,7 +609,7 @@ public final class NativeDensityGraphCompiler {
         try {
             // Reflection-heavy graph lowering and native compilation deliberately run
             // outside LOCK. Other RandomState instances can prepare in parallel.
-            PersistentCacheKey cacheKey = persistentCacheKey(root, randomState);
+            PersistentCacheKey cacheKey = persistentCacheKey(root, randomState, stateGraphs);
             if (cacheKey != null) {
                 Optional<PortableDensityGraphCache.Graph> cachedGraph = readPersistentGraph(cacheKey);
                 if (cachedGraph.isPresent()) {
@@ -696,55 +718,89 @@ public final class NativeDensityGraphCompiler {
         }
     }
 
-    private static PersistentCacheKey persistentCacheKey(DensityFunction root, RandomState randomState) {
+    private static PersistentCacheKey persistentCacheKey(
+            DensityFunction root, RandomState randomState, StateGraphs stateGraphs
+    ) {
         try {
             RandomStateAccessor access = (RandomStateAccessor) (Object) randomState;
             NoiseRouter router = access.jpe$getRouter();
             String rootKey = routerRootKey(router, root);
             if (rootKey == null) return null;
 
-            Optional<byte[]> routerDigest = EffectiveNoiseRouterDigest.tryCreate(router, JsonOps.INSTANCE);
-            if (routerDigest.isEmpty()) return null;
-
-            List<DensityGraphWorldFingerprint.ModVersion> mods = new ArrayList<>();
-            Map<Path, String> artifactDigests = new HashMap<>();
-            String loaderVersion = null;
-            for (var mod : ModList.get().getMods()) {
-                String id = mod.getModId();
-                String version = mod.getVersion().toString();
-                var owningFile = mod.getOwningFile();
-                if (owningFile == null || owningFile.getFile() == null) return null;
-                Path artifactPath = owningFile.getFile().getFilePath();
-                if (artifactPath == null) return null;
-                artifactPath = artifactPath.toAbsolutePath().normalize();
-                String artifactDigest = artifactDigests.get(artifactPath);
-                if (artifactDigest == null) {
-                    artifactDigest = sha256ModArtifact(artifactPath);
-                    artifactDigests.put(artifactPath, artifactDigest);
+            PersistentCacheEnvironment environment;
+            synchronized (stateGraphs) {
+                if (!stateGraphs.persistentCacheEnvironmentResolved) {
+                    // Mark the attempt before doing I/O. Unsupported or unreadable
+                    // environments must not trigger the same full mod scan per root.
+                    stateGraphs.persistentCacheEnvironmentResolved = true;
+                    long started = System.nanoTime();
+                    try {
+                        stateGraphs.persistentCacheEnvironment =
+                                createPersistentCacheEnvironment(router, access.jpe$getSeed());
+                        if (stateGraphs.persistentCacheEnvironment != null) {
+                            JPEOptimizer.LOGGER.info(
+                                    "Persistent density graph cache environment prepared in {} ms ({} loaded mods)",
+                                    (System.nanoTime() - started) / 1_000_000.0,
+                                    stateGraphs.persistentCacheEnvironment.mods().size());
+                        }
+                    } catch (IOException | RuntimeException | LinkageError unavailable) {
+                        JPEOptimizer.LOGGER.debug(
+                                "Persistent density graph cache environment unavailable: {}",
+                                describe(unavailable));
+                    }
                 }
-                mods.add(new DensityGraphWorldFingerprint.ModVersion(id, version, artifactDigest));
-                if (id.equals("neoforge")) loaderVersion = version;
+                environment = stateGraphs.persistentCacheEnvironment;
             }
-            if (loaderVersion == null) return null;
+            if (environment == null) return null;
 
             byte[] fingerprint = DensityGraphWorldFingerprint.create(
-                    access.jpe$getSeed(), "26.3", "neoforge", loaderVersion,
+                    environment.worldSeed(), "26.3", "neoforge", environment.loaderVersion(),
                     "noise-router:" + rootKey, NativeRuntime.EXPECTED_ABI_VERSION,
-                    CONFIGURATION_FINGERPRINT, routerDigest.orElseThrow(), mods);
+                    CONFIGURATION_FINGERPRINT, environment.routerDigest(), environment.mods());
 
-            String configuredDirectory = System.getProperty("jpe.nativeDensityGraphCacheDir");
-            Path directory = configuredDirectory == null || configuredDirectory.isBlank()
-                    ? FMLPaths.GAMEDIR.get().resolve("jpe-optimizer").resolve("density-graphs")
-                    : Path.of(configuredDirectory);
             return new PersistentCacheKey(
-                    directory.resolve(HexFormat.of().formatHex(fingerprint) + ".dgraph"), fingerprint);
-        } catch (IOException | RuntimeException | LinkageError unavailable) {
-            // If the resolved router, mod inventory, or game directory is not
-            // available in full, persistent reuse is unsafe. Compile normally.
+                    environment.directory().resolve(HexFormat.of().formatHex(fingerprint) + ".dgraph"),
+                    fingerprint);
+        } catch (RuntimeException | LinkageError unavailable) {
             JPEOptimizer.LOGGER.debug(
                     "Persistent density graph cache key unavailable: {}", describe(unavailable));
             return null;
         }
+    }
+
+    private static PersistentCacheEnvironment createPersistentCacheEnvironment(
+            NoiseRouter router, long worldSeed
+    ) throws IOException {
+        Optional<byte[]> routerDigest = EffectiveNoiseRouterDigest.tryCreate(router, JsonOps.INSTANCE);
+        if (routerDigest.isEmpty()) return null;
+
+        List<DensityGraphWorldFingerprint.ModVersion> mods = new ArrayList<>();
+        Map<Path, String> artifactDigests = new HashMap<>();
+        String loaderVersion = null;
+        for (var mod : ModList.get().getMods()) {
+            String id = mod.getModId();
+            String version = mod.getVersion().toString();
+            var owningFile = mod.getOwningFile();
+            if (owningFile == null || owningFile.getFile() == null) return null;
+            Path artifactPath = owningFile.getFile().getFilePath();
+            if (artifactPath == null) return null;
+            artifactPath = artifactPath.toAbsolutePath().normalize();
+            String artifactDigest = artifactDigests.get(artifactPath);
+            if (artifactDigest == null) {
+                artifactDigest = sha256ModArtifact(artifactPath);
+                artifactDigests.put(artifactPath, artifactDigest);
+            }
+            mods.add(new DensityGraphWorldFingerprint.ModVersion(id, version, artifactDigest));
+            if (id.equals("neoforge")) loaderVersion = version;
+        }
+        if (loaderVersion == null) return null;
+
+        String configuredDirectory = System.getProperty("jpe.nativeDensityGraphCacheDir");
+        Path directory = configuredDirectory == null || configuredDirectory.isBlank()
+                ? FMLPaths.GAMEDIR.get().resolve("jpe-optimizer").resolve("density-graphs")
+                : Path.of(configuredDirectory);
+        return new PersistentCacheEnvironment(
+                router, worldSeed, routerDigest.orElseThrow(), loaderVersion, mods, directory);
     }
 
     /**
