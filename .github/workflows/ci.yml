@@ -146,7 +146,7 @@ jobs:
           fi
           exit "$test_status"
 
-      - name: Compare Java and strict native worlds (two fresh 340-FULL-chunk batches)
+      - name: Compare Java and strict native worlds (340 FULL chunks each, 5-minute batch deadline)
         if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         env:
           # Each mode gets a fresh server process and world directory, identical seed/settings,
@@ -424,6 +424,7 @@ jobs:
             build/climate-rtree-benchmark/
             build/server-benchmark/
             build/gametest/
+            build/worldgen-parity/
             build/reports/tests/
             build/test-results/
             build/source-audit/report.txt
