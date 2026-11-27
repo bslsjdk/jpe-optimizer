@@ -10,8 +10,12 @@ import dev.jpe.optimizer.runtime.NativeRuntime;
 import dev.jpe.optimizer.runtime.PortableDensityGraphCache;
 import dev.jpe.optimizer.runtime.DensityGraphWorldFingerprint;
 import dev.jpe.optimizer.runtime.EffectiveNoiseRouterDigest;
+import com.google.gson.JsonElement;
 import com.mojang.serialization.JsonOps;
 import net.minecraft.world.level.levelgen.NoiseRouter;
+import net.minecraft.resources.RegistryOps;
+import net.minecraft.server.MinecraftServer;
+import net.neoforged.neoforge.server.ServerLifecycleHooks;
 import net.neoforged.fml.ModList;
 import net.neoforged.fml.loading.FMLPaths;
 import it.unimi.dsi.fastutil.floats.FloatList;
@@ -727,6 +731,13 @@ public final class NativeDensityGraphCompiler {
             String rootKey = routerRootKey(router, root);
             if (rootKey == null) return null;
 
+            // NoiseRouter codecs can contain Holder references. JsonOps alone has
+            // no registry context and may reject an otherwise valid resolved router.
+            // A worldgen call made before the server is published simply skips disk
+            // caching and can retry on a later root without poisoning this state.
+            MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+            if (server == null) return null;
+
             PersistentCacheEnvironment environment;
             synchronized (stateGraphs) {
                 if (!stateGraphs.persistentCacheEnvironmentResolved) {
@@ -736,7 +747,7 @@ public final class NativeDensityGraphCompiler {
                     long started = System.nanoTime();
                     try {
                         stateGraphs.persistentCacheEnvironment =
-                                createPersistentCacheEnvironment(router, access.jpe$getSeed());
+                                createPersistentCacheEnvironment(router, access.jpe$getSeed(), server);
                         if (stateGraphs.persistentCacheEnvironment != null) {
                             JPEOptimizer.LOGGER.info(
                                     "Persistent density graph cache environment prepared in {} ms ({} loaded mods)",
@@ -769,10 +780,16 @@ public final class NativeDensityGraphCompiler {
     }
 
     private static PersistentCacheEnvironment createPersistentCacheEnvironment(
-            NoiseRouter router, long worldSeed
+            NoiseRouter router, long worldSeed, MinecraftServer server
     ) throws IOException {
-        Optional<byte[]> routerDigest = EffectiveNoiseRouterDigest.tryCreate(router, JsonOps.INSTANCE);
-        if (routerDigest.isEmpty()) return null;
+        RegistryOps<JsonElement> registryOps =
+                RegistryOps.create(JsonOps.INSTANCE, server.registryAccess());
+        Optional<byte[]> routerDigest = EffectiveNoiseRouterDigest.tryCreate(router, registryOps);
+        if (routerDigest.isEmpty()) {
+            JPEOptimizer.LOGGER.debug(
+                    "Persistent density graph cache disabled: resolved NoiseRouter did not encode with server registries");
+            return null;
+        }
 
         List<DensityGraphWorldFingerprint.ModVersion> mods = new ArrayList<>();
         Map<Path, String> artifactDigests = new HashMap<>();
