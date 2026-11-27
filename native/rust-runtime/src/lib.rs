@@ -475,6 +475,16 @@ impl JpeGraphProgram {
 }
 
 unsafe extern "C" {
+    fn jpe_cpp_density_graph_handle_count() -> u32;
+}
+
+/// Live compiled-handle count, for leak checks across long generation runs.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_handle_count() -> u32 {
+    unsafe { jpe_cpp_density_graph_handle_count() }
+}
+
+unsafe extern "C" {
     fn jpe_cpp_density_graph_compile_program(
         nodes: *const JpeDensityNode, node_count: u32, root_node: u32,
         ir_version: u32, configuration_fingerprint: u64,
@@ -1749,6 +1759,160 @@ mod tests {
             jpe_runtime_density_graph_compile(nodes.as_ptr(), 1, 0, 10, 0x6701)
         };
         assert_eq!(refused, 0);
+    }
+
+    fn resident_bytes() -> usize {
+        let statm = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
+        let pages: usize = statm.split_whitespace().nth(1)
+            .and_then(|value| value.parse().ok()).unwrap_or(0);
+        pages * 4096
+    }
+
+    #[test]
+    fn density_graph_sustained_worldgen_keeps_handles_and_memory_flat() {
+        // An overworld-shaped graph: four noise stacks, a transposed shift, two
+        // splines, range choice, squeeze, and a trilinear root. The root is
+        // INTERPOLATED, so evaluating a full chunk only computes 4x48x4 cells --
+        // exactly the vanilla cost model.
+        let mut permutation = [0u8; 256];
+        let mut state = 0x1234_5678u32;
+        for slot in permutation.iter_mut() {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *slot = (state >> 24) as u8;
+        }
+        let layer = JpePerlinLayer {
+            permutation: permutation.as_ptr(),
+            offset_x: 1.5, offset_y: -2.5, offset_z: 0.75,
+            xz_scale: 0.25, y_scale: 0.125,
+            amplitude: 1.0, fudge_y_scale: 1.0,
+            flags: 0, reserved: 0,
+        };
+        let shift_b = JpePerlinLayer { xz_scale: 0.25, y_scale: 0.25, amplitude: 4.0, ..layer };
+        let plans = [
+            JpeNoisePlan { layers: &layer, layer_count: 1, flags: 0 },
+            JpeNoisePlan { layers: &layer, layer_count: 1, flags: 0 },
+            JpeNoisePlan { layers: &layer, layer_count: 1, flags: 0 },
+            JpeNoisePlan { layers: &shift_b, layer_count: 1, flags: 0 },
+        ];
+
+        // Splines: root 0 is a 5-point multipoint over node 0, root 1 is 3-point
+        // over node 1. Both use constant children.
+        let spline_nodes = [
+            JpeSplineNode { kind: SPLINE_MULTIPOINT, coordinate: 0, constant: 0.0, first_point: 0, point_count: 5 },
+            JpeSplineNode { kind: SPLINE_MULTIPOINT, coordinate: 1, constant: 0.0, first_point: 5, point_count: 3 },
+            JpeSplineNode { kind: SPLINE_CONSTANT, coordinate: 0, constant: 0.0, first_point: 0, point_count: 0 },
+            JpeSplineNode { kind: SPLINE_CONSTANT, coordinate: 0, constant: 0.5, first_point: 0, point_count: 0 },
+            JpeSplineNode { kind: SPLINE_CONSTANT, coordinate: 0, constant: -0.5, first_point: 0, point_count: 0 },
+            JpeSplineNode { kind: SPLINE_CONSTANT, coordinate: 0, constant: 0.25, first_point: 0, point_count: 0 },
+            JpeSplineNode { kind: SPLINE_CONSTANT, coordinate: 0, constant: -0.25, first_point: 0, point_count: 0 },
+        ];
+        let points = [
+            JpeSplinePoint { location: -1.0, derivative: 0.0, child: 2 },
+            JpeSplinePoint { location: -0.5, derivative: 0.0, child: 3 },
+            JpeSplinePoint { location: 0.0, derivative: 0.0, child: 4 },
+            JpeSplinePoint { location: 0.5, derivative: 0.0, child: 5 },
+            JpeSplinePoint { location: 1.0, derivative: 0.0, child: 6 },
+            JpeSplinePoint { location: -1.0, derivative: 0.0, child: 2 },
+            JpeSplinePoint { location: 0.0, derivative: 0.0, child: 3 },
+            JpeSplinePoint { location: 1.0, derivative: 0.0, child: 4 },
+        ];
+
+        let pack = |min: f32, max: f32| {
+            f64::from_bits(((min.to_bits() as u64) << 32) | max.to_bits() as u64)
+        };
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_NOISE, input_a: 0, input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_NOISE, input_a: 1, input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_NOISE, input_a: 2, input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_NOISE_TRANSPOSED, input_a: 3, input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_SPLINE, input_a: 0, input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            JpeDensityNode { opcode: DENSITY_SPLINE, input_a: 1, input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0 },
+            coordinate_node(DENSITY_Y),
+            constant_node(0.5),
+            binary_node(DENSITY_MUL, 5, 7),
+            binary_node(DENSITY_ADD, 4, 8),
+            constant_node(1.0),
+            constant_node(0.0),
+            JpeDensityNode { opcode: DENSITY_RANGE_CHOICE, input_a: 9, input_b: 10, reserved: 11, immediate: pack(0.0, 1.0) },
+            binary_node(DENSITY_ADD, 2, 3),
+            binary_node(DENSITY_MUL, 12, 13),
+            constant_node(-0.1),
+            binary_node(DENSITY_ADD, 14, 15),
+            unary_node(DENSITY_SQUEEZE, 16),
+            JpeDensityNode { opcode: DENSITY_INTERPOLATED, input_a: 17, input_b: 4, reserved: 8, immediate: 0.0 },
+        ];
+
+        let mut program = JpeGraphProgram::empty();
+        program.noise_plans = plans.as_ptr();
+        program.noise_plan_count = plans.len() as u32;
+        program.splines = spline_nodes.as_ptr();
+        program.spline_count = spline_nodes.len() as u32;
+        program.spline_points = points.as_ptr();
+        program.spline_point_count = points.len() as u32;
+
+        let root = nodes.len() as u32 - 1;
+        let first = unsafe {
+            jpe_runtime_density_graph_compile_program(
+                nodes.as_ptr(), nodes.len() as u32, root, 10, 0x9001, &program,
+            )
+        };
+        assert_ne!(first, 0, "sustained graph must compile");
+        let baseline_handles = unsafe { jpe_runtime_density_graph_handle_count() };
+
+        let (sx, sy, sz) = (16u32, 384u32, 16u32);
+        let volume = (sx * sy * sz) as usize;
+        let mut out = vec![0.0f32; volume];
+        let mut reference = vec![0.0f32; volume];
+
+        // First chunk becomes the determinism reference.
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                first, sx, sy, sz, 0, -64, 0, 1, 1, 1, reference.as_mut_ptr(), volume as u64,
+            )
+        }, 0);
+
+        let before = resident_bytes();
+        let chunks = 200u32;
+        let start = std::time::Instant::now();
+        for index in 0..chunks {
+            let chunk_x = (index % 16) as i32 * 16;
+            let chunk_z = (index / 16) as i32 * 16;
+            // Recompiling the identical program must hand back the same handle.
+            let handle = unsafe {
+                jpe_runtime_density_graph_compile_program(
+                    nodes.as_ptr(), nodes.len() as u32, root, 10, 0x9001, &program,
+                )
+            };
+            assert_eq!(handle, first, "identical programs must reuse one handle");
+            assert_eq!(unsafe {
+                jpe_runtime_density_graph_evaluate(
+                    handle, sx, sy, sz, chunk_x, -64, chunk_z, 1, 1, 1,
+                    out.as_mut_ptr(), volume as u64,
+                )
+            }, 0);
+        }
+        let elapsed = start.elapsed();
+        let after = resident_bytes();
+        let handles = unsafe { jpe_runtime_density_graph_handle_count() };
+
+        // Determinism: the origin chunk must reproduce bit for bit.
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                first, sx, sy, sz, 0, -64, 0, 1, 1, 1, out.as_mut_ptr(), volume as u64,
+            )
+        }, 0);
+        assert_eq!(out, reference, "repeated evaluation must be bit-identical");
+
+        let per_chunk = elapsed.as_secs_f64() * 1000.0 / chunks as f64;
+        println!(
+            "JPE_SUSTAINED chunks={chunks} total_ms={:.2} ms_per_chunk={:.3} handles={handles} rss_delta_kb={}",
+            elapsed.as_secs_f64() * 1000.0,
+            per_chunk,
+            (after as i64 - before as i64) / 1024
+        );
+        assert_eq!(handles, baseline_handles, "handle count must not grow with chunks");
+        assert!(after <= before + 8 * 1024 * 1024, "resident memory grew by more than 8 MiB");
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(first) }, 0);
     }
 
     #[test]

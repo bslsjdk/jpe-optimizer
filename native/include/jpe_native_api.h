@@ -312,6 +312,9 @@ JPE_API int32_t jpe_runtime_density_graph_evaluate_multi_with_inputs(
     const uint32_t *output_nodes, uint32_t output_count,
     float *outputs, uint64_t output_length
 );
+/* Number of live compiled handles. A steady worldgen run must hold this constant,
+ * so this is the leak check for long generation sessions. */
+JPE_API uint32_t jpe_runtime_density_graph_handle_count(void);
 /* Releases one retained handle. Active evaluations keep their immutable plan alive. */
 JPE_API int32_t jpe_runtime_density_graph_release(uint64_t graph_handle);
 /* Native-owned persistent plan cache. A cache miss returns handle 0; save returns status 0 on success. */
