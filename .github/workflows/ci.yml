@@ -147,7 +147,7 @@ jobs:
       - name: Real overworld native density and Aquifer parity (full chunk generation)
         if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         env:
-          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphVerify=true -Djpe.nativeDensityGraphStrict=true -Djpe.nativeAquiferSubstanceEnabled=true -Djpe.nativeAquiferSubstanceStrict=true -Djpe.nativeAquiferSubstanceVerify=true -Djpe.nativeAquiferFusedVerify=true -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=22 -Djpe.worldgenMetrics=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
+          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphVerify=true -Djpe.nativeDensityGraphStrict=true -Djpe.nativeAquiferSubstanceEnabled=true -Djpe.nativeAquiferSubstanceStrict=true -Djpe.nativeAquiferSubstanceVerify=true -Djpe.nativeAquiferFusedVerify=true -Djpe.nativeDensityGraphCacheDir=${{ github.workspace }}/build/native-density-graph-cache -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=22 -Djpe.worldgenMetrics=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
         run: |
           mkdir -p build/native-density-worldgen
           rm -rf run
@@ -171,6 +171,7 @@ jobs:
           set -o pipefail
           gradle runServer --no-daemon --stacktrace 2>&1 | tee build/native-density-worldgen/overworld.log
           grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*completedChunks=340.*failedChunks=0.*doFillCalls=([3-9][0-9]{2,}|[1-9][0-9]{3,})' build/native-density-worldgen/overworld.log
+          grep -F 'Persistent density graph cache environment prepared' build/native-density-worldgen/overworld.log
           grep -F 'Native density graph compiled for' build/native-density-worldgen/overworld.log
           grep -F 'Native density graph evaluated for' build/native-density-worldgen/overworld.log
           grep -F 'JPE_NATIVE_AQUIFER_CONTEXT_READY' build/native-density-worldgen/overworld.log
@@ -178,6 +179,39 @@ jobs:
           ! grep -F 'Native Aquifer full-volume parity mismatch' build/native-density-worldgen/overworld.log
           ! grep -F 'Native density graph evaluation failed' build/native-density-worldgen/overworld.log
           ! grep -F 'Native density graph parity mismatch' build/native-density-worldgen/overworld.log
+
+      - name: Warm-launch persistent density graph cache (fresh server process)
+        if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
+        env:
+          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphVerify=true -Djpe.nativeDensityGraphStrict=true -Djpe.nativeAquiferSubstanceEnabled=true -Djpe.nativeAquiferSubstanceStrict=true -Djpe.nativeAquiferSubstanceVerify=true -Djpe.nativeDensityGraphCacheDir=${{ github.workspace }}/build/native-density-graph-cache -Djpe.serverWorldgenBenchmark=true -Djpe.worldgenMetrics=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
+        run: |
+          mkdir -p build/native-density-cache-warm
+          # Keep the shared portable cache, but use a clean world directory and a
+          # new JVM/server process with the same seed and resolved worldgen settings.
+          rm -rf run
+          mkdir -p run
+          printf 'eula=true\\n' > run/eula.txt
+          cat > run/server.properties <<'PROPERTIES'
+          level-seed=12648430
+          level-type=minecraft:normal
+          generate-structures=true
+          online-mode=false
+          server-ip=127.0.0.1
+          server-port=25566
+          enable-query=false
+          enable-rcon=false
+          spawn-protection=0
+          view-distance=8
+          simulation-distance=6
+          max-tick-time=-1
+          sync-chunk-writes=false
+          PROPERTIES
+          set -o pipefail
+          gradle runServer --no-daemon --stacktrace 2>&1 | tee build/native-density-cache-warm/warm.log
+          grep -F 'JPE_SERVER_WORLDGEN_BENCH' build/native-density-cache-warm/warm.log
+          grep -F 'Persistent native density graph cache hit for' build/native-density-cache-warm/warm.log
+          ! grep -F 'Native density graph evaluation failed' build/native-density-cache-warm/warm.log
+          ! grep -F 'Native density graph parity mismatch' build/native-density-cache-warm/warm.log
 
       - name: Real overworld Climate R-tree benchmark (six fan-outs, vanilla result parity)
         if: github.event_name == 'workflow_dispatch'
