@@ -346,6 +346,9 @@ public final class ContinuousWorldgenBenchmark {
                                     MEASUREMENT_DEADLINE_SECONDS, measuredCompleted.get(), measuredFailed.get(),
                                     inFlight.get(), measuredRowsIssued, MEASURED_ROWS);
                             server.halt(false);
+                            // This is a dedicated CI benchmark JVM. A blocked server thread must
+                            // not prevent the hard wall-clock deadline from terminating the batch.
+                            Runtime.getRuntime().halt(124);
                         }
                         return;
                     }
