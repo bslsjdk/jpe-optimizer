@@ -4,3 +4,4 @@ native/cpp-kernels/build/
 *.so
 *.dylib
 *.dll
+build/

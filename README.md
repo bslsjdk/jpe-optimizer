@@ -82,7 +82,11 @@ The metrics are disabled by default. They measure only these two `doFill` phases
 ## Correctness rule
 Minecraft 26.3 evaluates Density Functions and noises with single-precision floating point, including intermediate operations. Reordering arithmetic can change rounding. Current code is a synthetic CSE experiment, not a replacement for vanilla worldgen.
 
+## Standalone density graph server
+`scripts/run-density-server.sh` starts a JDK-only HTTP service that compiles native density programs, evaluates chunk-sized volumes, and compares the result with a Java scalar reference. It needs neither Minecraft nor Gradle, only the built `libjpe_runtime`; the dashboard at `http://127.0.0.1:8787/` renders a volume slice and reports parity and p50/p95. See [docs/density-graph-server.md](docs/density-graph-server.md).
+
 ## Commands
+- `scripts/run-density-server.sh`
 - `gradle test`
 - `gradle benchmark`
 - `gradle vectorBenchmark`
