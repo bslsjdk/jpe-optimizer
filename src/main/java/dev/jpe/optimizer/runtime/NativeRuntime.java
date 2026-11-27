@@ -1214,19 +1214,21 @@ public final class NativeRuntime implements AutoCloseable {
 
         public int size() { ensureOpen(); return count; }
 
-        public boolean hasBlockState(int index) {
+        /**
+         * Reads one voxel result without repeating lifecycle and bounds checks.
+         * Bits 0..31 contain the block-state token, bit 32 indicates a state,
+         * and bit 33 indicates a scheduled fluid update. This is a primitive
+         * return value and does not allocate in the per-voxel fill loop.
+         */
+        public long packedResult(int index) {
             ensureIndex(index);
-            return values.get(ValueLayout.JAVA_INT, (long) index * 12L) != 0;
-        }
-
-        public int blockStateToken(int index) {
-            ensureIndex(index);
-            return values.get(ValueLayout.JAVA_INT, (long) index * 12L + 4L);
-        }
-
-        public boolean shouldScheduleFluidUpdate(int index) {
-            ensureIndex(index);
-            return values.get(ValueLayout.JAVA_INT, (long) index * 12L + 8L) != 0;
+            long offset = (long) index * 12L;
+            int hasBlockState = values.get(ValueLayout.JAVA_INT, offset);
+            int blockStateToken = values.get(ValueLayout.JAVA_INT, offset + 4L);
+            int scheduleFluidUpdate = values.get(ValueLayout.JAVA_INT, offset + 8L);
+            return (blockStateToken & 0xffff_ffffL)
+                    | (hasBlockState != 0 ? (1L << 32) : 0L)
+                    | (scheduleFluidUpdate != 0 ? (1L << 33) : 0L);
         }
 
         private void ensureIndex(int index) {
