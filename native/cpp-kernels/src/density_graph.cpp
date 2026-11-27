@@ -1035,7 +1035,7 @@ int32_t evaluate_density_graph_impl(
                     const int32_t status = jpe_cpp_perlin_stack_evaluate(
                         graph->prepared_handles[i], node.auxiliary, node.tertiary,
                         decode_float(node.reserved), transposed_x, transposed_y, 1,
-                        min_z, min_x, 0, step_z, step_x, 0,
+                        min_z, min_x, 0, step_z, step_x, 1,
                         perlin_scratch.data(), transposed_count, kAllowZeroPerlinSteps);
                     if (status != 0) return status;
                     size_t out = 0;
