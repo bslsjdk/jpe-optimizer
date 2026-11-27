@@ -3952,7 +3952,7 @@ mod tests {
         // skips positive-density voxels, and executes one negative-density voxel
         // through native nearest-four, FluidStatus, barrier and core decisions.
         let volume_densities = [-1.0_f32, 1.0_f32];
-        let mut volume_outputs = [JpeAquiferCoreOutput::default(); 2];
+        let mut volume_outputs = [0_u64; 2];
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_compute_substance_volume_f32(
                 context, expected_fingerprint.as_ptr(), expected_semantic_fingerprint,
@@ -3960,15 +3960,15 @@ mod tests {
                 volume_densities.as_ptr(), 2, volume_outputs.as_mut_ptr(),
             )
         }, STATUS_OK);
-        assert_eq!(volume_outputs[0].has_block_state, 1);
-        assert_eq!(volume_outputs[0].block_state_type, info.water_type);
-        assert_eq!(volume_outputs[0].should_schedule_fluid_update, 0);
-        assert_eq!(volume_outputs[1].has_block_state, 0);
-        assert_eq!(volume_outputs[1].block_state_type, info.air_type);
-        assert_eq!(volume_outputs[1].should_schedule_fluid_update, 0);
+        assert_ne!(volume_outputs[0] & (1_u64 << 32), 0);
+        assert_eq!(volume_outputs[0] as u32, info.water_type);
+        assert_eq!(volume_outputs[0] & (1_u64 << 33), 0);
+        assert_eq!(volume_outputs[1] & (1_u64 << 32), 0);
+        assert_eq!(volume_outputs[1] as u32, info.air_type);
+        assert_eq!(volume_outputs[1] & (1_u64 << 33), 0);
 
         let active_density = [-1.0_f32];
-        let mut active_output = [JpeAquiferCoreOutput::default(); 1];
+        let mut active_output = [0_u64; 1];
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_compute_substance_volume_f32(
                 context, expected_fingerprint.as_ptr(), expected_semantic_fingerprint,
@@ -3976,16 +3976,12 @@ mod tests {
                 active_density.as_ptr(), 1, active_output.as_mut_ptr(),
             )
         }, STATUS_OK);
-        assert_eq!(active_output[0].has_block_state, 1);
-        assert_eq!(active_output[0].block_state_type, info.air_type);
-        assert_eq!(active_output[0].should_schedule_fluid_update, 0);
+        assert_ne!(active_output[0] & (1_u64 << 32), 0);
+        assert_eq!(active_output[0] as u32, info.air_type);
+        assert_eq!(active_output[0] & (1_u64 << 33), 0);
 
         // Invalid volume dimensions are rejected before touching output.
-        let untouched_volume = [JpeAquiferCoreOutput {
-            has_block_state: 77,
-            block_state_type: 88,
-            should_schedule_fluid_update: 99,
-        }; 1];
+        let untouched_volume = [88_u64 | (77_u64 << 32) | (99_u64 << 33)];
         active_output = untouched_volume;
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_compute_substance_volume_f32(
@@ -3994,9 +3990,7 @@ mod tests {
                 active_density.as_ptr(), 1, active_output.as_mut_ptr(),
             )
         }, STATUS_INVALID_ARGUMENT);
-        assert_eq!(active_output[0].has_block_state, 77);
-        assert_eq!(active_output[0].block_state_type, 88);
-        assert_eq!(active_output[0].should_schedule_fluid_update, 99);
+        assert_eq!(active_output[0], untouched_volume[0]);
 
         assert_eq!(unsafe { jpe_runtime_aquifer_context_destroy(context) }, STATUS_OK);
         assert_eq!(unsafe { jpe_runtime_aquifer_context_destroy(context) }, STATUS_INVALID_ARGUMENT);
@@ -4198,7 +4192,7 @@ mod tests {
             )
         }, STATUS_OK);
 
-        let mut fused = [JpeAquiferCoreOutput::default(); 8];
+        let mut fused = [0_u64; 8];
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_compute_density_and_substance_volume_f32(
                 context, fingerprint.as_ptr(), info.semantic_fingerprint,
@@ -4209,7 +4203,7 @@ mod tests {
         }, STATUS_OK);
 
         let split_density = [-0.2_f32; 8];
-        let mut split = [JpeAquiferCoreOutput::default(); 8];
+        let mut split = [0_u64; 8];
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_compute_substance_volume_f32(
                 context, fingerprint.as_ptr(), info.semantic_fingerprint,
@@ -4220,18 +4214,13 @@ mod tests {
             )
         }, STATUS_OK);
         for index in 0..8 {
-            assert_eq!(fused[index].has_block_state, split[index].has_block_state);
-            assert_eq!(fused[index].block_state_type, split[index].block_state_type);
-            assert_eq!(
-                fused[index].should_schedule_fluid_update,
-                split[index].should_schedule_fluid_update,
-            );
+            assert_eq!(fused[index], split[index], "packed voxel {index}");
         }
 
         // Reuse the same native worker scratch with a smaller volume, then a
         // no-active-voxel volume, then an active voxel again. This catches stale
         // vector lengths/content surviving between successive chunk fills.
-        let mut fused_small = [JpeAquiferCoreOutput::default(); 1];
+        let mut fused_small = [0_u64; 1];
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_compute_density_and_substance_volume_f32(
                 context, fingerprint.as_ptr(), info.semantic_fingerprint,
@@ -4242,7 +4231,7 @@ mod tests {
         }, STATUS_OK);
 
         let small_density = [-0.2_f32];
-        let mut split_small = [JpeAquiferCoreOutput::default(); 1];
+        let mut split_small = [0_u64; 1];
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_compute_substance_volume_f32(
                 context, fingerprint.as_ptr(), info.semantic_fingerprint,
@@ -4251,15 +4240,10 @@ mod tests {
                 small_density.as_ptr(), 1, split_small.as_mut_ptr(),
             )
         }, STATUS_OK);
-        assert_eq!(fused_small[0].has_block_state, split_small[0].has_block_state);
-        assert_eq!(fused_small[0].block_state_type, split_small[0].block_state_type);
-        assert_eq!(
-            fused_small[0].should_schedule_fluid_update,
-            split_small[0].should_schedule_fluid_update,
-        );
+        assert_eq!(fused_small[0], split_small[0]);
 
         let positive_density = [1.0_f32; 3];
-        let mut positive_outputs = [JpeAquiferCoreOutput::default(); 3];
+        let mut positive_outputs = [0_u64; 3];
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_compute_substance_volume_f32(
                 context, fingerprint.as_ptr(), info.semantic_fingerprint,
@@ -4269,12 +4253,12 @@ mod tests {
             )
         }, STATUS_OK);
         for output in positive_outputs {
-            assert_eq!(output.has_block_state, 0);
-            assert_eq!(output.block_state_type, info.air_type);
-            assert_eq!(output.should_schedule_fluid_update, 0);
+            assert_eq!(output & (1_u64 << 32), 0);
+            assert_eq!(output as u32, info.air_type);
+            assert_eq!(output & (1_u64 << 33), 0);
         }
 
-        let mut reactivated_output = [JpeAquiferCoreOutput::default(); 1];
+        let mut reactivated_output = [0_u64; 1];
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_compute_substance_volume_f32(
                 context, fingerprint.as_ptr(), info.semantic_fingerprint,
@@ -4283,12 +4267,7 @@ mod tests {
                 small_density.as_ptr(), 1, reactivated_output.as_mut_ptr(),
             )
         }, STATUS_OK);
-        assert_eq!(reactivated_output[0].has_block_state, split_small[0].has_block_state);
-        assert_eq!(reactivated_output[0].block_state_type, split_small[0].block_state_type);
-        assert_eq!(
-            reactivated_output[0].should_schedule_fluid_update,
-            split_small[0].should_schedule_fluid_update,
-        );
+        assert_eq!(reactivated_output[0], split_small[0]);
 
         assert_eq!(unsafe {
             jpe_runtime_aquifer_context_destroy(context)
