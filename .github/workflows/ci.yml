@@ -152,7 +152,7 @@ jobs:
           mkdir -p build/native-density-worldgen
           rm -rf run
           mkdir -p run
-          printf 'eula=true\\n' > run/eula.txt
+          printf '%s\n' 'eula=true' > run/eula.txt
           cat > run/server.properties <<'PROPERTIES'
           level-seed=12648430
           level-type=minecraft:normal
@@ -190,7 +190,7 @@ jobs:
           # new JVM/server process with the same seed and resolved worldgen settings.
           rm -rf run
           mkdir -p run
-          printf 'eula=true\\n' > run/eula.txt
+          printf '%s\n' 'eula=true' > run/eula.txt
           cat > run/server.properties <<'PROPERTIES'
           level-seed=12648430
           level-type=minecraft:normal
@@ -258,7 +258,7 @@ jobs:
             # Clear the entire directory so no prior world's far-away benchmark chunks survive.
             rm -rf run
             mkdir -p run
-            printf 'eula=true\n' > run/eula.txt
+            printf '%s\n' 'eula=true' > run/eula.txt
             cat > run/server.properties <<'PROPERTIES'
           level-seed=12648430
           level-type=minecraft:normal
