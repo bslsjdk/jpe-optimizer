@@ -1401,7 +1401,7 @@ public final class NativeDensityGraphCompiler {
                         result = append(NativeRuntime.DensityNode.clamp(input, minimum, maximum));
                     }
                     case "SliceFunction" -> {
-                        String axisName = component(function, "axis").toString();
+                        String axisName = component(function, "axis").toString().toUpperCase(java.util.Locale.ROOT);
                         int axis = switch (axisName) {
                             case "X" -> 0;
                             case "Y" -> 1;
