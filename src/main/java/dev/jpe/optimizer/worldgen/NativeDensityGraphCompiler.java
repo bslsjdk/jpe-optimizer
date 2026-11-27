@@ -43,6 +43,7 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.charset.StandardCharsets;
+import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.nio.file.Path;
@@ -115,7 +116,6 @@ public final class NativeDensityGraphCompiler {
     private record GraphHandle(NativeRuntime runtime, long handle) {}
     private record PersistentCacheKey(Path path, byte[] fingerprint) {}
     private record PersistentCacheEnvironment(
-            NoiseRouter router,
             long worldSeed,
             byte[] routerDigest,
             String loaderVersion,
@@ -800,7 +800,7 @@ public final class NativeDensityGraphCompiler {
                 ? FMLPaths.GAMEDIR.get().resolve("jpe-optimizer").resolve("density-graphs")
                 : Path.of(configuredDirectory);
         return new PersistentCacheEnvironment(
-                router, worldSeed, routerDigest.orElseThrow(), loaderVersion, mods, directory);
+                worldSeed, routerDigest.orElseThrow(), loaderVersion, mods, directory);
     }
 
     /**
@@ -809,7 +809,7 @@ public final class NativeDensityGraphCompiler {
      * path and file contents. Symlinks and unreadable/unknown artifact types
      * disable persistent reuse rather than weakening the cache identity.
      */
-    private static String sha256ModArtifact(Path artifact) throws IOException {
+    static String sha256ModArtifact(Path artifact) throws IOException {
         if (Files.isSymbolicLink(artifact)) {
             throw new IOException("Mod artifact is a symbolic link: " + artifact);
         }
@@ -845,23 +845,33 @@ public final class NativeDensityGraphCompiler {
                 byte[] relative = artifact.relativize(file).toString()
                         .replace(file.getFileSystem().getSeparator(), "/")
                         .getBytes(StandardCharsets.UTF_8);
+                long expectedSize = Files.size(file);
+                // Length-prefix both the path and payload. Delimiter-only framing
+                // permits ambiguous directory layouts to produce identical input
+                // streams without requiring a SHA-256 collision.
+                digest.update(ByteBuffer.allocate(Integer.BYTES).putInt(relative.length).array());
                 digest.update(relative);
-                digest.update((byte) 0);
-                updateDigestFromFile(digest, file);
-                digest.update((byte) 0xFF);
+                digest.update(ByteBuffer.allocate(Long.BYTES).putLong(expectedSize).array());
+                long actualSize = updateDigestFromFile(digest, file);
+                if (actualSize != expectedSize) {
+                    throw new IOException("Mod artifact changed while hashing: " + file);
+                }
             }
         }
         return HexFormat.of().formatHex(digest.digest());
     }
 
-    private static void updateDigestFromFile(MessageDigest digest, Path file) throws IOException {
+    private static long updateDigestFromFile(MessageDigest digest, Path file) throws IOException {
         byte[] buffer = new byte[64 * 1024];
+        long total = 0L;
         try (InputStream input = Files.newInputStream(file)) {
             int read;
             while ((read = input.read(buffer)) != -1) {
                 digest.update(buffer, 0, read);
+                total += read;
             }
         }
+        return total;
     }
 
     private static String routerRootKey(NoiseRouter router, DensityFunction root) {
