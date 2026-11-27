@@ -227,22 +227,20 @@ public final class GameTests {
                              runtime.computeAquiferSubstanceVolumeF32(
                                      context, worldFingerprint, 0xA91F_2630_0001L,
                                      -1, testVolume, testDensity)) {
+                    long first = volumeResult.packedResult(0);
+                    long second = volumeResult.packedResult(1);
                     if (volumeResult.size() != 2
-                            || !volumeResult.hasBlockState(0)
-                            || volumeResult.blockStateToken(0) != 200
-                            || volumeResult.shouldScheduleFluidUpdate(0)
-                            || volumeResult.hasBlockState(1)
-                            || volumeResult.blockStateToken(1) != 100
-                            || volumeResult.shouldScheduleFluidUpdate(1)) {
+                            || (first & (1L << 32)) == 0L
+                            || (int) first != 200
+                            || (first & (1L << 33)) != 0L
+                            || (second & (1L << 32)) != 0L
+                            || (int) second != 100
+                            || (second & (1L << 33)) != 0L) {
                         throw new AssertionError(
                                 "Native full-volume Aquifer FFM mismatch: "
                                         + "size=" + volumeResult.size()
-                                        + " first=(" + volumeResult.hasBlockState(0)
-                                        + "," + volumeResult.blockStateToken(0)
-                                        + "," + volumeResult.shouldScheduleFluidUpdate(0)
-                                        + ") second=(" + volumeResult.hasBlockState(1)
-                                        + "," + volumeResult.blockStateToken(1)
-                                        + "," + volumeResult.shouldScheduleFluidUpdate(1) + ")");
+                                        + " firstPacked=" + Long.toUnsignedString(first)
+                                        + " secondPacked=" + Long.toUnsignedString(second));
                     }
                 }
             }
