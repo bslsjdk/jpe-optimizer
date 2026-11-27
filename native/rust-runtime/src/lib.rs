@@ -257,7 +257,7 @@ unsafe extern "C" {
         size_x: u32, size_y: u32, size_z: u32,
         min_x: i32, min_y: i32, min_z: i32,
         step_x: i32, step_y: i32, step_z: i32,
-        outputs: *mut JpeAquiferCoreOutput,
+        outputs: *mut u64,
     ) -> i32;
     fn jpe_cpp_aquifer_compute_substance_batch(
         inputs: *const JpeAquiferCoreInput,
@@ -719,7 +719,7 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_context_compute_density_and_substan
     size_x: u32, size_y: u32, size_z: u32,
     min_x: i32, min_y: i32, min_z: i32,
     step_x: i32, step_y: i32, step_z: i32,
-    outputs: *mut JpeAquiferCoreOutput,
+    outputs: *mut u64,
 ) -> i32 {
     const MAX_VOLUME_VOXELS: u64 = 1_048_576;
     let Some(total) = (size_x as u64)
