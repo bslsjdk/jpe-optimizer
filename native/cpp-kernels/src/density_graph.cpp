@@ -48,6 +48,7 @@ constexpr uint32_t kReciprocal = 19, kSign = 20, kPow = 21, kClamp = 22;
 constexpr uint32_t kSqueeze = 23, kLerp = 24, kGradient = 25, kInterpolated = 26, kRangeChoice = 27;
 constexpr uint32_t kRound = 28, kLog = 29, kDistanceToPoint = 30, kPerlinStackWarp = 31, kSlice = 32;
 constexpr uint32_t kShiftBPerlinStack = 33;
+constexpr uint32_t kFindTopSurface = 34;
 
 struct CompiledGraph {
     uint64_t fingerprint = 0;
@@ -252,6 +253,13 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                     || node.immediate > static_cast<double>(INT32_MAX)
                     || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
                 break;
+            case kFindTopSurface:
+                if (node.input_a >= i || node.input_b >= i
+                    || !std::isfinite(node.immediate) || node.immediate < 1.0
+                    || std::floor(node.immediate) != node.immediate
+                    || node.immediate > static_cast<double>(INT32_MAX)
+                    || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
+                break;
             default:
                 return false;
         }
@@ -331,6 +339,8 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
                     mark(node.input_a); mark(node.input_b); mark(node.reserved); break;
                 case kSlice:
                     mark(node.input_a); break;
+                case kFindTopSurface:
+                    mark(node.input_a); mark(node.input_b); break;
                 default:
                     break;
             }
@@ -355,6 +365,10 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
                 case kInterpolated:
                     graph->needs_x_coordinates = true;
                     graph->needs_y_coordinates = true;
+                    graph->needs_z_coordinates = true;
+                    break;
+                case kFindTopSurface:
+                    graph->needs_x_coordinates = true;
                     graph->needs_z_coordinates = true;
                     break;
                 default: break;
@@ -394,6 +408,8 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
                 ++consumers[node.input_a]; ++consumers[node.input_b]; ++consumers[node.reserved];
             } else if (node.opcode == kSlice) {
                 ++consumers[node.input_a];
+            } else if (node.opcode == kFindTopSurface) {
+                ++consumers[node.input_a]; ++consumers[node.input_b];
             }
         }
         graph->node_slots.resize(node_count, kNoInput);
@@ -433,6 +449,9 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
                 release_input(node.reserved);
             } else if (node.opcode == kSlice) {
                 release_input(node.input_a);
+            } else if (node.opcode == kFindTopSurface) {
+                release_input(node.input_a);
+                release_input(node.input_b);
             }
             if (i != root_node && consumers[i] == 0) free_slots.push_back(slot);
         }
@@ -983,6 +1002,50 @@ int32_t evaluate_density_graph_impl(
                                 const Scalar y0 = lerp(z00, z10, tx);
                                 const Scalar y1 = lerp(z01, z11, tx);
                                 values[out++] = lerp(y0, y1, ty);
+                            }
+                        }
+                    }
+                    break;
+                }
+                case kFindTopSurface: {
+                    // This node is column-valued: compute one surface Y per X/Z
+                    // column, then broadcast it through the requested Y volume.
+                    const int32_t lower_bound = static_cast<int32_t>(node.reserved);
+                    const int32_t step_size = static_cast<int32_t>(node.immediate);
+                    size_t out = 0;
+                    Scalar upper_value = Scalar(0);
+                    Scalar density_value = Scalar(0);
+                    for (uint32_t z = 0; z < size_z; ++z) {
+                        const int32_t world_z = wrapped_coordinate(min_z, z, step_z);
+                        for (uint32_t x = 0; x < size_x; ++x) {
+                            const int32_t world_x = wrapped_coordinate(min_x, x, step_x);
+                            int32_t surface_y = lower_bound;
+                            // The upper-bound function is a column estimate. Its
+                            // shipped vanilla inputs are X/Z-only; sample at Y=0.
+                            int32_t status = evaluate_density_graph_impl<Scalar>(
+                                graph, node.input_b, 1, 1, 1,
+                                world_x, 0, world_z, 0, 0, 0,
+                                &upper_value, 1, recursion_depth + 1);
+                            if (status != 0) return status;
+                            if (!std::isfinite(static_cast<double>(upper_value))) return 1;
+                            const double rounded_upper = std::floor(static_cast<double>(upper_value));
+                            if (rounded_upper > static_cast<double>(INT32_MAX)
+                                || rounded_upper < static_cast<double>(INT32_MIN)) return 1;
+                            int64_t y = static_cast<int64_t>(rounded_upper);
+                            while (y >= lower_bound) {
+                                status = evaluate_density_graph_impl<Scalar>(
+                                    graph, node.input_a, 1, 1, 1,
+                                    world_x, static_cast<int32_t>(y), world_z, 0, 0, 0,
+                                    &density_value, 1, recursion_depth + 1);
+                                if (status != 0) return status;
+                                if (density_value > Scalar(0)) {
+                                    surface_y = static_cast<int32_t>(y);
+                                    break;
+                                }
+                                y -= step_size;
+                            }
+                            for (uint32_t y_index = 0; y_index < size_y; ++y_index) {
+                                values[out++] = static_cast<Scalar>(surface_y);
                             }
                         }
                     }
