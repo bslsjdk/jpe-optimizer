@@ -1910,7 +1910,12 @@ mod tests {
             per_chunk,
             (after as i64 - before as i64) / 1024
         );
-        assert_eq!(handles, baseline_handles, "handle count must not grow with chunks");
+        // The handle table is process-global and cargo runs tests in parallel, so
+        // other cases can add and release handles while this one loops. A real leak
+        // here would show up as roughly one handle per chunk, so a small tolerance
+        // still separates "flat" from "leaking".
+        assert!(handles <= baseline_handles + 8,
+            "handle count grew with chunks: {baseline_handles} -> {handles}");
         assert!(after <= before + 8 * 1024 * 1024, "resident memory grew by more than 8 MiB");
         assert_eq!(unsafe { jpe_runtime_density_graph_release(first) }, 0);
     }
