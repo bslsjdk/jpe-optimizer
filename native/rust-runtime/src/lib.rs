@@ -306,6 +306,7 @@ unsafe extern "C" {
         expected_world_fingerprint: *const u8,
         expected_semantic_fingerprint: u64,
         final_density_graph_handle: u64,
+        beardifier_context_handle: u64,
         skip_sampling_above_y: i32,
         size_x: u32, size_y: u32, size_z: u32,
         min_x: i32, min_y: i32, min_z: i32,
@@ -852,6 +853,7 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_context_compute_density_and_substan
     expected_world_fingerprint: *const u8,
     expected_semantic_fingerprint: u64,
     final_density_graph_handle: u64,
+    beardifier_context_handle: u64,
     skip_sampling_above_y: i32,
     size_x: u32, size_y: u32, size_z: u32,
     min_x: i32, min_y: i32, min_z: i32,
@@ -866,6 +868,7 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_context_compute_density_and_substan
     };
     if context_handle == 0 || expected_world_fingerprint.is_null()
         || expected_semantic_fingerprint == 0 || final_density_graph_handle == 0
+        || beardifier_context_handle == 0
         || outputs.is_null() || size_x == 0 || size_y == 0 || size_z == 0
         || step_x <= 0 || step_y <= 0 || step_z <= 0
         || total == 0 || total > MAX_VOLUME_VOXELS {
@@ -874,7 +877,7 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_context_compute_density_and_substan
     match catch_unwind(AssertUnwindSafe(|| unsafe {
         jpe_cpp_aquifer_context_compute_density_and_substance_volume_f32(
             context_handle, expected_world_fingerprint, expected_semantic_fingerprint,
-            final_density_graph_handle, skip_sampling_above_y,
+            final_density_graph_handle, beardifier_context_handle, skip_sampling_above_y,
             size_x, size_y, size_z,
             min_x, min_y, min_z, step_x, step_y, step_z, outputs,
         )
