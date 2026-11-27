@@ -61,6 +61,7 @@ constexpr uint32_t kBeardifier = 36;
 struct EvaluationPlan {
     // Register and coordinate requirements for one actual evaluation lattice.
     std::vector<uint32_t> node_slots;
+    std::vector<uint32_t> ordered_nodes;
     uint32_t slot_count = 0;
     bool has_perlin = false;
     bool needs_x_coordinates = false;
@@ -388,6 +389,7 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
             for (uint32_t i = 0; i <= plan_root; ++i) {
                 if (reachable[i] == 0) continue;
                 reachable_union[i] = 1;
+                plan.ordered_nodes.push_back(i);
                 switch (graph->nodes[i].opcode) {
                     case JPE_DENSITY_X: plan.needs_x_coordinates = true; break;
                     case JPE_DENSITY_Y: plan.needs_y_coordinates = true; break;
@@ -676,10 +678,9 @@ int32_t evaluate_density_graph_impl(
         auto& slots = scratch.slots;
         auto& perlin_scratch = scratch.perlin;
 
-        for (uint32_t i = 0; i <= root_node; ++i) {
+        for (const uint32_t i : plan.ordered_nodes) {
             const JpeDensityNode& node = graph->nodes[i];
             const uint32_t slot = plan.node_slots[i];
-            if (slot == kNoInput) continue;
             auto& values = slots[slot];
 
             switch (node.opcode) {
