@@ -150,6 +150,7 @@ const DENSITY_CLAMP: u32 = 22;
 const DENSITY_PERLIN_STACK_WARP: u32 = 31;
 const DENSITY_SLICE: u32 = 32;
 const DENSITY_FIND_TOP_SURFACE: u32 = 34;
+const DENSITY_SMEARED_PERLIN_STACK: u32 = 35;
 
 unsafe extern "C" {
     fn jpe_cpp_density_graph_compile(
@@ -1983,6 +1984,76 @@ mod tests {
         assert_eq!(unsafe {
             jpe_runtime_density_graph_compile(invalid.as_ptr(), invalid.len() as u32, 2, 0x465453)
         }, 0, "zero scan stride must be rejected");
+    }
+
+    #[test]
+    fn density_graph_smeared_perlin_stack_matches_prepared_stack_f32() {
+        let permutation: [u8; 256] = std::array::from_fn(|index| index as u8);
+        let layer = JpePerlinLayer {
+            permutation: permutation.as_ptr(),
+            offset_x: 17.25,
+            offset_y: -31.5,
+            offset_z: 8.75,
+            xz_scale: 0.125,
+            y_scale: 0.25,
+            amplitude: 0.875,
+        };
+        let fudge_y_scales = [0.75_f64];
+        let prepared = unsafe {
+            jpe_runtime_prepare_smeared_perlin_stack(
+                &layer, fudge_y_scales.as_ptr(), 1,
+            )
+        };
+        assert_ne!(prepared, 0, "SmearedPerlin stack should prepare");
+
+        let nodes = [JpeDensityNode {
+            opcode: DENSITY_SMEARED_PERLIN_STACK,
+            input_a: DENSITY_NO_INPUT,
+            input_b: DENSITY_NO_INPUT,
+            reserved: 0,
+            immediate: prepared as f64,
+            auxiliary: 0.0,
+            tertiary: 0.0,
+        }];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), 1, 0, 0x534D_4541_5245_4431)
+        };
+        assert_ne!(graph, 0, "SmearedPerlin density graph should compile");
+
+        const SIZE_X: u32 = 3;
+        const SIZE_Y: u32 = 17;
+        const SIZE_Z: u32 = 2;
+        const LENGTH: usize = (SIZE_X * SIZE_Y * SIZE_Z) as usize;
+        let mut direct = [f32::NAN; LENGTH];
+        let mut graph_output = [f32::NAN; LENGTH];
+
+        assert_eq!(unsafe {
+            jpe_runtime_evaluate_prepared_smeared_perlin_stack(
+                prepared,
+                SIZE_X, SIZE_Y, SIZE_Z,
+                -31, -24, 11,
+                2, 1, 3,
+                direct.as_mut_ptr(), direct.len() as u64, 0,
+            )
+        }, STATUS_OK);
+
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                graph,
+                SIZE_X, SIZE_Y, SIZE_Z,
+                -31, -24, 11,
+                2, 1, 3,
+                graph_output.as_mut_ptr(), graph_output.len() as u64,
+            )
+        }, STATUS_OK);
+
+        assert_eq!(
+            graph_output.map(f32::to_bits),
+            direct.map(f32::to_bits),
+            "Opcode 35 must preserve the prepared SmearedPerlin stack output bit-for-bit",
+        );
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(graph) }, STATUS_OK);
+        assert_eq!(jpe_runtime_release_prepared_perlin_stack(prepared), STATUS_OK);
     }
 
     #[test]
