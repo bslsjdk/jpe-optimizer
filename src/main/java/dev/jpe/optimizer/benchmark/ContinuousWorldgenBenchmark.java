@@ -93,6 +93,7 @@ public final class ContinuousWorldgenBenchmark {
         private final AtomicInteger activeGenerationFutures = new AtomicInteger();
         private final AtomicInteger measuredCompleted = new AtomicInteger();
         private final AtomicInteger measuredFailed = new AtomicInteger();
+        private final AtomicInteger measuredFinished = new AtomicInteger();
         private final AtomicInteger maxInFlight = new AtomicInteger();
         private final AtomicInteger maxPendingTasks = new AtomicInteger();
         private final AtomicInteger maxLoadedChunks = new AtomicInteger();
@@ -261,6 +262,21 @@ public final class ContinuousWorldgenBenchmark {
                         activeGenerationFutures.decrementAndGet();
                     }
                     inFlight.decrementAndGet();
+                    if (pending.measured()) {
+                        int finished = measuredFinished.incrementAndGet();
+                        if (finished % FRONTIER_WIDTH == 0 || finished == MEASURED_ROWS * FRONTIER_WIDTH) {
+                            long elapsed = measurementStartNanos == 0L
+                                    ? 0L : System.nanoTime() - measurementStartNanos;
+                            JPEOptimizer.LOGGER.info(
+                                    "JPE continuous worldgen chunk progress: finished={}/{} completed={} failed={} "
+                                            + "inFlight={} activeGenerationFutures={} pendingTasks={} elapsedSeconds={}",
+                                    finished, MEASURED_ROWS * FRONTIER_WIDTH,
+                                    measuredCompleted.get(), measuredFailed.get(), inFlight.get(),
+                                    activeGenerationFutures.get(), level.getChunkSource().getPendingTasksCount(),
+                                    format(elapsed / 1_000_000_000.0)
+                            );
+                        }
+                    }
                 }
             });
         }
