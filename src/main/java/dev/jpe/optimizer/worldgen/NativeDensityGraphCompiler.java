@@ -1351,7 +1351,7 @@ public final class NativeDensityGraphCompiler {
                         result = append(NativeRuntime.DensityNode.lerp(alpha, first, second));
                     }
                     case "GradientFunction" -> {
-                        String axisName = component(function, "axis").toString();
+                        String axisName = component(function, "axis").toString().toUpperCase(java.util.Locale.ROOT);
                         String tilingName = component(function, "tiling").toString();
                         int tiling = switch (tilingName) {
                             case "CLAMP_TO_EDGE" -> 0;
