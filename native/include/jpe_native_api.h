@@ -144,7 +144,34 @@ enum {
     JPE_DENSITY_LERP = 31,
     /* Vanilla PowFunction: input_a=base, input_b=exponent. Both are promoted to
      * double for Math.pow, then narrowed back to float. */
-    JPE_DENSITY_POW = 32
+    JPE_DENSITY_POW = 32,
+    /* Vanilla SplineFunction. input_a is the index of the spline root in the
+     * program's spline table; the tree itself lives in JpeSplineNode/JpeSplinePoint
+     * so a spline never costs extra density nodes. input_b must be kNoInput. */
+    JPE_DENSITY_SPLINE = 33,
+    /* Vanilla SliceFunction: pin one axis to a constant. input_a is the child,
+     * immediate is the pinned block coordinate. The child is evaluated once on
+     * the reduced volume and broadcast along the pinned axis. */
+    JPE_DENSITY_SLICE_X = 34,
+    JPE_DENSITY_SLICE_Y = 35,
+    JPE_DENSITY_SLICE_Z = 36,
+    /* Vanilla RoundFunction: input_a=input, input_b=multiple or kNoInput for 1.0,
+     * reserved = 0 floor / 1 round / 2 ceil / 3 truncate. */
+    JPE_DENSITY_ROUND = 37,
+    /* Vanilla IntervalSelectFunction. input_a indexes the program's interval
+     * table, which carries the input node, the sorted thresholds and the N+1
+     * branch nodes. */
+    JPE_DENSITY_INTERVAL_SELECT = 38,
+    /* Vanilla FindTopSurfaceFunction: input_a=density, input_b=upperBound,
+     * reserved=cellHeight, immediate=lowerBound. Requires sizeY == 1. */
+    JPE_DENSITY_FIND_TOP_SURFACE = 39,
+    /* Vanilla DistanceToPointFunction. input_a indexes the program's point table. */
+    JPE_DENSITY_DISTANCE_TO_POINT = 40,
+    /* Vanilla BlendDensityFunction. input_a=child; the blend region comes from the
+     * program's blend table, and an inactive table is the identity. */
+    JPE_DENSITY_BLEND_DENSITY = 41,
+    /* Vanilla EndIslandFunction. Uses the program's simplex permutation. */
+    JPE_DENSITY_END_ISLAND = 42
 };
 /* One world-prepared noise plan. Layers must already be expanded by the caller:
  * each layer's xz_scale/y_scale includes the outer NoiseFunction scale times the
@@ -155,6 +182,94 @@ typedef struct JpeNoisePlan {
     uint32_t layer_count; /* 1..64 */
     uint32_t flags;
 } JpeNoisePlan;
+
+/* ---- Program payload tables ----------------------------------------------
+ * Several vanilla density functions carry more state than a node's four
+ * operands can hold. Those tables travel in one JpeGraphProgram so the ABI does
+ * not grow a new entry point every time a node is added. Every table is copied
+ * into the compiled graph, so all pointers may be released after compile. */
+
+/* CubicSpline is a tree of Multipoint nodes and Constant leaves. */
+enum {
+    JPE_SPLINE_CONSTANT = 0,
+    JPE_SPLINE_MULTIPOINT = 1
+};
+
+typedef struct JpeSplineNode {
+    uint32_t kind;        /* JPE_SPLINE_CONSTANT or JPE_SPLINE_MULTIPOINT */
+    uint32_t coordinate;  /* density node supplying the spline input (multipoint) */
+    float constant;       /* leaf value (constant) */
+    uint32_t first_point; /* index into the point table (multipoint) */
+    uint32_t point_count; /* >= 1, locations strictly ascending (multipoint) */
+} JpeSplineNode;
+
+typedef struct JpeSplinePoint {
+    float location;
+    float derivative;
+    uint32_t child; /* index into the spline node table */
+} JpeSplinePoint;
+
+typedef struct JpeIntervalSelect {
+    uint32_t input_node;
+    uint32_t first_threshold; /* index into the threshold table */
+    uint32_t threshold_count; /* N, so there are N+1 branches */
+    uint32_t first_branch;    /* index into the branch table */
+} JpeIntervalSelect;
+
+typedef struct JpeDistancePoint {
+    int32_t x;
+    int32_t y;
+    int32_t z;
+    uint32_t metric; /* 0 euclidean, 1 squared, 2 manhattan, 3 chebyshev */
+} JpeDistancePoint;
+
+/* One pre-resolved blend region. Vanilla resolves its blending maps through
+ * ChunkPos lookups and boundary fallbacks per voxel; the caller flattens that
+ * into these two dense cell grids, which turns every probe into one index. */
+typedef struct JpeBlendInput {
+    uint32_t active;      /* 0 -> blendDensity is the identity */
+    int32_t base_cell_x;  /* inclusive cell bounds, cells are block >> 2 */
+    int32_t base_cell_y;
+    int32_t base_cell_z;
+    uint32_t cells_x;
+    uint32_t cells_y;
+    uint32_t cells_z;
+    /* fixed_density: the height/biome blend value, or FLT_MAX where absent.
+     * density: the per-chunk density blend value. Both use [x][y][z] order and
+     * share the bounds above. density_mask is 1 where density is meaningful. */
+    const float *fixed_density;
+    const float *density;
+    const uint8_t *density_mask;
+} JpeBlendInput;
+
+typedef struct JpeGraphProgram {
+    const JpeNoisePlan *noise_plans;
+    uint32_t noise_plan_count;
+    const JpeSplineNode *splines;
+    uint32_t spline_count;
+    const JpeSplinePoint *spline_points;
+    uint32_t spline_point_count;
+    const JpeIntervalSelect *interval_selects;
+    uint32_t interval_select_count;
+    const float *interval_thresholds;
+    uint32_t interval_threshold_count;
+    const uint32_t *interval_branches;
+    uint32_t interval_branch_count;
+    const JpeDistancePoint *distance_points;
+    uint32_t distance_point_count;
+    const JpeBlendInput *blend;
+    /* EndIslandFunction's 256-byte simplex permutation (GradientNoise.perms). The
+     * island noise uses noiseOffsetScale 0, so no offset table is needed. */
+    const uint8_t *end_island_permutation;
+} JpeGraphProgram;
+
+/* Compiles a graph plus every payload table it references. All tables are copied.
+ * Returns a retained handle, or zero for an invalid program. */
+JPE_API uint64_t jpe_runtime_density_graph_compile_program(
+    const JpeDensityNode *nodes, uint32_t node_count, uint32_t root_node,
+    uint32_t ir_version, uint64_t configuration_fingerprint,
+    const JpeGraphProgram *program
+);
 /* Compiles a graph whose JPE_DENSITY_NOISE nodes reference noise_plans by slot.
  * Plan contents are copied. This entry bypasses the on-disk plan cache because
  * noise payload identity is owned by the caller's configuration_fingerprint. */

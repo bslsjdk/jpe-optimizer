@@ -45,6 +45,15 @@ constexpr uint32_t kNoInput = UINT32_MAX;
 constexpr uint32_t kMaxNoisePlans = 64;
 constexpr uint32_t kMaxNoiseLayers = 64;
 constexpr uint64_t kMaxNoiseFloats = 4ULL * 1024ULL * 1024ULL; // 16 MiB of shared noise staging.
+/* Payload ceilings. Every table is copied at compile, so each bound keeps one
+ * graph's retained footprint inside a predictable envelope. */
+constexpr uint32_t kMaxSplineNodes = 4096;
+constexpr uint32_t kMaxSplinePoints = 16384;
+constexpr uint32_t kMaxIntervals = 256;
+constexpr uint32_t kMaxIntervalThresholds = 1024;
+constexpr uint32_t kMaxIntervalBranches = 1024;
+constexpr uint32_t kMaxDistancePoints = 256;
+constexpr uint64_t kMaxBlendCells = 1ULL << 20;
 
 
 constexpr uint32_t kCacheFormatVersion = 1;
@@ -180,6 +189,53 @@ struct InterpolatedBinding {
     uint32_t cell_size_y;
 };
 
+/* Spline tree stored flat: nodes index into a shared point table, and every
+ * point names its own child node, so the tree needs no recursion at compile. */
+struct SplineBinding { uint32_t node; uint32_t root; };
+
+/* One pinned-axis sample. The child is evaluated on the reduced volume once per
+ * call, then broadcast along the pinned axis. */
+struct SliceBinding {
+    uint32_t node;
+    uint32_t input_node;
+    uint32_t axis;
+    int32_t coordinate;
+};
+
+struct RoundBinding {
+    uint32_t node;
+    uint32_t input_node;
+    uint32_t multiple_node; /* kNoInput means 1.0 */
+    uint32_t type;
+};
+
+struct IntervalBinding {
+    uint32_t node;
+    uint32_t input_node;
+    uint32_t first_threshold;
+    uint32_t threshold_count;
+    uint32_t first_branch;
+};
+
+struct TopSurfaceBinding {
+    uint32_t node;
+    uint32_t density_node;
+    uint32_t upper_node;
+    int32_t lower_bound;
+    int32_t cell_height;
+};
+
+/* Pre-resolved blend region. Everything is owned, so callers free their grids
+ * as soon as compile returns. */
+struct BlendRegion {
+    bool active = false;
+    int32_t base_x = 0, base_y = 0, base_z = 0;
+    uint32_t cells_x = 0, cells_y = 0, cells_z = 0;
+    std::vector<float> fixed_density;
+    std::vector<float> density;
+    std::vector<uint8_t> density_mask;
+};
+
 struct CompiledGraph {
     uint64_t fingerprint = 0;
     uint64_t configuration_fingerprint = 0;
@@ -197,6 +253,23 @@ struct CompiledGraph {
     std::vector<NoiseBinding> noises;
     std::vector<NoisePlanData> noise_plans;
     std::vector<InterpolatedBinding> interpolateds;
+    std::vector<SplineBinding> splines;
+    std::vector<JpeSplineNode> spline_nodes;
+    std::vector<JpeSplinePoint> spline_points;
+    std::vector<SliceBinding> slices;
+    std::vector<RoundBinding> rounds;
+    std::vector<JpeIntervalSelect> interval_tables;
+    std::vector<IntervalBinding> intervals;
+    std::vector<float> interval_thresholds;
+    std::vector<uint32_t> interval_branches;
+    std::vector<TopSurfaceBinding> top_surfaces;
+    std::vector<JpeDistancePoint> distance_points;
+    std::vector<uint32_t> distance_bindings; /* node -> index into distance_points */
+    BlendRegion blend;
+    std::vector<uint8_t> end_island_permutation;
+    std::vector<uint32_t> end_island_nodes;
+    /* node -> binding slot, so the tile sweep can dispatch in node order. */
+    std::vector<uint32_t> op_slot;
 };
 
 void build_execution_plan(CompiledGraph& graph) {
@@ -205,28 +278,44 @@ void build_execution_plan(CompiledGraph& graph) {
     graph.coordinates.clear();
     graph.gradients.clear();
     graph.arithmetic.clear();
+    graph.splines.clear();
+    graph.slices.clear();
+    graph.rounds.clear();
+    graph.intervals.clear();
+    graph.top_surfaces.clear();
+    graph.distance_bindings.clear();
+    graph.end_island_nodes.clear();
     graph.static_values.reserve(graph.nodes.size());
     graph.inputs.reserve(graph.nodes.size());
     graph.coordinates.reserve(graph.nodes.size());
     graph.gradients.reserve(graph.nodes.size());
     graph.arithmetic.reserve(graph.nodes.size());
+    // One slot per node names the binding that drives it, so the tile sweep can
+    // walk nodes strictly in index order. Topological order is the only thing
+    // that keeps a composite node from reading a stale child lane.
+    graph.op_slot.assign(graph.nodes.size(), kNoInput);
 
     for (uint32_t i = 0; i < graph.nodes.size(); ++i) {
         const JpeDensityNode& node = graph.nodes[i];
         switch (node.opcode) {
             case JPE_DENSITY_CONST:
+                graph.op_slot[i] = static_cast<uint32_t>(graph.static_values.size());
                 graph.static_values.push_back({i, static_cast<float>(node.immediate)});
                 break;
             case JPE_DENSITY_INPUT:
+                graph.op_slot[i] = static_cast<uint32_t>(graph.inputs.size());
                 graph.inputs.push_back({i, static_cast<uint32_t>(node.immediate)});
                 break;
             case JPE_DENSITY_X:
+                graph.op_slot[i] = static_cast<uint32_t>(graph.coordinates.size());
                 graph.coordinates.push_back({i, 0});
                 break;
             case JPE_DENSITY_Y:
+                graph.op_slot[i] = static_cast<uint32_t>(graph.coordinates.size());
                 graph.coordinates.push_back({i, 1});
                 break;
             case JPE_DENSITY_Z:
+                graph.op_slot[i] = static_cast<uint32_t>(graph.coordinates.size());
                 graph.coordinates.push_back({i, 2});
                 break;
             case JPE_DENSITY_GRADIENT_CLAMPED_X:
@@ -241,27 +330,76 @@ void build_execution_plan(CompiledGraph& graph) {
                 std::memcpy(&factor, &factor_bits, sizeof(factor));
                 const uint32_t axis = node.opcode == JPE_DENSITY_GRADIENT_CLAMPED_X ? 0U
                     : node.opcode == JPE_DENSITY_GRADIENT_CLAMPED_Y ? 1U : 2U;
+                graph.op_slot[i] = static_cast<uint32_t>(graph.gradients.size());
                 graph.gradients.push_back({i, axis, signed_i32(node.input_a),
                     signed_i32(node.input_b), signed_i32(node.reserved), from_value, factor});
                 break;
             }
             case JPE_DENSITY_OPAQUE:
+                graph.op_slot[i] = static_cast<uint32_t>(graph.static_values.size());
                 graph.static_values.push_back({i, std::numeric_limits<float>::quiet_NaN()});
                 break;
             case JPE_DENSITY_NOISE:
+                graph.op_slot[i] = static_cast<uint32_t>(graph.noises.size());
                 graph.noises.push_back({i, node.input_a, 0});
                 break;
             case JPE_DENSITY_NOISE_TRANSPOSED:
+                graph.op_slot[i] = static_cast<uint32_t>(graph.noises.size());
                 graph.noises.push_back({i, node.input_a, 1});
                 break;
             case JPE_DENSITY_INTERPOLATED:
+                graph.op_slot[i] = static_cast<uint32_t>(graph.interpolateds.size());
                 graph.interpolateds.push_back({i, node.input_a, node.input_b, node.reserved});
                 break;
+            case JPE_DENSITY_SPLINE:
+                graph.op_slot[i] = static_cast<uint32_t>(graph.splines.size());
+                graph.splines.push_back({i, node.input_a});
+                break;
+            case JPE_DENSITY_SLICE_X:
+            case JPE_DENSITY_SLICE_Y:
+            case JPE_DENSITY_SLICE_Z:
+                graph.op_slot[i] = static_cast<uint32_t>(graph.slices.size());
+                graph.slices.push_back({i, node.input_a,
+                    node.opcode == JPE_DENSITY_SLICE_X ? 0U
+                        : node.opcode == JPE_DENSITY_SLICE_Y ? 1U : 2U,
+                    static_cast<int32_t>(node.immediate)});
+                break;
+            case JPE_DENSITY_ROUND:
+                graph.op_slot[i] = static_cast<uint32_t>(graph.rounds.size());
+                graph.rounds.push_back({i, node.input_a, node.input_b, node.reserved});
+                break;
+            case JPE_DENSITY_INTERVAL_SELECT: {
+                graph.op_slot[i] = static_cast<uint32_t>(graph.intervals.size());
+                const JpeIntervalSelect& table = graph.interval_tables[node.input_a];
+                graph.intervals.push_back({i, table.input_node, table.first_threshold,
+                                           table.threshold_count, table.first_branch});
+                break;
+            }
+            case JPE_DENSITY_FIND_TOP_SURFACE:
+                graph.op_slot[i] = static_cast<uint32_t>(graph.top_surfaces.size());
+                graph.top_surfaces.push_back({i, node.input_a, node.input_b,
+                                              static_cast<int32_t>(node.immediate),
+                                              static_cast<int32_t>(node.reserved)});
+                break;
+            case JPE_DENSITY_DISTANCE_TO_POINT:
+                graph.op_slot[i] = static_cast<uint32_t>(graph.distance_bindings.size());
+                graph.distance_bindings.push_back(node.input_a);
+                break;
+            case JPE_DENSITY_BLEND_DENSITY:
+                // Graph-level payload: the node only names its child.
+                graph.op_slot[i] = node.input_a;
+                break;
+            case JPE_DENSITY_END_ISLAND:
+                graph.op_slot[i] = static_cast<uint32_t>(graph.end_island_nodes.size());
+                graph.end_island_nodes.push_back(i);
+                break;
             case JPE_DENSITY_LERP:
+                graph.op_slot[i] = static_cast<uint32_t>(graph.arithmetic.size());
                 graph.arithmetic.push_back({node.opcode, node.input_a, node.input_b, i,
                                             0.0f, 0.0f, node.reserved});
                 break;
             case JPE_DENSITY_POW:
+                graph.op_slot[i] = static_cast<uint32_t>(graph.arithmetic.size());
                 graph.arithmetic.push_back({node.opcode, node.input_a, node.input_b, i,
                                             0.0f, 0.0f, kNoInput});
                 break;
@@ -279,6 +417,7 @@ void build_execution_plan(CompiledGraph& graph) {
                     || static_cast<double>(maximum) != static_cast<double>(static_cast<float>(maximum))) {
                     throw std::invalid_argument("RangeChoice bounds must be exactly float-representable");
                 }
+                graph.op_slot[i] = static_cast<uint32_t>(graph.arithmetic.size());
                 graph.arithmetic.push_back({node.opcode, node.input_a, node.input_b, i,
                                             minimum, maximum, node.reserved});
                 break;
@@ -289,6 +428,7 @@ void build_execution_plan(CompiledGraph& graph) {
             case JPE_DENSITY_DIV:
             case JPE_DENSITY_MIN:
             case JPE_DENSITY_MAX:
+                graph.op_slot[i] = static_cast<uint32_t>(graph.arithmetic.size());
                 graph.arithmetic.push_back({node.opcode, node.input_a, node.input_b, i, 0.0f, 0.0f, 0});
                 break;
             case JPE_DENSITY_NEGATE:
@@ -300,9 +440,11 @@ void build_execution_plan(CompiledGraph& graph) {
             case JPE_DENSITY_RECIPROCAL:
             case JPE_DENSITY_SIGN:
             case JPE_DENSITY_SQUEEZE:
+                graph.op_slot[i] = static_cast<uint32_t>(graph.arithmetic.size());
                 graph.arithmetic.push_back({node.opcode, node.input_a, kNoInput, i, 0.0f, 0.0f, 0});
                 break;
             case JPE_DENSITY_LEAKY_RELU:
+                graph.op_slot[i] = static_cast<uint32_t>(graph.arithmetic.size());
                 graph.arithmetic.push_back({node.opcode, node.input_a, kNoInput, i,
                     static_cast<float>(node.immediate), 0.0f, 0});
                 break;
@@ -314,6 +456,7 @@ void build_execution_plan(CompiledGraph& graph) {
                 float minimum = 0.0f, maximum = 0.0f;
                 std::memcpy(&minimum, &min_bits, sizeof(minimum));
                 std::memcpy(&maximum, &max_bits, sizeof(maximum));
+                graph.op_slot[i] = static_cast<uint32_t>(graph.arithmetic.size());
                 graph.arithmetic.push_back({node.opcode, node.input_a, kNoInput, i, minimum, maximum, 0});
                 break;
             }
@@ -507,6 +650,41 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
             case JPE_DENSITY_POW:
                 if (node.input_a >= i || node.input_b >= i || node.reserved != 0) return false;
                 break;
+            case JPE_DENSITY_SPLINE:
+                // The spline root index is range-checked against the program table.
+                if (node.input_b != kNoInput || node.reserved != 0 || node.immediate != 0.0) return false;
+                break;
+            case JPE_DENSITY_SLICE_X:
+            case JPE_DENSITY_SLICE_Y:
+            case JPE_DENSITY_SLICE_Z:
+                if (node.input_a >= i || node.input_b != kNoInput || node.reserved != 0) return false;
+                if (!std::isfinite(node.immediate) || std::floor(node.immediate) != node.immediate) return false;
+                if (node.immediate < -2147483648.0 || node.immediate > 2147483647.0) return false;
+                break;
+            case JPE_DENSITY_ROUND:
+                if (node.input_a >= i || node.reserved > 3 || node.immediate != 0.0) return false;
+                if (node.input_b != kNoInput && node.input_b >= i) return false;
+                break;
+            case JPE_DENSITY_INTERVAL_SELECT:
+                if (node.input_b != kNoInput || node.reserved != 0 || node.immediate != 0.0) return false;
+                break;
+            case JPE_DENSITY_FIND_TOP_SURFACE:
+                if (node.input_a >= i || node.input_b >= i) return false;
+                if (node.reserved == 0 || node.reserved > 64) return false;
+                if (!std::isfinite(node.immediate) || std::floor(node.immediate) != node.immediate) return false;
+                if (node.immediate < -2147483648.0 || node.immediate > 2147483647.0) return false;
+                break;
+            case JPE_DENSITY_DISTANCE_TO_POINT:
+                if (node.input_b != kNoInput || node.reserved != 0 || node.immediate != 0.0) return false;
+                break;
+            case JPE_DENSITY_BLEND_DENSITY:
+                if (node.input_a >= i || node.input_b != kNoInput || node.reserved != 0
+                    || node.immediate != 0.0) return false;
+                break;
+            case JPE_DENSITY_END_ISLAND:
+                if (node.input_a != kNoInput || node.input_b != kNoInput
+                    || node.reserved != 0 || node.immediate != 0.0) return false;
+                break;
             default:
                 return false;
         }
@@ -520,7 +698,11 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
  * topological order guarantees every dependency sits at a lower index. */
 thread_local uint32_t g_node_limit = 0;
 thread_local uint32_t g_interpolate_depth = 0;
+/* Slices, top-surface probes and blends re-enter the public evaluator too. */
+thread_local uint32_t g_reentry_depth = 0;
 constexpr uint32_t kMaxInterpolateDepth = 8;
+constexpr uint32_t kMaxSplineDepth = 16;
+constexpr uint32_t kMaxTopSurfaceDepth = 4;
 
 int32_t floor_div(int32_t value, int32_t divisor) noexcept {
     int32_t quotient = value / divisor;
@@ -539,8 +721,238 @@ float lerp_f32(float delta, float start, float end) noexcept {
     return start + delta * (end - start);
 }
 
-int32_t wrapped_coordinate(int32_t minimum, uint32_t index, int32_t step) noexcept {
-    const uint32_t bits = static_cast<uint32_t>(minimum)
+/* Java double lerp: Mth.lerp(double, double, double). */
+double lerp_f64(double delta, double start, double end) noexcept {
+    return start + delta * (end - start);
+}
+
+/* Exact java.lang.Math.round(float): floor(a + 0.5) without ever forming a+0.5,
+ * because that sum is not representable once |a| reaches 2^23. */
+int32_t java_math_round(float value) noexcept {
+    if (std::isnan(value)) return 0;
+    if (value >= 2147483647.0f) return INT32_MAX;
+    if (value <= -2147483648.0f) return INT32_MIN;
+    const float base = std::floor(value);
+    return static_cast<int32_t>(base) + ((value - base) >= 0.5f ? 1 : 0);
+}
+
+/* RoundFunction.roundToInteger, in vanilla's Type order. */
+float round_to_integer(float input, uint32_t type) noexcept {
+    switch (type) {
+        case 0: return static_cast<float>(std::floor(static_cast<double>(input)));
+        case 1: return static_cast<float>(java_math_round(input));
+        case 2: return static_cast<float>(std::ceil(static_cast<double>(input)));
+        default:
+            // TRUNCATE: vanilla tests input > 0, so NaN takes the ceil branch.
+            return static_cast<float>(input > 0.0f
+                ? std::floor(static_cast<double>(input))
+                : std::ceil(static_cast<double>(input)));
+    }
+}
+
+/* DistanceMetric.compute(dx, dy, dz); dx/dy/dz are already point - block. */
+float distance_metric(uint32_t metric, float dx, float dy, float dz) noexcept {
+    switch (metric) {
+        case 1: return dx * dx + dy * dy + dz * dz;
+        case 2: return std::fabs(dx) + std::fabs(dy) + std::fabs(dz);
+        case 3: return std::max(std::max(std::fabs(dx), std::fabs(dy)), std::fabs(dz));
+        default:
+            return static_cast<float>(std::sqrt(static_cast<double>(
+                dx * dx + dy * dy + dz * dz)));
+    }
+}
+
+/* CubicSpline.sample, mirrored exactly. The tree is flat: each node owns a
+ * coordinate lane and a slice of the shared point table, and every point names
+ * its own child node. Vanilla's edge case is a linear extension from the first
+ * or last point, not a clamp, so a derivative of zero must return the value
+ * untouched rather than forming value + 0 * delta. */
+float spline_sample(const CompiledGraph& graph, uint32_t index,
+                    const float* lanes, uint32_t stride, uint32_t sample,
+                    uint32_t depth) noexcept {
+    if (depth > kMaxSplineDepth || index >= graph.spline_nodes.size()) {
+        return std::numeric_limits<float>::quiet_NaN();
+    }
+    const JpeSplineNode& node = graph.spline_nodes[index];
+    if (node.kind == JPE_SPLINE_CONSTANT) return node.constant;
+    const JpeSplinePoint* points = graph.spline_points.data() + node.first_point;
+    const uint32_t count = node.point_count;
+    if (count == 0) return std::numeric_limits<float>::quiet_NaN();
+    const float input = lanes[static_cast<size_t>(node.coordinate) * stride + sample];
+
+    // Branchless upper_bound: first index whose location is greater than input,
+    // which is exactly Mth.binarySearch(0, n, i -> input < locations[i]).
+    uint32_t first_greater = 0;
+    for (uint32_t span = count; span > 0;) {
+        const uint32_t half = span >> 1;
+        const uint32_t probe = first_greater + half;
+        if (input < points[probe].location) {
+            span = half;
+        } else {
+            first_greater = probe + 1;
+            span -= half + 1;
+        }
+    }
+    const int32_t start = static_cast<int32_t>(first_greater) - 1;
+    const uint32_t last = count - 1;
+    if (start < 0 || static_cast<uint32_t>(start) == last) {
+        const uint32_t edge = start < 0 ? 0U : last;
+        const float value = spline_sample(graph, points[edge].child, lanes, stride, sample, depth + 1);
+        const float derivative = points[edge].derivative;
+        return derivative == 0.0f
+            ? value
+            : value + derivative * (input - points[edge].location);
+    }
+    const float x1 = points[start].location;
+    const float x2 = points[start + 1].location;
+    const float t = (input - x1) / (x2 - x1);
+    const float d1 = points[start].derivative;
+    const float d2 = points[start + 1].derivative;
+    const float y1 = spline_sample(graph, points[start].child, lanes, stride, sample, depth + 1);
+    const float y2 = spline_sample(graph, points[start + 1].child, lanes, stride, sample, depth + 1);
+    const float a = d1 * (x2 - x1) - (y2 - y1);
+    const float b = -d2 * (x2 - x1) + (y2 - y1);
+    return lerp_f32(t, y1, y2) + t * (1.0f - t) * lerp_f32(t, a, b);
+}
+
+/* ---- SimplexNoise (2D) -----------------------------------------------
+ * net.minecraft.world.level.levelgen.synth.SimplexNoise with
+ * noiseOffsetScale 0, which is exactly how EndIslandFunction builds it. */
+constexpr double kSimplexF2 = 0.3660254037844386;   /* 0.5 * (sqrt(3) - 1) */
+constexpr double kSimplexG2 = 0.21132486540518713;  /* (3 - sqrt(3)) / 6 */
+
+int32_t simplex_permute(const uint8_t* perms, int32_t value) noexcept {
+    return static_cast<int32_t>(perms[value & 0xFF]);
+}
+
+/* GRADIENT[i].dot(x, y, 0) for the 16-entry table, folded into integer math. */
+double simplex_corner(int32_t index, double x, double y, double base) noexcept {
+    static constexpr int8_t kGradient[16][3] = {
+        {1,1,0},{-1,1,0},{1,-1,0},{-1,-1,0},
+        {1,0,1},{-1,0,1},{1,0,-1},{-1,0,-1},
+        {0,1,1},{0,-1,1},{0,1,-1},{0,-1,-1},
+        {1,1,0},{0,-1,1},{-1,1,0},{0,-1,-1}
+    };
+    double t = base - x * x - y * y;
+    if (t < 0.0) return 0.0;
+    t *= t;
+    const int8_t* g = kGradient[index & 15];
+    return t * t * (static_cast<double>(g[0]) * x + static_cast<double>(g[1]) * y);
+}
+
+float simplex_noise_2d(const uint8_t* perms, double xin, double yin) noexcept {
+    const double s = (xin + yin) * kSimplexF2;
+    const int32_t i = static_cast<int32_t>(std::floor(xin + s));
+    const int32_t j = static_cast<int32_t>(std::floor(yin + s));
+    const double t = static_cast<double>(i + j) * kSimplexG2;
+    const double x0 = xin - (static_cast<double>(i) - t);
+    const double y0 = yin - (static_cast<double>(j) - t);
+    const int32_t i1 = x0 > y0 ? 1 : 0;
+    const int32_t j1 = x0 > y0 ? 0 : 1;
+    const double x1 = x0 - static_cast<double>(i1) + kSimplexG2;
+    const double y1 = y0 - static_cast<double>(j1) + kSimplexG2;
+    const double x2 = x0 - 1.0 + 2.0 * kSimplexG2;
+    const double y2 = y0 - 1.0 + 2.0 * kSimplexG2;
+    const int32_t ii = i & 0xFF;
+    const int32_t jj = j & 0xFF;
+    const int32_t gi0 = simplex_permute(perms, ii + simplex_permute(perms, jj)) % 12;
+    const int32_t gi1 = simplex_permute(perms, ii + i1 + simplex_permute(perms, jj + j1)) % 12;
+    const int32_t gi2 = simplex_permute(perms, ii + 1 + simplex_permute(perms, jj + 1)) % 12;
+    const double n0 = simplex_corner(gi0, x0, y0, 0.5);
+    const double n1 = simplex_corner(gi1, x1, y1, 0.5);
+    const double n2 = simplex_corner(gi2, x2, y2, 0.5);
+    return static_cast<float>(70.0 * (n0 + n1 + n2));
+}
+
+/* EndIslandFunction.getHeightValue. */
+float end_island_height(const uint8_t* perms, int32_t section_x, int32_t section_z) noexcept {
+    const int32_t chunk_x = section_x / 2;
+    const int32_t chunk_z = section_z / 2;
+    const int32_t sub_x = section_x % 2;
+    const int32_t sub_z = section_z % 2;
+    float doffs = -100.0f;
+    for (int32_t xo = -12; xo <= 12; ++xo) {
+        for (int32_t zo = -12; zo <= 12; ++zo) {
+            const int64_t total_x = static_cast<int64_t>(chunk_x) + xo;
+            const int64_t total_z = static_cast<int64_t>(chunk_z) + zo;
+            if (total_x * total_x + total_z * total_z <= 4096LL) continue;
+            if (!(simplex_noise_2d(perms, static_cast<double>(total_x),
+                                   static_cast<double>(total_z)) < -0.9f)) continue;
+            const float island_size = std::fmod(
+                static_cast<float>(total_x < 0 ? -total_x : total_x) * 3439.0f
+                + static_cast<float>(total_z < 0 ? -total_z : total_z) * 147.0f, 13.0f) + 9.0f;
+            const int32_t xd = sub_x - xo * 2;
+            const int32_t zd = sub_z - zo * 2;
+            const float sum = static_cast<float>(xd * xd + zd * zd);
+            float candidate = 100.0f - static_cast<float>(std::sqrt(static_cast<double>(sum))) * island_size;
+            // Mth.clamp(candidate, -100, 80)
+            if (candidate < -100.0f) candidate = -100.0f;
+            else candidate = std::min(candidate, 80.0f);
+            doffs = std::max(doffs, candidate);
+        }
+    }
+    return doffs;
+}
+
+/* ---- Blender.blendDensity --------------------------------------------
+ * Vanilla walks its blending maps per voxel through ChunkPos lookups; the caller
+ * flattens both maps into dense cell grids, so this is one indexed read plus the
+ * same weighted average over the 3x3x3 cell neighbourhood. */
+float blend_density(const BlendRegion& region, int32_t block_x, int32_t block_y,
+                    int32_t block_z, float noise_value) noexcept {
+    const int32_t cell_x = block_x >> 2;
+    const int32_t cell_y = block_y / 8;
+    const int32_t cell_z = block_z >> 2;
+    const auto index_of = [&region](int64_t x, int64_t y, int64_t z) -> size_t {
+        return (static_cast<size_t>(x) * region.cells_y + static_cast<size_t>(y))
+            * region.cells_z + static_cast<size_t>(z);
+    };
+    const int64_t fx = static_cast<int64_t>(cell_x) - region.base_x;
+    const int64_t fy = static_cast<int64_t>(cell_y) - region.base_y;
+    const int64_t fz = static_cast<int64_t>(cell_z) - region.base_z;
+    if (fx >= 0 && fy >= 0 && fz >= 0
+        && fx < region.cells_x && fy < region.cells_y && fz < region.cells_z) {
+        const float fixed_value = region.fixed_density[index_of(fx, fy, fz)];
+        if (fixed_value != std::numeric_limits<float>::max()) return fixed_value;
+    }
+
+    double total_weight = 0.0;
+    double weighted = 0.0;
+    double closest = std::numeric_limits<double>::infinity();
+    for (int32_t probe_y = cell_y - 1; probe_y <= cell_y + 1; ++probe_y) {
+        const int64_t iy = static_cast<int64_t>(probe_y) - region.base_y;
+        if (iy < 0 || iy >= static_cast<int64_t>(region.cells_y)) continue;
+        for (uint32_t ix = 0; ix < region.cells_x; ++ix) {
+            for (uint32_t iz = 0; iz < region.cells_z; ++iz) {
+                const size_t index = index_of(ix, iy, iz);
+                if (region.density_mask[index] == 0) continue;
+                const int32_t delta_x = cell_x - (region.base_x + static_cast<int32_t>(ix));
+                const int32_t delta_y = (cell_y - probe_y) * 2;
+                const int32_t delta_z = cell_z - (region.base_z + static_cast<int32_t>(iz));
+                // Mth.length(int,int,int) resolves to the float overload.
+                const float fx_d = static_cast<float>(delta_x);
+                const float fy_d = static_cast<float>(delta_y);
+                const float fz_d = static_cast<float>(delta_z);
+                const float distance = static_cast<float>(std::sqrt(static_cast<double>(
+                    fx_d * fx_d + fy_d * fy_d + fz_d * fz_d)));
+                if (distance > 2.0) continue;
+                if (static_cast<double>(distance) < closest) closest = static_cast<double>(distance);
+                const double d = static_cast<double>(distance);
+                const double weight = 1.0 / (d * d * d * d);
+                weighted += static_cast<double>(region.density[index]) * weight;
+                total_weight += weight;
+            }
+        }
+    }
+    if (closest == std::numeric_limits<double>::infinity()) return noise_value;
+    const double average = weighted / total_weight;
+    double alpha = closest / 3.0;
+    if (alpha < 0.0) alpha = 0.0;
+    else if (alpha > 1.0) alpha = 1.0;
+    return static_cast<float>(lerp_f64(alpha, average, static_cast<double>(noise_value)));
+}
+
+int32_t wrapped_coordinate(int32_t minimum, uint32_t index, int32_t step) noexcept {    const uint32_t bits = static_cast<uint32_t>(minimum)
         + index * static_cast<uint32_t>(step);
     int32_t result;
     std::memcpy(&result, &bits, sizeof(result));
@@ -562,11 +974,21 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
     uint32_t ir_version, uint64_t configuration_fingerprint
 ) try {
     if (ir_version != 10 || !valid_graph(nodes, node_count, root_node)) return 0;
-    // A NOISE node needs a bound plan. This entry has no plan table, so accepting
-    // one here would leave the node reading an empty staging buffer at evaluate time.
+    // These opcodes read a program payload table. This entry has no payload, so
+    // accepting one here would leave the node reading an empty staging buffer.
     for (uint32_t i = 0; i < node_count; ++i) {
-        if (nodes[i].opcode == JPE_DENSITY_NOISE
-            || nodes[i].opcode == JPE_DENSITY_NOISE_TRANSPOSED) return 0;
+        switch (nodes[i].opcode) {
+            case JPE_DENSITY_NOISE:
+            case JPE_DENSITY_NOISE_TRANSPOSED:
+            case JPE_DENSITY_SPLINE:
+            case JPE_DENSITY_INTERVAL_SELECT:
+            case JPE_DENSITY_DISTANCE_TO_POINT:
+            case JPE_DENSITY_BLEND_DENSITY:
+            case JPE_DENSITY_END_ISLAND:
+                return 0;
+            default:
+                break;
+        }
     }
     const uint64_t fingerprint = hash_graph(nodes, node_count, root_node, ir_version, configuration_fingerprint);
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -603,31 +1025,209 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
  * (permutations and layer scalars live in the plan, not the node array), so this
  * entry never joins the deduplicating cache. The caller's configuration fingerprint
  * must already identify the noise configuration. */
-extern "C" uint64_t jpe_cpp_density_graph_compile_with_noise(
+/* Payload identity. Every table is POD, so byte hashing is exact and cheap
+ * relative to a chunk's own work; the cache still verifies with a full compare. */
+uint64_t hash_payload_bytes(uint64_t hash, const void* data, size_t length) noexcept {
+    const uint8_t* bytes = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < length; ++i) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+template <typename T>
+uint64_t hash_vector(uint64_t hash, const std::vector<T>& values) noexcept {
+    return hash_payload_bytes(hash, values.data(), values.size() * sizeof(T));
+}
+
+uint64_t hash_program_payload(const JpeGraphProgram& payload) noexcept {
+    uint64_t hash = 1469598103934665603ULL;
+    hash = hash_payload_bytes(hash, &payload.noise_plan_count, sizeof(uint32_t));
+    if (payload.spline_count > 0) {
+        hash = hash_payload_bytes(hash, payload.splines,
+            static_cast<size_t>(payload.spline_count) * sizeof(JpeSplineNode));
+    }
+    if (payload.spline_point_count > 0) {
+        hash = hash_payload_bytes(hash, payload.spline_points,
+            static_cast<size_t>(payload.spline_point_count) * sizeof(JpeSplinePoint));
+    }
+    if (payload.interval_select_count > 0) {
+        hash = hash_payload_bytes(hash, payload.interval_selects,
+            static_cast<size_t>(payload.interval_select_count) * sizeof(JpeIntervalSelect));
+    }
+    if (payload.interval_threshold_count > 0) {
+        hash = hash_payload_bytes(hash, payload.interval_thresholds,
+            static_cast<size_t>(payload.interval_threshold_count) * sizeof(float));
+    }
+    if (payload.interval_branch_count > 0) {
+        hash = hash_payload_bytes(hash, payload.interval_branches,
+            static_cast<size_t>(payload.interval_branch_count) * sizeof(uint32_t));
+    }
+    if (payload.distance_point_count > 0) {
+        hash = hash_payload_bytes(hash, payload.distance_points,
+            static_cast<size_t>(payload.distance_point_count) * sizeof(JpeDistancePoint));
+    }
+    if (payload.end_island_permutation != nullptr) {
+        hash = hash_payload_bytes(hash, payload.end_island_permutation, 256);
+    }
+    if (payload.blend != nullptr && payload.blend->active != 0) {
+        const JpeBlendInput& blend = *payload.blend;
+        hash = hash_payload_bytes(hash, &blend, sizeof(JpeBlendInput));
+        const size_t cells = static_cast<size_t>(blend.cells_x) * blend.cells_y * blend.cells_z;
+        hash = hash_payload_bytes(hash, blend.fixed_density, cells * sizeof(float));
+        hash = hash_payload_bytes(hash, blend.density, cells * sizeof(float));
+        hash = hash_payload_bytes(hash, blend.density_mask, cells);
+    }
+    return hash;
+}
+
+/* Exact cache verification. Comparing stored tables against the caller's tables
+ * avoids re-copying a payload that turns out to be a duplicate. */
+bool same_program_payload(const CompiledGraph& graph, const JpeGraphProgram& payload) noexcept {
+    if (graph.spline_nodes.size() != payload.spline_count) return false;
+    if (graph.spline_points.size() != payload.spline_point_count) return false;
+    if (graph.interval_tables.size() != payload.interval_select_count) return false;
+    if (graph.interval_thresholds.size() != payload.interval_threshold_count) return false;
+    if (graph.interval_branches.size() != payload.interval_branch_count) return false;
+    if (graph.distance_points.size() != payload.distance_point_count) return false;
+    if (payload.spline_count > 0
+        && std::memcmp(graph.spline_nodes.data(), payload.splines,
+                       graph.spline_nodes.size() * sizeof(JpeSplineNode)) != 0) return false;
+    if (payload.spline_point_count > 0
+        && std::memcmp(graph.spline_points.data(), payload.spline_points,
+                       graph.spline_points.size() * sizeof(JpeSplinePoint)) != 0) return false;
+    if (payload.interval_select_count > 0
+        && std::memcmp(graph.interval_tables.data(), payload.interval_selects,
+                       graph.interval_tables.size() * sizeof(JpeIntervalSelect)) != 0) return false;
+    if (payload.interval_threshold_count > 0
+        && std::memcmp(graph.interval_thresholds.data(), payload.interval_thresholds,
+                       graph.interval_thresholds.size() * sizeof(float)) != 0) return false;
+    if (payload.interval_branch_count > 0
+        && std::memcmp(graph.interval_branches.data(), payload.interval_branches,
+                       graph.interval_branches.size() * sizeof(uint32_t)) != 0) return false;
+    if (payload.distance_point_count > 0
+        && std::memcmp(graph.distance_points.data(), payload.distance_points,
+                       graph.distance_points.size() * sizeof(JpeDistancePoint)) != 0) return false;
+    const bool has_permutation = !graph.end_island_permutation.empty();
+    if (has_permutation != (payload.end_island_permutation != nullptr)) return false;
+    if (has_permutation
+        && std::memcmp(graph.end_island_permutation.data(), payload.end_island_permutation, 256) != 0) return false;
+    const bool has_blend = graph.blend.active;
+    const bool want_blend = payload.blend != nullptr && payload.blend->active != 0;
+    if (has_blend != want_blend) return false;
+    if (has_blend) {
+        const JpeBlendInput& stored = *payload.blend;
+        if (graph.blend.base_x != stored.base_cell_x || graph.blend.base_y != stored.base_cell_y
+            || graph.blend.base_z != stored.base_cell_z
+            || graph.blend.cells_x != stored.cells_x || graph.blend.cells_y != stored.cells_y
+            || graph.blend.cells_z != stored.cells_z) return false;
+        const size_t cells = graph.blend.fixed_density.size();
+        if (std::memcmp(graph.blend.fixed_density.data(), stored.fixed_density,
+                        cells * sizeof(float)) != 0) return false;
+        if (std::memcmp(graph.blend.density.data(), stored.density, cells * sizeof(float)) != 0) return false;
+        if (std::memcmp(graph.blend.density_mask.data(), stored.density_mask, cells) != 0) return false;
+    }
+    return true;
+}
+
+extern "C" uint64_t jpe_cpp_density_graph_compile_program(
     const JpeDensityNode* nodes, uint32_t node_count, uint32_t root_node,
     uint32_t ir_version, uint64_t configuration_fingerprint,
-    const JpeNoisePlan* noise_plans, uint32_t noise_plan_count
+    const JpeGraphProgram* program
 ) try {
     if (ir_version != 10 || !valid_graph(nodes, node_count, root_node)) return 0;
-    if (noise_plan_count > kMaxNoisePlans) return 0;
-    if (noise_plan_count > 0 && noise_plans == nullptr) return 0;
-    std::vector<int8_t> slot_layout(noise_plan_count, -1);
+    const JpeGraphProgram empty{};
+    const JpeGraphProgram& payload = program != nullptr ? *program : empty;
+
+    if (payload.noise_plan_count > kMaxNoisePlans) return 0;
+    if (payload.noise_plan_count > 0 && payload.noise_plans == nullptr) return 0;
+    if (payload.spline_count > kMaxSplineNodes || payload.spline_point_count > kMaxSplinePoints) return 0;
+    if (payload.interval_select_count > kMaxIntervals) return 0;
+    if (payload.interval_threshold_count > kMaxIntervalThresholds) return 0;
+    if (payload.interval_branch_count > kMaxIntervalBranches) return 0;
+    if (payload.distance_point_count > kMaxDistancePoints) return 0;
+    if (payload.spline_count > 0 && payload.splines == nullptr) return 0;
+    if (payload.spline_point_count > 0 && payload.spline_points == nullptr) return 0;
+    if (payload.interval_select_count > 0 && payload.interval_selects == nullptr) return 0;
+    if (payload.interval_threshold_count > 0 && payload.interval_thresholds == nullptr) return 0;
+    if (payload.interval_branch_count > 0 && payload.interval_branches == nullptr) return 0;
+    if (payload.distance_point_count > 0 && payload.distance_points == nullptr) return 0;
+
+    // Noise slots: one staging buffer each, so a slot cannot serve two layouts.
+    std::vector<int8_t> slot_layout(payload.noise_plan_count, -1);
+    bool needs_end_island = false;
     for (uint32_t i = 0; i < node_count; ++i) {
-        if (nodes[i].opcode != JPE_DENSITY_NOISE
-            && nodes[i].opcode != JPE_DENSITY_NOISE_TRANSPOSED) continue;
-        if (nodes[i].input_a >= noise_plan_count) return 0;
-        const int8_t layout = nodes[i].opcode == JPE_DENSITY_NOISE_TRANSPOSED ? 1 : 0;
-        int8_t& existing = slot_layout[nodes[i].input_a];
-        // One staging buffer per slot, so a slot cannot serve two layouts.
-        if (existing != -1 && existing != layout) return 0;
-        existing = layout;
+        const JpeDensityNode& node = nodes[i];
+        switch (node.opcode) {
+            case JPE_DENSITY_NOISE:
+            case JPE_DENSITY_NOISE_TRANSPOSED: {
+                if (node.input_a >= payload.noise_plan_count) return 0;
+                const int8_t layout = node.opcode == JPE_DENSITY_NOISE_TRANSPOSED ? 1 : 0;
+                int8_t& existing = slot_layout[node.input_a];
+                if (existing != -1 && existing != layout) return 0;
+                existing = layout;
+                break;
+            }
+            case JPE_DENSITY_SPLINE: {
+                if (node.input_a >= payload.spline_count) return 0;
+                const JpeSplineNode& root = payload.splines[node.input_a];
+                if (root.kind != JPE_SPLINE_MULTIPOINT && root.kind != JPE_SPLINE_CONSTANT) return 0;
+                if (root.kind == JPE_SPLINE_MULTIPOINT && root.coordinate >= i) return 0;
+                break;
+            }
+            case JPE_DENSITY_INTERVAL_SELECT: {
+                if (node.input_a >= payload.interval_select_count) return 0;
+                const JpeIntervalSelect& table = payload.interval_selects[node.input_a];
+                if (table.input_node >= i) return 0;
+                if (static_cast<uint64_t>(table.first_threshold) + table.threshold_count
+                    > payload.interval_threshold_count) return 0;
+                if (static_cast<uint64_t>(table.first_branch) + table.threshold_count + 1
+                    > payload.interval_branch_count) return 0;
+                for (uint32_t k = 0; k < table.threshold_count; ++k) {
+                    const float value = payload.interval_thresholds[table.first_threshold + k];
+                    if (k > 0 && !(payload.interval_thresholds[table.first_threshold + k - 1] < value)) return 0;
+                }
+                for (uint32_t k = 0; k <= table.threshold_count; ++k) {
+                    if (payload.interval_branches[table.first_branch + k] >= i) return 0;
+                }
+                break;
+            }
+            case JPE_DENSITY_DISTANCE_TO_POINT:
+                if (node.input_a >= payload.distance_point_count) return 0;
+                if (payload.distance_points[node.input_a].metric > 3) return 0;
+                break;
+            case JPE_DENSITY_END_ISLAND:
+                needs_end_island = true;
+                break;
+            default:
+                break;
+        }
+    }
+    if (needs_end_island && payload.end_island_permutation == nullptr) return 0;
+
+    // Spline tables: every point must name a real child and the locations must be
+    // strictly ascending, because the sampler binary-searches them.
+    for (uint32_t index = 0; index < payload.spline_count; ++index) {
+        const JpeSplineNode& node = payload.splines[index];
+        if (node.kind == JPE_SPLINE_CONSTANT) continue;
+        if (node.kind != JPE_SPLINE_MULTIPOINT) return 0;
+        if (node.point_count == 0) return 0;
+        if (static_cast<uint64_t>(node.first_point) + node.point_count > payload.spline_point_count) return 0;
+        for (uint32_t k = 0; k < node.point_count; ++k) {
+            const JpeSplinePoint& point = payload.spline_points[node.first_point + k];
+            if (point.child >= payload.spline_count) return 0;
+            if (k > 0 && !(payload.spline_points[node.first_point + k - 1].location < point.location)) return 0;
+        }
     }
 
     const uint64_t base = hash_graph(nodes, node_count, root_node, ir_version, configuration_fingerprint);
-    const uint64_t noise_hash = hash_noise_payload(noise_plans, noise_plan_count);
-    // Boost-style mix keeps node identity and noise payload in one cache key.
-    const uint64_t fingerprint =
-        base ^ (noise_hash + 0x9E3779B97F4A7C15ULL + (base << 6) + (base >> 2));
+    const uint64_t noise_hash = payload.noise_plan_count > 0
+        ? hash_noise_payload(payload.noise_plans, payload.noise_plan_count) : 0;
+    const uint64_t program_hash = hash_program_payload(payload);
+    // Boost-style mix keeps node identity and every payload table in one cache key.
+    uint64_t fingerprint = base ^ (noise_hash + 0x9E3779B97F4A7C15ULL + (base << 6) + (base >> 2));
+    fingerprint ^= program_hash + 0x9E3779B97F4A7C15ULL + (fingerprint << 6) + (fingerprint >> 2);
 
     {
         std::lock_guard<std::mutex> lock(g_mutex);
@@ -641,7 +1241,8 @@ extern "C" uint64_t jpe_cpp_density_graph_compile_with_noise(
                 && graph.root == root_node && graph.nodes.size() == node_count
                 && std::memcmp(graph.nodes.data(), nodes,
                                static_cast<size_t>(node_count) * sizeof(JpeDensityNode)) == 0
-                && same_noise_payload(graph.noise_plans, noise_plans, noise_plan_count)) {
+                && same_noise_payload(graph.noise_plans, payload.noise_plans, payload.noise_plan_count)
+                && same_program_payload(graph, payload)) {
                 ++graph.references;
                 return found->first;
             }
@@ -655,9 +1256,9 @@ extern "C" uint64_t jpe_cpp_density_graph_compile_with_noise(
     graph->root = root_node;
     graph->nodes.assign(nodes, nodes + node_count);
 
-    graph->noise_plans.resize(noise_plan_count);
-    for (uint32_t slot = 0; slot < noise_plan_count; ++slot) {
-        const JpeNoisePlan& plan = noise_plans[slot];
+    graph->noise_plans.resize(payload.noise_plan_count);
+    for (uint32_t slot = 0; slot < payload.noise_plan_count; ++slot) {
+        const JpeNoisePlan& plan = payload.noise_plans[slot];
         if (plan.layers == nullptr || plan.layer_count == 0 || plan.layer_count > kMaxNoiseLayers) return 0;
         NoisePlanData& target = graph->noise_plans[slot];
         target.flags = plan.flags;
@@ -671,6 +1272,53 @@ extern "C" uint64_t jpe_cpp_density_graph_compile_with_noise(
         }
     }
 
+    if (payload.spline_count > 0) {
+        graph->spline_nodes.assign(payload.splines, payload.splines + payload.spline_count);
+    }
+    if (payload.spline_point_count > 0) {
+        graph->spline_points.assign(payload.spline_points, payload.spline_points + payload.spline_point_count);
+    }
+    if (payload.interval_select_count > 0) {
+        graph->interval_tables.assign(payload.interval_selects,
+                                      payload.interval_selects + payload.interval_select_count);
+    }
+    if (payload.interval_threshold_count > 0) {
+        graph->interval_thresholds.assign(payload.interval_thresholds,
+                                          payload.interval_thresholds + payload.interval_threshold_count);
+    }
+    if (payload.interval_branch_count > 0) {
+        graph->interval_branches.assign(payload.interval_branches,
+                                        payload.interval_branches + payload.interval_branch_count);
+    }
+    if (payload.distance_point_count > 0) {
+        graph->distance_points.assign(payload.distance_points,
+                                      payload.distance_points + payload.distance_point_count);
+    }
+    if (payload.end_island_permutation != nullptr) {
+        graph->end_island_permutation.assign(payload.end_island_permutation,
+                                             payload.end_island_permutation + 256);
+    }
+    if (payload.blend != nullptr && payload.blend->active != 0) {
+        const JpeBlendInput& source = *payload.blend;
+        if (source.cells_x == 0 || source.cells_y == 0 || source.cells_z == 0) return 0;
+        const uint64_t cells = static_cast<uint64_t>(source.cells_x) * source.cells_y * source.cells_z;
+        if (cells > kMaxBlendCells) return 0;
+        if (source.fixed_density == nullptr || source.density == nullptr
+            || source.density_mask == nullptr) return 0;
+        graph->blend.active = true;
+        graph->blend.base_x = source.base_cell_x;
+        graph->blend.base_y = source.base_cell_y;
+        graph->blend.base_z = source.base_cell_z;
+        graph->blend.cells_x = source.cells_x;
+        graph->blend.cells_y = source.cells_y;
+        graph->blend.cells_z = source.cells_z;
+        graph->blend.fixed_density.assign(source.fixed_density,
+                                          source.fixed_density + static_cast<size_t>(cells));
+        graph->blend.density.assign(source.density, source.density + static_cast<size_t>(cells));
+        graph->blend.density_mask.assign(source.density_mask,
+                                         source.density_mask + static_cast<size_t>(cells));
+    }
+
     build_execution_plan(*graph);
     std::lock_guard<std::mutex> lock(g_mutex);
     uint64_t handle = g_next_handle++;
@@ -679,6 +1327,18 @@ extern "C" uint64_t jpe_cpp_density_graph_compile_with_noise(
     g_cache.emplace(fingerprint, handle);
     return handle;
 } catch (...) { return 0; }
+
+extern "C" uint64_t jpe_cpp_density_graph_compile_with_noise(
+    const JpeDensityNode* nodes, uint32_t node_count, uint32_t root_node,
+    uint32_t ir_version, uint64_t configuration_fingerprint,
+    const JpeNoisePlan* noise_plans, uint32_t noise_plan_count
+) {
+    JpeGraphProgram program{};
+    program.noise_plans = noise_plans;
+    program.noise_plan_count = noise_plan_count;
+    return jpe_cpp_density_graph_compile_program(
+        nodes, node_count, root_node, ir_version, configuration_fingerprint, &program);
+}
 
 
 extern "C" int32_t jpe_cpp_density_graph_save_cache(
@@ -823,6 +1483,26 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
     const uint32_t node_limit = g_node_limit == 0
         ? static_cast<uint32_t>(graph->nodes.size()) : g_node_limit;
 
+    // Re-entrant child evaluation. Topological order guarantees a child's whole
+    // dependency set sits below its index, so limiting the sweep to that prefix
+    // is exact and prevents a nested call from redoing the whole graph.
+    const auto evaluate_prefix = [&](uint32_t child_node,
+                                     uint32_t nx, uint32_t ny, uint32_t nz,
+                                     int32_t mx, int32_t my, int32_t mz,
+                                     int32_t sx, int32_t sy, int32_t sz,
+                                     float* target, uint64_t target_length) -> int32_t {
+        if (g_reentry_depth >= kMaxTopSurfaceDepth) return 1;
+        ++g_reentry_depth;
+        const uint32_t saved_limit = g_node_limit;
+        g_node_limit = child_node + 1;
+        const int32_t status = jpe_cpp_density_graph_evaluate_multi_with_inputs(
+            graph_handle, nx, ny, nz, mx, my, mz, sx, sy, sz,
+            inputs, input_count, &child_node, 1, target, target_length);
+        g_node_limit = saved_limit;
+        --g_reentry_depth;
+        return status;
+    };
+
     // Evaluate a bounded tile of samples at once. Node-major storage lets the
     // compiler vectorize each ADD/MUL across contiguous samples while preserving
     // the topological order (and therefore every float32 rounding point).
@@ -869,8 +1549,9 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
     // Noise nodes are whole-volume: one stack pass per plan, then the tile lanes
     // read slices of that buffer. This keeps the tile sweep free of per-sample
     // noise work and preserves the kernel's own Y-loop hoisting.
+    const auto in_prefix = [node_limit](uint32_t node) { return node < node_limit; };
     std::vector<float> noise_values;
-    if (!graph->noises.empty()) {
+    if (!graph->noises.empty() && in_prefix(graph->noises.front().node)) {
         if (graph->noise_plans.empty()) return 1;
         const uint64_t staged = static_cast<uint64_t>(graph->noise_plans.size()) * volume_length;
         if (staged > kMaxNoiseFloats) return 1;
@@ -913,7 +1594,7 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
     // same Z->X->Y order vanilla uses. The Y axis is a running sum, not a fresh lerp,
     // because vanilla accumulates valueStep; recomputing it would change the bits.
     std::vector<float> interpolated_values;
-    if (!graph->interpolateds.empty()) {
+    if (!graph->interpolateds.empty() && in_prefix(graph->interpolateds.front().node)) {
         if (!graph->inputs.empty()) {
             // External volumes are staged at output resolution, so a coarser child
             // grid cannot index them. Refuse rather than silently read the wrong data.
@@ -1076,77 +1757,175 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
         }
     }
 
-    for (uint64_t tile_start = 0; tile_start < volume_length; tile_start += tile_capacity) {
-        const uint32_t count = static_cast<uint32_t>(
-            std::min<uint64_t>(tile_capacity, volume_length - tile_start));
-
-        const uint32_t z_start = static_cast<uint32_t>(tile_start / plane_size);
-        const uint64_t within_plane = tile_start - static_cast<uint64_t>(z_start) * plane_size;
-        uint32_t x_index = static_cast<uint32_t>(within_plane / size_y);
-        uint32_t y_index = static_cast<uint32_t>(within_plane - static_cast<uint64_t>(x_index) * size_y);
-        uint32_t z_index = z_start;
-
-        for (uint32_t sample = 0; sample < count; ++sample) {
-            x_coordinates[sample] = wrapped_coordinate(min_x, x_index, step_x);
-            y_coordinates[sample] = wrapped_coordinate(min_y, y_index, step_y);
-            z_coordinates[sample] = wrapped_coordinate(min_z, z_index, step_z);
-            x_values[sample] = static_cast<float>(x_coordinates[sample]);
-            y_values[sample] = static_cast<float>(y_coordinates[sample]);
-            z_values[sample] = static_cast<float>(z_coordinates[sample]);
-            if (++y_index == size_y) {
-                y_index = 0;
-                if (++x_index == size_x) {
-                    x_index = 0;
-                    ++z_index;
+    // SLICE pins one axis: the child runs once on the reduced volume, then the
+    // result is broadcast back along the pinned axis. Staging whole volumes keeps
+    // the tile sweep a plain copy, exactly like noise.
+    std::vector<float> slice_values;
+    if (!graph->slices.empty() && in_prefix(graph->slices.front().node)) {
+        // External input volumes are staged at output resolution, so a reduced
+        // child grid could not index them. Refuse instead of reading wrong data.
+        if (!graph->inputs.empty()) return 1;
+        const uint64_t staged = static_cast<uint64_t>(graph->slices.size()) * volume_length;
+        if (staged > kMaxNoiseFloats) return 1;
+        slice_values.resize(static_cast<size_t>(staged));
+        for (uint32_t index = 0; index < graph->slices.size(); ++index) {
+            const SliceBinding& binding = graph->slices[index];
+            uint32_t reduced_x = size_x, reduced_y = size_y, reduced_z = size_z;
+            int32_t min_reduced_x = min_x, min_reduced_y = min_y, min_reduced_z = min_z;
+            int32_t step_reduced_x = step_x, step_reduced_y = step_y, step_reduced_z = step_z;
+            if (binding.axis == 0) {
+                reduced_x = 1; min_reduced_x = binding.coordinate; step_reduced_x = 1;
+            } else if (binding.axis == 1) {
+                reduced_y = 1; min_reduced_y = binding.coordinate; step_reduced_y = 1;
+            } else {
+                reduced_z = 1; min_reduced_z = binding.coordinate; step_reduced_z = 1;
+            }
+            const uint64_t reduced_length = static_cast<uint64_t>(reduced_x) * reduced_y * reduced_z;
+            std::vector<float> buffer(static_cast<size_t>(reduced_length));
+            const int32_t status = evaluate_prefix(
+                binding.input_node, reduced_x, reduced_y, reduced_z,
+                min_reduced_x, min_reduced_y, min_reduced_z,
+                step_reduced_x, step_reduced_y, step_reduced_z,
+                buffer.data(), reduced_length);
+            if (status != 0) return status;
+            float* destination = slice_values.data()
+                + static_cast<uint64_t>(index) * volume_length;
+            for (uint32_t z = 0; z < size_z; ++z) {
+                for (uint32_t x = 0; x < size_x; ++x) {
+                    for (uint32_t y = 0; y < size_y; ++y) {
+                        const uint64_t out = (static_cast<uint64_t>(z) * size_x + x) * size_y + y;
+                        const uint64_t source = binding.axis == 0
+                            ? static_cast<uint64_t>(z) * size_y + y
+                            : binding.axis == 1
+                                ? static_cast<uint64_t>(z) * size_x + x
+                                : static_cast<uint64_t>(x) * size_y + y;
+                        destination[out] = buffer[static_cast<size_t>(source)];
+                    }
                 }
             }
         }
+    }
 
-        for (const InputBinding& binding : graph->inputs) {
-            const float* source = inputs + static_cast<uint64_t>(binding.input_index) * volume_length + tile_start;
-            float* destination = tile_values.data() + static_cast<size_t>(binding.node) * tile_capacity;
-            std::copy_n(source, count, destination);
-        }
+    // FIND_TOP_SURFACE scans downward from a per-column ceiling. One batched child
+    // evaluation over the probe lattice replaces vanilla's per-probe sampleValue,
+    // which is the whole reason this node is affordable at chunk scale.
+    std::vector<float> top_surface_values;
+    if (!graph->top_surfaces.empty() && in_prefix(graph->top_surfaces.front().node)) {
+        // Vanilla rejects sizeY != 1 outright, because the result is one height
+        // per column.
+        if (size_y != 1) return 1;
+        if (!graph->inputs.empty()) return 1;
+        const uint64_t staged = static_cast<uint64_t>(graph->top_surfaces.size()) * volume_length;
+        if (staged > kMaxNoiseFloats) return 1;
+        top_surface_values.resize(static_cast<size_t>(staged));
+        const uint64_t column_count = static_cast<uint64_t>(size_x) * size_z;
+        std::vector<float> upper(static_cast<size_t>(volume_length));
+        std::vector<int32_t> tops(static_cast<size_t>(column_count));
+        for (uint32_t index = 0; index < graph->top_surfaces.size(); ++index) {
+            const TopSurfaceBinding& binding = graph->top_surfaces[index];
+            const int32_t status = evaluate_prefix(
+                binding.upper_node, size_x, size_y, size_z,
+                min_x, min_y, min_z, step_x, step_y, step_z,
+                upper.data(), volume_length);
+            if (status != 0) return status;
 
-        for (const NoiseBinding& binding : graph->noises) {
-            const float* source = noise_values.data()
-                + static_cast<uint64_t>(binding.plan_slot) * volume_length + tile_start;
-            float* destination = tile_values.data() + static_cast<size_t>(binding.node) * tile_capacity;
-            std::copy_n(source, count, destination);
-        }
+            const int32_t cell_height = binding.cell_height;
+            const int32_t lower_bound = binding.lower_bound;
+            int32_t highest_top = INT32_MIN;
+            for (uint64_t column = 0; column < column_count; ++column) {
+                const float value = upper[static_cast<size_t>(column)];
+                const double scaled = std::floor(static_cast<double>(value / static_cast<float>(cell_height)));
+                int32_t top = scaled <= -2147483648.0 ? INT32_MIN
+                    : scaled >= 2147483647.0 ? INT32_MAX
+                    : static_cast<int32_t>(scaled) * cell_height;
+                tops[static_cast<size_t>(column)] = top;
+                if (top > highest_top) highest_top = top;
+            }
 
-        for (uint32_t index = 0; index < graph->interpolateds.size(); ++index) {
-            const float* source = interpolated_values.data()
-                + static_cast<uint64_t>(index) * volume_length + tile_start;
-            float* destination = tile_values.data()
-                + static_cast<size_t>(graph->interpolateds[index].node) * tile_capacity;
-            std::copy_n(source, count, destination);
-        }
+            float* destination = top_surface_values.data()
+                + static_cast<uint64_t>(index) * volume_length;
+            // Probe values are always multiples of cellHeight, so the lattice must
+            // start at the first multiple at or above lowerBound.
+            const int32_t base = (floor_div(lower_bound, cell_height)
+                + (floor_mod(lower_bound, cell_height) != 0 ? 1 : 0)) * cell_height;
+            const int64_t probe_count = highest_top < base ? 0
+                : (static_cast<int64_t>(highest_top) - base) / cell_height + 1;
+            if (probe_count == 0) {
+                std::fill_n(destination, volume_length, static_cast<float>(lower_bound));
+                continue;
+            }
+            if (probe_count > 65536) return 1;
+            const uint32_t probe_height = static_cast<uint32_t>(probe_count);
+            const uint64_t probe_length = static_cast<uint64_t>(size_x) * probe_height * size_z;
+            if (probe_length > kMaxNoiseFloats) return 1;
+            std::vector<float> probes(static_cast<size_t>(probe_length));
+            const int32_t probe_status = evaluate_prefix(
+                binding.density_node, size_x, probe_height, size_z,
+                min_x, base, min_z, step_x, cell_height, step_z,
+                probes.data(), probe_length);
+            if (probe_status != 0) return probe_status;
 
-        for (const CoordinateBinding& binding : graph->coordinates) {
-            float* destination = tile_values.data() + static_cast<size_t>(binding.node) * tile_capacity;
-            const float* source = binding.axis == 0 ? x_values
-                : binding.axis == 1 ? y_values : z_values;
-            std::copy_n(source, count, destination);
-        }
-
-        for (const GradientBinding& binding : graph->gradients) {
-            const int32_t* coordinates = binding.axis == 0 ? x_coordinates
-                : binding.axis == 1 ? y_coordinates : z_coordinates;
-            float* destination = tile_values.data() + static_cast<size_t>(binding.node) * tile_capacity;
-            for (uint32_t sample = 0; sample < count; ++sample) {
-                const int32_t coordinate = coordinates[sample];
-                const int32_t clamped = coordinate < binding.min_coordinate ? binding.min_coordinate
-                    : coordinate > binding.max_coordinate ? binding.max_coordinate : coordinate;
-                const uint32_t delta_bits = static_cast<uint32_t>(clamped)
-                    - static_cast<uint32_t>(binding.from_coordinate);
-                const int32_t delta = signed_i32(delta_bits);
-                volatile float scaled = static_cast<float>(delta) * binding.coordinate_factor;
-                destination[sample] = binding.from_value + scaled;
+            for (uint32_t z = 0; z < size_z; ++z) {
+                for (uint32_t x = 0; x < size_x; ++x) {
+                    const uint64_t column = static_cast<uint64_t>(z) * size_x + x;
+                    const int32_t top = tops[static_cast<size_t>(column)];
+                    float result = static_cast<float>(lower_bound);
+                    if (top > lower_bound) {
+                        const int64_t start_k = (static_cast<int64_t>(top) - base) / cell_height;
+                        for (int64_t k = start_k; k >= 0; --k) {
+                            const uint64_t probe = (static_cast<uint64_t>(z) * size_x + x)
+                                * probe_height + static_cast<uint64_t>(k);
+                            if (probes[static_cast<size_t>(probe)] > 0.0f) {
+                                result = static_cast<float>(base + static_cast<int32_t>(k) * cell_height);
+                                break;
+                            }
+                        }
+                    }
+                    destination[column] = result;
+                }
             }
         }
+    }
 
-        for (const ArithmeticInstruction& instruction : graph->arithmetic) {
+    // END_ISLAND is column-constant: one island height per (x,z), broadcast along Y.
+    std::vector<float> end_island_values;
+    if (!graph->end_island_nodes.empty() && in_prefix(graph->end_island_nodes.front())) {
+        if (graph->end_island_permutation.size() != 256) return 1;
+        const uint64_t staged = static_cast<uint64_t>(graph->end_island_nodes.size()) * volume_length;
+        if (staged > kMaxNoiseFloats) return 1;
+        end_island_values.resize(static_cast<size_t>(staged));
+        const uint8_t* perms = graph->end_island_permutation.data();
+        // Adjacent columns usually share (blockX/8)/2, so a tiny memo removes
+        // almost all of the 25x25 island scan.
+        std::unordered_map<int64_t, float> cache;
+        cache.reserve(64);
+        for (uint32_t index = 0; index < graph->end_island_nodes.size(); ++index) {
+            float* destination = end_island_values.data()
+                + static_cast<uint64_t>(index) * volume_length;
+            for (uint32_t z = 0; z < size_z; ++z) {
+                const int32_t block_z = wrapped_coordinate(min_z, z, step_z);
+                for (uint32_t x = 0; x < size_x; ++x) {
+                    const int32_t block_x = wrapped_coordinate(min_x, x, step_x);
+                    const int32_t section_x = block_x / 8;
+                    const int32_t section_z = block_z / 8;
+                    const int64_t key = (static_cast<int64_t>(section_x) << 32)
+                        ^ static_cast<uint32_t>(section_z);
+                    auto found = cache.find(key);
+                    if (found == cache.end()) {
+                        found = cache.emplace(key,
+                            end_island_height(perms, section_x, section_z)).first;
+                    }
+                    const float value = (found->second - 8.0f) / 128.0f;
+                    const uint64_t base_index = (static_cast<uint64_t>(z) * size_x + x) * size_y;
+                    std::fill_n(destination + base_index, size_y, value);
+                }
+            }
+        }
+    }
+
+    // Arithmetic runs from the ordered node sweep below, so it needs to be
+    // callable per node rather than per binding list.
+    const auto run_arithmetic = [&](const ArithmeticInstruction& instruction, uint32_t count) {
             const float* left = tile_values.data()
                 + static_cast<size_t>(instruction.input_a) * tile_capacity;
             const float* right = instruction.input_b == kNoInput ? nullptr
@@ -1264,6 +2043,198 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
                 for (uint32_t sample = 0; sample < count; ++sample) {
                     destination[sample] = left[sample] / right[sample];
                 }
+            }
+    };
+
+    for (uint64_t tile_start = 0; tile_start < volume_length; tile_start += tile_capacity) {
+        const uint32_t count = static_cast<uint32_t>(
+            std::min<uint64_t>(tile_capacity, volume_length - tile_start));
+
+        const uint32_t z_start = static_cast<uint32_t>(tile_start / plane_size);
+        const uint64_t within_plane = tile_start - static_cast<uint64_t>(z_start) * plane_size;
+        uint32_t x_index = static_cast<uint32_t>(within_plane / size_y);
+        uint32_t y_index = static_cast<uint32_t>(within_plane - static_cast<uint64_t>(x_index) * size_y);
+        uint32_t z_index = z_start;
+
+        for (uint32_t sample = 0; sample < count; ++sample) {
+            x_coordinates[sample] = wrapped_coordinate(min_x, x_index, step_x);
+            y_coordinates[sample] = wrapped_coordinate(min_y, y_index, step_y);
+            z_coordinates[sample] = wrapped_coordinate(min_z, z_index, step_z);
+            x_values[sample] = static_cast<float>(x_coordinates[sample]);
+            y_values[sample] = static_cast<float>(y_coordinates[sample]);
+            z_values[sample] = static_cast<float>(z_coordinates[sample]);
+            if (++y_index == size_y) {
+                y_index = 0;
+                if (++x_index == size_x) {
+                    x_index = 0;
+                    ++z_index;
+                }
+            }
+        }
+
+        // Strict node order. Topological order is what makes a composite node
+        // (spline, round, interval, blend) see its children already materialized;
+        // grouping by binding kind would let arithmetic read a stale lane.
+        for (uint32_t node_index = 0; node_index < node_limit; ++node_index) {
+            const JpeDensityNode& node = graph->nodes[node_index];
+            const uint32_t slot = graph->op_slot[node_index];
+            float* destination = tile_values.data()
+                + static_cast<size_t>(node_index) * tile_capacity;
+            switch (node.opcode) {
+                case JPE_DENSITY_CONST:
+                case JPE_DENSITY_OPAQUE:
+                    // Static lanes are filled once per volume, not per tile.
+                    break;
+                case JPE_DENSITY_INPUT: {
+                    const InputBinding& binding = graph->inputs[slot];
+                    const float* source = inputs
+                        + static_cast<uint64_t>(binding.input_index) * volume_length + tile_start;
+                    std::copy_n(source, count, destination);
+                    break;
+                }
+                case JPE_DENSITY_X:
+                case JPE_DENSITY_Y:
+                case JPE_DENSITY_Z: {
+                    const uint32_t axis = graph->coordinates[slot].axis;
+                    std::copy_n(axis == 0 ? x_values : axis == 1 ? y_values : z_values,
+                                count, destination);
+                    break;
+                }
+                case JPE_DENSITY_GRADIENT_CLAMPED_X:
+                case JPE_DENSITY_GRADIENT_CLAMPED_Y:
+                case JPE_DENSITY_GRADIENT_CLAMPED_Z: {
+                    const GradientBinding& binding = graph->gradients[slot];
+                    const int32_t* coordinates = binding.axis == 0 ? x_coordinates
+                        : binding.axis == 1 ? y_coordinates : z_coordinates;
+                    for (uint32_t sample = 0; sample < count; ++sample) {
+                        const int32_t coordinate = coordinates[sample];
+                        const int32_t clamped = coordinate < binding.min_coordinate ? binding.min_coordinate
+                            : coordinate > binding.max_coordinate ? binding.max_coordinate : coordinate;
+                        const uint32_t delta_bits = static_cast<uint32_t>(clamped)
+                            - static_cast<uint32_t>(binding.from_coordinate);
+                        const int32_t delta = signed_i32(delta_bits);
+                        const float scaled = static_cast<float>(delta) * binding.coordinate_factor;
+                        destination[sample] = binding.from_value + scaled;
+                    }
+                    break;
+                }
+                case JPE_DENSITY_NOISE:
+                case JPE_DENSITY_NOISE_TRANSPOSED: {
+                    const NoiseBinding& binding = graph->noises[slot];
+                    const float* source = noise_values.data()
+                        + static_cast<uint64_t>(binding.plan_slot) * volume_length + tile_start;
+                    std::copy_n(source, count, destination);
+                    break;
+                }
+                case JPE_DENSITY_INTERPOLATED: {
+                    const float* source = interpolated_values.data()
+                        + static_cast<uint64_t>(slot) * volume_length + tile_start;
+                    std::copy_n(source, count, destination);
+                    break;
+                }
+                case JPE_DENSITY_SLICE_X:
+                case JPE_DENSITY_SLICE_Y:
+                case JPE_DENSITY_SLICE_Z: {
+                    const float* source = slice_values.data()
+                        + static_cast<uint64_t>(slot) * volume_length + tile_start;
+                    std::copy_n(source, count, destination);
+                    break;
+                }
+                case JPE_DENSITY_FIND_TOP_SURFACE: {
+                    const float* source = top_surface_values.data()
+                        + static_cast<uint64_t>(slot) * volume_length + tile_start;
+                    std::copy_n(source, count, destination);
+                    break;
+                }
+                case JPE_DENSITY_END_ISLAND: {
+                    const float* source = end_island_values.data()
+                        + static_cast<uint64_t>(slot) * volume_length + tile_start;
+                    std::copy_n(source, count, destination);
+                    break;
+                }
+                case JPE_DENSITY_SPLINE: {
+                    const SplineBinding& binding = graph->splines[slot];
+                    const float* lanes = tile_values.data();
+                    for (uint32_t sample = 0; sample < count; ++sample) {
+                        destination[sample] = spline_sample(
+                            *graph, binding.root, lanes, tile_capacity, sample, 0);
+                    }
+                    break;
+                }
+                case JPE_DENSITY_ROUND: {
+                    const RoundBinding& binding = graph->rounds[slot];
+                    const float* input_lane = tile_values.data()
+                        + static_cast<size_t>(binding.input_node) * tile_capacity;
+                    if (binding.multiple_node == kNoInput) {
+                        for (uint32_t sample = 0; sample < count; ++sample) {
+                            destination[sample] = round_to_integer(input_lane[sample], binding.type);
+                        }
+                        break;
+                    }
+                    const float* multiple_lane = tile_values.data()
+                        + static_cast<size_t>(binding.multiple_node) * tile_capacity;
+                    for (uint32_t sample = 0; sample < count; ++sample) {
+                        const float multiple = multiple_lane[sample];
+                        // Vanilla returns the input untouched at multiple == 1.
+                        destination[sample] = multiple == 1.0f
+                            ? input_lane[sample]
+                            : round_to_integer(input_lane[sample] / multiple, binding.type) * multiple;
+                    }
+                    break;
+                }
+                case JPE_DENSITY_INTERVAL_SELECT: {
+                    const IntervalBinding& binding = graph->intervals[slot];
+                    const float* input_lane = tile_values.data()
+                        + static_cast<size_t>(binding.input_node) * tile_capacity;
+                    const float* thresholds = graph->interval_thresholds.data() + binding.first_threshold;
+                    const uint32_t* branches = graph->interval_branches.data() + binding.first_branch;
+                    for (uint32_t sample = 0; sample < count; ++sample) {
+                        const float value = input_lane[sample];
+                        // selectSamplerIndex: first threshold the value is below,
+                        // otherwise the last branch. NaN lands on the last branch.
+                        uint32_t chosen = binding.threshold_count;
+                        for (uint32_t k = 0; k < binding.threshold_count; ++k) {
+                            if (value < thresholds[k]) { chosen = k; break; }
+                        }
+                        destination[sample] = tile_values[
+                            static_cast<size_t>(branches[chosen]) * tile_capacity + sample];
+                    }
+                    break;
+                }
+                case JPE_DENSITY_DISTANCE_TO_POINT: {
+                    const JpeDistancePoint& point =
+                        graph->distance_points[graph->distance_bindings[slot]];
+                    for (uint32_t sample = 0; sample < count; ++sample) {
+                        const int32_t delta_x = signed_i32(static_cast<uint32_t>(point.x)
+                            - static_cast<uint32_t>(x_coordinates[sample]));
+                        const int32_t delta_y = signed_i32(static_cast<uint32_t>(point.y)
+                            - static_cast<uint32_t>(y_coordinates[sample]));
+                        const int32_t delta_z = signed_i32(static_cast<uint32_t>(point.z)
+                            - static_cast<uint32_t>(z_coordinates[sample]));
+                        destination[sample] = distance_metric(point.metric,
+                            static_cast<float>(delta_x), static_cast<float>(delta_y),
+                            static_cast<float>(delta_z));
+                    }
+                    break;
+                }
+                case JPE_DENSITY_BLEND_DENSITY: {
+                    const float* child_lane = tile_values.data()
+                        + static_cast<size_t>(node.input_a) * tile_capacity;
+                    if (!graph->blend.active) {
+                        std::copy_n(child_lane, count, destination);
+                        break;
+                    }
+                    const BlendRegion& region = graph->blend;
+                    for (uint32_t sample = 0; sample < count; ++sample) {
+                        destination[sample] = blend_density(region,
+                            x_coordinates[sample], y_coordinates[sample], z_coordinates[sample],
+                            child_lane[sample]);
+                    }
+                    break;
+                }
+                default:
+                    run_arithmetic(graph->arithmetic[slot], count);
+                    break;
             }
         }
 

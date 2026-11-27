@@ -76,6 +76,18 @@ const DENSITY_INTERPOLATED: u32 = 29;
 const DENSITY_RANGE_CHOICE: u32 = 30;
 const DENSITY_LERP: u32 = 31;
 const DENSITY_POW: u32 = 32;
+const DENSITY_SPLINE: u32 = 33;
+const DENSITY_SLICE_X: u32 = 34;
+const DENSITY_SLICE_Y: u32 = 35;
+const DENSITY_SLICE_Z: u32 = 36;
+const DENSITY_ROUND: u32 = 37;
+const DENSITY_INTERVAL_SELECT: u32 = 38;
+const DENSITY_FIND_TOP_SURFACE: u32 = 39;
+const DENSITY_DISTANCE_TO_POINT: u32 = 40;
+const DENSITY_BLEND_DENSITY: u32 = 41;
+const DENSITY_END_ISLAND: u32 = 42;
+const SPLINE_CONSTANT: u32 = 0;
+const SPLINE_MULTIPOINT: u32 = 1;
 #[cfg(test)]
 static CACHE_TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -365,6 +377,123 @@ pub struct JpeNoisePlan {
     pub layers: *const JpePerlinLayer,
     pub layer_count: u32,
     pub flags: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct JpeSplineNode {
+    pub kind: u32,
+    pub coordinate: u32,
+    pub constant: f32,
+    pub first_point: u32,
+    pub point_count: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct JpeSplinePoint {
+    pub location: f32,
+    pub derivative: f32,
+    pub child: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct JpeIntervalSelect {
+    pub input_node: u32,
+    pub first_threshold: u32,
+    pub threshold_count: u32,
+    pub first_branch: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct JpeDistancePoint {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    pub metric: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct JpeBlendInput {
+    pub active: u32,
+    pub base_cell_x: i32,
+    pub base_cell_y: i32,
+    pub base_cell_z: i32,
+    pub cells_x: u32,
+    pub cells_y: u32,
+    pub cells_z: u32,
+    pub fixed_density: *const f32,
+    pub density: *const f32,
+    pub density_mask: *const u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct JpeGraphProgram {
+    pub noise_plans: *const JpeNoisePlan,
+    pub noise_plan_count: u32,
+    pub splines: *const JpeSplineNode,
+    pub spline_count: u32,
+    pub spline_points: *const JpeSplinePoint,
+    pub spline_point_count: u32,
+    pub interval_selects: *const JpeIntervalSelect,
+    pub interval_select_count: u32,
+    pub interval_thresholds: *const f32,
+    pub interval_threshold_count: u32,
+    pub interval_branches: *const u32,
+    pub interval_branch_count: u32,
+    pub distance_points: *const JpeDistancePoint,
+    pub distance_point_count: u32,
+    pub blend: *const JpeBlendInput,
+    pub end_island_permutation: *const u8,
+}
+
+impl JpeGraphProgram {
+    pub fn empty() -> Self {
+        Self {
+            noise_plans: core::ptr::null(),
+            noise_plan_count: 0,
+            splines: core::ptr::null(),
+            spline_count: 0,
+            spline_points: core::ptr::null(),
+            spline_point_count: 0,
+            interval_selects: core::ptr::null(),
+            interval_select_count: 0,
+            interval_thresholds: core::ptr::null(),
+            interval_threshold_count: 0,
+            interval_branches: core::ptr::null(),
+            interval_branch_count: 0,
+            distance_points: core::ptr::null(),
+            distance_point_count: 0,
+            blend: core::ptr::null(),
+            end_island_permutation: core::ptr::null(),
+        }
+    }
+}
+
+unsafe extern "C" {
+    fn jpe_cpp_density_graph_compile_program(
+        nodes: *const JpeDensityNode, node_count: u32, root_node: u32,
+        ir_version: u32, configuration_fingerprint: u64,
+        program: *const JpeGraphProgram,
+    ) -> u64;
+}
+
+/// Compiles a graph together with every payload table it references.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_compile_program(
+    nodes: *const JpeDensityNode, node_count: u32, root_node: u32,
+    ir_version: u32, configuration_fingerprint: u64,
+    program: *const JpeGraphProgram,
+) -> u64 {
+    unsafe {
+        jpe_cpp_density_graph_compile_program(
+            nodes, node_count, root_node, ir_version, configuration_fingerprint, program,
+        )
+    }
 }
 
 unsafe extern "C" {
@@ -1335,6 +1464,291 @@ mod tests {
         }, 0);
         assert_eq!(value[0], 1024.0);
         assert_eq!(unsafe { jpe_runtime_density_graph_release(power) }, 0);
+    }
+
+    fn constant_node(value: f64) -> JpeDensityNode {
+        JpeDensityNode {
+            opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+            input_b: DENSITY_NO_INPUT, reserved: 0, immediate: value,
+        }
+    }
+
+    fn unary_node(opcode: u32, input: u32) -> JpeDensityNode {
+        JpeDensityNode {
+            opcode, input_a: input, input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0,
+        }
+    }
+
+    fn binary_node(opcode: u32, a: u32, b: u32) -> JpeDensityNode {
+        JpeDensityNode {
+            opcode, input_a: a, input_b: b, reserved: 0, immediate: 0.0,
+        }
+    }
+
+    fn coordinate_node(opcode: u32) -> JpeDensityNode {
+        JpeDensityNode {
+            opcode, input_a: DENSITY_NO_INPUT, input_b: DENSITY_NO_INPUT,
+            reserved: 0, immediate: 0.0,
+        }
+    }
+
+    fn evaluate_single(handle: u64, x: i32, y: i32, z: i32) -> f32 {
+        let mut out = [0.0f32; 1];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(handle, 1, 1, 1, x, y, z, 1, 1, 1, out.as_mut_ptr(), 1)
+        }, 0);
+        out[0]
+    }
+
+    #[test]
+    fn density_graph_spline_matches_cubic_interpolation_and_edge_extension() {
+        // Graph: 0 = X, 1 = SPLINE(root 0). Spline: multipoint over [0, 10] with
+        // constant children 5 and 15.
+        let nodes = [coordinate_node(DENSITY_X), unary_node(DENSITY_SPLINE, 0)];
+        let spline_nodes = [
+            JpeSplineNode { kind: SPLINE_MULTIPOINT, coordinate: 0, constant: 0.0,
+                first_point: 0, point_count: 2 },
+            JpeSplineNode { kind: SPLINE_CONSTANT, coordinate: 0, constant: 5.0,
+                first_point: 0, point_count: 0 },
+            JpeSplineNode { kind: SPLINE_CONSTANT, coordinate: 0, constant: 15.0,
+                first_point: 0, point_count: 0 },
+        ];
+        let points = [
+            JpeSplinePoint { location: 0.0, derivative: 0.0, child: 1 },
+            JpeSplinePoint { location: 10.0, derivative: 0.0, child: 2 },
+        ];
+        let mut program = JpeGraphProgram::empty();
+        program.splines = spline_nodes.as_ptr();
+        program.spline_count = spline_nodes.len() as u32;
+        program.spline_points = points.as_ptr();
+        program.spline_point_count = points.len() as u32;
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile_program(nodes.as_ptr(), 2, 1, 10, 0x6001, &program)
+        };
+        assert_ne!(handle, 0, "spline graph must compile");
+        assert_eq!(evaluate_single(handle, 0, 0, 0), 5.0);
+        assert_eq!(evaluate_single(handle, 10, 0, 0), 15.0);
+        // t = 0.5, both derivatives zero: lerp only.
+        assert_eq!(evaluate_single(handle, 5, 0, 0), 10.0);
+        // Outside the table a zero derivative returns the edge value untouched.
+        assert_eq!(evaluate_single(handle, -5, 0, 0), 5.0);
+        assert_eq!(evaluate_single(handle, 25, 0, 0), 15.0);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, 0);
+
+        // Same table with a non-zero first derivative: the edge must extend linearly.
+        let points_sloped = [
+            JpeSplinePoint { location: 0.0, derivative: 2.0, child: 1 },
+            JpeSplinePoint { location: 10.0, derivative: 0.0, child: 2 },
+        ];
+        let mut sloped = JpeGraphProgram::empty();
+        sloped.splines = spline_nodes.as_ptr();
+        sloped.spline_count = spline_nodes.len() as u32;
+        sloped.spline_points = points_sloped.as_ptr();
+        sloped.spline_point_count = points_sloped.len() as u32;
+        let sloped_handle = unsafe {
+            jpe_runtime_density_graph_compile_program(nodes.as_ptr(), 2, 1, 10, 0x6002, &sloped)
+        };
+        assert_ne!(sloped_handle, 0);
+        assert_eq!(evaluate_single(sloped_handle, -5, 0, 0), 5.0 + 2.0 * -5.0);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(sloped_handle) }, 0);
+    }
+
+    #[test]
+    fn density_graph_round_matches_each_vanilla_mode() {
+        // RoundFunction.roundToInteger over +-2.5 for floor/round/ceil/truncate.
+        let expected_pos = [2.0f32, 3.0, 3.0, 2.0];
+        let expected_neg = [-3.0f32, -2.0, -2.0, -2.0];
+        for (mode, (positive, negative)) in expected_pos.iter().zip(expected_neg.iter()).enumerate() {
+            for (input, expected) in [(2.5f64, *positive), (-2.5f64, *negative)] {
+                let nodes = [constant_node(input), JpeDensityNode {
+                    opcode: DENSITY_ROUND, input_a: 0, input_b: DENSITY_NO_INPUT,
+                    reserved: mode as u32, immediate: 0.0,
+                }];
+                let handle = unsafe {
+                    jpe_runtime_density_graph_compile(nodes.as_ptr(), 2, 1, 10, 0x6100 + mode as u64)
+                };
+                assert_ne!(handle, 0);
+                assert_eq!(evaluate_single(handle, 0, 0, 0), expected,
+                    "mode {mode} at input {input}");
+                assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn density_graph_interval_select_uses_first_threshold_not_below() {
+        let nodes = [
+            coordinate_node(DENSITY_X),
+            constant_node(1.0),
+            constant_node(2.0),
+            JpeDensityNode {
+                opcode: DENSITY_INTERVAL_SELECT, input_a: 0, input_b: DENSITY_NO_INPUT,
+                reserved: 0, immediate: 0.0,
+            },
+        ];
+        let selects = [JpeIntervalSelect {
+            input_node: 0, first_threshold: 0, threshold_count: 1, first_branch: 0,
+        }];
+        let thresholds = [0.0f32];
+        let branches = [1u32, 2u32];
+        let mut program = JpeGraphProgram::empty();
+        program.interval_selects = selects.as_ptr();
+        program.interval_select_count = 1;
+        program.interval_thresholds = thresholds.as_ptr();
+        program.interval_threshold_count = 1;
+        program.interval_branches = branches.as_ptr();
+        program.interval_branch_count = 2;
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile_program(nodes.as_ptr(), 4, 3, 10, 0x6200, &program)
+        };
+        assert_ne!(handle, 0);
+        assert_eq!(evaluate_single(handle, -1, 0, 0), 1.0);
+        // selectSamplerIndex tests `value < threshold`, so the threshold itself
+        // belongs to the next branch.
+        assert_eq!(evaluate_single(handle, 0, 0, 0), 2.0);
+        assert_eq!(evaluate_single(handle, 1, 0, 0), 2.0);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, 0);
+    }
+
+    #[test]
+    fn density_graph_slice_pins_the_requested_axis() {
+        let nodes = [coordinate_node(DENSITY_Y), JpeDensityNode {
+            opcode: DENSITY_SLICE_Y, input_a: 0, input_b: DENSITY_NO_INPUT,
+            reserved: 0, immediate: 5.0,
+        }];
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), 2, 1, 10, 0x6300)
+        };
+        assert_ne!(handle, 0);
+        let mut out = [0.0f32; 8];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                handle, 2, 2, 2, 0, 0, 0, 1, 1, 1, out.as_mut_ptr(), 8,
+            )
+        }, 0);
+        assert!(out.iter().all(|value| *value == 5.0),
+            "every lane must read the pinned Y, got {out:?}");
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, 0);
+    }
+
+    #[test]
+    fn density_graph_distance_to_point_uses_each_metric() {
+        let expected = [5.0f32, 25.0, 7.0, 4.0];
+        for (metric, want) in expected.iter().enumerate() {
+            let nodes = [JpeDensityNode {
+                opcode: DENSITY_DISTANCE_TO_POINT, input_a: 0, input_b: DENSITY_NO_INPUT,
+                reserved: 0, immediate: 0.0,
+            }];
+            let points = [JpeDistancePoint { x: 0, y: 0, z: 0, metric: metric as u32 }];
+            let mut program = JpeGraphProgram::empty();
+            program.distance_points = points.as_ptr();
+            program.distance_point_count = 1;
+            let handle = unsafe {
+                jpe_runtime_density_graph_compile_program(nodes.as_ptr(), 1, 0, 10, 0x6400 + metric as u64, &program)
+            };
+            assert_ne!(handle, 0);
+            assert_eq!(evaluate_single(handle, 3, 4, 0), *want, "metric {metric}");
+            assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, 0);
+        }
+    }
+
+    #[test]
+    fn density_graph_find_top_surface_scans_down_to_the_first_positive_probe() {
+        // density = 10 - Y, so the highest probe with density > 0 is y = 9.
+        let nodes = [
+            constant_node(10.0),
+            coordinate_node(DENSITY_Y),
+            binary_node(DENSITY_SUB, 0, 1),
+            constant_node(32.0),
+            JpeDensityNode {
+                opcode: DENSITY_FIND_TOP_SURFACE, input_a: 2, input_b: 3,
+                reserved: 1, immediate: 0.0,
+            },
+        ];
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), 5, 4, 10, 0x6500)
+        };
+        assert_ne!(handle, 0);
+        assert_eq!(evaluate_single(handle, 0, 0, 0), 9.0);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, 0);
+
+        // A lower bound above the surface clamps the answer instead of scanning.
+        let mut clamped = nodes;
+        clamped[4].immediate = 40.0;
+        let clamped_handle = unsafe {
+            jpe_runtime_density_graph_compile(clamped.as_ptr(), 5, 4, 10, 0x6501)
+        };
+        assert_ne!(clamped_handle, 0);
+        assert_eq!(evaluate_single(clamped_handle, 0, 0, 0), 40.0);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(clamped_handle) }, 0);
+    }
+
+    #[test]
+    fn density_graph_blend_density_is_identity_when_inactive_and_overrides_on_fixed_data() {
+        let nodes = [constant_node(0.25), unary_node(DENSITY_BLEND_DENSITY, 0)];
+        // BLEND_DENSITY reads a program-level region, so it needs the program entry.
+        let no_blend = JpeGraphProgram::empty();
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile_program(nodes.as_ptr(), 2, 1, 10, 0x6600, &no_blend)
+        };
+        assert_ne!(handle, 0);
+        assert_eq!(evaluate_single(handle, 0, 0, 0), 0.25);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, 0);
+
+        // One cell of fixed blending data replaces the child outright.
+        let cells = 4usize;
+        let total = cells * cells * cells;
+        let mut fixed = vec![f32::MAX; total];
+        let density = vec![0.0f32; total];
+        let mask = vec![0u8; total];
+        fixed[0] = 0.75;
+        let blend = JpeBlendInput {
+            active: 1,
+            base_cell_x: 0, base_cell_y: 0, base_cell_z: 0,
+            cells_x: cells as u32, cells_y: cells as u32, cells_z: cells as u32,
+            fixed_density: fixed.as_ptr(), density: density.as_ptr(),
+            density_mask: mask.as_ptr(),
+        };
+        let mut program = JpeGraphProgram::empty();
+        program.blend = &blend;
+        let blended = unsafe {
+            jpe_runtime_density_graph_compile_program(nodes.as_ptr(), 2, 1, 10, 0x6601, &program)
+        };
+        assert_ne!(blended, 0);
+        assert_eq!(evaluate_single(blended, 0, 0, 0), 0.75);
+        // A voxel outside the region falls through to the child untouched.
+        assert_eq!(evaluate_single(blended, 64, 0, 0), 0.25);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(blended) }, 0);
+    }
+
+    #[test]
+    fn density_graph_end_island_is_y_invariant_and_within_the_declared_range() {
+        let nodes = [coordinate_node(DENSITY_END_ISLAND)];
+        let permutation: Vec<u8> = (0..256).map(|value| value as u8).collect();
+        let mut program = JpeGraphProgram::empty();
+        program.end_island_permutation = permutation.as_ptr();
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile_program(nodes.as_ptr(), 1, 0, 10, 0x6700, &program)
+        };
+        assert_ne!(handle, 0, "end island needs a permutation");
+        let mut out = [0.0f32; 4];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                handle, 2, 2, 1, 0, 0, 0, 1, 1, 1, out.as_mut_ptr(), 4,
+            )
+        }, 0);
+        // (height - 8) / 128 with height in [-100, 80].
+        for value in out {
+            assert!(value >= -0.84375 && value <= 0.5625, "out of range: {value}");
+        }
+        assert_eq!(out[0], out[1], "the value must not depend on Y");
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, 0);
+
+        // Without a permutation the compile must refuse rather than read nothing.
+        let refused = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), 1, 0, 10, 0x6701)
+        };
+        assert_eq!(refused, 0);
     }
 
     #[test]
