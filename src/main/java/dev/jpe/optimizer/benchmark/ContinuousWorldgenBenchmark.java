@@ -37,8 +37,10 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * Synthetic moving-frontier world-generation probe.
  *
- * It submits FULL-chunk futures from the server tick loop at a configurable
- * frontier interval. This is not a real ServerPlayer ticket lifecycle and
+ * It schedules FULL-chunk future submissions from the server tick loop at a
+ * configurable frontier interval, invoking the chunk source off-thread so
+ * Minecraft's main-thread managedBlock does not serialize requests. This is
+ * not a real ServerPlayer ticket lifecycle and
  * does not measure network delivery, client meshing, or rendering. Request
  * submission time is recorded separately because getChunkFuture may perform
  * nontrivial synchronous work before returning its future.
@@ -272,6 +274,7 @@ public final class ContinuousWorldgenBenchmark {
                 inFlight.decrementAndGet();
                 if (measured) {
                     measuredFailed.incrementAndGet();
+                    measuredFinished.incrementAndGet();
                 }
                 JPEOptimizer.LOGGER.error("Unable to request benchmark chunk {},{}", x, z, failure);
                 return null;
