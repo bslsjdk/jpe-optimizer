@@ -74,6 +74,8 @@ const DENSITY_NOISE: u32 = 27;
 const DENSITY_NOISE_TRANSPOSED: u32 = 28;
 const DENSITY_INTERPOLATED: u32 = 29;
 const DENSITY_RANGE_CHOICE: u32 = 30;
+const DENSITY_LERP: u32 = 31;
+const DENSITY_POW: u32 = 32;
 #[cfg(test)]
 static CACHE_TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -1284,6 +1286,55 @@ mod tests {
             assert_eq!(unsafe { jpe_runtime_density_graph_release(other) }, 0);
         }
         assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, 0);
+    }
+
+    #[test]
+    fn density_graph_lerp_and_pow_match_vanilla_arithmetic() {
+        // lerp(alpha=0.25, first=2, second=6) = 2 + 0.25*4 = 3
+        let lerp_nodes = [
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.25 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 2.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 6.0 },
+            JpeDensityNode { opcode: DENSITY_LERP, input_a: 0,
+                input_b: 1, reserved: 2, immediate: 0.0 },
+        ];
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile(lerp_nodes.as_ptr(), 4, 3, 10, 0x4D4D)
+        };
+        assert_ne!(handle, 0);
+        let mut out = [0.0f32; 1];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                handle, 1, 1, 1, 0, 0, 0, 1, 1, 1, out.as_mut_ptr(), 1,
+            )
+        }, 0);
+        assert_eq!(out[0], 3.0);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, 0);
+
+        // pow(base=2, exponent=10) = 1024 through double Math.pow.
+        let pow_nodes = [
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 2.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 10.0 },
+            JpeDensityNode { opcode: DENSITY_POW, input_a: 0,
+                input_b: 1, reserved: 0, immediate: 0.0 },
+        ];
+        let power = unsafe {
+            jpe_runtime_density_graph_compile(pow_nodes.as_ptr(), 3, 2, 10, 0x5E5E)
+        };
+        assert_ne!(power, 0);
+        let mut value = [0.0f32; 1];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                power, 1, 1, 1, 0, 0, 0, 1, 1, 1, value.as_mut_ptr(), 1,
+            )
+        }, 0);
+        assert_eq!(value[0], 1024.0);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(power) }, 0);
     }
 
     #[test]

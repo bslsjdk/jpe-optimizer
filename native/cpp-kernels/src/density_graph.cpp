@@ -257,6 +257,14 @@ void build_execution_plan(CompiledGraph& graph) {
             case JPE_DENSITY_INTERPOLATED:
                 graph.interpolateds.push_back({i, node.input_a, node.input_b, node.reserved});
                 break;
+            case JPE_DENSITY_LERP:
+                graph.arithmetic.push_back({node.opcode, node.input_a, node.input_b, i,
+                                            0.0f, 0.0f, node.reserved});
+                break;
+            case JPE_DENSITY_POW:
+                graph.arithmetic.push_back({node.opcode, node.input_a, node.input_b, i,
+                                            0.0f, 0.0f, kNoInput});
+                break;
             case JPE_DENSITY_RANGE_CHOICE: {
                 uint64_t packed = 0;
                 std::memcpy(&packed, &node.immediate, sizeof(packed));
@@ -492,6 +500,12 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
             case JPE_DENSITY_RANGE_CHOICE:
                 if (node.input_a >= i || node.input_b >= i || node.reserved >= i) return false;
                 if (!std::isfinite(node.immediate)) return false;
+                break;
+            case JPE_DENSITY_LERP:
+                if (node.input_a >= i || node.input_b >= i || node.reserved >= i) return false;
+                break;
+            case JPE_DENSITY_POW:
+                if (node.input_a >= i || node.input_b >= i || node.reserved != 0) return false;
                 break;
             default:
                 return false;
@@ -1210,6 +1224,26 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
                 for (uint32_t sample = 0; sample < count; ++sample) {
                     const float value = left[sample];
                     destination[sample] = value > 0.0f ? value : negative_factor * value;
+                }
+            } else if (instruction.opcode == JPE_DENSITY_LERP) {
+                const float* alpha_lane = tile_values.data()
+                    + static_cast<size_t>(instruction.input_a) * tile_capacity;
+                const float* first_lane = tile_values.data()
+                    + static_cast<size_t>(instruction.input_b) * tile_capacity;
+                const float* second_lane = tile_values.data()
+                    + static_cast<size_t>(instruction.input_c) * tile_capacity;
+                for (uint32_t sample = 0; sample < count; ++sample) {
+                    const float alpha = alpha_lane[sample];
+                    // Vanilla returns first outright at alpha == 0 and never forms
+                    // (second - first), so NaN in second cannot leak through.
+                    destination[sample] = alpha == 0.0f
+                        ? first_lane[sample]
+                        : lerp_f32(alpha, first_lane[sample], second_lane[sample]);
+                }
+            } else if (instruction.opcode == JPE_DENSITY_POW) {
+                for (uint32_t sample = 0; sample < count; ++sample) {
+                    destination[sample] = static_cast<float>(std::pow(
+                        static_cast<double>(left[sample]), static_cast<double>(right[sample])));
                 }
             } else if (instruction.opcode == JPE_DENSITY_RANGE_CHOICE) {
                 const float* input_lane = tile_values.data()

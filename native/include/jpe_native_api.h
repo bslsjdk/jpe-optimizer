@@ -137,7 +137,14 @@ enum {
      * reserved=whenOutOfRange, immediate packs minInclusive/maxExclusive as two
      * raw float32 words. Both bounds must be exactly float-representable, which
      * the compiler enforces; vanilla's data pack only uses such values. */
-    JPE_DENSITY_RANGE_CHOICE = 30
+    JPE_DENSITY_RANGE_CHOICE = 30,
+    /* Vanilla LerpFunction: input_a=alpha, input_b=first, reserved=second.
+     * Vanilla short-circuits alpha == 0 to first, which also skips the
+     * (second - first) subtraction that could produce NaN. */
+    JPE_DENSITY_LERP = 31,
+    /* Vanilla PowFunction: input_a=base, input_b=exponent. Both are promoted to
+     * double for Math.pow, then narrowed back to float. */
+    JPE_DENSITY_POW = 32
 };
 /* One world-prepared noise plan. Layers must already be expanded by the caller:
  * each layer's xz_scale/y_scale includes the outer NoiseFunction scale times the
