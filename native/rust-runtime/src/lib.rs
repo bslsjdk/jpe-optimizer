@@ -149,6 +149,7 @@ const DENSITY_ABS: u32 = 12;
 const DENSITY_CLAMP: u32 = 22;
 const DENSITY_PERLIN_STACK_WARP: u32 = 31;
 const DENSITY_SLICE: u32 = 32;
+const DENSITY_FIND_TOP_SURFACE: u32 = 34;
 
 unsafe extern "C" {
     fn jpe_cpp_density_graph_compile(
@@ -1867,6 +1868,60 @@ mod tests {
                 output.as_mut_ptr(), 1,
             )
         }, 2);
+    }
+
+    #[test]
+    fn density_graph_find_top_surface_scans_down_and_broadcasts_columns() {
+        // density = 8 - y; from upper bound 20, stride 4, the first
+        // positive sample is y=4 (y=8 is exactly zero).
+        let nodes = [
+            JpeDensityNode { opcode: DENSITY_Y, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 8.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_SUB, input_a: 1,
+                input_b: 0, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 20.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_FIND_TOP_SURFACE, input_a: 2,
+                input_b: 3, reserved: (-16_i32) as u32, immediate: 4.0, auxiliary: 0.0, tertiary: 0.0 },
+        ];
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), nodes.len() as u32, 4, 0x465453)
+        };
+        assert_ne!(handle, 0, "FindTopSurface graph should compile");
+
+        let mut output_f64 = [0.0_f64; 8];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                handle, 2, 2, 2, 10, 0, -4, 1, 1, 1,
+                output_f64.as_mut_ptr(), output_f64.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(output_f64, [4.0; 8]);
+
+        let mut output_f32 = [0.0_f32; 8];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate_f32(
+                handle, 2, 2, 2, 10, 0, -4, 1, 1, 1,
+                output_f32.as_mut_ptr(), output_f32.len() as u64,
+            )
+        }, STATUS_OK);
+        assert_eq!(output_f32, [4.0; 8]);
+
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, STATUS_OK);
+
+        let invalid = [
+            JpeDensityNode { opcode: DENSITY_Y, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 20.0, auxiliary: 0.0, tertiary: 0.0 },
+            JpeDensityNode { opcode: DENSITY_FIND_TOP_SURFACE, input_a: 0,
+                input_b: 1, reserved: 0, immediate: 0.0, auxiliary: 0.0, tertiary: 0.0 },
+        ];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_compile(invalid.as_ptr(), invalid.len() as u32, 2, 0x465453)
+        }, 0, "zero scan stride must be rejected");
     }
 
     #[test]
