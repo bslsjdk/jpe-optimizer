@@ -134,6 +134,26 @@ class PortableDensityGraphCacheTest {
     }
 
     @Test
+    void roundTripsFindTopSurfaceNodeWithoutProcessLocalHandles() throws Exception {
+        Path cache = temporaryDirectory.resolve("find-top-surface.dgraph");
+        byte[] worldFingerprint = fingerprint(0x6C);
+        var density = NativeRuntime.DensityNode.constant(0.25);
+        var upperBound = NativeRuntime.DensityNode.constant(320.0);
+        var findTop = NativeRuntime.DensityNode.findTopSurface(0, 1, -64, 8);
+        var graph = new PortableDensityGraphCache.Graph(
+                List.of(density, upperBound, findTop), 2, List.of());
+
+        PortableDensityGraphCache.write(cache, worldFingerprint, 0x77665544L, graph);
+
+        var loaded = PortableDensityGraphCache.read(cache, worldFingerprint, 0x77665544L).orElseThrow();
+        assertEquals(2, loaded.rootNode());
+        assertEquals(34, loaded.nodes().get(2).opcode());
+        assertEquals(-64, loaded.nodes().get(2).reserved());
+        assertEquals(8.0, loaded.nodes().get(2).immediate());
+        assertTrue(loaded.perlinStacks().isEmpty());
+    }
+
+    @Test
     void rejectsInvalidPortablePerlinSlots() {
         assertThrows(IllegalArgumentException.class, () ->
                 new PortableDensityGraphCache.Graph(List.of(
