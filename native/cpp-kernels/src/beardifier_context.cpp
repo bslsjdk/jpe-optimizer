@@ -39,7 +39,7 @@ float minecraft_fast_inv_sqrt(double value) noexcept {
 float bury_contribution(float dx, float dy, float dz) noexcept {
     const float distance_sq = length_squared(dx, dy, dz);
     if (distance_sq >= 36.0F) return 0.0F;
-    return 1.0F - static_cast<float>(std::sqrt(distance_sq)) / 6.0F;
+    return 1.0F - static_cast<float>(std::sqrt(static_cast<double>(distance_sq))) / 6.0F;
 }
 float beard_contribution(
     const JpeBeardifierContext& context,
@@ -119,6 +119,7 @@ extern "C" JPE_API uint64_t jpe_cpp_beardifier_context_create(
         || (info->junction_count != 0 && info->junctions == nullptr)
         || info->has_affected_box > 1U || info->reserved0 != 0 || info->reserved1 != 0
         || info->reserved2 != 0 || info->reserved3 != 0) return 0;
+    if ((info->piece_count != 0 || info->junction_count != 0) && info->has_affected_box == 0U) return 0;
     if (info->has_affected_box != 0U
         && (info->min_x > info->max_x || info->min_y > info->max_y || info->min_z > info->max_z)) return 0;
     for (uint32_t i = 0; i < info->piece_count; ++i) {
@@ -143,8 +144,12 @@ extern "C" JPE_API uint64_t jpe_cpp_beardifier_context_create(
     }
 
     auto context = std::make_shared<JpeBeardifierContext>();
-    context->pieces.assign(info->pieces, info->pieces + info->piece_count);
-    context->junctions.assign(info->junctions, info->junctions + info->junction_count);
+    if (info->piece_count != 0) {
+        context->pieces.assign(info->pieces, info->pieces + info->piece_count);
+    }
+    if (info->junction_count != 0) {
+        context->junctions.assign(info->junctions, info->junctions + info->junction_count);
+    }
     context->has_affected_box = info->has_affected_box != 0U;
     context->min_x = info->min_x; context->min_y = info->min_y; context->min_z = info->min_z;
     context->max_x = info->max_x; context->max_y = info->max_y; context->max_z = info->max_z;
