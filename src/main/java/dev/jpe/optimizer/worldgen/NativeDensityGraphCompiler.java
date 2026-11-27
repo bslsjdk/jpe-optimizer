@@ -75,7 +75,7 @@ import java.util.concurrent.ExecutionException;
  * graph, leaving the existing vanilla sampler untouched.
  */
 public final class NativeDensityGraphCompiler {
-    private static final long CONFIGURATION_FINGERPRINT = 0x4A50452603000006L;
+    private static final long CONFIGURATION_FINGERPRINT = 0x4A50452603000007L;
     private static final Object LOCK = new Object();
 
     // Density graphs repeatedly read the same record components while lowering
@@ -1399,6 +1399,17 @@ public final class NativeDensityGraphCompiler {
                         float minimum = ((Number) component(function, "min")).floatValue();
                         float maximum = ((Number) component(function, "max")).floatValue();
                         result = append(NativeRuntime.DensityNode.clamp(input, minimum, maximum));
+                    }
+                    case "FindTopSurfaceFunction" -> {
+                        int density = lower((DensityFunction) component(function, "density"));
+                        int upperBound = lower((DensityFunction) component(function, "upperBound"));
+                        int lowerBound = ((Number) component(function, "lowerBound")).intValue();
+                        int stepSize = ((Number) component(function, "stepSize")).intValue();
+                        if (stepSize <= 0) {
+                            throw new UnsupportedOperationException("FindTopSurface stepSize must be positive");
+                        }
+                        result = append(NativeRuntime.DensityNode.findTopSurface(
+                                density, upperBound, lowerBound, stepSize));
                     }
                     case "SliceFunction" -> {
                         String axisName = component(function, "axis").toString().toUpperCase(java.util.Locale.ROOT);
