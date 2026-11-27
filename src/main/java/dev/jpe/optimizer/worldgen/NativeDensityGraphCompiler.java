@@ -956,7 +956,7 @@ public final class NativeDensityGraphCompiler {
         List<NativeRuntime.DensityNode> materialized = graph.materialize(runtime);
         Set<Long> temporaryHandles = new HashSet<>();
         for (NativeRuntime.DensityNode node : materialized) {
-            if (node.opcode() == 7 || node.opcode() == 31) {
+            if (node.opcode() == 7 || node.opcode() == 31 || node.opcode() == 33) {
                 temporaryHandles.add((long) node.immediate());
             }
         }
@@ -1411,6 +1411,40 @@ public final class NativeDensityGraphCompiler {
                         int coordinate = ((Number) component(function, "coordinate")).intValue();
                         int input = lower((DensityFunction) component(function, "input"));
                         result = append(NativeRuntime.DensityNode.slice(input, axis, coordinate));
+                    }
+                    case "ShiftA", "ShiftB", "Shift" -> {
+                        @SuppressWarnings("unchecked")
+                        Holder<NormalNoise> noiseHolder =
+                                (Holder<NormalNoise>) component(function, "offsetNoise");
+                        Noise noise = context.createNoiseSampler(noiseHolder);
+                        long preparedHandle = NativePerlinNoiseBackend.preparedStackHandleForDensityGraph(noise);
+                        if (preparedHandle == 0L) {
+                            throw new UnsupportedOperationException(
+                                    "Shift noise is not backed by a supported prepared Perlin stack");
+                        }
+                        if (capturePortable && portableGraphSupported) {
+                            Integer stackSlot = perlinStackSlots.get(noise);
+                            if (stackSlot == null) {
+                                PortableDensityGraphCache.PerlinStack descriptor =
+                                        NativePerlinNoiseBackend.portableStackDescriptor(noise);
+                                if (descriptor == null) {
+                                    portableGraphSupported = false;
+                                } else {
+                                    stackSlot = perlinStacks.size();
+                                    perlinStacks.add(descriptor);
+                                    perlinStackSlots.put(noise, stackSlot);
+                                }
+                            }
+                            if (stackSlot != null) preparedHandleSlots.putIfAbsent(preparedHandle, stackSlot);
+                        }
+                        result = switch (kind) {
+                            case "ShiftA" -> append(NativeRuntime.DensityNode.perlinStack(
+                                    preparedHandle, 0.25, 0.0, 4.0F));
+                            case "Shift" -> append(NativeRuntime.DensityNode.perlinStack(
+                                    preparedHandle, 0.25, 0.25, 4.0F));
+                            case "ShiftB" -> append(NativeRuntime.DensityNode.shiftBPerlinStack(preparedHandle));
+                            default -> throw new AssertionError(kind);
+                        };
                     }
                     case "NoiseFunction" -> {
                         Noise noise = resolveCapturedNoise((NoiseFunction) function, context);
