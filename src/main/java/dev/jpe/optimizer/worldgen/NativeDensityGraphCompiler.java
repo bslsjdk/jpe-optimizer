@@ -39,6 +39,12 @@ import java.lang.reflect.RecordComponent;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.nio.file.Path;
 import java.util.HexFormat;
 import java.util.Optional;
@@ -51,6 +57,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.stream.Stream;
 import java.util.WeakHashMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -229,7 +237,7 @@ public final class NativeDensityGraphCompiler {
         final NativeRuntime runtime;
         try {
             runtime = NativePerlinNoiseBackend.runtimeForDensityGraph();
-        } catch (RuntimeException | LinkageError unavailable) {
+        } catch (IOException | RuntimeException | LinkageError unavailable) {
             if (strictMode()) {
                 throw new IllegalStateException("Strict native sampler preparation: runtime unavailable", unavailable);
             }
@@ -699,11 +707,22 @@ public final class NativeDensityGraphCompiler {
             if (routerDigest.isEmpty()) return null;
 
             List<DensityGraphWorldFingerprint.ModVersion> mods = new ArrayList<>();
+            Map<Path, String> artifactDigests = new HashMap<>();
             String loaderVersion = null;
             for (var mod : ModList.get().getMods()) {
                 String id = mod.getModId();
                 String version = mod.getVersion().toString();
-                mods.add(new DensityGraphWorldFingerprint.ModVersion(id, version));
+                var owningFile = mod.getOwningFile();
+                if (owningFile == null || owningFile.getFile() == null) return null;
+                Path artifactPath = owningFile.getFile().getFilePath();
+                if (artifactPath == null) return null;
+                artifactPath = artifactPath.toAbsolutePath().normalize();
+                String artifactDigest = artifactDigests.get(artifactPath);
+                if (artifactDigest == null) {
+                    artifactDigest = sha256ModArtifact(artifactPath);
+                    artifactDigests.put(artifactPath, artifactDigest);
+                }
+                mods.add(new DensityGraphWorldFingerprint.ModVersion(id, version, artifactDigest));
                 if (id.equals("neoforge")) loaderVersion = version;
             }
             if (loaderVersion == null) return null;
@@ -725,6 +744,67 @@ public final class NativeDensityGraphCompiler {
             JPEOptimizer.LOGGER.debug(
                     "Persistent density graph cache key unavailable: {}", describe(unavailable));
             return null;
+        }
+    }
+
+    /**
+     * Hashes the actual loaded mod artifact, not merely its declared version.
+     * Directory-backed development mods are hashed deterministically by relative
+     * path and file contents. Symlinks and unreadable/unknown artifact types
+     * disable persistent reuse rather than weakening the cache identity.
+     */
+    private static String sha256ModArtifact(Path artifact) throws IOException {
+        if (Files.isSymbolicLink(artifact)) {
+            throw new IOException("Mod artifact is a symbolic link: " + artifact);
+        }
+        final MessageDigest digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new AssertionError(impossible);
+        }
+
+        if (Files.isRegularFile(artifact, LinkOption.NOFOLLOW_LINKS)) {
+            digest.update((byte) 'F');
+            updateDigestFromFile(digest, artifact);
+            return HexFormat.of().formatHex(digest.digest());
+        }
+        if (!Files.isDirectory(artifact, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Unsupported mod artifact path: " + artifact);
+        }
+
+        digest.update((byte) 'D');
+        try (Stream<Path> walk = Files.walk(artifact)) {
+            List<Path> files = walk.sorted(Comparator.comparing(
+                    path -> artifact.relativize(path).toString())).toList();
+            for (Path file : files) {
+                if (file.equals(artifact)) continue;
+                if (Files.isSymbolicLink(file)) {
+                    throw new IOException("Mod artifact contains a symbolic link: " + file);
+                }
+                if (Files.isDirectory(file, LinkOption.NOFOLLOW_LINKS)) continue;
+                if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
+                    throw new IOException("Unsupported entry in mod artifact: " + file);
+                }
+                byte[] relative = artifact.relativize(file).toString()
+                        .replace(file.getFileSystem().getSeparator(), "/")
+                        .getBytes(StandardCharsets.UTF_8);
+                digest.update(relative);
+                digest.update((byte) 0);
+                updateDigestFromFile(digest, file);
+                digest.update((byte) 0xFF);
+            }
+        }
+        return HexFormat.of().formatHex(digest.digest());
+    }
+
+    private static void updateDigestFromFile(MessageDigest digest, Path file) throws IOException {
+        byte[] buffer = new byte[64 * 1024];
+        try (InputStream input = Files.newInputStream(file)) {
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                digest.update(buffer, 0, read);
+            }
         }
     }
 
