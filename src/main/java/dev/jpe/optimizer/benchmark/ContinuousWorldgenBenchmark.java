@@ -426,7 +426,7 @@ public final class ContinuousWorldgenBenchmark {
 
             String digestFile = System.getProperty("jpe.benchmark.digestFile");
             if (digestFile != null && !digestFile.isBlank()) {
-                writeDigestSnapshot(Path.of(digestFile), requested);
+                writeDigestSnapshot(Path.of(digestFile), requested, level, measuredChunkDigests);
             }
 
             if (completed != requested || failed != 0 || inFlight.get() != 0 || doFillCalls < requested) {
@@ -472,7 +472,8 @@ public final class ContinuousWorldgenBenchmark {
         return hash * 0x100000001b3L;
     }
 
-    private void writeDigestSnapshot(Path output, long expectedChunks) {
+    private static void writeDigestSnapshot(Path output, long expectedChunks, ServerLevel level,
+                                            ConcurrentSkipListMap<Long, Long> measuredChunkDigests) {
         if (measuredChunkDigests.size() != expectedChunks) {
             throw new IllegalStateException("Cannot write complete chunk digest: expected="
                     + expectedChunks + " actual=" + measuredChunkDigests.size());
