@@ -2034,7 +2034,7 @@ mod tests {
     }
 
     #[test]
-    fn exports_expected_abi_version() { assert_eq!(jpe_runtime_abi_version(), 7); }
+    fn exports_expected_abi_version() { assert_eq!(jpe_runtime_abi_version(), 8); }
 
     #[test]
     fn worker_configuration_is_idempotent_after_scheduler_start() {
