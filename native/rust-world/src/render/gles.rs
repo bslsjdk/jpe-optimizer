@@ -33,6 +33,16 @@ impl GlesRenderer {
         })
     }
 
+    /// Wrap the GLES context already current on this thread and present into its
+    /// default framebuffer at `width` x `height`.
+    ///
+    /// Must be called on the thread that owns the GLES context.
+    pub fn create_external(width: u32, height: u32) -> Result<Self, RenderError> {
+        Ok(Self {
+            core: GlCore::create_external(Profile::Es, width, height)?,
+        })
+    }
+
     /// Driver-reported renderer string (for diagnostics/tests).
     pub fn renderer_name(&self) -> &str {
         self.core.renderer_name()

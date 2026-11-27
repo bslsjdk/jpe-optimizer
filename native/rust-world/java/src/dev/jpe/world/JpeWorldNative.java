@@ -134,6 +134,7 @@ public final class JpeWorldNative implements AutoCloseable {
     private final MethodHandle hMeshSection;
 
     private final MethodHandle hRendererCreate;
+    private final MethodHandle hRendererCreateExternal;
     private final MethodHandle hRendererAvailable;
     private final MethodHandle hRendererDestroy;
     private final MethodHandle hRendererCaps;
@@ -203,6 +204,8 @@ public final class JpeWorldNative implements AutoCloseable {
 
         this.hRendererCreate = down(linker, lookup, "jpe_world_renderer_create",
                 FunctionDescriptor.of(i64, i32));
+        this.hRendererCreateExternal = down(linker, lookup, "jpe_world_renderer_create_external",
+                FunctionDescriptor.of(i64, i32, i32, i32));
         this.hRendererAvailable = down(linker, lookup, "jpe_world_renderer_available",
                 FunctionDescriptor.of(i32, i32));
         this.hRendererDestroy = down(linker, lookup, "jpe_world_renderer_destroy",
@@ -429,6 +432,19 @@ public final class JpeWorldNative implements AutoCloseable {
      */
     public long rendererCreate(int backend) {
         return invokeLong(hRendererCreate, backend);
+    }
+
+    /**
+     * Create a renderer that shares the GL/GLES context already current on the
+     * calling thread (the game's own context) and draws into its default
+     * framebuffer at {@code width} x {@code height}.
+     *
+     * <p>Must be called on the thread that owns the GL context. Returns 0 when
+     * the backend cannot share a context here (Vulkan/auto, or no current
+     * context). Like {@link #rendererCreate} the handle is thread-affine.
+     */
+    public long rendererCreateExternal(int backend, int width, int height) {
+        return invokeLong(hRendererCreateExternal, backend, width, height);
     }
 
     /** 1 if the backend can be created here, else 0. */

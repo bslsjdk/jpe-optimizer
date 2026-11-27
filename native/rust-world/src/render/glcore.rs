@@ -19,7 +19,10 @@
 
 #![allow(non_snake_case)]
 
-use super::egl::{dlopen_first, EglContext, EGL_OPENGL_API, EGL_OPENGL_ES_API};
+use super::egl::{
+    dlopen_first, load_egl_get_proc, EglContext, PfnGetProcAddress, EGL_OPENGL_API,
+    EGL_OPENGL_ES_API,
+};
 use super::{
     Backend, Capabilities, DrawBatch, FramePixels, Mat4, MeshHandle, PresentStatus,
     PresentSupport, RenderError, SurfaceDesc, MAT4_IDENTITY,
@@ -85,14 +88,15 @@ macro_rules! gl_fns {
         #[allow(non_snake_case)]
         struct GlFns { $($name: unsafe extern "C" fn($($arg),*) -> $ret,)* }
         impl GlFns {
-            unsafe fn load(lib: *mut c_void, egl: &EglContext) -> Result<Self, RenderError> {
+            unsafe fn load(lib: *mut c_void, get_proc: Option<PfnGetProcAddress>) -> Result<Self, RenderError> {
                 // SAFETY: each name is looked up in the live GL library, with
-                // `eglGetProcAddress` as fallback, and the resulting address is
-                // re-interpreted as the documented C signature.
+                // `eglGetProcAddress` (when available) as fallback, and the
+                // resulting address is re-interpreted as the documented C
+                // signature.
                 unsafe {
                     Ok(Self {
                         $($name: {
-                            let p = resolve_entry(lib, egl, concat!(stringify!($name), "\0").as_ptr() as *const c_char);
+                            let p = resolve_entry(lib, get_proc, concat!(stringify!($name), "\0").as_ptr() as *const c_char);
                             let Some(p) = p else {
                                 return Err(RenderError::BackendUnavailable(
                                     concat!("gl: missing entry point ", stringify!($name))));
@@ -164,14 +168,26 @@ gl_fns! {
     glReadPixels: fn(i32, i32, i32, i32, u32, u32, *mut c_void) -> ();
 }
 
-unsafe fn resolve_entry(lib: *mut c_void, egl: &EglContext, name: *const c_char) -> Option<*mut c_void> {
+unsafe fn resolve_entry(
+    lib: *mut c_void,
+    get_proc: Option<PfnGetProcAddress>,
+    name: *const c_char,
+) -> Option<*mut c_void> {
     // SAFETY: `lib` is a live shared-library handle and `name` is a
     // NUL-terminated string literal.
     let direct = unsafe { dlsym(lib, name) };
     if !direct.is_null() {
         return Some(direct);
     }
-    egl.proc_raw(name)
+    // SAFETY: `get_proc` is a live `eglGetProcAddress` and `name` is
+    // NUL-terminated; EGL returns null for unknown entry points.
+    match get_proc {
+        Some(f) => {
+            let p = unsafe { f(name) };
+            if p.is_null() { None } else { Some(p) }
+        }
+        None => None,
+    }
 }
 
 // --- profile --------------------------------------------------------------
@@ -300,10 +316,13 @@ struct GlTarget {
 /// The shared GL/GLES renderer core. Owns an EGL context and every GPU object.
 pub struct GlCore {
     gl: GlFns,
-    // `egl` is held only to keep the context current for this renderer's GPU
-    // objects; `Drop::drop` releases those objects before any field drops.
+    // `egl` is held only to keep an owned context current for this renderer's
+    // GPU objects; `Drop::drop` releases those objects before any field drops.
+    // `None` means this renderer wraps a context that the host already made
+    // current (the Minecraft-sharing path): it must NOT make-current or destroy
+    // that context, so nothing is stored here.
     _lib: *mut c_void,
-    _egl: EglContext,
+    _egl: Option<EglContext>,
     profile: Profile,
     capabilities: Capabilities,
     renderer_name: String,
@@ -364,7 +383,37 @@ impl GlCore {
                 Profile::Es => "gles: libGLESv2 not loadable",
             }));
         }
-        Self::init(profile, egl, lib)
+        Self::init(profile, Some(egl), lib)
+    }
+
+    /// Wrap the GL context that is already current on the calling thread, for
+    /// the Minecraft-sharing path, and draw into its default framebuffer.
+    ///
+    /// The caller (the context owner) is responsible for keeping the context
+    /// current on this thread and for the buffer swap. This renderer never makes
+    /// the context current and never destroys it: [`GlCore`] stores no
+    /// [`EglContext`] on this path, so `Drop` only releases the GPU objects it
+    /// created here.
+    pub fn create_external(profile: Profile, width: u32, height: u32) -> Result<Self, RenderError> {
+        if width == 0 || height == 0 {
+            return Err(RenderError::InvalidMesh);
+        }
+        // SAFETY: `libraries()` yields static, NUL-terminated names.
+        let lib = unsafe { dlopen_first(profile.libraries()) };
+        if lib.is_null() {
+            return Err(RenderError::BackendUnavailable(match profile {
+                Profile::Core => "gl: libGL not loadable",
+                Profile::Es => "gles: libGLESv2 not loadable",
+            }));
+        }
+        // No owned EGL context exists here; borrow a loader from libEGL when it
+        // is present, and lean on the GL library's direct exports otherwise.
+        // SAFETY: opens libEGL and takes `eglGetProcAddress`, which needs no
+        // current context.
+        let get_proc = unsafe { load_egl_get_proc() };
+        let mut core = Self::init_external(profile, lib, get_proc)?;
+        core.attach_surface_core(SurfaceDesc::ExternalGlCurrent { width, height })?;
+        Ok(core)
     }
 
     /// Probe by building and dropping a renderer.
@@ -373,12 +422,30 @@ impl GlCore {
         Ok(core.capabilities)
     }
 
-    fn init(profile: Profile, egl: EglContext, lib: *mut c_void) -> Result<Self, RenderError> {
+    fn init(profile: Profile, egl: Option<EglContext>, lib: *mut c_void) -> Result<Self, RenderError> {
+        let get_proc = egl.as_ref().map(|e| e.get_proc_fn());
+        Self::init_with(profile, egl, lib, get_proc)
+    }
+
+    fn init_external(
+        profile: Profile,
+        lib: *mut c_void,
+        get_proc: Option<PfnGetProcAddress>,
+    ) -> Result<Self, RenderError> {
+        Self::init_with(profile, None, lib, get_proc)
+    }
+
+    fn init_with(
+        profile: Profile,
+        egl: Option<EglContext>,
+        lib: *mut c_void,
+        get_proc: Option<PfnGetProcAddress>,
+    ) -> Result<Self, RenderError> {
         // SAFETY: all calls below go through the validated entry-point table,
         // with the EGL context made current for this thread, and only touch
         // objects created here.
         unsafe {
-            let gl = GlFns::load(lib, &egl)?;
+            let gl = GlFns::load(lib, get_proc)?;
 
             let version_text = gl_string(&gl, GL_VERSION).ok_or(RenderError::BackendUnavailable(
                 concat!("gl: glGetString(GL_VERSION) failed"),
@@ -658,7 +725,9 @@ impl GlCore {
     }
 
     pub fn draw_core(&mut self, batch: DrawBatch) -> Result<(), RenderError> {
-        if self.target.is_none() {
+        // A draw is only valid between begin_frame and end_frame, which requires
+        // either an owned target (offscreen) or an attached external surface.
+        if self.target.is_none() && self.external.is_none() {
             return Err(RenderError::InvalidMesh);
         }
         let Some(idx) = batch.mesh.0.checked_sub(1).map(|v| v as usize) else {

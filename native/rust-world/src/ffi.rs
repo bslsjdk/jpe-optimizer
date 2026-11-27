@@ -533,6 +533,32 @@ fn make_renderer(backend: u32) -> Option<Box<dyn Renderer>> {
     }
 }
 
+/// Build a renderer that wraps the GL/GLES context already current on the
+/// calling thread, or `None` when that is not possible here.
+///
+/// Only the GL and GLES backends can share a host context (Vulkan needs an
+/// owner swapchain, which is not wired yet), so other codes return `None`.
+fn make_external_renderer(backend: u32, width: u32, height: u32) -> Option<Box<dyn Renderer>> {
+    fn gl(width: u32, height: u32) -> Option<Box<dyn Renderer>> {
+        crate::render::gl::GlRenderer::create_external(width, height)
+            .ok()
+            .map(|r| Box::new(r) as Box<dyn Renderer>)
+    }
+    fn gles(width: u32, height: u32) -> Option<Box<dyn Renderer>> {
+        crate::render::gles::GlesRenderer::create_external(width, height)
+            .ok()
+            .map(|r| Box::new(r) as Box<dyn Renderer>)
+    }
+    match backend {
+        // AUTO shares the current context through desktop GL first (Minecraft runs on
+        // a desktop GL context), then GLES.
+        RENDER_BACKEND_AUTO => gl(width, height).or_else(|| gles(width, height)),
+        RENDER_BACKEND_GL => gl(width, height),
+        RENDER_BACKEND_GLES => gles(width, height),
+        _ => None,
+    }
+}
+
 fn render_error_code(error: RenderError) -> i32 {
     match error {
         RenderError::BackendUnavailable(_) => -3,
@@ -575,6 +601,35 @@ fn status<R>(result: Result<R, i32>) -> i32 {
 #[no_mangle]
 pub extern "C" fn jpe_world_renderer_create(backend: u32) -> u64 {
     let Some(renderer) = make_renderer(backend) else {
+        return 0;
+    };
+    let mut reg = renderer_lock();
+    reg.next = reg.next.wrapping_add(1).max(1);
+    let handle = reg.next;
+    reg.entries.insert(
+        handle,
+        RendererEntry {
+            thread: std::thread::current().id(),
+            renderer,
+        },
+    );
+    handle
+}
+
+/// Create a renderer that shares the GL/GLES context already current on the
+/// calling thread (the Minecraft-sharing path) and draws into its default
+/// framebuffer at `width` x `height`.
+///
+/// Returns a non-zero handle, or 0 when the backend cannot share a context here
+/// (Vulkan/`AUTO`, or no GL context is current). Like `jpe_world_renderer_create`
+/// the handle is thread-affine: it must be driven from this same thread.
+#[no_mangle]
+pub extern "C" fn jpe_world_renderer_create_external(
+    backend: u32,
+    width: u32,
+    height: u32,
+) -> u64 {
+    let Some(renderer) = make_external_renderer(backend, width, height) else {
         return 0;
     };
     let mut reg = renderer_lock();
@@ -1811,8 +1866,33 @@ mod tests {
         assert_eq!(jpe_world_renderer_destroy(handle), 0);
     }
 
-    /// The Java binding offsets into these two records directly, so the layout is
-    /// part of the ABI and must not drift silently.
+    /// `create_external` must only succeed when a GL context is already current
+    /// on the calling thread; otherwise it returns 0 rather than fabricating a
+    /// renderer. Vulkan has no shared-context path yet and always returns 0.
+    #[test]
+    fn create_external_requires_a_current_context() {
+        // No GL context is current on this (fresh test) thread.
+        assert_eq!(
+            jpe_world_renderer_create_external(RENDER_BACKEND_GL, 64, 64),
+            0,
+            "wrapping with no current context must fail, not fake success"
+        );
+        assert_eq!(
+            jpe_world_renderer_create_external(RENDER_BACKEND_GL, 0, 64),
+            0,
+            "zero extent is rejected"
+        );
+        assert_eq!(
+            jpe_world_renderer_create_external(RENDER_BACKEND_VULKAN, 64, 64),
+            0,
+            "Vulkan has no shared-context path yet"
+        );
+        assert_eq!(
+            jpe_world_renderer_create_external(RENDER_BACKEND_AUTO, 64, 64),
+            0,
+            "AUTO tries GL/GLES but neither can wrap with no current context"
+        );
+    }
     #[test]
     fn renderer_plan_struct_layout_is_stable() {
         assert_eq!(std::mem::size_of::<JpeRendererCaps>(), 24);

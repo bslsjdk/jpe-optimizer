@@ -109,6 +109,10 @@ public final class WorldEngineHost {
     private long framesRun;
     private boolean ready;
     private boolean failed;
+    /** True once the on-screen present path is active (renderer lives on this thread). */
+    private boolean presenting;
+    /** True when on-screen present was requested but the backend cannot share a context. */
+    private boolean presentUnsupported;
 
     private WorldEngineHost(RustWorldBridge bridge, Config config, Minecraft minecraft) {
         this.bridge = bridge;
@@ -118,6 +122,16 @@ public final class WorldEngineHost {
 
     /** Explicit opt-in for the continuous host, separate from the library path. */
     public static final String ENABLE_PROPERTY = "jpe.worldHost";
+
+    /**
+     * Opt-in for the on-screen present path. When true, the renderer is created on the
+     * calling (render) thread over Minecraft's already-current GL context and the engine
+     * draws into that context's default framebuffer, presenting with a flush each frame;
+     * Minecraft performs the buffer swap. This is a takeover demo, not an overlay: the
+     * engine clears the framebuffer it draws into, and on-screen output has never been
+     * verified in this headless environment. Off by default so normal play is untouched.
+     */
+    public static final String PRESENT_PROPERTY = "jpe.worldPresent";
 
     /**
      * Register the host's client event listeners. Must be called only on the client
@@ -175,8 +189,22 @@ public final class WorldEngineHost {
                 config.targetWidth(), config.targetHeight(),
                 config.terrainBudget(), config.meshBudget(), config.meshBudget(),
                 config.threads(), -4, 23, 1L, 4096);
-        RustWorldBridge bridge = RustWorldBridge.open(library, options);
-        return new WorldEngineHost(bridge, config, minecraft);
+        boolean presentRequested = Boolean.getBoolean(PRESENT_PROPERTY);
+        RustWorldBridge bridge = RustWorldBridge.open(library, options, presentRequested);
+        WorldEngineHost host = new WorldEngineHost(bridge, config, minecraft);
+        if (presentRequested) {
+            int support = bridge.presentSupport();
+            if (support == JpeWorldNative.PRESENT_EXTERNAL_GL) {
+                host.presenting = true;
+                LOGGER.info("world host presenting into Minecraft's GL context (takeover demo; "
+                        + "the engine clears the framebuffer it draws into)");
+            } else {
+                host.presentUnsupported = true;
+                LOGGER.warn("jpe.worldPresent=true but backend={} reports present support {}; "
+                        + "continuing offscreen-only", bridge.backend().name(), support);
+            }
+        }
+        return host;
     }
 
     // --- client tick: player tracking + chunk streaming + dirty resubmit ----
@@ -336,6 +364,18 @@ public final class WorldEngineHost {
                     0.1f, far);
             float[] eye = {(float) eyePos.x, (float) eyePos.y, (float) eyePos.z};
             JpeWorldNative.FrameStats last = bridge.frame(viewProj, eye);
+            if (presenting) {
+                // The engine already drew into the context's default framebuffer; flush so
+                // the driver hands the finished frame over, then Minecraft swaps it. A
+                // negative code means the backend dropped its surface; stop presenting and
+                // fall back to offscreen rather than failing the whole host.
+                int present = bridge.present();
+                if (present < 0) {
+                    presenting = false;
+                    presentUnsupported = true;
+                    LOGGER.warn("on-screen present failed (code {}); continuing offscreen-only", present);
+                }
+            }
             if (++framesRun % config.logEveryFrames() == 0) {
                 LOGGER.info("world host frame={} radius={} residentChunks={} resident={} visible={} "
                                 + "culled={} batches={} terrain={} mesh={} remesh={} fov={}",

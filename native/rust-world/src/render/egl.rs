@@ -37,7 +37,7 @@ const EGL_CONTEXT_MAJOR_VERSION: i32 = 0x3098;
 const EGL_CONTEXT_MINOR_VERSION: i32 = 0x30FB;
 const EGL_CONTEXT_CLIENT_VERSION: i32 = 0x3098;
 
-type PfnGetProcAddress = unsafe extern "C" fn(*const c_char) -> *mut c_void;
+pub type PfnGetProcAddress = unsafe extern "C" fn(*const c_char) -> *mut c_void;
 type PfnGetPlatformDisplay = unsafe extern "C" fn(u32, *mut c_void, *const i32) -> *mut c_void;
 type PfnGetDisplay = unsafe extern "C" fn(*mut c_void) -> *mut c_void;
 type PfnInitialize = unsafe extern "C" fn(*mut c_void, *mut i32, *mut i32) -> u32;
@@ -236,6 +236,8 @@ impl EglContext {
 
     pub fn egl_version(&self) -> u32 { self.version }
     pub fn vendor(&self) -> &str { &self.vendor }
+    /// The raw `eglGetProcAddress` pointer, for reusing this context's loader.
+    pub fn get_proc_fn(&self) -> PfnGetProcAddress { self.get_proc }
     pub fn last_error(&self) -> i32 {
         // SAFETY: live function pointer.
         unsafe { (self.get_error)() }
@@ -270,6 +272,25 @@ pub unsafe fn dlopen_first(names: &[&std::ffi::CStr]) -> *mut c_void {
         }
     }
     null_mut()
+}
+
+/// Resolve `eglGetProcAddress` from a freshly-opened `libEGL` for the
+/// "wrap an already-current host context" path.
+///
+/// The Minecraft-sharing path does not own an EGL display or context, so it has
+/// no [`EglContext`] to borrow a loader from. `eglGetProcAddress` itself needs
+/// no current context, so opening `libEGL` and taking the symbol is enough. The
+/// handle is intentionally left open (the same policy as [`EglContext`]: closing
+/// a GL/EGL loader can unmap vendor state still referenced by the process).
+pub unsafe fn load_egl_get_proc() -> Option<PfnGetProcAddress> {
+    // SAFETY: static, NUL-terminated names passed to the platform loader.
+    let lib = unsafe { dlopen_first(&[c"libEGL.so.1", c"libEGL.so"]) };
+    if lib.is_null() {
+        return None;
+    }
+    // SAFETY: `lib` is live and the symbol, when present, has this signature.
+    unsafe { load_sym(lib, c"eglGetProcAddress") }
+        .map(|p| unsafe { std::mem::transmute::<*mut c_void, PfnGetProcAddress>(p) })
 }
 
 unsafe fn load_sym(lib: *mut c_void, name: &std::ffi::CStr) -> Option<*mut c_void> {

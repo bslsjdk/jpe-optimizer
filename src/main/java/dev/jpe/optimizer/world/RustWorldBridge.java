@@ -109,6 +109,25 @@ public final class RustWorldBridge implements AutoCloseable {
      *         no native render backend can be created here
      */
     public static RustWorldBridge open(Path library, Options options) {
+        return open(library, options, false);
+    }
+
+    /**
+     * Like {@link #open(Path, Options)} but, when {@code shareCurrentContext} is true,
+     * wraps the GL/GLES context already current on the <em>calling</em> thread (the
+     * Minecraft render thread) and runs every native call inline on that thread instead
+     * of a private engine thread.
+     *
+     * <p>This is the on-screen presentation path: the renderer must live on the thread
+     * that owns the context, and it draws into that context's default framebuffer. The
+     * caller must keep the context current on this thread and perform the buffer swap
+     * (Minecraft does both). Vulkan cannot share a host context yet, so only the GL/GLES
+     * backends succeed; {@link JpeWorldNative#BACKEND_AUTO} falls back to GL then GLES.
+     *
+     * @throws IllegalStateException when the library is unusable, the ABI disagrees, or
+     *         no context-sharing render backend can be created here
+     */
+    public static RustWorldBridge open(Path library, Options options, boolean shareCurrentContext) {
         if (!Files.isReadable(library)) {
             throw new IllegalStateException("world engine library is not readable: " + library);
         }
@@ -121,17 +140,26 @@ public final class RustWorldBridge implements AutoCloseable {
                 throw new IllegalStateException("world engine ABI mismatch: library reports " + abi
                         + ", this bridge needs " + EXPECTED_ABI_VERSION);
             }
-            ThreadFactory factory = task -> {
-                Thread thread = new Thread(task, "jpe-world-engine");
-                thread.setDaemon(true);
-                return thread;
-            };
-            engine = Executors.newSingleThreadExecutor(factory);
+            if (shareCurrentContext) {
+                // Renderer must be created and driven on the context-owning thread.
+                engine = new CallerThreadExecutor();
+            } else {
+                ThreadFactory factory = task -> {
+                    Thread thread = new Thread(task, "jpe-world-engine");
+                    thread.setDaemon(true);
+                    return thread;
+                };
+                engine = Executors.newSingleThreadExecutor(factory);
+            }
             final ExecutorService engineRef = engine;
             Future<long[]> handlesFuture = engineRef.submit(() -> {
-                long renderer = world.rendererCreate(options.backend());
+                long renderer = shareCurrentContext
+                        ? world.rendererCreateExternal(options.backend(), options.width(), options.height())
+                        : world.rendererCreate(options.backend());
                 if (renderer == 0) {
-                    throw new IllegalStateException("no native render backend available (requested "
+                    throw new IllegalStateException((shareCurrentContext
+                            ? "no native render backend can share the current GL context (requested "
+                            : "no native render backend available (requested ")
                             + backendName(options.backend()) + ")");
                 }
                 long pipeline = world.pipelineCreate(renderer, options.worldEpoch(),

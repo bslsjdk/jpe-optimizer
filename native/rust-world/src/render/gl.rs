@@ -37,6 +37,16 @@ impl GlRenderer {
         })
     }
 
+    /// Wrap the GL context already current on this thread (the game's context)
+    /// and present into its default framebuffer at `width` x `height`.
+    ///
+    /// Must be called on the thread that owns the GL context.
+    pub fn create_external(width: u32, height: u32) -> Result<Self, RenderError> {
+        Ok(Self {
+            core: GlCore::create_external(Profile::Core, width, height)?,
+        })
+    }
+
     /// Driver-reported renderer string (for diagnostics/tests).
     pub fn renderer_name(&self) -> &str {
         self.core.renderer_name()
@@ -196,5 +206,59 @@ mod tests {
         eprintln!("gl shading: {non_bg} lit pixels, {colours} distinct colours");
 
         renderer.destroy_mesh(handle);
+    }
+
+    /// Wrapping the already-current context must reuse it without taking
+    /// ownership: after the wrapped renderer drops, the owner's context is still
+    /// current and its own offscreen path still works.
+    #[test]
+    fn wrap_current_context_does_not_own_it() {
+        let mut owner = match GlRenderer::create_headless() {
+            Ok(r) => r,
+            Err(RenderError::BackendUnavailable(msg)) => {
+                require_or_skip(msg);
+                eprintln!("gl unavailable here, skipping wrap test: {msg}");
+                return;
+            }
+            Err(e) => panic!("create_headless failed: {e:?}"),
+        };
+
+        {
+            let mut wrapped = match GlRenderer::create_external(64, 64) {
+                Ok(r) => r,
+                Err(RenderError::BackendUnavailable(msg)) => {
+                    require_or_skip(msg);
+                    eprintln!("gl wrap unavailable here, skipping: {msg}");
+                    return;
+                }
+                Err(e) => panic!("create_external failed: {e:?}"),
+            };
+            assert_eq!(wrapped.present_support(), PresentSupport::ExternalGl);
+
+            // Drive a real frame into the shared default framebuffer and present.
+            let mesh = one_block_mesh();
+            let handle = wrapped.create_mesh(&mesh).expect("create_mesh");
+            wrapped.begin_frame([64, 64]).expect("begin_frame");
+            wrapped
+                .draw(DrawBatch { mesh: handle, index_count: mesh.indices.len() as u32, instance_count: 1 })
+                .expect("draw");
+            wrapped.end_frame().expect("end_frame");
+            assert_eq!(wrapped.present().expect("present"), PresentStatus::Presented);
+            wrapped.resize_surface([80, 60]).expect("resize");
+            wrapped.destroy_mesh(handle);
+        } // wrapped dropped here: it must NOT destroy the borrowed context.
+
+        // The owner still owns a live, current context and can render offscreen.
+        let mesh = one_block_mesh();
+        let handle = owner.create_mesh(&mesh).expect("owner create_mesh");
+        owner.begin_frame([64, 64]).expect("owner begin_frame");
+        owner
+            .draw(DrawBatch { mesh: handle, index_count: mesh.indices.len() as u32, instance_count: 1 })
+            .expect("owner draw");
+        owner.end_frame().expect("owner end_frame");
+        let pixels = owner.read_pixels().expect("owner read_pixels");
+        assert_eq!(pixels.width, 64);
+        assert_eq!(pixels.height, 64);
+        owner.destroy_mesh(handle);
     }
 }
