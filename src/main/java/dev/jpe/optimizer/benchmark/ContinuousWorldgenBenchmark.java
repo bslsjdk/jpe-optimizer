@@ -105,7 +105,7 @@ public final class ContinuousWorldgenBenchmark {
         private final ConcurrentLinkedQueue<Long> measuredLatencies = new ConcurrentLinkedQueue<>();
         private final ConcurrentLinkedQueue<Long> tickIntervals = new ConcurrentLinkedQueue<>();
         // Sorted by packed (chunkX, chunkZ); populated only after each measured FULL chunk completes.
-        private final ConcurrentSkipListMap<Long, Long> measuredChunkDigests = new ConcurrentSkipListMap<>();
+        private final ConcurrentSkipListMap<Long, LevelChunk> measuredChunks = new ConcurrentSkipListMap<>();
 
         private int tick;
         private int nextIssueTick = 1;
@@ -261,7 +261,7 @@ public final class ContinuousWorldgenBenchmark {
                     if (pending.measured()) {
                         measuredCompleted.incrementAndGet();
                         measuredLatencies.add(System.nanoTime() - pending.requestedAt());
-                        measuredChunkDigests.put(packChunkPos(chunk.getPos().x(), chunk.getPos().z()), digestChunk(chunk));
+                        measuredChunks.put(packChunkPos(chunk.getPos().x(), chunk.getPos().z()), chunk);
                     }
                 } finally {
                     if (pending.pendingAtSubmission()) {
@@ -426,7 +426,7 @@ public final class ContinuousWorldgenBenchmark {
 
             String digestFile = System.getProperty("jpe.benchmark.digestFile");
             if (digestFile != null && !digestFile.isBlank()) {
-                writeDigestSnapshot(Path.of(digestFile), requested, level, measuredChunkDigests);
+                writeDigestSnapshot(Path.of(digestFile), requested, level, measuredChunks);
             }
 
             if (completed != requested || failed != 0 || inFlight.get() != 0 || doFillCalls < requested) {
@@ -473,11 +473,12 @@ public final class ContinuousWorldgenBenchmark {
     }
 
     private static void writeDigestSnapshot(Path output, long expectedChunks, ServerLevel level,
-                                            ConcurrentSkipListMap<Long, Long> measuredChunkDigests) {
-        if (measuredChunkDigests.size() != expectedChunks) {
+                                            ConcurrentSkipListMap<Long, LevelChunk> measuredChunks) {
+        if (measuredChunks.size() != expectedChunks) {
             throw new IllegalStateException("Cannot write complete chunk digest: expected="
-                    + expectedChunks + " actual=" + measuredChunkDigests.size());
+                    + expectedChunks + " actual=" + measuredChunks.size());
         }
+        long digestStart = System.nanoTime();
         try {
             Path absolute = output.toAbsolutePath();
             Files.createDirectories(absolute.getParent());
@@ -488,16 +489,17 @@ public final class ContinuousWorldgenBenchmark {
                         + " maxBuildHeight=" + level.getMaxBuildHeight()
                         + " sections=" + level.getSectionsCount());
                 writer.newLine();
-                for (Map.Entry<Long, Long> entry : measuredChunkDigests.entrySet()) {
+                for (Map.Entry<Long, LevelChunk> entry : measuredChunks.entrySet()) {
                     int x = (int) (entry.getKey() >> 32);
                     int z = (int) (long) entry.getKey();
-                    writer.write(x + "," + z + "," + String.format(java.util.Locale.ROOT, "%016x", entry.getValue()));
+                    long digest = digestChunk(entry.getValue());
+                    writer.write(x + "," + z + "," + String.format(java.util.Locale.ROOT, "%016x", digest));
                     writer.newLine();
                 }
             }
             JPEOptimizer.LOGGER.info("JPE chunk block-state digest snapshot written: path={} chunks={} seed={} "
-                            + "scope=all-block-states-in-all-chunk-sections",
-                    absolute, measuredChunkDigests.size(), level.getSeed());
+                            + "scope=all-block-states-in-all-chunk-sections digestMs={}",
+                    absolute, measuredChunks.size(), level.getSeed(), format((System.nanoTime() - digestStart) / 1_000_000.0));
         } catch (IOException failure) {
             throw new IllegalStateException("Unable to write chunk digest snapshot to " + output, failure);
         }
