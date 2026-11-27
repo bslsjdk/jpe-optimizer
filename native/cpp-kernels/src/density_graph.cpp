@@ -1406,7 +1406,6 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_f32_with_beardifier(
     int32_t step_x, int32_t step_y, int32_t step_z,
     float* output, uint64_t output_length
 ) {
-    if (beardifier_context_handle == 0) return 1;
     return evaluate_density_graph<float>(graph_handle, size_x, size_y, size_z,
         min_x, min_y, min_z, step_x, step_y, step_z, output, output_length,
         beardifier_context_handle);
