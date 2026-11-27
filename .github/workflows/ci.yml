@@ -144,10 +144,12 @@ jobs:
           fi
           exit "$test_status"
 
-      - name: Real overworld native density and Aquifer parity (full chunk generation)
+      - name: Real overworld strict native generation (340 full chunks; parity checked in GameTest)
         if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         env:
-          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphVerify=true -Djpe.nativeDensityGraphStrict=true -Djpe.nativeAquiferSubstanceEnabled=true -Djpe.nativeAquiferSubstanceStrict=true -Djpe.nativeAquiferSubstanceVerify=true -Djpe.nativeAquiferFusedVerify=true -Djpe.nativeDensityGraphCacheDir=${{ github.workspace }}/build/native-density-graph-cache -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=1 -Djpe.benchmark.maxInFlightChunks=68 -Djpe.worldgenMetrics=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
+          # GameTest performs independent Java/native parity checks. This full-world
+          # run measures the real native path without re-evaluating every voxel in Java.
+          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphStrict=true -Djpe.nativeAquiferSubstanceEnabled=true -Djpe.nativeAquiferSubstanceStrict=true -Djpe.nativeDensityGraphCacheDir=${{ github.workspace }}/build/native-density-graph-cache -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=1 -Djpe.benchmark.maxInFlightChunks=68 -Djpe.worldgenMetrics=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
         run: |
           mkdir -p build/native-density-worldgen
           rm -rf run
@@ -183,7 +185,7 @@ jobs:
       - name: Warm-launch persistent density graph cache (fresh server process)
         if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         env:
-          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphVerify=true -Djpe.nativeDensityGraphStrict=true -Djpe.nativeAquiferSubstanceEnabled=true -Djpe.nativeAquiferSubstanceStrict=true -Djpe.nativeAquiferSubstanceVerify=true -Djpe.nativeDensityGraphCacheDir=${{ github.workspace }}/build/native-density-graph-cache -Djpe.serverWorldgenBenchmark=true -Djpe.worldgenMetrics=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
+          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphStrict=true -Djpe.nativeAquiferSubstanceEnabled=true -Djpe.nativeAquiferSubstanceStrict=true -Djpe.nativeDensityGraphCacheDir=${{ github.workspace }}/build/native-density-graph-cache -Djpe.serverWorldgenBenchmark=true -Djpe.worldgenMetrics=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
         run: |
           mkdir -p build/native-density-cache-warm
           # Keep the shared portable cache, but use a clean world directory and a
