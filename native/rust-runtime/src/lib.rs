@@ -72,6 +72,7 @@ const DENSITY_GRADIENT_CLAMPED_Y: u32 = 25;
 const DENSITY_GRADIENT_CLAMPED_Z: u32 = 26;
 const DENSITY_NOISE: u32 = 27;
 const DENSITY_NOISE_TRANSPOSED: u32 = 28;
+const DENSITY_INTERPOLATED: u32 = 29;
 #[cfg(test)]
 static CACHE_TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -1158,6 +1159,80 @@ mod tests {
         }
         assert_eq!(mismatches, 0, "every Y lane must equal the (z,x) plane sample");
 
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, 0);
+    }
+
+    #[test]
+    fn density_graph_interpolated_reproduces_a_linear_child_bit_for_bit() {
+        // X is linear, and 4/8 are powers of two, so every alpha is exact and the
+        // trilinear expansion must return the original X value at every voxel.
+        let nodes = [
+            JpeDensityNode {
+                opcode: DENSITY_X, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0,
+            },
+            JpeDensityNode {
+                opcode: DENSITY_INTERPOLATED, input_a: 0,
+                input_b: 4, reserved: 8, immediate: 0.0,
+            },
+        ];
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), 2, 1, 10, 0x1A7)
+        };
+        assert_ne!(handle, 0, "interpolated graph must compile");
+
+        let (sx, sy, sz) = (8u32, 16u32, 8u32);
+        let volume = (sx * sy * sz) as usize;
+        let mut out = vec![0.0f32; volume];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                handle, sx, sy, sz, 0, 0, 0, 1, 1, 1, out.as_mut_ptr(), volume as u64,
+            )
+        }, 0);
+
+        let mut mismatches = 0usize;
+        for z in 0..sz {
+            for x in 0..sx {
+                for y in 0..sy {
+                    let index = (((z * sx + x) * sy) + y) as usize;
+                    if out[index].to_bits() != (x as f32).to_bits() {
+                        mismatches += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(mismatches, 0, "linear child must survive trilinear expansion exactly");
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, 0);
+    }
+
+    #[test]
+    fn density_graph_interpolated_passes_through_on_the_cell_grid() {
+        // Step 4 on X/Z and 8 on Y is exactly the cell grid, so the node must
+        // forward the child instead of interpolating again.
+        let nodes = [
+            JpeDensityNode {
+                opcode: DENSITY_Y, input_a: DENSITY_NO_INPUT,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0,
+            },
+            JpeDensityNode {
+                opcode: DENSITY_INTERPOLATED, input_a: 0,
+                input_b: 4, reserved: 8, immediate: 0.0,
+            },
+        ];
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), 2, 1, 10, 0x2A2A)
+        };
+        assert_ne!(handle, 0);
+        let (sx, sy, sz) = (2u32, 2u32, 2u32);
+        let mut out = [0.0f32; 8];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                handle, sx, sy, sz, 0, 0, 0, 4, 8, 4, out.as_mut_ptr(), 8,
+            )
+        }, 0);
+        // Coordinates are (0,0,0), (0,8,0), (0,0,4), ... in z/x/y order.
+        let expected = [0.0f32, 8.0, 0.0, 8.0, 0.0, 8.0, 0.0, 8.0];
+        assert_eq!(out, expected, "cell-grid volumes must pass the child through");
         assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, 0);
     }
 

@@ -126,7 +126,13 @@ enum {
      * transposed (z,x,0) plane and broadcast along Y. The plan already carries
      * xz_scale=0.25, y_scale=0.25 and amplitude=4.0 as expanded by the caller.
      * input_a is the plan slot; input_b and reserved must be kNoInput/0. */
-    JPE_DENSITY_NOISE_TRANSPOSED = 28
+    JPE_DENSITY_NOISE_TRANSPOSED = 28,
+    /* Vanilla InterpolatedFunction: evaluate input_a on a coarse cell grid, then
+     * trilinearly expand to the requested volume. input_b = cellSizeXz,
+     * reserved = cellSizeY, immediate = 0. When the requested volume already sits
+     * on the cell grid the node passes the child through unchanged, which is what
+     * makes nested interpolation terminate. */
+    JPE_DENSITY_INTERPOLATED = 29
 };
 /* One world-prepared noise plan. Layers must already be expanded by the caller:
  * each layer's xz_scale/y_scale includes the outer NoiseFunction scale times the

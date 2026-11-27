@@ -26,6 +26,18 @@ extern "C" int32_t jpe_cpp_perlin_add_stack(
     float *output, uint64_t output_length, uint32_t flags
 ) noexcept;
 
+/* INTERPOLATED re-enters the evaluator on the coarser cell grid, so the entry
+ * point needs a forward declaration before its own definition. */
+extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
+    uint64_t graph_handle,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    const float *inputs, uint32_t input_count,
+    const uint32_t *output_nodes, uint32_t output_count,
+    float *outputs, uint64_t output_length
+);
+
 namespace {
 constexpr uint32_t kMaxNodes = 65536;
 constexpr uint64_t kMaxVolumeElements = 1024ULL * 1024ULL;
@@ -159,6 +171,14 @@ struct NoisePlanData {
  * broadcast along Y. The plan's layer scales already encode 0.25 / 0.25 / 4.0. */
 struct NoiseBinding { uint32_t node; uint32_t plan_slot; uint32_t transposed; };
 
+/* Vanilla InterpolatedFunction: coarse cell grid plus trilinear expansion. */
+struct InterpolatedBinding {
+    uint32_t node;
+    uint32_t input_node;
+    uint32_t cell_size_xz;
+    uint32_t cell_size_y;
+};
+
 struct CompiledGraph {
     uint64_t fingerprint = 0;
     uint64_t configuration_fingerprint = 0;
@@ -175,6 +195,7 @@ struct CompiledGraph {
     std::vector<ArithmeticInstruction> arithmetic;
     std::vector<NoiseBinding> noises;
     std::vector<NoisePlanData> noise_plans;
+    std::vector<InterpolatedBinding> interpolateds;
 };
 
 void build_execution_plan(CompiledGraph& graph) {
@@ -231,6 +252,9 @@ void build_execution_plan(CompiledGraph& graph) {
                 break;
             case JPE_DENSITY_NOISE_TRANSPOSED:
                 graph.noises.push_back({i, node.input_a, 1});
+                break;
+            case JPE_DENSITY_INTERPOLATED:
+                graph.interpolateds.push_back({i, node.input_a, node.input_b, node.reserved});
                 break;
             case JPE_DENSITY_ADD:
             case JPE_DENSITY_MUL:
@@ -441,11 +465,41 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                 // Plan-slot range is validated at compile time, where the count is known.
                 if (node.input_b != kNoInput || node.reserved != 0 || node.immediate != 0.0) return false;
                 break;
+            case JPE_DENSITY_INTERPOLATED:
+                if (node.input_a >= i || node.input_b == 0 || node.reserved == 0
+                    || node.immediate != 0.0) return false;
+                if (node.input_b > 64 || node.reserved > 64) return false;
+                break;
             default:
                 return false;
         }
     }
     return true;
+}
+
+/* Java floor semantics: C++ integer division truncates toward zero. */
+/* INTERPOLATED re-enters the public evaluator. These thread-local guards bound the
+ * recursion and restrict the nested call to the child's dependency prefix, because
+ * topological order guarantees every dependency sits at a lower index. */
+thread_local uint32_t g_node_limit = 0;
+thread_local uint32_t g_interpolate_depth = 0;
+constexpr uint32_t kMaxInterpolateDepth = 8;
+
+int32_t floor_div(int32_t value, int32_t divisor) noexcept {
+    int32_t quotient = value / divisor;
+    if ((value % divisor != 0) && ((value < 0) != (divisor < 0))) --quotient;
+    return quotient;
+}
+
+int32_t floor_mod(int32_t value, int32_t divisor) noexcept {
+    int32_t remainder = value % divisor;
+    if (remainder != 0 && ((remainder < 0) != (divisor < 0))) remainder += divisor;
+    return remainder;
+}
+
+/* Exact Minecraft Mth.lerp(float, float, float). */
+float lerp_f32(float delta, float start, float end) noexcept {
+    return start + delta * (end - start);
 }
 
 int32_t wrapped_coordinate(int32_t minimum, uint32_t index, int32_t step) noexcept {
@@ -729,6 +783,8 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
     if (selected_roots.empty()
         || static_cast<uint64_t>(input_count + selected_roots.size()) > 16777216ULL / volume_length
         || output_length != volume_length * selected_roots.size()) return 1;
+    const uint32_t node_limit = g_node_limit == 0
+        ? static_cast<uint32_t>(graph->nodes.size()) : g_node_limit;
 
     // Evaluate a bounded tile of samples at once. Node-major storage lets the
     // compiler vectorize each ADD/MUL across contiguous samples while preserving
@@ -748,21 +804,16 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
 #endif
     const uint32_t tile_capacity = static_cast<uint32_t>(
         std::max<size_t>(1, std::min<size_t>(tile_sample_limit, kMaxTileValues / node_count)));
-    // The FFM call is synchronous and this evaluator never calls back into Java,
-    // so one bounded scratch vector can be safely reused by each worldgen worker.
-    // Capacity is capped at 1 MiB and retained per native worker thread.
-    thread_local std::vector<float> tile_scratch;
-    tile_scratch.resize(node_count * tile_capacity);
-    std::vector<float>& tile_values = tile_scratch;
-    // Coordinate lanes must follow the selected tile capacity too. A fixed-size
-    // stack array silently overflows when the benchmark override exceeds 768.
-    thread_local std::vector<float> coordinate_scratch;
-    coordinate_scratch.resize(static_cast<size_t>(tile_capacity) * 3);
+    // These scratch buffers are deliberately local rather than thread_local:
+    // INTERPOLATED re-enters this evaluator on the coarser cell grid, and a shared
+    // buffer would be resized underneath the outer call. The bounded sizes keep the
+    // per-call allocation small (under 1 MiB) relative to a chunk's own work.
+    std::vector<float> tile_values(node_count * tile_capacity);
+    std::vector<float> coordinate_scratch(static_cast<size_t>(tile_capacity) * 3);
     float* x_values = coordinate_scratch.data();
     float* y_values = x_values + tile_capacity;
     float* z_values = y_values + tile_capacity;
-    thread_local std::vector<int32_t> integer_coordinate_scratch;
-    integer_coordinate_scratch.resize(static_cast<size_t>(tile_capacity) * 3);
+    std::vector<int32_t> integer_coordinate_scratch(static_cast<size_t>(tile_capacity) * 3);
     int32_t* x_coordinates = integer_coordinate_scratch.data();
     int32_t* y_coordinates = x_coordinates + tile_capacity;
     int32_t* z_coordinates = y_coordinates + tile_capacity;
@@ -804,8 +855,7 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
             const uint32_t plane_x = size_z;
             const uint32_t plane_y = size_x;
             const uint64_t plane_length = static_cast<uint64_t>(plane_x) * plane_y;
-            thread_local std::vector<float> transposed_plane;
-            transposed_plane.resize(static_cast<size_t>(plane_length));
+            std::vector<float> transposed_plane(static_cast<size_t>(plane_length));
             const int32_t status = jpe_cpp_perlin_add_stack(
                 plan.layers.data(), static_cast<uint32_t>(plan.layers.size()),
                 plane_x, plane_y, 1, min_z, min_x, 0, step_z, step_x, 1,
@@ -817,6 +867,173 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
                     float* column = destination
                         + (static_cast<uint64_t>(z) * size_x + x) * size_y;
                     std::fill_n(column, size_y, value);
+                }
+            }
+        }
+    }
+
+    // INTERPOLATED evaluates its child on a coarse cell grid, then expands with the
+    // same Z->X->Y order vanilla uses. The Y axis is a running sum, not a fresh lerp,
+    // because vanilla accumulates valueStep; recomputing it would change the bits.
+    std::vector<float> interpolated_values;
+    if (!graph->interpolateds.empty()) {
+        if (!graph->inputs.empty()) {
+            // External volumes are staged at output resolution, so a coarser child
+            // grid cannot index them. Refuse rather than silently read the wrong data.
+            return 1;
+        }
+        const uint64_t staged = static_cast<uint64_t>(graph->interpolateds.size()) * volume_length;
+        if (staged > kMaxNoiseFloats) return 1;
+        interpolated_values.resize(static_cast<size_t>(staged));
+        for (uint32_t index = 0; index < graph->interpolateds.size(); ++index) {
+            const InterpolatedBinding& binding = graph->interpolateds[index];
+            if (binding.node >= node_limit) continue;
+            const int32_t csz = static_cast<int32_t>(binding.cell_size_xz);
+            const int32_t csy = static_cast<int32_t>(binding.cell_size_y);
+            float* destination = interpolated_values.data()
+                + static_cast<uint64_t>(index) * volume_length;
+
+            const bool on_grid =
+                (step_x == csz || size_x == 1) && (step_y == csy || size_y == 1)
+                && (step_z == csz || size_z == 1)
+                && floor_mod(min_x, csz) == 0 && floor_mod(min_y, csy) == 0
+                && floor_mod(min_z, csz) == 0;
+            const auto recurse = [&](uint32_t nx, uint32_t ny, uint32_t nz,
+                                     int32_t mx, int32_t my, int32_t mz,
+                                     int32_t rsx, int32_t rsy, int32_t rsz,
+                                     float* target, uint64_t target_length) -> int32_t {
+                if (g_interpolate_depth >= kMaxInterpolateDepth) return 1;
+                ++g_interpolate_depth;
+                const uint32_t saved_limit = g_node_limit;
+                g_node_limit = binding.input_node + 1;
+                const int32_t status = jpe_cpp_density_graph_evaluate_multi_with_inputs(
+                    graph_handle, nx, ny, nz, mx, my, mz, rsx, rsy, rsz,
+                    inputs, input_count, &binding.input_node, 1, target, target_length);
+                g_node_limit = saved_limit;
+                --g_interpolate_depth;
+                return status;
+            };
+
+            if (on_grid) {
+                const int32_t status = recurse(
+                    size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z,
+                    destination, volume_length);
+                if (status != 0) return status;
+                continue;
+            }
+            if (step_x <= 0 || step_y <= 0 || step_z <= 0) return 1;
+
+            if (step_x != 1 || step_y != 1 || step_z != 1) {
+                // Re-expand to a unit-step block volume first, mirroring vanilla's
+                // sampleWithNonBlockStep, then subsample at the original steps.
+                const uint32_t bx = size_x * static_cast<uint32_t>(step_x);
+                const uint32_t by = size_y * static_cast<uint32_t>(step_y);
+                const uint32_t bz = size_z * static_cast<uint32_t>(step_z);
+                const uint64_t block_length = static_cast<uint64_t>(bx) * by * bz;
+                if (block_length > kMaxNoiseFloats) return 1;
+                std::vector<float> block_buffer(static_cast<size_t>(block_length));
+                const int32_t status = recurse(
+                    bx, by, bz, min_x, min_y, min_z, 1, 1, 1,
+                    block_buffer.data(), block_length);
+                if (status != 0) return status;
+                for (uint32_t z = 0; z < size_z; ++z) {
+                    for (uint32_t x = 0; x < size_x; ++x) {
+                        for (uint32_t y = 0; y < size_y; ++y) {
+                            const uint64_t source =
+                                (static_cast<uint64_t>(z * static_cast<uint32_t>(step_z)) * bx
+                                 + x * static_cast<uint32_t>(step_x)) * by
+                                + y * static_cast<uint32_t>(step_y);
+                            destination[(static_cast<uint64_t>(z) * size_x + x) * size_y + y]
+                                = block_buffer[static_cast<size_t>(source)];
+                        }
+                    }
+                }
+                continue;
+            }
+
+            const int32_t max_block_x = min_x + static_cast<int32_t>(size_x - 1) * step_x;
+            const int32_t max_block_y = min_y + static_cast<int32_t>(size_y - 1) * step_y;
+            const int32_t max_block_z = min_z + static_cast<int32_t>(size_z - 1) * step_z;
+            const int32_t min_cell_x = floor_div(min_x, csz);
+            const int32_t min_cell_y = floor_div(min_y, csy);
+            const int32_t min_cell_z = floor_div(min_z, csz);
+            const int32_t max_cell_x = floor_div(max_block_x, csz);
+            const int32_t max_cell_y = floor_div(max_block_y, csy);
+            const int32_t max_cell_z = floor_div(max_block_z, csz);
+            const uint32_t cell_count_x = static_cast<uint32_t>(max_cell_x - min_cell_x + 1);
+            const uint32_t cell_count_y = static_cast<uint32_t>(max_cell_y - min_cell_y + 1);
+            const uint32_t cell_count_z = static_cast<uint32_t>(max_cell_z - min_cell_z + 1);
+            const uint32_t grid_x = floor_mod(max_block_x, csz) == 0 ? cell_count_x : cell_count_x + 1;
+            const uint32_t grid_y = floor_mod(max_block_y, csy) == 0 ? cell_count_y : cell_count_y + 1;
+            const uint32_t grid_z = floor_mod(max_block_z, csz) == 0 ? cell_count_z : cell_count_z + 1;
+            const uint64_t cell_length = static_cast<uint64_t>(grid_x) * grid_y * grid_z;
+            if (cell_length > kMaxNoiseFloats) return 1;
+            std::vector<float> cell_buffer(static_cast<size_t>(cell_length));
+            const int32_t status = recurse(
+                grid_x, grid_y, grid_z,
+                min_cell_x * csz, min_cell_y * csy, min_cell_z * csz,
+                csz, csy, csz, cell_buffer.data(), cell_length);
+            if (status != 0) return status;
+
+            const float inv_xz = 1.0f / static_cast<float>(csz);
+            const float inv_y = 1.0f / static_cast<float>(csy);
+            const auto cell_at = [&](uint32_t ix, uint32_t iy, uint32_t iz) {
+                return cell_buffer[(static_cast<uint64_t>(iz) * grid_x + ix) * grid_y + iy];
+            };
+            for (uint32_t cell_z = 0; cell_z < cell_count_z; ++cell_z) {
+                const uint32_t next_z = std::min(cell_z + 1, grid_z - 1);
+                for (uint32_t cell_x = 0; cell_x < cell_count_x; ++cell_x) {
+                    const uint32_t next_x = std::min(cell_x + 1, grid_x - 1);
+                    float v000 = cell_at(cell_x, 0, cell_z);
+                    float v100 = cell_at(next_x, 0, cell_z);
+                    float v001 = cell_at(cell_x, 0, next_z);
+                    float v101 = cell_at(next_x, 0, next_z);
+                    for (uint32_t cell_y = 0; cell_y < cell_count_y; ++cell_y) {
+                        const uint32_t next_y = std::min(cell_y + 1, grid_y - 1);
+                        const float v010 = cell_at(cell_x, next_y, cell_z);
+                        const float v110 = cell_at(next_x, next_y, cell_z);
+                        const float v011 = cell_at(cell_x, next_y, next_z);
+                        const float v111 = cell_at(next_x, next_y, next_z);
+
+                        const int32_t out_x = (min_cell_x + static_cast<int32_t>(cell_x)) * csz - min_x;
+                        const int32_t out_y = (min_cell_y + static_cast<int32_t>(cell_y)) * csy - min_y;
+                        const int32_t out_z = (min_cell_z + static_cast<int32_t>(cell_z)) * csz - min_z;
+                        const int32_t x0 = std::max(0, -out_x);
+                        const int32_t y0 = std::max(0, -out_y);
+                        const int32_t z0 = std::max(0, -out_z);
+                        const int32_t x1 = std::min(csz, static_cast<int32_t>(size_x) - out_x) - 1;
+                        const int32_t y1 = std::min(csy, static_cast<int32_t>(size_y) - out_y) - 1;
+                        const int32_t z1 = std::min(csz, static_cast<int32_t>(size_z) - out_z) - 1;
+                        for (int32_t zz = z0; zz <= z1; ++zz) {
+                            const int32_t output_z = out_z + zz;
+                            const float alpha_z = static_cast<float>(zz) * inv_xz;
+                            const float vz00 = lerp_f32(alpha_z, v000, v001);
+                            const float vz01 = lerp_f32(alpha_z, v010, v011);
+                            const float vz10 = lerp_f32(alpha_z, v100, v101);
+                            const float vz11 = lerp_f32(alpha_z, v110, v111);
+                            for (int32_t xx = x0; xx <= x1; ++xx) {
+                                const int32_t output_x = out_x + xx;
+                                const float alpha_x = static_cast<float>(xx) * inv_xz;
+                                const float low = lerp_f32(alpha_x, vz00, vz10);
+                                const float high = lerp_f32(alpha_x, vz01, vz11);
+                                const float value_step = (high - low) * inv_y;
+                                float value = low + value_step * static_cast<float>(y0);
+                                uint64_t output_index =
+                                    (static_cast<uint64_t>(output_z) * size_x
+                                     + static_cast<uint32_t>(output_x)) * size_y
+                                    + static_cast<uint32_t>(out_y + y0);
+                                for (int32_t yy = y0; yy <= y1; ++yy) {
+                                    destination[output_index++] = value;
+                                    value += value_step;
+                                }
+                            }
+                        }
+
+                        v000 = v010;
+                        v100 = v110;
+                        v001 = v011;
+                        v101 = v111;
+                    }
                 }
             }
         }
@@ -858,6 +1075,14 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
             const float* source = noise_values.data()
                 + static_cast<uint64_t>(binding.plan_slot) * volume_length + tile_start;
             float* destination = tile_values.data() + static_cast<size_t>(binding.node) * tile_capacity;
+            std::copy_n(source, count, destination);
+        }
+
+        for (uint32_t index = 0; index < graph->interpolateds.size(); ++index) {
+            const float* source = interpolated_values.data()
+                + static_cast<uint64_t>(index) * volume_length + tile_start;
+            float* destination = tile_values.data()
+                + static_cast<size_t>(graph->interpolateds[index].node) * tile_capacity;
             std::copy_n(source, count, destination);
         }
 
