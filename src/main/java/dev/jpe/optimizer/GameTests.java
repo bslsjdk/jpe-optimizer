@@ -354,11 +354,6 @@ public final class GameTests {
 
     /** Compares Native Aquifer cell-center offsets with Minecraft's actual XOROSHIRO factory. */
     private static void aquiferXoroshiroNativeParity(GameTestHelper helper) {
-        String library = System.getProperty("jpe.nativeLibraryPath");
-        if (library == null || library.isBlank()) {
-            throw new AssertionError("Set -Djpe.nativeLibraryPath to the freshly built native runtime library");
-        }
-
         long[][] sourceSeeds = {
                 {0x0123456789abcdefL, 0xfedcba9876543210L},
                 {0L, 0L},
@@ -377,7 +372,7 @@ public final class GameTests {
                 {0x40000001, -0x40000001, 0x7ffffffe}
         };
 
-        try (NativeRuntime runtime = NativeRuntime.load(java.nio.file.Path.of(library))) {
+        try (NativeRuntime runtime = NativeRuntime.load(nativeLibrary())) {
             if (!runtime.supportsAquiferXoroshiroOffsets() || !runtime.supportsAquiferLegacyOffsets()) {
                 throw new AssertionError("Native library does not export both Aquifer RNG algorithms");
             }
@@ -608,11 +603,6 @@ public final class GameTests {
 
     /** Verifies the versioned Java FFM graph API against a known full-volume result. */
     private static void densityGraphNativeParity(GameTestHelper helper) {
-        String library = System.getProperty("jpe.nativeLibraryPath");
-        if (library == null || library.isBlank()) {
-            throw new AssertionError("Set -Djpe.nativeLibraryPath to the freshly built native runtime library");
-        }
-
         DensityGraphIr graph = new DensityGraphIr(List.of(
                 DensityGraphIr.Node.x(),
                 DensityGraphIr.Node.y(),
@@ -621,7 +611,7 @@ public final class GameTests {
                 DensityGraphIr.Node.multiply(3, 1)
         ), 4, 0x4A50454752415048L);
         float[] output = new float[4];
-        try (NativeRuntime runtime = NativeRuntime.load(java.nio.file.Path.of(library));
+        try (NativeRuntime runtime = NativeRuntime.load(nativeLibrary());
              NativeRuntime.NativeDensityGraph compiled = runtime.compileDensityGraph(graph)) {
             compiled.evaluate(2, 2, 1, 10, 3, 0, 1, 1, 1, output);
         } catch (Exception failure) {
@@ -642,11 +632,6 @@ public final class GameTests {
 
     /** Compares the Rust/C++ Perlin volume backend against vanilla output bit-for-bit. */
     private static void perlinNativeParity(GameTestHelper helper) {
-        String library = System.getProperty("jpe.nativeLibraryPath");
-        if (library == null || library.isBlank()) {
-            throw new AssertionError("Set -Djpe.nativeLibraryPath to the freshly built native runtime library");
-        }
-
         PerlinNoise noise = new PerlinNoise(RandomSource.create(0x4A50454C263L));
         DensityVolume volume = new DensityVolume(3, 64, 2, -16, -64, 32, 4, 2, 8);
         DensityBuffer vanilla = DensityBuffer.createUnpooled(volume.size());
@@ -661,7 +646,7 @@ public final class GameTests {
         float[] expected = ((DensityBufferAccessor) vanilla).jpe$values();
         float[] synchronous = new float[volume.size()];
         GradientNoiseAccessor access = (GradientNoiseAccessor) (Object) noise;
-        try (NativeRuntime runtime = NativeRuntime.load(java.nio.file.Path.of(library))) {
+        try (NativeRuntime runtime = NativeRuntime.load(nativeLibrary())) {
             runtime.perlinAddVolume(
                     access.jpe$perms(), volume.sizeX(), volume.sizeY(), volume.sizeZ(),
                     volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
@@ -747,10 +732,6 @@ public final class GameTests {
 
     /** Compares the live Java Blender implementation against one full-volume C++ call. */
     private static void blenderNativeParity(GameTestHelper helper) {
-        String library = System.getProperty("jpe.nativeLibraryPath");
-        if (library == null || library.isBlank()) {
-            throw new AssertionError("Set -Djpe.nativeLibraryPath to the freshly built native runtime library");
-        }
         String[] propertyNames = {"jpe.nativeBlenderEnabled", "jpe.verifyNativeBlenderParity", "jpe.nativeBlenderTiming"};
         String[] previousProperties = new String[propertyNames.length];
         for (int i = 0; i < propertyNames.length; ++i) {
@@ -759,7 +740,7 @@ public final class GameTests {
         System.setProperty("jpe.nativeBlenderEnabled", "true");
         System.setProperty("jpe.verifyNativeBlenderParity", "true");
         System.setProperty("jpe.nativeBlenderTiming", "true");
-        try (NativeRuntime runtime = NativeRuntime.load(java.nio.file.Path.of(library))) {
+        try (NativeRuntime runtime = NativeRuntime.load(nativeLibrary())) {
             if (!runtime.supportsBlenderDensityVolume()) {
                 throw new AssertionError("Native library does not export Blender density volume support");
             }
@@ -1600,5 +1581,19 @@ public final class GameTests {
                 .mapToLong(GarbageCollectorMXBean::getCollectionTime)
                 .filter(value -> value >= 0)
                 .sum();
+    }
+
+    /**
+     * Resolves the native runtime the same way the mod does at runtime: bundled
+     * jar resource first, then an explicit override, then a local build. This
+     * keeps the GameTests runnable on a dedicated server with no extra JVM flags.
+     */
+    private static java.nio.file.Path nativeLibrary() {
+        java.nio.file.Path library = dev.jpe.optimizer.runtime.NativeLibraryLoader.resolve();
+        if (library == null) {
+            throw new AssertionError(
+                    "Native runtime library not found: no bundled resource, no override, no local build");
+        }
+        return library;
     }
 }

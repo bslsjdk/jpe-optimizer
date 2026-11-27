@@ -67,19 +67,9 @@ public final class NativeFinalDensityPlan implements AutoCloseable {
 
     /** Locates the runtime library the same way the test and the mod do. */
     public static Path defaultLibrary() {
-        String override = System.getProperty("jpe.nativeLibraryPath");
-        if (override != null && !override.isBlank()) return Path.of(override);
-        String[] candidates = {
-                "native/rust-runtime/target/release/libjpe_runtime.so",
-                "native/rust-runtime/target/release/libjpe_runtime.dylib",
-                "native/rust-runtime/target/release/jpe_runtime.dll",
-                "native/rust-runtime/target/debug/libjpe_runtime.so"
-        };
-        for (String candidate : candidates) {
-            Path path = Path.of(candidate);
-            if (Files.exists(path)) return path;
-        }
-        return null;
+        // A packaged jar carries the cdylib under META-INF/natives; the loader
+        // also honours -Djpe.nativeLibraryPath and a local target/ build.
+        return NativeLibraryLoader.resolve();
     }
 
     /** Compiles {@code graph} and retains the native plan until {@link #close()}. */

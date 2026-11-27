@@ -4,6 +4,7 @@ import com.mojang.logging.LogUtils;
 import dev.jpe.optimizer.benchmark.ContinuousWorldgenBenchmark;
 import dev.jpe.optimizer.benchmark.ServerWorldgenBenchmark;
 import dev.jpe.optimizer.runtime.JavaRuntimeDiagnostics;
+import dev.jpe.optimizer.runtime.NativeRuntimeSelfCheck;
 import dev.jpe.optimizer.vector.DensityVectorRuntime;
 import dev.jpe.optimizer.world.WorldEngineHost;
 import net.neoforged.api.distmarker.Dist;
@@ -35,6 +36,10 @@ public final class JPEOptimizer {
         }
         LOGGER.info("JPE Optimizer initialized for Minecraft 26.3");
         JavaRuntimeDiagnostics.logRuntimeCapabilities();
+        // Proves the native payload shipped inside this jar can be unpacked and
+        // linked on a dedicated server, independent of whether any worldgen path
+        // has asked for it yet.
+        NativeRuntimeSelfCheck.logBundledRuntime();
         LOGGER.info("JPE density kernels: {}", DensityVectorRuntime.initialize());
     }
 }

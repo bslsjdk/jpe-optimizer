@@ -69,6 +69,25 @@ def generateModMetadata = tasks.register("generateModMetadata", ProcessResources
 
 sourceSets.main.resources.srcDir(generateModMetadata)
 
+// Ship the native runtime inside the mod jar. A dedicated server starts in its
+// own working directory, so a relative target/ path cannot be resolved there;
+// NativeLibraryLoader unpacks this resource on first use.
+def nativeRelease = layout.projectDirectory.dir('native/rust-runtime/target/release')
+tasks.named('processResources') {
+    from(nativeRelease) {
+        include 'libjpe_runtime.so'
+        into 'META-INF/natives/linux-x86_64'
+    }
+    from(nativeRelease) {
+        include 'libjpe_runtime.dylib'
+        into 'META-INF/natives/macos-aarch64'
+    }
+    from(nativeRelease) {
+        include 'jpe_runtime.dll'
+        into 'META-INF/natives/windows-x86_64'
+    }
+}
+
 dependencies {
     testImplementation platform('org.junit:junit-bom:5.12.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
