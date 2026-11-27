@@ -824,6 +824,7 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_density_and_substance
     const uint8_t* expected_world_fingerprint,
     uint64_t expected_semantic_fingerprint,
     uint64_t final_density_graph_handle,
+    uint64_t beardifier_context_handle,
     int32_t skip_sampling_above_y,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
@@ -833,6 +834,7 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_density_and_substance
     constexpr uint64_t kMaxVolumeElements = 1024ULL * 1024ULL;
     if (context_handle == 0 || expected_world_fingerprint == nullptr
         || expected_semantic_fingerprint == 0 || final_density_graph_handle == 0
+        || beardifier_context_handle == 0
         || outputs == nullptr || size_x == 0 || size_y == 0 || size_z == 0
         || step_x <= 0 || step_y <= 0 || step_z <= 0) return 1;
 
@@ -847,8 +849,8 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_density_and_substance
     AquiferScratchRetentionGuard scratch_guard{scratch};
     auto& density_values = scratch.density_values;
     density_values.resize(static_cast<size_t>(total));
-    const int32_t density_status = jpe_cpp_density_graph_evaluate_f32(
-        final_density_graph_handle,
+    const int32_t density_status = jpe_cpp_density_graph_evaluate_f32_with_beardifier(
+        final_density_graph_handle, beardifier_context_handle,
         size_x, size_y, size_z,
         min_x, min_y, min_z,
         step_x, step_y, step_z,
