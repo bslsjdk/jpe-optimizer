@@ -40,7 +40,7 @@ constexpr uint64_t kMaxVolumeElements = 1024ULL * 1024ULL;
 // remains intact while repeated per-volume heap allocations are avoided.
 struct AquiferVolumeScratch {
     std::vector<float> density_values;
-    std::vector<JpeAquiferCoreOutput> staged;
+    std::vector<uint64_t> staged;
     std::vector<uint32_t> active_indices;
     std::vector<int32_t> active_x, active_y, active_z;
     std::vector<int32_t> center_x, center_y, center_z, distances;
@@ -54,7 +54,7 @@ struct AquiferVolumeScratch {
         constexpr size_t kRetainedBudgetBytes = 32U * 1024U * 1024U;
         const size_t retained =
             density_values.capacity() * sizeof(float)
-            + staged.capacity() * sizeof(JpeAquiferCoreOutput)
+            + staged.capacity() * sizeof(uint64_t)
             + active_indices.capacity() * sizeof(uint32_t)
             + (active_x.capacity() + active_y.capacity() + active_z.capacity()
                 + center_x.capacity() + center_y.capacity() + center_z.capacity()
@@ -69,7 +69,7 @@ struct AquiferVolumeScratch {
         // A pathological/oversized volume must not pin an unbounded amount of
         // memory to a long-lived Java worker thread.
         std::vector<float>().swap(density_values);
-        std::vector<JpeAquiferCoreOutput>().swap(staged);
+        std::vector<uint64_t>().swap(staged);
         std::vector<uint32_t>().swap(active_indices);
         std::vector<int32_t>().swap(active_x);
         std::vector<int32_t>().swap(active_y);
@@ -691,7 +691,7 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
     for (uint32_t index = 0; index < density_count; ++index) {
         const float density = density_values[index];
         if (density > 0.0F) {
-            staged[index] = JpeAquiferCoreOutput{0U, context->air_type, 0U};
+            staged[index] = static_cast<uint64_t>(context->air_type);
             continue;
         }
 
@@ -709,15 +709,13 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
         const JpeAquiferFluidStatus global = global_picker(y);
         const uint32_t global_state = fluid_at(global, y);
         if (y > skip_sampling_above_y) {
-            staged[index] = JpeAquiferCoreOutput{1U, global_state, 0U};
+            staged[index] = static_cast<uint64_t>(global_state) | (uint64_t{1} << 32U);
             continue;
         }
         if (global_state == context->lava_type) {
-            staged[index] = JpeAquiferCoreOutput{
-                1U,
-                debug_disable_fluid_generation != 0 ? context->air_type : context->lava_type,
-                0U
-            };
+            const uint32_t state = debug_disable_fluid_generation != 0
+                ? context->air_type : context->lava_type;
+            staged[index] = static_cast<uint64_t>(state) | (uint64_t{1} << 32U);
             continue;
         }
 
@@ -806,18 +804,15 @@ extern "C" JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
             return 1;
         }
         for (uint32_t i = 0; i < active_count; ++i) {
-            staged[active_indices[i]] = core_outputs[i];
+            const auto& value = core_outputs[i];
+            staged[active_indices[i]] = static_cast<uint64_t>(value.block_state_type)
+                | (value.has_block_state != 0U ? (uint64_t{1} << 32U) : 0U)
+                | (value.should_schedule_fluid_update != 0U ? (uint64_t{1} << 33U) : 0U);
         }
     }
 
-    // Compact the stable 12-byte internal decision into the 8-byte Java-facing ABI.
-    // Bits 0..31: registry token; bit 32: has block state; bit 33: fluid update.
-    for (size_t i = 0; i < total; ++i) {
-        const auto& value = staged[i];
-        outputs[i] = static_cast<uint64_t>(value.block_state_type)
-            | (value.has_block_state != 0U ? (uint64_t{1} << 32U) : 0U)
-            | (value.should_schedule_fluid_update != 0U ? (uint64_t{1} << 33U) : 0U);
-    }
+    // Commit the already-packed staging buffer only after every calculation succeeds.
+    std::copy(staged.begin(), staged.end(), outputs);
     return 0;
 } catch (...) {
     return 2;
