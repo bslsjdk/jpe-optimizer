@@ -153,7 +153,7 @@ public final class ContinuousWorldgenBenchmark {
 
             if (measurementStartNanos == 0L) {
                 if (warmupRowsIssued < WARMUP_ROWS && tick >= nextIssueTick
-                        && inFlight.get() < MAX_IN_FLIGHT_CHUNKS) {
+                        && inFlight.get() + FRONTIER_WIDTH <= MAX_IN_FLIGHT_CHUNKS) {
                     issueFrontierRow(false);
                     warmupRowsIssued++;
                     nextIssueTick = tick + TICKS_PER_CHUNK_COLUMN;
@@ -169,7 +169,7 @@ public final class ContinuousWorldgenBenchmark {
             }
 
             if (measuredRowsIssued < MEASURED_ROWS && tick >= nextIssueTick
-                    && inFlight.get() < MAX_IN_FLIGHT_CHUNKS) {
+                    && inFlight.get() + FRONTIER_WIDTH <= MAX_IN_FLIGHT_CHUNKS) {
                 issueFrontierRow(true);
                 measuredRowsIssued++;
                 nextIssueTick = tick + TICKS_PER_CHUNK_COLUMN;
