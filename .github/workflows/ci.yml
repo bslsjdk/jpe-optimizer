@@ -183,8 +183,22 @@ jobs:
           max-tick-time=-1
           sync-chunk-writes=false
           PROPERTIES
-            JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector ${engine_options} -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=1 -Djpe.benchmark.digestFile=${GITHUB_WORKSPACE}/build/worldgen-parity/${label}.csv -Djpe.worldgenMetrics=true" \
-              gradle runServer --no-daemon --stacktrace 2>&1 | tee "build/worldgen-parity/${label}.log"
+            # A 340-chunk FULL batch must not occupy a runner indefinitely.
+            # This is a wall-clock limit for the whole fresh-server batch, not a tick count.
+            local batch_status=0
+            timeout --signal=TERM --kill-after=15s 300s \
+              env JAVA_TOOL_OPTIONS="--add-modules=jdk.incubator.vector ${engine_options} -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=1 -Djpe.benchmark.digestFile=${GITHUB_WORKSPACE}/build/worldgen-parity/${label}.csv -Djpe.worldgenMetrics=true" \
+              gradle runServer --no-daemon --stacktrace 2>&1 | tee "build/worldgen-parity/${label}.log" || batch_status=$?
+
+            if [[ "${batch_status}" -ne 0 ]]; then
+              echo "::error title=Worldgen parity batch failed::${label} batch exited with status ${batch_status}; expected at most 300 seconds."
+              echo "===== ${label} batch progress diagnostics ====="
+              grep -E 'JPE continuous worldgen|JPE_CONTINUOUS_WORLDGEN_BENCH|JPE chunk block-state digest' \
+                "build/worldgen-parity/${label}.log" | tail -n 100 || true
+              echo "===== ${label} final log tail ====="
+              tail -n 120 "build/worldgen-parity/${label}.log" || true
+              return "${batch_status}"
+            fi
 
             grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*completedChunks=340.*failedChunks=0.*doFillCalls=([3-9][0-9]{2,}|[1-9][0-9]{3,})' \
               "build/worldgen-parity/${label}.log"
