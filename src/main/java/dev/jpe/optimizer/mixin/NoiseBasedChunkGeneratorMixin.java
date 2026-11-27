@@ -2,6 +2,7 @@ package dev.jpe.optimizer.mixin;
 
 import dev.jpe.optimizer.mixin.AquiferNoiseBasedAccessor;
 import dev.jpe.optimizer.runtime.CompiledSamplerGraphDiagnostics;
+import dev.jpe.optimizer.runtime.NativeFinalDensityHooks;
 import dev.jpe.optimizer.worldgen.DensityVolumeIndex;
 import dev.jpe.optimizer.worldgen.SectionCachePolicy;
 import dev.jpe.optimizer.worldgen.WorldgenMetrics;
@@ -84,6 +85,10 @@ public abstract class NoiseBasedChunkGeneratorMixin {
 
         try {
             try (ScopedDensityBuffer densityBuffer = finalDensity.sampleVolume(volume)) {
+            // Off by default. In shadow mode this compiles the captured graph once and
+            // compares every float; only commit mode may replace the buffer, and only
+            // after an exact match.
+            NativeFinalDensityHooks.afterJavaSample(finalDensity, volume, densityBuffer);
             if (profile) {
                 densityNanos = System.nanoTime() - densityStart;
                 densityAllocatedBytes = WorldgenMetrics.allocatedDelta(

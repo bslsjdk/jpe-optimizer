@@ -51,8 +51,8 @@ class NativeDensityProgramBridgeTest {
         ByteBuffer buffer = ByteBuffer.allocate(nodes.size() * NODE_BYTES).order(ORDER);
         for (DensityGraphIr.Node node : nodes) {
             buffer.putInt(node.opcode());
-            buffer.putInt(node.inputA() < 0 ? 0xffff_ffff : node.inputA());
-            buffer.putInt(node.inputB() < 0 ? 0xffff_ffff : node.inputB());
+            buffer.putInt(node.inputA());
+            buffer.putInt(node.inputB());
             buffer.putInt(node.opcode() == DensityGraphIr.OPAQUE ? 1 : node.reserved());
             buffer.putDouble(node.immediate());
         }
