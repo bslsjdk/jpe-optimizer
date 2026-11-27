@@ -147,7 +147,7 @@ jobs:
       - name: Real overworld native density and Aquifer parity (full chunk generation)
         if: steps.changes.outputs.java == 'true' || github.event_name == 'workflow_dispatch'
         env:
-          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphVerify=true -Djpe.nativeDensityGraphStrict=true -Djpe.nativeAquiferSubstanceEnabled=true -Djpe.nativeAquiferSubstanceStrict=true -Djpe.nativeAquiferSubstanceVerify=true -Djpe.nativeAquiferFusedVerify=true -Djpe.nativeDensityGraphCacheDir=${{ github.workspace }}/build/native-density-graph-cache -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=22 -Djpe.worldgenMetrics=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
+          JAVA_TOOL_OPTIONS: --add-modules=jdk.incubator.vector -Djpe.nativePerlinEnabled=true -Djpe.nativePerlinSynchronous=true -Djpe.nativeDensityGraphEnabled=true -Djpe.nativeDensityGraphVerify=true -Djpe.nativeDensityGraphStrict=true -Djpe.nativeAquiferSubstanceEnabled=true -Djpe.nativeAquiferSubstanceStrict=true -Djpe.nativeAquiferSubstanceVerify=true -Djpe.nativeAquiferFusedVerify=true -Djpe.nativeDensityGraphCacheDir=${{ github.workspace }}/build/native-density-graph-cache -Djpe.continuousWorldgenBenchmark=true -Djpe.benchmark.ticksPerColumn=1 -Djpe.benchmark.maxInFlightChunks=68 -Djpe.worldgenMetrics=true -Djpe.nativeLibraryPath=${{ github.workspace }}/native/rust-runtime/target/release/libjpe_runtime.so
         run: |
           mkdir -p build/native-density-worldgen
           rm -rf run
