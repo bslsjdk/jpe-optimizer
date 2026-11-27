@@ -485,8 +485,8 @@ public final class ContinuousWorldgenBenchmark {
             try (BufferedWriter writer = Files.newBufferedWriter(absolute, StandardCharsets.UTF_8)) {
                 writer.write("# jpe-chunk-blockstate-fnv64-v1 seed=" + level.getSeed()
                         + " chunks=" + expectedChunks
-                        + " minBuildHeight=" + level.getMinBuildHeight()
-                        + " maxBuildHeight=" + level.getMaxBuildHeight()
+                        + " minBuildHeight=" + level.getMinY()
+                        + " maxBuildHeight=" + level.getMaxY()
                         + " sections=" + level.getSectionsCount());
                 writer.newLine();
                 for (Map.Entry<Long, LevelChunk> entry : measuredChunks.entrySet()) {
