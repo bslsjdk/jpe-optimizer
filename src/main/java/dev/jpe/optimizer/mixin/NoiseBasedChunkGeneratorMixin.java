@@ -129,8 +129,25 @@ public abstract class NoiseBasedChunkGeneratorMixin {
         long timingSampleCount = 0L;
         long aquiferCallsExecuted = 0L;
         long aquiferCallsSkipped = 0L;
+        long nativeBeardifierContextHandle = 0L;
 
         try {
+            boolean nativeBeardifierRequired = Boolean.getBoolean("jpe.nativeDensityGraphEnabled")
+                    || nativeAquiferVolumeEnabled;
+            if (nativeBeardifierRequired) {
+                try {
+                    nativeBeardifierContextHandle =
+                            NativeDensityGraphCompiler.prepareBeardifierContext(noiseChunk);
+                } catch (RuntimeException | LinkageError failure) {
+                    if (Boolean.getBoolean("jpe.nativeDensityGraphStrict") || nativeAquiferVolumeStrict) {
+                        throw new IllegalStateException(
+                                "Strict native worldgen requires a complete per-chunk Beardifier context", failure);
+                    }
+                    JPEOptimizer.LOGGER.warn(
+                            "Native Beardifier context unavailable; this chunk cannot use the native density graph: {}",
+                            failure.toString());
+                }
+            }
             boolean nativeAquiferFusedVerify = Boolean.getBoolean("jpe.nativeAquiferFusedVerify");
             if (nativeAquiferFusedVerify
                     && (!Boolean.getBoolean("jpe.nativeDensityGraphVerify")
@@ -163,7 +180,8 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                     }
                     precomputedNativeVolume =
                             nativeAquiferPrepared.computeDensityAndSubstanceVolumeF32(
-                                    noiseAquifer, finalDensityGraphHandle, volume);
+                                    noiseAquifer, finalDensityGraphHandle,
+                                    nativeBeardifierContextHandle, volume);
                 } catch (RuntimeException | LinkageError failure) {
                     if (nativeAquiferVolumeStrict) {
                         throw new IllegalStateException(
@@ -179,7 +197,8 @@ public abstract class NoiseBasedChunkGeneratorMixin {
             ScopedDensityBuffer sampledDensity = null;
             if (precomputedNativeVolume == null || nativeAquiferVolumeVerify) {
                 sampledDensity = NativeDensityGraphCompiler.trySampleVolume(
-                        finalDensityFunction, finalDensity, noiseChunk, volume);
+                        finalDensityFunction, finalDensity, noiseChunk, volume,
+                        nativeBeardifierContextHandle);
                 if (sampledDensity == null) {
                     if (Boolean.getBoolean("jpe.nativeDensityGraphStrict")) {
                         throw new IllegalStateException(
@@ -345,7 +364,13 @@ public abstract class NoiseBasedChunkGeneratorMixin {
             try {
                 if (nativeAquiferPrepared != null) nativeAquiferPrepared.close();
             } finally {
-                if (profile) WorldgenMetrics.endDoFill();
+                try {
+                    if (nativeBeardifierContextHandle != 0L) {
+                        NativeDensityGraphCompiler.releaseBeardifierContext(nativeBeardifierContextHandle);
+                    }
+                } finally {
+                    if (profile) WorldgenMetrics.endDoFill();
+                }
             }
         }
 
