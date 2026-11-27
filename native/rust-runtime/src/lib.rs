@@ -71,6 +71,7 @@ const DENSITY_GRADIENT_CLAMPED_X: u32 = 24;
 const DENSITY_GRADIENT_CLAMPED_Y: u32 = 25;
 const DENSITY_GRADIENT_CLAMPED_Z: u32 = 26;
 const DENSITY_NOISE: u32 = 27;
+const DENSITY_NOISE_TRANSPOSED: u32 = 28;
 #[cfg(test)]
 static CACHE_TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -1089,6 +1090,75 @@ mod tests {
         assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, 0);
         assert_eq!(unsafe { jpe_runtime_density_graph_release(again) }, 0);
         assert_eq!(unsafe { jpe_runtime_density_graph_release(different) }, 0);
+    }
+
+    #[test]
+    fn density_graph_transposed_noise_matches_pointwise_shift_b() {
+        let mut permutation = [0u8; 256];
+        let mut state = 0x0BAD_F00Du32;
+        for slot in permutation.iter_mut() {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *slot = (state >> 24) as u8;
+        }
+        // ShiftB: xz_scale 0.25, y_scale 0.25, amplitude 4.0 as vanilla expands it.
+        let layer = JpePerlinLayer {
+            permutation: permutation.as_ptr(),
+            offset_x: 0.0, offset_y: 0.0, offset_z: 0.0,
+            xz_scale: 0.25, y_scale: 0.25,
+            amplitude: 4.0, fudge_y_scale: 1.0,
+            flags: 0, reserved: 0,
+        };
+        let (sx, sy, sz) = (4u32, 8u32, 4u32);
+        let (min_x, min_y, min_z) = (0i32, -64i32, 0i32);
+        let (step_x, step_y, step_z) = (4i32, 8i32, 4i32);
+        let volume = (sx * sy * sz) as usize;
+
+        let nodes = [JpeDensityNode {
+            opcode: DENSITY_NOISE_TRANSPOSED, input_a: 0,
+            input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0,
+        }];
+        let plan = JpeNoisePlan { layers: &layer, layer_count: 1, flags: 0 };
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile_with_noise(
+                nodes.as_ptr(), 1, 0, 10, 0x51F7, &plan, 1,
+            )
+        };
+        assert_ne!(handle, 0, "transposed noise graph must compile");
+
+        let mut actual = vec![0.0f32; volume];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                handle, sx, sy, sz, min_x, min_y, min_z, step_x, step_y, step_z,
+                actual.as_mut_ptr(), volume as u64,
+            )
+        }, 0);
+
+        // Independent reference: one 1x1x1 stack call per (x,z) column, at the
+        // exact block coordinate the transposed plane would sample.
+        let mut mismatches = 0usize;
+        for z_index in 0..sz {
+            for x_index in 0..sx {
+                let block_z = min_z + (z_index as i32) * step_z;
+                let block_x = min_x + (x_index as i32) * step_x;
+                let mut point = [0.0f32; 1];
+                assert_eq!(unsafe {
+                    jpe_runtime_perlin_add_stack(
+                        &layer, 1, 1, 1, 1,
+                        block_z, block_x, 0, 1, 1, 1,
+                        point.as_mut_ptr(), 1, 0,
+                    )
+                }, 0);
+                for y_index in 0..sy {
+                    let index = (((z_index * sx + x_index) * sy) + y_index) as usize;
+                    if actual[index].to_bits() != point[0].to_bits() {
+                        mismatches += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(mismatches, 0, "every Y lane must equal the (z,x) plane sample");
+
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, 0);
     }
 
     #[test]

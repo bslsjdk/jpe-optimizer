@@ -155,7 +155,9 @@ struct NoisePlanData {
     uint32_t flags = 0;
 };
 
-struct NoiseBinding { uint32_t node; uint32_t plan_slot; };
+/* transposed != 0 selects the vanilla ShiftB layout: sample over (z,x,0) and
+ * broadcast along Y. The plan's layer scales already encode 0.25 / 0.25 / 4.0. */
+struct NoiseBinding { uint32_t node; uint32_t plan_slot; uint32_t transposed; };
 
 struct CompiledGraph {
     uint64_t fingerprint = 0;
@@ -225,7 +227,10 @@ void build_execution_plan(CompiledGraph& graph) {
                 graph.static_values.push_back({i, std::numeric_limits<float>::quiet_NaN()});
                 break;
             case JPE_DENSITY_NOISE:
-                graph.noises.push_back({i, node.input_a});
+                graph.noises.push_back({i, node.input_a, 0});
+                break;
+            case JPE_DENSITY_NOISE_TRANSPOSED:
+                graph.noises.push_back({i, node.input_a, 1});
                 break;
             case JPE_DENSITY_ADD:
             case JPE_DENSITY_MUL:
@@ -432,6 +437,7 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                 if (node.reserved != 0 || node.input_a >= i || node.input_b != kNoInput) return false;
                 break;
             case JPE_DENSITY_NOISE:
+            case JPE_DENSITY_NOISE_TRANSPOSED:
                 // Plan-slot range is validated at compile time, where the count is known.
                 if (node.input_b != kNoInput || node.reserved != 0 || node.immediate != 0.0) return false;
                 break;
@@ -468,7 +474,8 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
     // A NOISE node needs a bound plan. This entry has no plan table, so accepting
     // one here would leave the node reading an empty staging buffer at evaluate time.
     for (uint32_t i = 0; i < node_count; ++i) {
-        if (nodes[i].opcode == JPE_DENSITY_NOISE) return 0;
+        if (nodes[i].opcode == JPE_DENSITY_NOISE
+            || nodes[i].opcode == JPE_DENSITY_NOISE_TRANSPOSED) return 0;
     }
     const uint64_t fingerprint = hash_graph(nodes, node_count, root_node, ir_version, configuration_fingerprint);
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -513,8 +520,16 @@ extern "C" uint64_t jpe_cpp_density_graph_compile_with_noise(
     if (ir_version != 10 || !valid_graph(nodes, node_count, root_node)) return 0;
     if (noise_plan_count > kMaxNoisePlans) return 0;
     if (noise_plan_count > 0 && noise_plans == nullptr) return 0;
+    std::vector<int8_t> slot_layout(noise_plan_count, -1);
     for (uint32_t i = 0; i < node_count; ++i) {
-        if (nodes[i].opcode == JPE_DENSITY_NOISE && nodes[i].input_a >= noise_plan_count) return 0;
+        if (nodes[i].opcode != JPE_DENSITY_NOISE
+            && nodes[i].opcode != JPE_DENSITY_NOISE_TRANSPOSED) continue;
+        if (nodes[i].input_a >= noise_plan_count) return 0;
+        const int8_t layout = nodes[i].opcode == JPE_DENSITY_NOISE_TRANSPOSED ? 1 : 0;
+        int8_t& existing = slot_layout[nodes[i].input_a];
+        // One staging buffer per slot, so a slot cannot serve two layouts.
+        if (existing != -1 && existing != layout) return 0;
+        existing = layout;
     }
 
     const uint64_t base = hash_graph(nodes, node_count, root_node, ir_version, configuration_fingerprint);
@@ -772,14 +787,38 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
         const uint64_t staged = static_cast<uint64_t>(graph->noise_plans.size()) * volume_length;
         if (staged > kMaxNoiseFloats) return 1;
         noise_values.resize(static_cast<size_t>(staged));
-        for (uint32_t slot = 0; slot < graph->noise_plans.size(); ++slot) {
-            const NoisePlanData& plan = graph->noise_plans[slot];
-            float* destination = noise_values.data() + static_cast<uint64_t>(slot) * volume_length;
+        for (const NoiseBinding& binding : graph->noises) {
+            const NoisePlanData& plan = graph->noise_plans[binding.plan_slot];
+            float* destination = noise_values.data()
+                + static_cast<uint64_t>(binding.plan_slot) * volume_length;
+            if (binding.transposed == 0) {
+                const int32_t status = jpe_cpp_perlin_add_stack(
+                    plan.layers.data(), static_cast<uint32_t>(plan.layers.size()),
+                    size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z,
+                    destination, volume_length, plan.flags);
+                if (status != 0) return 3;
+                continue;
+            }
+            // Vanilla ShiftB samples a (z,x,1) transposed plane, then writes the
+            // same value into every Y lane of that column.
+            const uint32_t plane_x = size_z;
+            const uint32_t plane_y = size_x;
+            const uint64_t plane_length = static_cast<uint64_t>(plane_x) * plane_y;
+            thread_local std::vector<float> transposed_plane;
+            transposed_plane.resize(static_cast<size_t>(plane_length));
             const int32_t status = jpe_cpp_perlin_add_stack(
                 plan.layers.data(), static_cast<uint32_t>(plan.layers.size()),
-                size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z,
-                destination, volume_length, plan.flags);
+                plane_x, plane_y, 1, min_z, min_x, 0, step_z, step_x, 1,
+                transposed_plane.data(), plane_length, plan.flags);
             if (status != 0) return 3;
+            for (uint32_t z = 0; z < size_z; ++z) {
+                for (uint32_t x = 0; x < size_x; ++x) {
+                    const float value = transposed_plane[static_cast<uint64_t>(z) * size_x + x];
+                    float* column = destination
+                        + (static_cast<uint64_t>(z) * size_x + x) * size_y;
+                    std::fill_n(column, size_y, value);
+                }
+            }
         }
     }
 

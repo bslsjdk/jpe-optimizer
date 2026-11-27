@@ -121,7 +121,12 @@ enum {
     /* Ordered noise stack. input_a is the noise-plan slot bound at compile time;
      * input_b and reserved must be kNoInput/0. The node evaluates the whole
      * volume once per call, then publishes the tile lanes from that buffer. */
-    JPE_DENSITY_NOISE = 27
+    JPE_DENSITY_NOISE = 27,
+    /* Vanilla ShiftNoiseFunction.ShiftB: sample the bound stack over the
+     * transposed (z,x,0) plane and broadcast along Y. The plan already carries
+     * xz_scale=0.25, y_scale=0.25 and amplitude=4.0 as expanded by the caller.
+     * input_a is the plan slot; input_b and reserved must be kNoInput/0. */
+    JPE_DENSITY_NOISE_TRANSPOSED = 28
 };
 /* One world-prepared noise plan. Layers must already be expanded by the caller:
  * each layer's xz_scale/y_scale includes the outer NoiseFunction scale times the
