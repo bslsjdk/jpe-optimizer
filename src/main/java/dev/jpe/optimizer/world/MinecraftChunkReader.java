@@ -163,6 +163,53 @@ public final class MinecraftChunkReader {
         return out;
     }
 
+    /**
+     * Compute the {@link BlockSignature} of a chunk column without allocating the
+     * {@code short[]} the {@link #read} path builds.
+     *
+     * <p>The fold visits sections and block ids in exactly the same order (and with the
+     * same bounded id mapping, since it shares this reader's {@link #idOf}), so the
+     * result equals {@code BlockSignature.of(read(chunk, base, count))} for the same
+     * content. Skipped sections fold as all-air via {@link BlockSignature#foldAirSection},
+     * which the array path reproduces because a skipped section stays default-zero.
+     *
+     * <p>This is the cheap half of the dirty-block detector: the host can re-signature a
+     * bounded number of resident chunks per tick and re-submit only the ones whose
+     * signature moved, with no per-column allocation.
+     */
+    public long signature(ChunkAccess chunk, int baseSectionY, int sectionCount) {
+        if (chunk == null) {
+            throw new IllegalArgumentException("chunk is null");
+        }
+        if (sectionCount <= 0) {
+            throw new IllegalArgumentException("sectionCount must be positive");
+        }
+        LevelChunkSection[] sections = chunk.getSections();
+        int minSection = SectionPos.blockToSectionCoord(chunk.getMinY());
+        long hash = BlockSignature.OFFSET_BASIS;
+
+        for (int i = 0; i < sectionCount; ++i) {
+            int slot = baseSectionY + i - minSection;
+            if (slot < 0 || slot >= sections.length) {
+                hash = BlockSignature.foldAirSection(hash);
+                continue;
+            }
+            LevelChunkSection section = sections[slot];
+            if (section == null || section.hasOnlyAir()) {
+                hash = BlockSignature.foldAirSection(hash);
+                continue;
+            }
+            for (int y = 0; y < 16; ++y) {
+                for (int z = 0; z < 16; ++z) {
+                    for (int x = 0; x < 16; ++x) {
+                        hash = BlockSignature.step(hash, idOf(section.getBlockState(x, y, z)));
+                    }
+                }
+            }
+        }
+        return hash;
+    }
+
     private int paletteNonAir(LevelChunkSection section) {
         int[] total = new int[1];
         section.getStates().count((state, count) -> {

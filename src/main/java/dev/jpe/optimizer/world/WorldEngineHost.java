@@ -1,14 +1,17 @@
 package dev.jpe.optimizer.world;
 
 import java.nio.file.Path;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.Set;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Optional;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.chunk.ChunkAccess;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.RenderFrameEvent;
 import net.neoforged.neoforge.common.NeoForge;
@@ -25,11 +28,13 @@ import dev.jpe.world.JpeWorldNative;
  * <p>This is the "system" form of the Stage 6 test rig: instead of a bounded GameTest
  * window, the host is ticked by real client events. Every client tick it reads the
  * camera entity's chunk position, tells the engine where the player is, streams the
- * block data of newly-loaded chunks around it through {@link MinecraftChunkReader},
- * and drops chunks that fall outside a working radius. Every render frame it builds a
- * real perspective view-projection (see {@link WorldCamera}, Vulkan {@code 0..=1}
- * depth) and runs one full engine frame — scheduling, meshing, GPU upload, visibility
- * and culling — through the native backend.
+ * block data of every loaded chunk inside the render distance through
+ * {@link MinecraftChunkReader}, re-signatures a bounded batch of resident chunks to catch
+ * block edits and re-submit the ones that changed, and drops chunks that fall outside a
+ * working radius. Every render frame it builds a real perspective view-projection from
+ * the interpolated camera and the live FOV option (see {@link WorldCamera}, Vulkan
+ * {@code 0..=1} depth) and runs one full engine frame — scheduling, meshing, GPU upload,
+ * visibility and culling — through the native backend.
  *
  * <p><b>Honest scope.</b> This class only loads on the physical client (see the dist
  * guard in {@code JPEOptimizer}). The engine renders into its own offscreen target, not
@@ -43,22 +48,37 @@ public final class WorldEngineHost {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("JPEOptimizer/world-host");
 
-    /** Tunables for the continuous host. */
+    /**
+     * Tunables for the continuous host.
+     *
+     * @param streamRadius       positive = fixed radius in chunks; {@code <= 0} = follow
+     *                           the live render-distance option (full render distance)
+     * @param unloadMargin       extra chunks kept before {@code unloadOutside} prunes them
+     * @param radiusCap          hard memory cap in chunks (the outermost bound on streaming)
+     * @param dirtyBudget        chunks re-signatured per tick to catch block edits
+     */
     public record Config(
-            int streamRadius,      // chunks streamed around the player (square radius)
-            int unloadMargin,      // extra chunks kept before unloadOutside prunes them
+            int streamRadius,
+            int unloadMargin,
+            int radiusCap,
             int terrainBudget,
             int meshBudget,
             int threads,
-            int targetWidth,       // offscreen extent
+            int targetWidth,
             int targetHeight,
-            int renderDistanceBlocks, // far plane
-            int logEveryFrames) {
+            int minFarBlocks,
+            int logEveryFrames,
+            int dirtyBudget) {
 
-        /** A modest default: 4-chunk working radius, 256x144 offscreen target. */
+        /**
+         * Follow the live render distance, capped at 8 chunks (≈56&nbsp;MB of column
+         * block data plus the Rust mirror) so a 12-plus-chunk client does not balloon;
+         * raise {@link #radiusCap} if the host has memory to spare.
+         */
         public static Config defaults() {
             int cores = Math.max(1, Runtime.getRuntime().availableProcessors());
-            return new Config(4, 2, 16, 16, Math.min(4, cores), 256, 144, 128, 120);
+            return new Config(0, 2, 8, 16, 16, Math.min(4, cores),
+                    256, 144, 128, 120, 8);
         }
     }
 
@@ -66,11 +86,25 @@ public final class WorldEngineHost {
     private final Config config;
     private final Minecraft minecraft;
 
-    /** Packed chunk positions already handed to the engine (and still resident). */
-    private final Set<Long> submitted = new HashSet<>();
+    /**
+     * One reader for the whole host. Sharing it keeps the {@code BlockState -> u16 id}
+     * mapping identical across every chunk in the session, so the mesher culls shared
+     * faces at chunk borders consistently and a chunk's signature is comparable across
+     * ticks.
+     */
+    private final MinecraftChunkReader reader = new MinecraftChunkReader();
 
+    /** Packed chunk positions already handed to the engine, in insertion order. */
+    private final LinkedHashSet<Long> submitted = new LinkedHashSet<>();
+    /** Same keys as {@link #submitted}, indexable for the round-robin dirty pass. */
+    private final ArrayList<Long> residentOrder = new ArrayList<>();
+    /** Last observed content signature per resident chunk. */
+    private final Map<Long, Long> signatures = new HashMap<>();
+
+    private int dirtyCursor;
     private int lastChunkX = Integer.MIN_VALUE;
     private int lastChunkZ = Integer.MIN_VALUE;
+    private int lastRadius = -1;
     private int tickCounter;
     private long framesRun;
     private boolean ready;
@@ -106,7 +140,7 @@ public final class WorldEngineHost {
             return null;
         }
         Minecraft minecraft = Minecraft.getInstance();
-        java.util.Optional<Path> library = RustWorldBridge.configuredLibrary();
+        Optional<Path> library = RustWorldBridge.configuredLibrary();
         if (library.isEmpty()) {
             if (RustWorldBridge.required()) {
                 LOGGER.error("jpe.worldRequired=true but jpe.worldLibrary is unset; world host disabled");
@@ -125,9 +159,11 @@ public final class WorldEngineHost {
 
         NeoForge.EVENT_BUS.addListener(ClientTickEvent.Post.class, host::onClientTick);
         NeoForge.EVENT_BUS.addListener(RenderFrameEvent.Post.class, event -> host.onRenderFrame());
-        LOGGER.info("Rust world host attached: backend={} target={}x{} radius={}",
+        LOGGER.info("Rust world host attached: backend={} target={}x{} radiusPolicy={} cap={} dirtyBudget={}",
                 host.bridge.backend().name(), host.config.targetWidth(),
-                host.config.targetHeight(), host.config.streamRadius());
+                host.config.targetHeight(), host.config.streamRadius() <= 0
+                        ? "render-distance" : host.config.streamRadius(),
+                host.config.radiusCap(), host.config.dirtyBudget());
         return host;
     }
 
@@ -143,7 +179,7 @@ public final class WorldEngineHost {
         return new WorldEngineHost(bridge, config, minecraft);
     }
 
-    // --- client tick: player tracking + chunk streaming ---------------------
+    // --- client tick: player tracking + chunk streaming + dirty resubmit ----
 
     private void onClientTick(ClientTickEvent.Post event) {
         if (failed) {
@@ -156,21 +192,27 @@ public final class WorldEngineHost {
         }
         int chunkX = (int) Math.floor(camera.getX() / 16.0);
         int chunkZ = (int) Math.floor(camera.getZ() / 16.0);
+        int radius = currentRadius();
         boolean moved = chunkX != lastChunkX || chunkZ != lastChunkZ;
+        boolean radiusChanged = radius != lastRadius;
         boolean periodic = ++tickCounter % 20 == 0;
-        if (!moved && !periodic) {
-            return;
-        }
-        lastChunkX = chunkX;
-        lastChunkZ = chunkZ;
         try {
-            bridge.setPlayer(chunkX, chunkZ);
-            streamLoadedChunks(level, chunkX, chunkZ);
-            if (moved) {
-                int keep = config.streamRadius() + config.unloadMargin();
+            if (moved || periodic || radiusChanged) {
+                lastChunkX = chunkX;
+                lastChunkZ = chunkZ;
+                bridge.setPlayer(chunkX, chunkZ);
+                streamLoadedChunks(level, chunkX, chunkZ, radius);
+            }
+            if (moved || radiusChanged) {
+                int keep = radius + config.unloadMargin();
                 bridge.unloadOutside(chunkX, chunkZ, keep);
                 pruneSubmitted(chunkX, chunkZ, keep);
+                lastRadius = radius;
             }
+            // Bounded block-edit detection runs every tick (resident chunks change even
+            // when the player stands still), re-meshing only the chunks whose signature
+            // moved.
+            recheckDirty(level);
             ready = true;
         } catch (RuntimeException streaming) {
             failed = true;
@@ -178,11 +220,16 @@ public final class WorldEngineHost {
         }
     }
 
+    /** Streaming radius for this tick: the live render distance, capped for memory. */
+    private int currentRadius() {
+        int renderDistance = minecraft.options.renderDistance().get();
+        return WorldHostMath.effectiveStreamRadius(config.streamRadius(), renderDistance, config.radiusCap());
+    }
+
     /** Submit every loaded chunk inside the working radius not already resident. */
-    private void streamLoadedChunks(ClientLevel level, int centerChunkX, int centerChunkZ) {
-        int r = config.streamRadius();
-        for (int dz = -r; dz <= r; dz++) {
-            for (int dx = -r; dx <= r; dx++) {
+    private void streamLoadedChunks(ClientLevel level, int centerChunkX, int centerChunkZ, int radius) {
+        for (int dz = -radius; dz <= radius; dz++) {
+            for (int dx = -radius; dx <= radius; dx++) {
                 int cx = centerChunkX + dx;
                 int cz = centerChunkZ + dz;
                 long key = pack(cx, cz);
@@ -196,68 +243,105 @@ public final class WorldEngineHost {
                 if (chunk == null) {
                     continue;
                 }
-                LevelColumn column = readColumn(chunk);
-                if (column == null) {
+                int baseSectionY = chunk.getMinY() >> 4;
+                int sectionCount = chunk.getSections().length;
+                if (sectionCount <= 0) {
                     continue;
                 }
-                int status = bridge.submitChunk(cx, cz, column.baseSectionY, column.blocks);
+                short[] blocks = reader.read(chunk, baseSectionY, sectionCount);
+                int status = bridge.submitChunk(cx, cz, baseSectionY, blocks);
                 // Any accepted code (new, mesh/remesh requested, or already in flight)
                 // means the chunk is now tracked by the engine; remember it so we do not
                 // resubmit every tick. Transient rejections are retried next pass.
-                if (status == JpeWorldNative.SUBMIT_NEW
-                        || status == JpeWorldNative.SUBMIT_MESH_REQUESTED
-                        || status == JpeWorldNative.SUBMIT_REMESH_REQUESTED
-                        || status == JpeWorldNative.SUBMIT_IN_FLIGHT) {
-                    submitted.add(key);
+                if (accepted(status)) {
+                    addResident(key);
+                    signatures.put(key, BlockSignature.of(blocks));
                 }
             }
         }
     }
 
-    /** Read a chunk's whole block column into the engine hand-off shape. */
-    private static LevelColumn readColumn(ChunkAccess chunk) {
-        int baseSectionY = chunk.getMinY() >> 4;
-        int sectionCount = chunk.getSections().length;
-        if (sectionCount <= 0) {
-            return null;
+    /**
+     * Re-signature up to {@link Config#dirtyBudget()} resident chunks this tick and
+     * re-submit the ones whose blocks changed. The signature fold allocates nothing, so
+     * a recheck is one section walk with no column array; only genuinely changed chunks
+     * pay for a fresh {@code read} on the resubmit path.
+     */
+    private void recheckDirty(ClientLevel level) {
+        int n = residentOrder.size();
+        if (n == 0 || config.dirtyBudget() <= 0) {
+            return;
         }
-        MinecraftChunkReader reader = new MinecraftChunkReader();
-        short[] blocks = reader.read(chunk, baseSectionY, sectionCount);
-        return new LevelColumn(baseSectionY, blocks);
+        int budget = Math.min(config.dirtyBudget(), n);
+        int start = dirtyCursor % n;
+        for (int k = 0; k < budget; k++) {
+            long key = residentOrder.get((start + k) % n);
+            int cx = (int) (key << 32 >> 32);
+            int cz = (int) (key >> 32);
+            if (!level.hasChunk(cx, cz)) {
+                continue;
+            }
+            ChunkAccess chunk = level.getChunk(cx, cz);
+            if (chunk == null) {
+                continue;
+            }
+            int baseSectionY = chunk.getMinY() >> 4;
+            int sectionCount = chunk.getSections().length;
+            if (sectionCount <= 0) {
+                continue;
+            }
+            long signature = reader.signature(chunk, baseSectionY, sectionCount);
+            Long previous = signatures.get(key);
+            if (previous == null) {
+                signatures.put(key, signature);
+                continue;
+            }
+            if (previous.longValue() == signature) {
+                continue;
+            }
+            // Content changed: hand the new data over; Rust replaces the stored sections
+            // and remeshes this chunk plus its loaded horizontal neighbours.
+            int status = bridge.submitChunk(cx, cz, baseSectionY,
+                    reader.read(chunk, baseSectionY, sectionCount));
+            if (accepted(status)) {
+                signatures.put(key, signature);
+            }
+        }
+        dirtyCursor = (start + budget) % n;
     }
 
-    private record LevelColumn(int baseSectionY, short[] blocks) {
-    }
-
-    // --- render frame: real perspective camera + one engine frame -----------
+    // --- render frame: interpolated live-FOV camera + one engine frame -----
 
     private void onRenderFrame() {
         if (!ready || failed) {
             return;
         }
-        ClientLevel level = minecraft.level;
         Entity camera = minecraft.getCameraEntity();
-        if (level == null || camera == null) {
+        if (minecraft.level == null || camera == null) {
             return;
         }
-        double ex = camera.getX();
-        double ey = camera.getY();
-        double ez = camera.getZ();
+        // Sub-tick interpolation so motion looks smooth at render rate rather than snapping
+        // to the 20 Hz tick, matching how vanilla positions the camera.
+        float partialTick = minecraft.getDeltaTracker().getGameTimeDeltaPartialTick(true);
+        Vec3 eyePos = camera.getEyePosition(partialTick);
+        int radius = lastRadius > 0 ? lastRadius : currentRadius();
+        float far = WorldHostMath.farPlane(radius, config.minFarBlocks());
+        float fov = WorldHostMath.clampFov(minecraft.options.fov().get());
         try {
             float[] viewProj = WorldCamera.perspectiveViewProj(
-                    ex, ey, ez,
-                    camera.getViewYRot(0.0f), camera.getViewXRot(0.0f),
-                    70.0f, // fov: a fixed transitional value; reading the live FOV option
-                            // is a Stage 5 refinement once we render to Minecraft's viewport
+                    eyePos.x, eyePos.y, eyePos.z,
+                    camera.getViewYRot(partialTick), camera.getViewXRot(partialTick),
+                    fov,
                     (float) config.targetWidth() / (float) config.targetHeight(),
-                    0.1f, (float) config.renderDistanceBlocks());
-            float[] eye = {(float) ex, (float) ey, (float) ez};
+                    0.1f, far);
+            float[] eye = {(float) eyePos.x, (float) eyePos.y, (float) eyePos.z};
             JpeWorldNative.FrameStats last = bridge.frame(viewProj, eye);
             if (++framesRun % config.logEveryFrames() == 0) {
-                LOGGER.info("world host frame={} residentChunks={} resident={} visible={} culled={} "
-                                + "batches={} terrain={} mesh={} remesh={}",
-                        framesRun, submitted.size(), last.resident(), last.visible(), last.culled(),
-                        last.batches(), last.terrainJobs(), last.meshJobs(), last.remeshChunks());
+                LOGGER.info("world host frame={} radius={} residentChunks={} resident={} visible={} "
+                                + "culled={} batches={} terrain={} mesh={} remesh={} fov={}",
+                        framesRun, radius, submitted.size(), last.resident(), last.visible(),
+                        last.culled(), last.batches(), last.terrainJobs(), last.meshJobs(),
+                        last.remeshChunks(), fov);
             }
         } catch (RuntimeException frame) {
             failed = true;
@@ -285,20 +369,39 @@ public final class WorldEngineHost {
 
     // --- helpers ------------------------------------------------------------
 
+    private static boolean accepted(int status) {
+        return status == JpeWorldNative.SUBMIT_NEW
+                || status == JpeWorldNative.SUBMIT_MESH_REQUESTED
+                || status == JpeWorldNative.SUBMIT_REMESH_REQUESTED
+                || status == JpeWorldNative.SUBMIT_IN_FLIGHT;
+    }
+
     private static long pack(int x, int z) {
         return ((long) z << 32) | (x & 0xFFFFFFFFL);
     }
 
-    /** Drop submitted keys that fell outside {@code keep} so re-approach resubmits. */
+    private void addResident(long key) {
+        if (submitted.add(key)) {
+            residentOrder.add(key);
+        }
+    }
+
+    /** Drop submitted keys outside {@code keep} so re-approach resubmits (and free signatures). */
     private void pruneSubmitted(int centerChunkX, int centerChunkZ, int keep) {
-        Iterator<Long> it = submitted.iterator();
-        while (it.hasNext()) {
-            long key = it.next();
+        ArrayList<Long> kept = new ArrayList<>(residentOrder.size());
+        submitted.clear();
+        for (long key : residentOrder) {
             int cx = (int) (key << 32 >> 32);
             int cz = (int) (key >> 32);
             if (Math.max(Math.abs(cx - centerChunkX), Math.abs(cz - centerChunkZ)) > keep) {
-                it.remove();
+                signatures.remove(key);
+            } else {
+                kept.add(key);
+                submitted.add(key);
             }
         }
+        residentOrder.clear();
+        residentOrder.addAll(kept);
+        dirtyCursor = 0;
     }
 }
