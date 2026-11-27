@@ -6,7 +6,7 @@ use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-const ABI_VERSION: u32 = 7;
+const ABI_VERSION: u32 = 8;
 const STATUS_OK: i32 = 0;
 const STATUS_INVALID_ARGUMENT: i32 = 1;
 const STATUS_CPP_FAILURE: i32 = 2;
@@ -246,7 +246,7 @@ unsafe extern "C" {
         step_x: i32, step_y: i32, step_z: i32,
         density_values: *const f32,
         density_count: u32,
-        outputs: *mut JpeAquiferCoreOutput,
+        outputs: *mut u64,
     ) -> i32;
     fn jpe_cpp_aquifer_context_compute_density_and_substance_volume_f32(
         context_handle: u64,
@@ -676,7 +676,7 @@ pub unsafe extern "C" fn jpe_runtime_aquifer_context_compute_substance_volume_f3
     step_x: i32, step_y: i32, step_z: i32,
     density_values: *const f32,
     density_count: u32,
-    outputs: *mut JpeAquiferCoreOutput,
+    outputs: *mut u64,
 ) -> i32 {
     const MAX_VOLUME_VOXELS: u64 = 1_048_576;
     let Some(total) = (size_x as u64)
