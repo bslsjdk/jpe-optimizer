@@ -193,11 +193,11 @@ public final class NativeAquiferFluidStatusPrefill {
                 || Boolean.getBoolean("jpe.nativeAquiferSubstanceStrict");
         final boolean verify = Boolean.getBoolean("jpe.nativeAquiferFluidStatusVerify")
                 || Boolean.getBoolean("jpe.nativeAquiferSubstanceVerify");
-        if (strict && !verify) {
-            throw new IllegalStateException(
-                    "Strict native Aquifer mode requires the full-volume vanilla parity oracle");
-        }
-
+        // Strictness and verification are deliberately independent:
+        // strict means native preparation/execution must fail closed, while verify
+        // opts into the expensive per-voxel vanilla Aquifer oracle. Requiring verify
+        // here would make strict production/performance runs recompute every voxel in
+        // Java, contradicting the caller's fail-closed native execution contract.
         NativeRuntime runtime;
         try {
             runtime = NativePerlinNoiseBackend.runtimeForDensityGraph();
