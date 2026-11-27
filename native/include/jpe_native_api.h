@@ -401,7 +401,7 @@ JPE_API int32_t jpe_runtime_aquifer_context_compute_substance_volume_f32(
     int32_t step_x, int32_t step_y, int32_t step_z,
     const float* density_values,
     uint32_t density_count,
-    JpeAquiferCoreOutput* outputs
+    uint64_t* outputs
 );
 /* Fused path evaluates finalDensity and Aquifer decisions entirely in native memory. */
 JPE_API int32_t jpe_runtime_aquifer_context_compute_density_and_substance_volume_f32(
@@ -413,7 +413,7 @@ JPE_API int32_t jpe_runtime_aquifer_context_compute_density_and_substance_volume
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
-    JpeAquiferCoreOutput* outputs
+    uint64_t* outputs
 );
 JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
     uint64_t context_handle,
@@ -425,7 +425,7 @@ JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
     int32_t step_x, int32_t step_y, int32_t step_z,
     const float* density_values,
     uint32_t density_count,
-    JpeAquiferCoreOutput* outputs
+    uint64_t* outputs
 );
 
 /* Returns 0 on success, 1 for invalid input. A false has_block_state means
@@ -493,7 +493,7 @@ JPE_API int32_t jpe_cpp_aquifer_context_compute_substance_volume_f32(
     int32_t step_x, int32_t step_y, int32_t step_z,
     const float* density_values,
     uint32_t density_count,
-    JpeAquiferCoreOutput* outputs
+    uint64_t* outputs
 );
 
 JPE_API int32_t jpe_cpp_aquifer_context_compute_density_and_substance_volume_f32(
@@ -505,7 +505,7 @@ JPE_API int32_t jpe_cpp_aquifer_context_compute_density_and_substance_volume_f32
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
-    JpeAquiferCoreOutput* outputs
+    uint64_t* outputs
 );
 JPE_API uint64_t jpe_cpp_aquifer_status_cache_create(uint32_t maximum_entries);
 JPE_API int32_t jpe_cpp_aquifer_status_cache_destroy(uint64_t handle);
