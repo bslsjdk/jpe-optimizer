@@ -21,6 +21,11 @@ extern "C" int32_t jpe_cpp_perlin_stack_evaluate(
     uint32_t, uint32_t, uint32_t,
     int32_t, int32_t, int32_t, int32_t, int32_t, int32_t,
     float*, uint64_t, uint32_t) noexcept;
+extern "C" int32_t jpe_cpp_smeared_perlin_stack_evaluate(
+    uint64_t,
+    uint32_t, uint32_t, uint32_t,
+    int32_t, int32_t, int32_t, int32_t, int32_t, int32_t,
+    float*, uint64_t, uint32_t) noexcept;
 extern "C" int32_t jpe_cpp_perlin_stack_sample_warped(
     uint64_t, int32_t, int32_t, int32_t, double, double, double,
     double, double, float*) noexcept;
@@ -49,6 +54,7 @@ constexpr uint32_t kSqueeze = 23, kLerp = 24, kGradient = 25, kInterpolated = 26
 constexpr uint32_t kRound = 28, kLog = 29, kDistanceToPoint = 30, kPerlinStackWarp = 31, kSlice = 32;
 constexpr uint32_t kShiftBPerlinStack = 33;
 constexpr uint32_t kFindTopSurface = 34;
+constexpr uint32_t kSmearedPerlinStack = 35;
 
 struct CompiledGraph {
     uint64_t fingerprint = 0;
@@ -238,6 +244,13 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                     || std::floor(handle) != handle || node.auxiliary != 0.25 || node.tertiary != 0.25) return false;
                 break;
             }
+            case kSmearedPerlinStack: {
+                const double handle = node.immediate;
+                if (node.input_a != kNoInput || node.input_b != kNoInput || node.reserved != 0
+                    || !std::isfinite(handle) || handle < 1.0 || handle > 9007199254740991.0
+                    || std::floor(handle) != handle || node.auxiliary != 0.0 || node.tertiary != 0.0) return false;
+                break;
+            }
             case kPerlinStackWarp: {
                 const double handle = node.immediate;
                 if (node.input_a >= i || node.input_b >= i || node.reserved >= i
@@ -371,6 +384,11 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
                     graph->needs_x_coordinates = true;
                     graph->needs_z_coordinates = true;
                     break;
+                case kSmearedPerlinStack:
+                    graph->needs_x_coordinates = true;
+                    graph->needs_y_coordinates = true;
+                    graph->needs_z_coordinates = true;
+                    break;
                 default: break;
             }
         }
@@ -379,7 +397,8 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
         for (uint32_t i = 0; i < node_count; ++i) {
             if (reachable[i] == 0
                 || (nodes[i].opcode != kPerlinStack && nodes[i].opcode != kPerlinStackWarp
-                    && nodes[i].opcode != kShiftBPerlinStack)) continue;
+                    && nodes[i].opcode != kShiftBPerlinStack
+                    && nodes[i].opcode != kSmearedPerlinStack)) continue;
             const uint64_t source_handle = static_cast<uint64_t>(nodes[i].immediate);
             const uint64_t retained = jpe_cpp_perlin_stack_retain(source_handle);
             if (retained == 0) return 0;
@@ -1086,6 +1105,20 @@ int32_t evaluate_density_graph_impl(
                         (step_x == 0 || step_y == 0 || step_z == 0) ? kAllowZeroPerlinSteps : 0U);
                     if (status != 0) return status;
                     for (size_t j = 0; j < volume; ++j) values[j] = static_cast<Scalar>(perlin_scratch[j]);
+                    break;
+                }
+                case kSmearedPerlinStack: {
+                    std::fill(perlin_scratch.begin(), perlin_scratch.end(), 0.0F);
+                    const int32_t status = jpe_cpp_smeared_perlin_stack_evaluate(
+                        graph->prepared_handles[i],
+                        size_x, size_y, size_z, min_x, min_y, min_z,
+                        step_x, step_y, step_z,
+                        perlin_scratch.data(), output_length,
+                        (step_x == 0 || step_y == 0 || step_z == 0) ? kAllowZeroPerlinSteps : 0U);
+                    if (status != 0) return status;
+                    for (size_t j = 0; j < volume; ++j) {
+                        values[j] = static_cast<Scalar>(perlin_scratch[j]);
+                    }
                     break;
                 }
                 case kShiftBPerlinStack: {
