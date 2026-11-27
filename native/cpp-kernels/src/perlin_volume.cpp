@@ -660,12 +660,12 @@ extern "C" int32_t jpe_cpp_perlin_add_volume(
         : step_magnitude >= 4U ? (1.0 / 32.0)
         : (1.0 / 64.0);
     if (avx2_available && y_step_magnitude <= avx2_step_limit) {
-        return perlin_add_volume_impl<true, false, true>(permutation,
+        return perlin_add_volume_impl<true, true, true>(permutation,
             size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
             xz_scale, y_scale, amplitude, output, output_length, flags);
     }
 #endif
-    return perlin_add_volume_impl<true, false, false>(permutation,
+    return perlin_add_volume_impl<true, true, false>(permutation,
         size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z, offset_x, offset_y, offset_z,
         xz_scale, y_scale, amplitude, output, output_length, flags);
 }
