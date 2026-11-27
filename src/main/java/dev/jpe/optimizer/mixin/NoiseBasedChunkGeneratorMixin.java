@@ -333,6 +333,14 @@ public abstract class NoiseBasedChunkGeneratorMixin {
             }
             }
             }
+        } catch (RuntimeException | Error failure) {
+            JPEOptimizer.LOGGER.error(
+                    "JPE chunk terrain fill failed for chunk {} (nativeDensityStrict={}, nativeAquiferStrict={})",
+                    chunk.getPos(),
+                    Boolean.getBoolean("jpe.nativeDensityGraphStrict"),
+                    nativeAquiferVolumeStrict,
+                    failure);
+            throw failure;
         } finally {
             try {
                 if (nativeAquiferPrepared != null) nativeAquiferPrepared.close();
