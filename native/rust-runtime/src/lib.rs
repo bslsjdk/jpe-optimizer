@@ -1482,6 +1482,46 @@ mod tests {
         assert_eq!(unsafe { jpe_runtime_density_graph_release(power) }, 0);
     }
 
+    #[test]
+    fn density_graph_lerp_endpoints_are_exact() {
+        // Vanilla's three lerp samplers all return an endpoint outright at alpha == 0
+        // and at alpha == 1 instead of lerping to it. Recomputing the endpoint as
+        // first + alpha*(second-first) is off by an ulp once the subtraction rounds:
+        // 10.0f + (3.95f - 10.0f) is 3.9499998, not 3.95.
+        let endpoint = |alpha: f64, first: f64, second: f64| {
+            let nodes = [
+                constant_node(alpha),
+                constant_node(first),
+                constant_node(second),
+                JpeDensityNode { opcode: DENSITY_LERP, input_a: 0,
+                    input_b: 1, reserved: 2, immediate: 0.0 },
+            ];
+            let handle = unsafe {
+                jpe_runtime_density_graph_compile(nodes.as_ptr(), 4, 3, 10, 0x4E4E)
+            };
+            assert_ne!(handle, 0);
+            let mut out = [0.0f32; 1];
+            assert_eq!(unsafe {
+                jpe_runtime_density_graph_evaluate(
+                    handle, 1, 1, 1, 0, 0, 0, 1, 1, 1, out.as_mut_ptr(), 1,
+                )
+            }, 0);
+            assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, 0);
+            out[0]
+        };
+
+        // The exact case observed in a live server: alpha 1 must give 3.95, not 3.9499998.
+        assert_eq!(endpoint(1.0, 10.0, 3.95), 3.95f32);
+        assert_eq!(endpoint(0.0, 10.0, 3.95), 10.0f32);
+        assert_eq!(endpoint(1.0, 1.0e9, 1.0), 1.0f32);
+        assert_eq!(endpoint(0.0, 1.0e9, 1.0), 1.0e9f32);
+        // alpha == 0 must not form (second - first) either, so a NaN second stays out.
+        assert_eq!(endpoint(0.0, 2.5, f64::NAN), 2.5f32);
+        assert!(endpoint(1.0, 2.5, f64::NAN).is_nan());
+        // Interior values still go through the lerp.
+        assert_eq!(endpoint(0.5, 0.0, 4.0), 2.0f32);
+    }
+
     fn constant_node(value: f64) -> JpeDensityNode {
         JpeDensityNode {
             opcode: DENSITY_CONST, input_a: DENSITY_NO_INPUT,

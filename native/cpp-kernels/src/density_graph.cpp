@@ -2211,19 +2211,18 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
                     + static_cast<size_t>(instruction.input_c) * tile_capacity;
                 for (uint32_t sample = 0; sample < count; ++sample) {
                     const float alpha = alpha_lane[sample];
-                    // Vanilla returns first outright at alpha == 0 and never forms
-                    // (second - first), so NaN in second cannot leak through.
-                    //
-                    // The alpha == 1 shortcut vanilla also has must NOT be added here.
-                    // Measured in a live server: returning second outright keeps every
-                    // endpoint within 1e-3 of the plain lerp (so the shortcut looks
-                    // harmless sample by sample) yet the volume parity collapses from
-                    // 1e-6 to 1.3 absolute on 6% of samples. Something downstream
-                    // amplifies the endpoint change; until that is understood, plain
-                    // lerp_f32 is what matches the live sampler.
+                    // All three vanilla variants (ConstFirstSampler, ConstSecondSampler,
+                    // Sampler) return an endpoint outright instead of lerping to it:
+                    //   alpha == 0 -> first, alpha == 1 -> second.
+                    // Both shortcuts are required for bit parity, not just an
+                    // optimisation. Reproduced exactly: first=10, alpha=1, second=3.95
+                    // gives 3.9499998 through lerp_f32 (first + (second - first) loses a
+                    // bit when the subtraction rounds) while vanilla returns 3.95.
                     destination[sample] = alpha == 0.0f
                         ? first_lane[sample]
-                        : lerp_f32(alpha, first_lane[sample], second_lane[sample]);
+                        : (alpha == 1.0f
+                            ? second_lane[sample]
+                            : lerp_f32(alpha, first_lane[sample], second_lane[sample]));
                 }
             } else if (instruction.opcode == JPE_DENSITY_POW) {
                 for (uint32_t sample = 0; sample < count; ++sample) {

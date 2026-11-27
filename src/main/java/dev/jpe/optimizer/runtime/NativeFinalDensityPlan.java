@@ -41,9 +41,15 @@ public final class NativeFinalDensityPlan implements AutoCloseable {
     }
 
     /** Bit-level comparison result for one volume. */
+    /**
+     * @param maxUlps largest distance between the two volumes in float32 steps.
+     *                Values that are numerically equal (+0.0 and -0.0) count as 0,
+     *                so a signed zero never looks like a 2^31 step jump.
+     */
     public record Parity(int compared, int mismatches, int firstMismatch,
-                         float javaValue, float nativeValue) {
+                         float javaValue, float nativeValue, int maxUlps) {
         public boolean exact() { return mismatches == 0; }
+        public boolean withinUlps(int ulps) { return maxUlps <= ulps; }
     }
 
     private final Arena arena;
@@ -213,19 +219,26 @@ public final class NativeFinalDensityPlan implements AutoCloseable {
         }
         int mismatches = 0;
         int first = -1;
+        int maxUlps = 0;
         float javaValue = 0.0f;
         float nativeValue = 0.0f;
         for (int i = 0; i < javaVolume.length; ++i) {
-            if (Float.floatToRawIntBits(javaVolume[i]) != Float.floatToRawIntBits(nativeVolume[i])) {
-                if (first < 0) {
-                    first = i;
-                    javaValue = javaVolume[i];
-                    nativeValue = nativeVolume[i];
-                }
-                ++mismatches;
+            float java = javaVolume[i];
+            float nativeValue1 = nativeVolume[i];
+            if (Float.floatToRawIntBits(java) == Float.floatToRawIntBits(nativeValue1)) continue;
+            if (first < 0) {
+                first = i;
+                javaValue = java;
+                nativeValue = nativeValue1;
             }
+            ++mismatches;
+            // +0.0 and -0.0 compare equal but are a 2^31 step apart in bits.
+            int distance = java == nativeValue1
+                    ? 0
+                    : Math.abs(Float.floatToRawIntBits(java) - Float.floatToRawIntBits(nativeValue1));
+            if (distance > maxUlps) maxUlps = distance;
         }
-        return new Parity(javaVolume.length, mismatches, first, javaValue, nativeValue);
+        return new Parity(javaVolume.length, mismatches, first, javaValue, nativeValue, maxUlps);
     }
 
     // ---- Noise plan encoding -------------------------------------------------

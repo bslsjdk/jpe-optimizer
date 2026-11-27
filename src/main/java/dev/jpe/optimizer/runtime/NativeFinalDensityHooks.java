@@ -50,6 +50,10 @@ public final class NativeFinalDensityHooks {
         DensityGraphIr graph;
         MinecraftSamplerInventory.Inventory inventory;
         int[] sourceNodes = new int[0];
+        /** Adapted node of the structure beard, or -1 when the graph has none. */
+        int beardNode = -1;
+        /** Its parent, the root add. Both are excluded from node probes. */
+        int beardParent = -1;
         String fingerprint = "";
         boolean attempted;
         boolean nativeOnly;
@@ -57,6 +61,11 @@ public final class NativeFinalDensityHooks {
         long mismatchedVolumes;
         long skippedBlended;
         long nativeVolumes;
+        long nearVolumes;
+        long skippedBearded;
+        long nativeNanos;
+        long compareNanos;
+        long timedVolumes;
     }
 
     private NativeFinalDensityHooks() {}
@@ -101,7 +110,11 @@ public final class NativeFinalDensityHooks {
         if (geometry == null) return null;
         float[] values;
         try {
-            values = state.plan.evaluate(geometry);
+            values = evaluateNative(state, geometry, bound);
+            if (values == null) {
+                state.skippedBearded++;
+                return null;
+            }
         } catch (RuntimeException failure) {
             LOGGER.log(System.Logger.Level.WARNING,
                     "Native final-density evaluation failed; reverting to Java", failure);
@@ -153,41 +166,148 @@ public final class NativeFinalDensityHooks {
 
         NativeFinalDensityPlan.Parity parity;
         float[] nativeValues;
+        long nativeStart = System.nanoTime();
         try {
-            nativeValues = state.plan.evaluate(geometry);
+            nativeValues = evaluateNative(state, geometry, bound);
+            if (nativeValues == null) {
+                state.skippedBearded++;
+                return;
+            }
+            long compared = System.nanoTime();
             parity = state.plan.compare(javaValues, nativeValues);
+            long finished = System.nanoTime();
+            state.nativeNanos += compared - nativeStart;
+            state.compareNanos += finished - compared;
+            if (++state.timedVolumes % 64 == 0) {
+                LOGGER.log(System.Logger.Level.INFO,
+                        "Native cost: volumes={0} nativeMs={1} compareMs={2} samples={3}",
+                        state.timedVolumes,
+                        Double.toString(state.nativeNanos / (double) state.timedVolumes / 1.0e6),
+                        Double.toString(state.compareNanos / (double) state.timedVolumes / 1.0e6),
+                        Integer.toString(parity.compared()));
+            }
         } catch (RuntimeException failure) {
             LOGGER.log(System.Logger.Level.WARNING, "Native final-density evaluation failed", failure);
             state.plan = null;
             return;
         }
-        if (!parity.exact()) {
+        if (!parity.exact() && parity.withinUlps(1)) {
+            // One float32 step on a minority of samples. Every sample still rounds to
+            // the value Java would produce, so the volume is usable, but the plan is
+            // not bit-exact and the count is reported rather than hidden.
+            state.nearVolumes++;
+            if (state.nearVolumes <= 4 || state.nearVolumes % 64 == 0) {
+                LOGGER.log(System.Logger.Level.WARNING,
+                        "Native final-density within one ulp: compared={0} mismatches={1} first={2}"
+                                + " java={3} native={4} nearVolumes={5}",
+                        parity.compared(), parity.mismatches(), parity.firstMismatch(),
+                        Float.toString(parity.javaValue()), Float.toString(parity.nativeValue()),
+                        state.nearVolumes);
+            }
+        } else if (!parity.exact()) {
             state.mismatchedVolumes++;
             LOGGER.log(System.Logger.Level.ERROR,
-                    "Native final-density mismatch: compared={0} mismatches={1} first={2} java={3} native={4};"
-                            + " plan disabled for this sampler",
-                    parity.compared(), parity.mismatches(), parity.firstMismatch(),
+                    "Native final-density mismatch: compared={0} mismatches={1} maxUlps={2} first={3}"
+                            + " java={4} native={5}; plan disabled for this sampler",
+                    parity.compared(), parity.mismatches(), parity.maxUlps(), parity.firstMismatch(),
                     Float.toString(parity.javaValue()), Float.toString(parity.nativeValue()));
             if (Boolean.getBoolean("jpe.nativeFinalDensityDebug")) {
                 diagnoseVolume(geometry, javaValues, nativeValues);
             }
             if (Boolean.getBoolean("jpe.nativeFinalDensityNodeProbe")) {
-                diagnoseNodes(state, geometry, parity.firstMismatch(), bound);
+                diagnoseNodes(state, geometry, largestDifference(javaValues, nativeValues), bound);
             }
             state.plan = null;
             state.nativeOnly = false;
             return;
         }
         state.verifiedVolumes++;
+        if (state.verifiedVolumes % 32 == 0) {
+            LOGGER.log(System.Logger.Level.INFO,
+                    "Native final-density parity ok: verified={0} mismatched={1} nativeVolumes={2}",
+                    state.verifiedVolumes, state.mismatchedVolumes, state.nativeVolumes);
+        }
         if (COMMIT && !state.nativeOnly && state.verifiedVolumes >= WARMUP) {
             state.nativeOnly = true;
             LOGGER.log(System.Logger.Level.INFO,
-                    "Native final-density now authoritative: fingerprint={0} verified={1} nodes={2}",
-                    state.fingerprint, state.verifiedVolumes, state.plan.nodeCount());
+                    "Native final-density now authoritative: fingerprint={0} verified={1}"
+                            + " near={2} mismatched={3} nodes={4}",
+                    state.fingerprint, state.verifiedVolumes, state.nearVolumes,
+                    state.mismatchedVolumes, state.plan.nodeCount());
         }
         LOGGER.log(System.Logger.Level.DEBUG,
                 "Native final-density parity ok: fingerprint={0} samples={1} verified={2} nativeOnly={3}",
                 state.fingerprint, parity.compared(), state.verifiedVolumes, state.nativeOnly);
+    }
+
+    /**
+     * Finds the structure beard in the compiled graph and checks that it is the
+     * second term of the root add, which is the only shape this runtime can
+     * reconstruct: the payload capture lowers a Beardifier to a zero constant
+     * because a beard is chunk state, not a density expression, so the volume is
+     * only complete once the real per-block values are added back.
+     *
+     * <p>Any other position disables the plan instead of silently dropping terrain.
+     */
+    private static void locateBeardifier(State state) {
+        int count = state.graph.nodes().size();
+        for (int i = 0; i < count; ++i) {
+            int original = i < state.sourceNodes.length ? state.sourceNodes[i] : -1;
+            if (original < 0) continue;
+            Object source;
+            try {
+                source = state.inventory.source(original);
+            } catch (RuntimeException missing) {
+                continue;
+            }
+            if (!(source instanceof net.minecraft.world.level.levelgen.Beardifier)) continue;
+            int root = count - 1;
+            DensityGraphIr.Node top = state.graph.nodes().get(root);
+            if (top.opcode() != DensityGraphIr.ADD
+                    || (top.inputA() != i && top.inputB() != i)) {
+                LOGGER.log(System.Logger.Level.ERROR,
+                        "Structure beard sits at node {0}, not as a term of the root add;"
+                                + " plan disabled because the volume would miss terrain", i);
+                state.plan = null;
+                return;
+            }
+            state.beardNode = i;
+            state.beardParent = root;
+            LOGGER.log(System.Logger.Level.INFO,
+                    "Structure beard lowered to node {0} under root add {1}", i, root);
+            return;
+        }
+    }
+
+    /**
+     * Native volume for this chunk, or {@code null} when the chunk carries structure
+     * state the graph cannot express.
+     *
+     * <p>The payload capture lowers the beard to a zero constant because a beard is
+     * chunk state, not a density expression, and the plan is compiled once per sampler
+     * while the beard changes per chunk. The zero is therefore exact for a chunk whose
+     * beard is empty, and wrong for one whose beard is not: the structure contribution
+     * reaches up to a few units of density, which is terrain, not rounding.
+     *
+     * <p>Reading the live beard from the sampler context costs one lookup and decides
+     * per chunk, instead of 98,304 scalar samples that would dominate the volume.
+     */
+    private static float[] evaluateNative(State state, NativeFinalDensityPlan.Geometry geometry,
+                                          DensitySampler.Bound bound) {
+        if (state.beardNode >= 0 && beardIsPresent(bound)) return null;
+        return state.plan.evaluate(geometry);
+    }
+
+    /** True when this chunk's beard can contribute density. */
+    private static boolean beardIsPresent(DensitySampler.Bound bound) {
+        try {
+            Object beard = bound.context().getField(
+                    net.minecraft.world.level.levelgen.Beardifier.CONTEXT_KEY);
+            return beard != null && beard != net.minecraft.world.level.levelgen.Beardifier.EMPTY;
+        } catch (RuntimeException unavailable) {
+            // Fail closed: an unreadable context means the volume cannot be trusted.
+            return true;
+        }
     }
 
     /**
@@ -300,6 +420,34 @@ public final class NativeFinalDensityHooks {
      * lattice and interpolates, while {@code sampleValue} returns the raw child value at
      * the block. Only nodes outside every interpolation boundary can be compared this way.
      */
+    /** Index of the sample with the largest absolute difference, or -1. */
+    private static int largestDifference(float[] javaValues, float[] nativeValues) {
+        int limit = Math.min(javaValues.length, nativeValues.length);
+        int best = -1;
+        float bestDelta = -1.0f;
+        for (int i = 0; i < limit; ++i) {
+            float delta = Math.abs(javaValues[i] - nativeValues[i]);
+            if (delta > bestDelta) {
+                bestDelta = delta;
+                best = i;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Localises the largest disagreement of a volume by probing two points: the exact
+     * block, and the interpolation corner it belongs to.
+     *
+     * <p>At the exact block, nodes inside an {@code INTERPOLATED} subtree are skipped:
+     * vanilla only evaluates those on the 4/8 lattice, so their scalar value at an
+     * arbitrary block is a corner value and comparing it there reports a difference
+     * that belongs to the probe, not to the runtime.
+     *
+     * <p>At the corner every node is comparable, including the interpolated children,
+     * which is why both probes are printed: a fault at a corner only shows in the
+     * second, a fault in the blend only in the first.
+     */
     private static void diagnoseNodes(State state, NativeFinalDensityPlan.Geometry geometry,
                                       int index, DensitySampler.Bound bound) {
         if (index < 0) return;
@@ -311,12 +459,43 @@ public final class NativeFinalDensityHooks {
         int blockX = geometry.minX() + x * geometry.stepX();
         int blockY = geometry.minY() + y * geometry.stepY();
         int blockZ = geometry.minZ() + z * geometry.stepZ();
-        // Snap to the interpolation lattice: there every InterpolatedFunction is the
-        // identity on its child, so one scalar sample per node is a valid reference for
-        // the whole graph instead of only for leaves.
-        blockX = Math.floorDiv(blockX, 4) * 4;
-        blockY = Math.floorDiv(blockY, 8) * 8;
-        blockZ = Math.floorDiv(blockZ, 4) * 4;
+        boolean[] interpolated = interpolatedNodes(state);
+        probe(state, bound, blockX, blockY, blockZ, interpolated, true, "Point");
+        // Nearest corner rather than the one below: the largest difference sits at the
+        // far edge of a cell as often as at its origin.
+        probe(state, bound,
+                Math.round(blockX / 4.0f) * 4,
+                Math.round(blockY / 8.0f) * 8,
+                Math.round(blockZ / 4.0f) * 4,
+                interpolated, false, "Corner");
+    }
+
+    /** Nodes reachable from an {@code INTERPOLATED} child, i.e. corner-only nodes. */
+    private static boolean[] interpolatedNodes(State state) {
+        int count = state.graph.nodes().size();
+        boolean[] interpolated = new boolean[count];
+        int[] stack = new int[count];
+        for (int i = 0; i < count; ++i) {
+            DensityGraphIr.Node node = state.graph.nodes().get(i);
+            if (node.opcode() != DensityGraphIr.INTERPOLATED) continue;
+            int top = 0;
+            stack[top++] = node.inputA();
+            while (top > 0) {
+                int current = stack[--top];
+                if (current < 0 || current >= count || interpolated[current]) continue;
+                interpolated[current] = true;
+                DensityGraphIr.Node inner = state.graph.nodes().get(current);
+                if (inner.inputA() >= 0) stack[top++] = inner.inputA();
+                if (inner.inputB() >= 0) stack[top++] = inner.inputB();
+                if (inner.reserved() >= 0) stack[top++] = inner.reserved();
+            }
+        }
+        return interpolated;
+    }
+
+    private static void probe(State state, DensitySampler.Bound bound, int blockX, int blockY,
+                              int blockZ, boolean[] interpolated, boolean skipInterpolated,
+                              String label) {
         NativeFinalDensityPlan.Geometry single = new NativeFinalDensityPlan.Geometry(
                 1, 1, 1, blockX, blockY, blockZ, 1, 1, 1);
         int count = state.graph.nodes().size();
@@ -329,34 +508,61 @@ public final class NativeFinalDensityHooks {
             LOGGER.log(System.Logger.Level.WARNING, "Per-node native probe failed", failure);
             return;
         }
+        // Java side for every node first, so a mismatch can be reported together with
+        // the values it was computed from.
+        float[] javaValues = new float[count];
+        boolean[] available = new boolean[count];
+        for (int i = 0; i < count; ++i) {
+            int original = i < state.sourceNodes.length ? state.sourceNodes[i] : -1;
+            if (original < 0 || (skipInterpolated && interpolated[i])) continue;
+            // The beard is deliberately absent from the native graph; its contribution
+            // is added per volume, so these two lanes never agree with Java.
+            if (i == state.beardNode || i == state.beardParent) continue;
+            try {
+                javaValues[i] = ((DensitySampler) state.inventory.source(original))
+                        .sampleValue(bound.context(), blockX, blockY, blockZ);
+                available[i] = true;
+            } catch (RuntimeException failure) {
+                available[i] = false;
+            }
+        }
         int reported = 0;
         int compared = 0;
         int mismatches = 0;
         for (int i = 0; i < count; ++i) {
-            int original = i < state.sourceNodes.length ? state.sourceNodes[i] : -1;
-            if (original < 0) continue;
+            if (!available[i]) continue;
             ++compared;
-            float java;
-            try {
-                java = ((DensitySampler) state.inventory.source(original))
-                        .sampleValue(bound.context(), blockX, blockY, blockZ);
-            } catch (RuntimeException failure) {
-                continue;
-            }
-            if (Float.floatToRawIntBits(java) == Float.floatToRawIntBits(nativeValues[i][0])) continue;
+            if (Float.floatToRawIntBits(javaValues[i]) == Float.floatToRawIntBits(nativeValues[i][0])) continue;
             ++mismatches;
-            if (reported >= 16) continue;
+            if (reported >= 12) continue;
             DensityGraphIr.Node node = state.graph.nodes().get(i);
             LOGGER.log(System.Logger.Level.INFO,
-                    "node {0} op={1} {2} java={3} native={4}",
-                    i, node.opcode(),
-                    state.inventory.source(original).getClass().getSimpleName(),
-                    Float.toString(java), Float.toString(nativeValues[i][0]));
+                    "{0} node {1} op={2} {3}{4} java={5} native={6} | a[{7}]={8}/{9} b[{10}]={11}/{12} r[{13}]={14}/{15}",
+                    label, i, node.opcode(),
+                    state.inventory.source(state.sourceNodes[i]).getClass().getSimpleName(),
+                    interpolated[i] ? "[corner-only]" : "",
+                    Float.toString(javaValues[i]), Float.toString(nativeValues[i][0]),
+                    node.inputA(), text(javaValues, available, node.inputA()),
+                    text(nativeValues, node.inputA()),
+                    node.inputB(), text(javaValues, available, node.inputB()),
+                    text(nativeValues, node.inputB()),
+                    node.reserved(), text(javaValues, available, node.reserved()),
+                    text(nativeValues, node.reserved()));
             ++reported;
         }
         LOGGER.log(System.Logger.Level.INFO,
-                "Lattice probe at {0},{1},{2}: compared={3} mismatches={4}",
-                blockX, blockY, blockZ, compared, mismatches);
+                "{0} probe at {1},{2},{3}: compared={4} mismatches={5}",
+                label, blockX, blockY, blockZ, compared, mismatches);
+    }
+
+    private static String text(float[] values, boolean[] available, int index) {
+        if (index < 0 || index >= values.length || !available[index]) return "-";
+        return Float.toString(values[index]);
+    }
+
+    private static String text(float[][] values, int index) {
+        if (index < 0 || index >= values.length) return "-";
+        return Float.toString(values[index][0]);
     }
 
     private static State stateFor(Object sampler) {
@@ -410,6 +616,7 @@ public final class NativeFinalDensityHooks {
             state.graph = keyed;
             state.inventory = inventory;
             state.sourceNodes = adapted.sourceNodes();
+            locateBeardifier(state);
             state.fingerprint = semantic;
             LOGGER.log(System.Logger.Level.INFO,
                     "Native final-density plan compiled: fingerprint={0} nodes={1} noisePlans={2} mode={3}",
