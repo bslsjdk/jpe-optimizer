@@ -30,7 +30,7 @@ import net.minecraft.world.level.levelgen.synth.PerlinNoise;
  * Completed jobs must be explicitly released before this runtime can be closed.
  */
 public final class NativeRuntime implements AutoCloseable {
-    public static final int EXPECTED_ABI_VERSION = 9;
+    public static final int EXPECTED_ABI_VERSION = 10;
     private static final long PERLIN_LAYER_SIZE = 56L;
 
     public static final int JOB_COMPLETE = 0;
@@ -52,6 +52,7 @@ public final class NativeRuntime implements AutoCloseable {
     private final MethodHandle preparePerlinStack;
     private final MethodHandle evaluatePreparedPerlinStack;
     private final MethodHandle releasePreparedPerlinStack;
+    private final MethodHandle prepareSmearedPerlinStack;
     private final MethodHandle densityGraphCompile;
     private final MethodHandle densityGraphEvaluate;
     private final MethodHandle densityGraphEvaluateF32;
@@ -108,6 +109,7 @@ public final class NativeRuntime implements AutoCloseable {
         private int permutationCapacity;
         private int outputCapacity;
         private MemorySegment layerDescriptors;
+        private MemorySegment layerFudgeYScales;
         private MemorySegment layerPermutations;
         private MemorySegment[] layerPermutationSegments;
         private byte[][] layerPermutationSources;
@@ -136,6 +138,9 @@ public final class NativeRuntime implements AutoCloseable {
             ensureCapacity(256, outputLength);
             if (layerCapacity < layerCount) {
                 layerDescriptors = arena.allocate(Math.multiplyExact((long) layerCount, PERLIN_LAYER_SIZE), 8);
+                layerFudgeYScales = arena.allocate(
+                        Math.multiplyExact((long) layerCount, ValueLayout.JAVA_DOUBLE.byteSize()),
+                        ValueLayout.JAVA_DOUBLE.byteAlignment());
                 layerPermutations = allocateBytes(arena, Math.multiplyExact(layerCount, 256));
                 layerPermutationSegments = new MemorySegment[layerCount];
                 layerPermutationSources = new byte[layerCount][];
@@ -358,7 +363,7 @@ public final class NativeRuntime implements AutoCloseable {
                           MethodHandle status, MethodHandle wait,
                           MethodHandle cancel, MethodHandle release,
                           MethodHandle preparePreparedStack, MethodHandle evaluatePreparedStack,
-                          MethodHandle releasePreparedStack,
+                          MethodHandle releasePreparedStack, MethodHandle prepareSmearedPerlinStack,
                           MethodHandle graphCompile, MethodHandle graphEvaluate, MethodHandle graphEvaluateF32,
                           MethodHandle graphEvaluatePoints, MethodHandle graphEvaluatePointsF32,
                           MethodHandle graphEvaluateMultiPointsF32, MethodHandle graphRelease,
@@ -383,6 +388,7 @@ public final class NativeRuntime implements AutoCloseable {
         this.preparePerlinStack = preparePreparedStack;
         this.evaluatePreparedPerlinStack = evaluatePreparedStack;
         this.releasePreparedPerlinStack = releasePreparedStack;
+        this.prepareSmearedPerlinStack = prepareSmearedPerlinStack;
         this.densityGraphCompile = graphCompile;
         this.densityGraphEvaluate = graphEvaluate;
         this.densityGraphEvaluateF32 = graphEvaluateF32;
@@ -484,6 +490,11 @@ public final class NativeRuntime implements AutoCloseable {
             MethodHandle releasePreparedStack = lookup.find("jpe_runtime_release_prepared_perlin_stack")
                     .map(symbol -> linker.downcallHandle(symbol,
                             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.JAVA_LONG)))
+                    .orElse(null);
+            MethodHandle prepareSmearedPreparedStack = lookup.find("jpe_runtime_prepare_smeared_perlin_stack")
+                    .map(symbol -> linker.downcallHandle(symbol,
+                            FunctionDescriptor.of(ValueLayout.JAVA_LONG,
+                                    ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT)))
                     .orElse(null);
             if (preparePreparedStack == null || evaluatePreparedStack == null || releasePreparedStack == null) {
                 preparePreparedStack = null;
@@ -669,7 +680,7 @@ public final class NativeRuntime implements AutoCloseable {
             int actualWorkers = (int) configureWorkers.invokeExact(requestedWorkers);
             if (actualWorkers < 1) throw new IllegalStateException("Unable to configure native workers: " + actualWorkers);
             return new NativeRuntime(configureWorkers, actualWorkers, add, perlin, perlinStack, submit, submitStack, status, wait, cancel, release,
-                    preparePreparedStack, evaluatePreparedStack, releasePreparedStack,
+                    preparePreparedStack, evaluatePreparedStack, releasePreparedStack, prepareSmearedPreparedStack,
                     graphCompile, graphEvaluate, graphEvaluateF32, graphEvaluatePoints, graphEvaluatePointsF32,
                     graphEvaluateMultiPointsF32, graphRelease, aquiferGridCenters, aquiferNearestFour,
                     aquiferSubstanceBatch, aquiferStatusCacheCreate, aquiferStatusCacheDestroy,
@@ -1698,6 +1709,80 @@ public final class NativeRuntime implements AutoCloseable {
     public boolean supportsPreparedPerlinStack() {
         return preparePerlinStack != null && evaluatePreparedPerlinStack != null
                 && releasePreparedPerlinStack != null;
+    }
+
+    /** True when the native runtime supports prepared SmearedPerlin octave stacks. */
+    public boolean supportsPreparedSmearedPerlinStack() {
+        return prepareSmearedPerlinStack != null && releasePreparedPerlinStack != null;
+    }
+
+    /**
+     * Copies SmearedPerlin octave descriptors, fully baking their outer NoiseFunction
+     * scales while preserving each octave's independent fudgeYScale.
+     */
+    public long prepareSmearedPerlinStack(
+            Object[] sourceLayers, double[] fudgeYScales, double xzScale, double yScale
+    ) {
+        if (!supportsPreparedSmearedPerlinStack()) return 0L;
+        lifecycle.readLock().lock();
+        PerlinScratch scratch = null;
+        try {
+            ensureOpen();
+            Objects.requireNonNull(sourceLayers, "sourceLayers");
+            Objects.requireNonNull(fudgeYScales, "fudgeYScales");
+            if (sourceLayers.length == 0 || sourceLayers.length > 64
+                    || fudgeYScales.length != sourceLayers.length
+                    || !Double.isFinite(xzScale) || !Double.isFinite(yScale)) {
+                throw new IllegalArgumentException("Invalid SmearedPerlin stack descriptor");
+            }
+            scratch = acquirePerlinScratch();
+            scratch.ensureStackCapacity(sourceLayers.length, 1);
+            writeSmearedPerlinLayers(sourceLayers, fudgeYScales, xzScale, yScale, scratch);
+            long handle = (long) prepareSmearedPerlinStack.invokeExact(
+                    scratch.layerDescriptors, scratch.layerFudgeYScales, sourceLayers.length);
+            if (handle != 0L) preparedStackHandles.add(handle);
+            return handle;
+        } catch (Throwable failure) {
+            throw rethrow("Unable to prepare native SmearedPerlin stack", failure);
+        } finally {
+            if (scratch != null) scratch.release();
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    private static void writeSmearedPerlinLayers(
+            Object[] sourceLayers, double[] fudgeYScales,
+            double xzScale, double yScale, PerlinScratch scratch
+    ) {
+        for (int i = 0; i < sourceLayers.length; ++i) {
+            NoiseStackLayerAccessor layer = (NoiseStackLayerAccessor)
+                    Objects.requireNonNull(sourceLayers[i], "layer");
+            Noise layerNoise = layer.jpe$noise();
+            if (!(layerNoise instanceof dev.jpe.optimizer.mixin.GradientNoiseAccessor noise)) {
+                throw new IllegalArgumentException("SmearedPerlin layer does not expose GradientNoise data");
+            }
+            byte[] permutation = noise.jpe$perms();
+            double fudge = fudgeYScales[i];
+            if (permutation == null || permutation.length != 256
+                    || !Double.isFinite(fudge) || fudge <= 0.0) {
+                throw new IllegalArgumentException("Invalid SmearedPerlin permutation or fudgeYScale");
+            }
+            if (scratch.layerPermutationSources[i] != permutation) {
+                MemorySegment.copy(permutation, 0, scratch.layerPermutations, ValueLayout.JAVA_BYTE,
+                        (long) i * 256L, 256);
+                scratch.layerPermutationSources[i] = permutation;
+            }
+            double frequency = layer.jpe$frequency();
+            long base = Math.multiplyExact((long) i, PERLIN_LAYER_SIZE);
+            scratch.layerDescriptors.set(ValueLayout.ADDRESS, base, scratch.layerPermutationSegments[i]);
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 8L, noise.jpe$offsetX());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 16L, noise.jpe$offsetY());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 24L, noise.jpe$offsetZ());
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 32L, xzScale * frequency);
+            scratch.layerDescriptors.set(ValueLayout.JAVA_DOUBLE, base + 40L, yScale * frequency);
+            scratch.layerDescriptors.set(ValueLayout.JAVA_FLOAT, base + 48L, layer.jpe$amplitude());
+            scratch.layerFudgeYScales.set(ValueLayout.JAVA_DOUBLE, (long) i * 8L, fudge);
+        }
     }
 
     /** Copies a NoiseStack's immutable octave data into C++ exactly once. */
