@@ -6,7 +6,7 @@ use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-const ABI_VERSION: u32 = 8;
+const ABI_VERSION: u32 = 9;
 const STATUS_OK: i32 = 0;
 const STATUS_INVALID_ARGUMENT: i32 = 1;
 const STATUS_CPP_FAILURE: i32 = 2;
@@ -2034,7 +2034,7 @@ mod tests {
     }
 
     #[test]
-    fn exports_expected_abi_version() { assert_eq!(jpe_runtime_abi_version(), 8); }
+    fn exports_expected_abi_version() { assert_eq!(jpe_runtime_abi_version(), 9); }
 
     #[test]
     fn worker_configuration_is_idempotent_after_scheduler_start() {
