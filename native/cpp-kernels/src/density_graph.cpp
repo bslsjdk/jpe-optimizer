@@ -16,10 +16,24 @@
 #include <unordered_map>
 #include <vector>
 
+/* Defined in perlin_stack.cpp. Density graphs reuse the exact ordered-stack
+ * kernel instead of introducing a second noise implementation. */
+extern "C" int32_t jpe_cpp_perlin_add_stack(
+    const JpePerlinLayer *layers, uint32_t layer_count,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    float *output, uint64_t output_length, uint32_t flags
+) noexcept;
+
 namespace {
 constexpr uint32_t kMaxNodes = 65536;
 constexpr uint64_t kMaxVolumeElements = 1024ULL * 1024ULL;
 constexpr uint32_t kNoInput = UINT32_MAX;
+constexpr uint32_t kMaxNoisePlans = 64;
+constexpr uint32_t kMaxNoiseLayers = 64;
+constexpr uint64_t kMaxNoiseFloats = 4ULL * 1024ULL * 1024ULL; // 16 MiB of shared noise staging.
+
 
 constexpr uint32_t kCacheFormatVersion = 1;
 constexpr size_t kMaxCacheBytes = 16U * 1024U * 1024U;
@@ -133,6 +147,16 @@ struct StaticBinding {
 
 struct InputBinding { uint32_t node; uint32_t input_index; };
 
+/* One immutable, world-prepared noise stack. The permutation bytes are owned by
+ * the compiled graph so callers may release every source buffer after compile. */
+struct NoisePlanData {
+    std::vector<std::array<uint8_t, 256>> permutations;
+    std::vector<JpePerlinLayer> layers;
+    uint32_t flags = 0;
+};
+
+struct NoiseBinding { uint32_t node; uint32_t plan_slot; };
+
 struct CompiledGraph {
     uint64_t fingerprint = 0;
     uint64_t configuration_fingerprint = 0;
@@ -147,6 +171,8 @@ struct CompiledGraph {
     std::vector<CoordinateBinding> coordinates;
     std::vector<GradientBinding> gradients;
     std::vector<ArithmeticInstruction> arithmetic;
+    std::vector<NoiseBinding> noises;
+    std::vector<NoisePlanData> noise_plans;
 };
 
 void build_execution_plan(CompiledGraph& graph) {
@@ -197,6 +223,9 @@ void build_execution_plan(CompiledGraph& graph) {
             }
             case JPE_DENSITY_OPAQUE:
                 graph.static_values.push_back({i, std::numeric_limits<float>::quiet_NaN()});
+                break;
+            case JPE_DENSITY_NOISE:
+                graph.noises.push_back({i, node.input_a});
                 break;
             case JPE_DENSITY_ADD:
             case JPE_DENSITY_MUL:
@@ -287,8 +316,68 @@ uint64_t hash_graph(const JpeDensityNode* nodes, uint32_t count,
     return hash;
 }
 
-bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noexcept {
-    if (nodes == nullptr || count == 0 || count > kMaxNodes || root >= count) return false;
+/* Noise payloads are large (up to 64 plans x 64 layers x 256 bytes), so the
+ * fingerprint mixes a compact digest and the cache hit path confirms it with a
+ * full comparison. Both steps are one-time per graph, never per chunk. */
+uint64_t hash_noise_payload(const JpeNoisePlan* plans, uint32_t count) noexcept {
+    uint64_t hash = 1469598103934665603ULL;
+    const auto mix = [&hash](const uint8_t* bytes, size_t length) {
+        for (size_t i = 0; i < length; ++i) {
+            hash ^= bytes[i];
+            hash *= 1099511628211ULL;
+        }
+    };
+    const auto mix_u64 = [&mix](uint64_t value) {
+        for (unsigned shift = 0; shift < 64; shift += 8) {
+            const uint8_t byte = static_cast<uint8_t>(value >> shift);
+            mix(&byte, 1);
+        }
+    };
+    for (uint32_t slot = 0; slot < count; ++slot) {
+        const JpeNoisePlan& plan = plans[slot];
+        mix_u64(plan.layer_count);
+        mix_u64(plan.flags);
+        for (uint32_t layer = 0; layer < plan.layer_count; ++layer) {
+            const JpePerlinLayer& item = plan.layers[layer];
+            uint64_t bits = 0;
+            std::memcpy(&bits, &item.offset_x, sizeof(bits)); mix_u64(bits);
+            std::memcpy(&bits, &item.offset_y, sizeof(bits)); mix_u64(bits);
+            std::memcpy(&bits, &item.offset_z, sizeof(bits)); mix_u64(bits);
+            std::memcpy(&bits, &item.xz_scale, sizeof(bits)); mix_u64(bits);
+            std::memcpy(&bits, &item.y_scale, sizeof(bits)); mix_u64(bits);
+            std::memcpy(&bits, &item.fudge_y_scale, sizeof(bits)); mix_u64(bits);
+            uint32_t amplitude_bits = 0;
+            std::memcpy(&amplitude_bits, &item.amplitude, sizeof(amplitude_bits));
+            mix_u64(amplitude_bits);
+            mix_u64(item.flags);
+            if (item.permutation != nullptr) mix(item.permutation, 256);
+        }
+    }
+    return hash;
+}
+
+bool same_noise_payload(const std::vector<NoisePlanData>& stored,
+                        const JpeNoisePlan* plans, uint32_t count) noexcept {
+    if (stored.size() != count) return false;
+    for (uint32_t slot = 0; slot < count; ++slot) {
+        const NoisePlanData& left = stored[slot];
+        const JpeNoisePlan& right = plans[slot];
+        if (left.flags != right.flags || left.layers.size() != right.layer_count) return false;
+        for (uint32_t layer = 0; layer < right.layer_count; ++layer) {
+            const JpePerlinLayer& a = left.layers[layer];
+            const JpePerlinLayer& b = right.layers[layer];
+            if (a.offset_x != b.offset_x || a.offset_y != b.offset_y || a.offset_z != b.offset_z
+                || a.xz_scale != b.xz_scale || a.y_scale != b.y_scale
+                || a.amplitude != b.amplitude || a.fudge_y_scale != b.fudge_y_scale
+                || a.flags != b.flags) return false;
+            if (b.permutation == nullptr) return false;
+            if (std::memcmp(left.permutations[layer].data(), b.permutation, 256) != 0) return false;
+        }
+    }
+    return true;
+}
+
+bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noexcept {    if (nodes == nullptr || count == 0 || count > kMaxNodes || root >= count) return false;
     for (uint32_t i = 0; i < count; ++i) {
         const JpeDensityNode& node = nodes[i];
         switch (node.opcode) {
@@ -342,6 +431,10 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
             case JPE_DENSITY_CLAMP:
                 if (node.reserved != 0 || node.input_a >= i || node.input_b != kNoInput) return false;
                 break;
+            case JPE_DENSITY_NOISE:
+                // Plan-slot range is validated at compile time, where the count is known.
+                if (node.input_b != kNoInput || node.reserved != 0 || node.immediate != 0.0) return false;
+                break;
             default:
                 return false;
         }
@@ -372,6 +465,11 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
     uint32_t ir_version, uint64_t configuration_fingerprint
 ) try {
     if (ir_version != 10 || !valid_graph(nodes, node_count, root_node)) return 0;
+    // A NOISE node needs a bound plan. This entry has no plan table, so accepting
+    // one here would leave the node reading an empty staging buffer at evaluate time.
+    for (uint32_t i = 0; i < node_count; ++i) {
+        if (nodes[i].opcode == JPE_DENSITY_NOISE) return 0;
+    }
     const uint64_t fingerprint = hash_graph(nodes, node_count, root_node, ir_version, configuration_fingerprint);
     std::lock_guard<std::mutex> lock(g_mutex);
     const auto range = g_cache.equal_range(fingerprint);
@@ -403,6 +501,79 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
     return handle;
 } catch (...) { return 0; }
 
+/* Noise-bearing graphs carry payload that hash_graph deliberately does not cover
+ * (permutations and layer scalars live in the plan, not the node array), so this
+ * entry never joins the deduplicating cache. The caller's configuration fingerprint
+ * must already identify the noise configuration. */
+extern "C" uint64_t jpe_cpp_density_graph_compile_with_noise(
+    const JpeDensityNode* nodes, uint32_t node_count, uint32_t root_node,
+    uint32_t ir_version, uint64_t configuration_fingerprint,
+    const JpeNoisePlan* noise_plans, uint32_t noise_plan_count
+) try {
+    if (ir_version != 10 || !valid_graph(nodes, node_count, root_node)) return 0;
+    if (noise_plan_count > kMaxNoisePlans) return 0;
+    if (noise_plan_count > 0 && noise_plans == nullptr) return 0;
+    for (uint32_t i = 0; i < node_count; ++i) {
+        if (nodes[i].opcode == JPE_DENSITY_NOISE && nodes[i].input_a >= noise_plan_count) return 0;
+    }
+
+    const uint64_t base = hash_graph(nodes, node_count, root_node, ir_version, configuration_fingerprint);
+    const uint64_t noise_hash = hash_noise_payload(noise_plans, noise_plan_count);
+    // Boost-style mix keeps node identity and noise payload in one cache key.
+    const uint64_t fingerprint =
+        base ^ (noise_hash + 0x9E3779B97F4A7C15ULL + (base << 6) + (base >> 2));
+
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        const auto range = g_cache.equal_range(fingerprint);
+        for (auto it = range.first; it != range.second; ++it) {
+            const auto found = g_handles.find(it->second);
+            if (found == g_handles.end()) continue;
+            auto& graph = *found->second;
+            if (graph.ir_version == ir_version
+                && graph.configuration_fingerprint == configuration_fingerprint
+                && graph.root == root_node && graph.nodes.size() == node_count
+                && std::memcmp(graph.nodes.data(), nodes,
+                               static_cast<size_t>(node_count) * sizeof(JpeDensityNode)) == 0
+                && same_noise_payload(graph.noise_plans, noise_plans, noise_plan_count)) {
+                ++graph.references;
+                return found->first;
+            }
+        }
+    }
+
+    auto graph = std::make_shared<CompiledGraph>();
+    graph->fingerprint = fingerprint;
+    graph->configuration_fingerprint = configuration_fingerprint;
+    graph->ir_version = ir_version;
+    graph->root = root_node;
+    graph->nodes.assign(nodes, nodes + node_count);
+
+    graph->noise_plans.resize(noise_plan_count);
+    for (uint32_t slot = 0; slot < noise_plan_count; ++slot) {
+        const JpeNoisePlan& plan = noise_plans[slot];
+        if (plan.layers == nullptr || plan.layer_count == 0 || plan.layer_count > kMaxNoiseLayers) return 0;
+        NoisePlanData& target = graph->noise_plans[slot];
+        target.flags = plan.flags;
+        target.permutations.resize(plan.layer_count);
+        target.layers.assign(plan.layers, plan.layers + plan.layer_count);
+        for (uint32_t layer = 0; layer < plan.layer_count; ++layer) {
+            if (plan.layers[layer].permutation == nullptr) return 0;
+            std::memcpy(target.permutations[layer].data(), plan.layers[layer].permutation, 256);
+            // Repoint at graph-owned storage; the caller's buffer may now be freed.
+            target.layers[layer].permutation = target.permutations[layer].data();
+        }
+    }
+
+    build_execution_plan(*graph);
+    std::lock_guard<std::mutex> lock(g_mutex);
+    uint64_t handle = g_next_handle++;
+    if (handle == 0) handle = g_next_handle++;
+    g_handles.emplace(handle, std::move(graph));
+    g_cache.emplace(fingerprint, handle);
+    return handle;
+} catch (...) { return 0; }
+
 
 extern "C" int32_t jpe_cpp_density_graph_save_cache(
     uint64_t graph_handle, const char* path, const char* cache_key
@@ -417,6 +588,9 @@ extern "C" int32_t jpe_cpp_density_graph_save_cache(
         if (found == g_handles.end()) return 2;
         graph = found->second;
     }
+    // The on-disk format carries nodes only; a noise plan must be rebound by the
+    // caller, so persisting a noise-bearing graph would silently lose its payload.
+    if (!graph->noises.empty()) return 1;
     std::vector<uint8_t> bytes;
     bytes.reserve(40U + key_length + graph->nodes.size() * 24U);
     bytes.insert(bytes.end(), kCacheMagic, kCacheMagic + sizeof(kCacheMagic));
@@ -589,6 +763,26 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
         if (binding.input_index >= input_count) return 1;
     }
 
+    // Noise nodes are whole-volume: one stack pass per plan, then the tile lanes
+    // read slices of that buffer. This keeps the tile sweep free of per-sample
+    // noise work and preserves the kernel's own Y-loop hoisting.
+    std::vector<float> noise_values;
+    if (!graph->noises.empty()) {
+        if (graph->noise_plans.empty()) return 1;
+        const uint64_t staged = static_cast<uint64_t>(graph->noise_plans.size()) * volume_length;
+        if (staged > kMaxNoiseFloats) return 1;
+        noise_values.resize(static_cast<size_t>(staged));
+        for (uint32_t slot = 0; slot < graph->noise_plans.size(); ++slot) {
+            const NoisePlanData& plan = graph->noise_plans[slot];
+            float* destination = noise_values.data() + static_cast<uint64_t>(slot) * volume_length;
+            const int32_t status = jpe_cpp_perlin_add_stack(
+                plan.layers.data(), static_cast<uint32_t>(plan.layers.size()),
+                size_x, size_y, size_z, min_x, min_y, min_z, step_x, step_y, step_z,
+                destination, volume_length, plan.flags);
+            if (status != 0) return 3;
+        }
+    }
+
     for (uint64_t tile_start = 0; tile_start < volume_length; tile_start += tile_capacity) {
         const uint32_t count = static_cast<uint32_t>(
             std::min<uint64_t>(tile_capacity, volume_length - tile_start));
@@ -617,6 +811,13 @@ extern "C" int32_t jpe_cpp_density_graph_evaluate_multi_with_inputs(
 
         for (const InputBinding& binding : graph->inputs) {
             const float* source = inputs + static_cast<uint64_t>(binding.input_index) * volume_length + tile_start;
+            float* destination = tile_values.data() + static_cast<size_t>(binding.node) * tile_capacity;
+            std::copy_n(source, count, destination);
+        }
+
+        for (const NoiseBinding& binding : graph->noises) {
+            const float* source = noise_values.data()
+                + static_cast<uint64_t>(binding.plan_slot) * volume_length + tile_start;
             float* destination = tile_values.data() + static_cast<size_t>(binding.node) * tile_capacity;
             std::copy_n(source, count, destination);
         }

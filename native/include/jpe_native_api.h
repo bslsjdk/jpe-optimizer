@@ -117,8 +117,29 @@ enum {
      * immediate packs fromValue/factor as raw float32 words. */
     JPE_DENSITY_GRADIENT_CLAMPED_X = 24,
     JPE_DENSITY_GRADIENT_CLAMPED_Y = 25,
-    JPE_DENSITY_GRADIENT_CLAMPED_Z = 26
+    JPE_DENSITY_GRADIENT_CLAMPED_Z = 26,
+    /* Ordered noise stack. input_a is the noise-plan slot bound at compile time;
+     * input_b and reserved must be kNoInput/0. The node evaluates the whole
+     * volume once per call, then publishes the tile lanes from that buffer. */
+    JPE_DENSITY_NOISE = 27
 };
+/* One world-prepared noise plan. Layers must already be expanded by the caller:
+ * each layer's xz_scale/y_scale includes the outer NoiseFunction scale times the
+ * layer frequency, and amplitude includes the layer amplitude. The plan is copied
+ * into the compiled graph, so every pointer may be released after compile returns. */
+typedef struct JpeNoisePlan {
+    const JpePerlinLayer *layers;
+    uint32_t layer_count; /* 1..64 */
+    uint32_t flags;
+} JpeNoisePlan;
+/* Compiles a graph whose JPE_DENSITY_NOISE nodes reference noise_plans by slot.
+ * Plan contents are copied. This entry bypasses the on-disk plan cache because
+ * noise payload identity is owned by the caller's configuration_fingerprint. */
+JPE_API uint64_t jpe_runtime_density_graph_compile_with_noise(
+    const JpeDensityNode *nodes, uint32_t node_count, uint32_t root_node,
+    uint32_t ir_version, uint64_t configuration_fingerprint,
+    const JpeNoisePlan *noise_plans, uint32_t noise_plan_count
+);
 /* Returns a retained compiled-plan handle, or zero for an invalid graph. */
 JPE_API uint64_t jpe_runtime_density_graph_compile(
     const JpeDensityNode *nodes, uint32_t node_count, uint32_t root_node,

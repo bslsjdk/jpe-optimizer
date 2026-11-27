@@ -70,6 +70,7 @@ const DENSITY_LEAKY_RELU: u32 = 23;
 const DENSITY_GRADIENT_CLAMPED_X: u32 = 24;
 const DENSITY_GRADIENT_CLAMPED_Y: u32 = 25;
 const DENSITY_GRADIENT_CLAMPED_Z: u32 = 26;
+const DENSITY_NOISE: u32 = 27;
 #[cfg(test)]
 static CACHE_TEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -353,6 +354,39 @@ pub struct JpePerlinLayer {
     pub flags: u32,
     pub reserved: u32,
 }
+
+#[repr(C)]
+pub struct JpeNoisePlan {
+    pub layers: *const JpePerlinLayer,
+    pub layer_count: u32,
+    pub flags: u32,
+}
+
+unsafe extern "C" {
+    fn jpe_cpp_density_graph_compile_with_noise(
+        nodes: *const JpeDensityNode, node_count: u32, root_node: u32,
+        ir_version: u32, configuration_fingerprint: u64,
+        noise_plans: *const JpeNoisePlan, noise_plan_count: u32,
+    ) -> u64;
+}
+
+/// Compiles a graph whose `DENSITY_NOISE` nodes reference `noise_plans` by slot.
+/// The C++ side copies every layer and permutation, so the caller may release
+/// all source buffers once this returns.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_compile_with_noise(
+    nodes: *const JpeDensityNode, node_count: u32, root_node: u32,
+    ir_version: u32, configuration_fingerprint: u64,
+    noise_plans: *const JpeNoisePlan, noise_plan_count: u32,
+) -> u64 {
+    unsafe {
+        jpe_cpp_density_graph_compile_with_noise(
+            nodes, node_count, root_node, ir_version, configuration_fingerprint,
+            noise_plans, noise_plan_count,
+        )
+    }
+}
+
 
 unsafe extern "C" {
     fn jpe_cpp_perlin_add_stack_fused(
@@ -970,6 +1004,91 @@ mod tests {
         assert_eq!(unsafe { jpe_cpp_aquifer_nearest_four(2,0,0,std::ptr::null(),
             std::ptr::null(),std::ptr::null(),1,std::ptr::null_mut(),std::ptr::null_mut(),
             std::ptr::null_mut(),std::ptr::null_mut()) },STATUS_INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn density_graph_noise_node_matches_the_stack_kernel_bit_for_bit() {
+        // Deterministic permutation keeps the test reproducible across machines.
+        let mut permutation = [0u8; 256];
+        let mut state = 0x1234_5678u32;
+        for slot in permutation.iter_mut() {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *slot = (state >> 24) as u8;
+        }
+        let layer = JpePerlinLayer {
+            permutation: permutation.as_ptr(),
+            offset_x: 1.5, offset_y: 2.5, offset_z: 3.5,
+            xz_scale: 0.25, y_scale: 0.125,
+            amplitude: 1.0, fudge_y_scale: 1.0,
+            flags: 0, reserved: 0,
+        };
+        let (sx, sy, sz) = (4u32, 8u32, 4u32);
+        let (min_x, min_y, min_z) = (0i32, -64i32, 0i32);
+        let (step_x, step_y, step_z) = (4i32, 8i32, 4i32);
+        let volume = (sx * sy * sz) as usize;
+
+        let mut reference = vec![0.0f32; volume];
+        assert_eq!(unsafe {
+            jpe_runtime_perlin_add_stack(
+                &layer, 1, sx, sy, sz, min_x, min_y, min_z, step_x, step_y, step_z,
+                reference.as_mut_ptr(), volume as u64, 0,
+            )
+        }, 0);
+
+        let nodes = [
+            JpeDensityNode {
+                opcode: DENSITY_NOISE, input_a: 0,
+                input_b: DENSITY_NO_INPUT, reserved: 0, immediate: 0.0,
+            },
+        ];
+        let plan = JpeNoisePlan { layers: &layer, layer_count: 1, flags: 0 };
+        let handle = unsafe {
+            jpe_runtime_density_graph_compile_with_noise(
+                nodes.as_ptr(), nodes.len() as u32, 0, 10, 0x5EED, &plan, 1,
+            )
+        };
+        assert_ne!(handle, 0, "noise graph must compile");
+
+        let mut actual = vec![0.0f32; volume];
+        assert_eq!(unsafe {
+            jpe_runtime_density_graph_evaluate(
+                handle, sx, sy, sz, min_x, min_y, min_z, step_x, step_y, step_z,
+                actual.as_mut_ptr(), volume as u64,
+            )
+        }, 0);
+
+        let mismatches = reference.iter().zip(actual.iter())
+            .filter(|(expected, got)| expected.to_bits() != got.to_bits())
+            .count();
+        assert_eq!(mismatches, 0, "noise node must match the stack kernel bit for bit");
+
+        // Identical payloads must reuse one handle.
+        let again = unsafe {
+            jpe_runtime_density_graph_compile_with_noise(
+                nodes.as_ptr(), nodes.len() as u32, 0, 10, 0x5EED, &plan, 1,
+            )
+        };
+        assert_eq!(again, handle, "identical noise payloads should reuse the handle");
+
+        // A changed layer must not be served from the cache.
+        let changed = JpePerlinLayer {
+            permutation: permutation.as_ptr(),
+            offset_x: 1.5, offset_y: 2.5, offset_z: 3.5,
+            xz_scale: 0.25, y_scale: 0.125,
+            amplitude: 0.5, fudge_y_scale: 1.0,
+            flags: 0, reserved: 0,
+        };
+        let changed_plan = JpeNoisePlan { layers: &changed, layer_count: 1, flags: 0 };
+        let different = unsafe {
+            jpe_runtime_density_graph_compile_with_noise(
+                nodes.as_ptr(), nodes.len() as u32, 0, 10, 0x5EED, &changed_plan, 1,
+            )
+        };
+        assert_ne!(different, handle, "a changed layer must produce a new handle");
+
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(handle) }, 0);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(again) }, 0);
+        assert_eq!(unsafe { jpe_runtime_density_graph_release(different) }, 0);
     }
 
     #[test]
