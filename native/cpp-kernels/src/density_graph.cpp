@@ -47,6 +47,7 @@ constexpr uint32_t kSqrt = 16, kHalfNegative = 17, kQuarterNegative = 18;
 constexpr uint32_t kReciprocal = 19, kSign = 20, kPow = 21, kClamp = 22;
 constexpr uint32_t kSqueeze = 23, kLerp = 24, kGradient = 25, kInterpolated = 26, kRangeChoice = 27;
 constexpr uint32_t kRound = 28, kLog = 29, kDistanceToPoint = 30, kPerlinStackWarp = 31, kSlice = 32;
+constexpr uint32_t kShiftBPerlinStack = 33;
 
 struct CompiledGraph {
     uint64_t fingerprint = 0;
@@ -228,6 +229,14 @@ bool valid_graph(const JpeDensityNode* nodes, uint32_t count, uint32_t root) noe
                     || !std::isfinite(amplitude)) return false;
                 break;
             }
+            case kShiftBPerlinStack: {
+                const double handle = node.immediate;
+                if (node.input_a != kNoInput || node.input_b != kNoInput
+                    || node.reserved != std::bit_cast<uint32_t>(4.0F)
+                    || !std::isfinite(handle) || handle < 1.0 || handle > 9007199254740991.0
+                    || std::floor(handle) != handle || node.auxiliary != 0.25 || node.tertiary != 0.25) return false;
+                break;
+            }
             case kPerlinStackWarp: {
                 const double handle = node.immediate;
                 if (node.input_a >= i || node.input_b >= i || node.reserved >= i
@@ -355,7 +364,8 @@ extern "C" uint64_t jpe_cpp_density_graph_compile(
         graph->prepared_handles.assign(node_count, 0);
         for (uint32_t i = 0; i < node_count; ++i) {
             if (reachable[i] == 0
-                || (nodes[i].opcode != kPerlinStack && nodes[i].opcode != kPerlinStackWarp)) continue;
+                || (nodes[i].opcode != kPerlinStack && nodes[i].opcode != kPerlinStackWarp
+                    && nodes[i].opcode != kShiftBPerlinStack)) continue;
             const uint64_t source_handle = static_cast<uint64_t>(nodes[i].immediate);
             const uint64_t retained = jpe_cpp_perlin_stack_retain(source_handle);
             if (retained == 0) return 0;
@@ -1013,6 +1023,29 @@ int32_t evaluate_density_graph_impl(
                         (step_x == 0 || step_y == 0 || step_z == 0) ? kAllowZeroPerlinSteps : 0U);
                     if (status != 0) return status;
                     for (size_t j = 0; j < volume; ++j) values[j] = static_cast<Scalar>(perlin_scratch[j]);
+                    break;
+                }
+                case kShiftBPerlinStack: {
+                    // Minecraft 26.3 ShiftB evaluates noise(blockZ*0.25, blockX*0.25, 0)
+                    // and broadcasts that X/Z plane through every Y in the requested volume.
+                    const uint32_t transposed_x = size_z;
+                    const uint32_t transposed_y = size_x;
+                    const uint64_t transposed_count = static_cast<uint64_t>(transposed_x) * transposed_y;
+                    std::vector<float> transposed(static_cast<size_t>(transposed_count));
+                    const int32_t status = jpe_cpp_perlin_stack_evaluate(
+                        graph->prepared_handles[i], node.auxiliary, node.tertiary,
+                        decode_float(node.reserved), transposed_x, transposed_y, 1,
+                        min_z, min_x, 0, step_z, step_x, 0,
+                        transposed.data(), transposed_count, kAllowZeroPerlinSteps);
+                    if (status != 0) return status;
+                    size_t out = 0;
+                    for (uint32_t z = 0; z < size_z; ++z) {
+                        for (uint32_t x = 0; x < size_x; ++x) {
+                            const Scalar value = static_cast<Scalar>(transposed[static_cast<size_t>(z) * size_x + x]);
+                            std::fill_n(values.data() + out, size_y, value);
+                            out += size_y;
+                        }
+                    }
                     break;
                 }
                 case kPerlinStackWarp: {
