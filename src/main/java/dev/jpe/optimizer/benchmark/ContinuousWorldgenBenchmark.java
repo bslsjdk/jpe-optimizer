@@ -8,6 +8,7 @@ import dev.jpe.optimizer.worldgen.StructureSpatialIndex;
 import dev.jpe.optimizer.worldgen.WorldgenMetrics;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
@@ -16,11 +17,18 @@ import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
+import java.io.BufferedWriter;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -40,9 +48,6 @@ public final class ContinuousWorldgenBenchmark {
     private static final int WARMUP_ROWS = 3;
     private static final int MEASURED_ROWS = 20;
     private static final int MAX_DRAIN_TICKS = 400;
-    // Keep enough work queued to use the chunk workers without flooding the server.
-    private static final int MAX_IN_FLIGHT_CHUNKS = Math.max(
-            FRONTIER_WIDTH, Integer.getInteger("jpe.benchmark.maxInFlightChunks", FRONTIER_WIDTH * 4));
     private static final int WARMUP_START_CHUNK_X = 4096;
     private static final int MEASURE_START_CHUNK_X = 8192;
     private static final int START_CHUNK_Z = 4096;
@@ -99,6 +104,8 @@ public final class ContinuousWorldgenBenchmark {
         private final AtomicInteger maxLoadedChunks = new AtomicInteger();
         private final ConcurrentLinkedQueue<Long> measuredLatencies = new ConcurrentLinkedQueue<>();
         private final ConcurrentLinkedQueue<Long> tickIntervals = new ConcurrentLinkedQueue<>();
+        // Sorted by packed (chunkX, chunkZ); populated only after each measured FULL chunk completes.
+        private final ConcurrentSkipListMap<Long, Long> measuredChunkDigests = new ConcurrentSkipListMap<>();
 
         private int tick;
         private int nextIssueTick = 1;
@@ -153,8 +160,7 @@ public final class ContinuousWorldgenBenchmark {
             maxLoadedChunks.accumulateAndGet(level.getChunkSource().getLoadedChunksCount(), Math::max);
 
             if (measurementStartNanos == 0L) {
-                if (warmupRowsIssued < WARMUP_ROWS && tick >= nextIssueTick
-                        && inFlight.get() + FRONTIER_WIDTH <= MAX_IN_FLIGHT_CHUNKS) {
+                if (warmupRowsIssued < WARMUP_ROWS && tick >= nextIssueTick) {
                     issueFrontierRow(false);
                     warmupRowsIssued++;
                     nextIssueTick = tick + TICKS_PER_CHUNK_COLUMN;
@@ -169,8 +175,7 @@ public final class ContinuousWorldgenBenchmark {
                 return;
             }
 
-            if (measuredRowsIssued < MEASURED_ROWS && tick >= nextIssueTick
-                    && inFlight.get() + FRONTIER_WIDTH <= MAX_IN_FLIGHT_CHUNKS) {
+            if (measuredRowsIssued < MEASURED_ROWS && tick >= nextIssueTick) {
                 issueFrontierRow(true);
                 measuredRowsIssued++;
                 nextIssueTick = tick + TICKS_PER_CHUNK_COLUMN;
@@ -246,7 +251,7 @@ public final class ContinuousWorldgenBenchmark {
 
                     if (!(rawResult instanceof net.minecraft.server.level.ChunkResult<?> result)
                             || !result.isSuccess()
-                            || !(result.orElse(null) instanceof LevelChunk)) {
+                            || !(result.orElse(null) instanceof LevelChunk chunk)) {
                         if (pending.measured()) {
                             measuredFailed.incrementAndGet();
                         }
@@ -256,6 +261,7 @@ public final class ContinuousWorldgenBenchmark {
                     if (pending.measured()) {
                         measuredCompleted.incrementAndGet();
                         measuredLatencies.add(System.nanoTime() - pending.requestedAt());
+                        measuredChunkDigests.put(packChunkPos(chunk.getPos().x(), chunk.getPos().z()), digestChunk(chunk));
                     }
                 } finally {
                     if (pending.pendingAtSubmission()) {
@@ -418,6 +424,11 @@ public final class ContinuousWorldgenBenchmark {
                     nativeJobFailures, nativeExceptions
             );
 
+            String digestFile = System.getProperty("jpe.benchmark.digestFile");
+            if (digestFile != null && !digestFile.isBlank()) {
+                writeDigestSnapshot(Path.of(digestFile), requested);
+            }
+
             if (completed != requested || failed != 0 || inFlight.get() != 0 || doFillCalls < requested) {
                 JPEOptimizer.LOGGER.error(
                         "JPE continuous benchmark incomplete: requested={} completed={} failed={} inFlight={} drainTicks={} doFillCalls={}",
@@ -425,6 +436,69 @@ public final class ContinuousWorldgenBenchmark {
                 );
             }
             server.halt(false);
+        }
+    }
+
+    private static long packChunkPos(int x, int z) {
+        return ((long) x << 32) | (z & 0xffff_ffffL);
+    }
+
+    /**
+     * Hashes every block-state registry ID in every section of a completed FULL chunk.
+     * This is a post-generation snapshot, not a second Java worldgen evaluation.
+     */
+    private static long digestChunk(LevelChunk chunk) {
+        long hash = 0xcbf29ce484222325L;
+        hash = fold(hash, chunk.getPos().x());
+        hash = fold(hash, chunk.getPos().z());
+        var sections = chunk.getSections();
+        hash = fold(hash, sections.length);
+        for (int sectionIndex = 0; sectionIndex < sections.length; sectionIndex++) {
+            var section = sections[sectionIndex];
+            hash = fold(hash, sectionIndex);
+            for (int y = 0; y < 16; y++) {
+                for (int z = 0; z < 16; z++) {
+                    for (int x = 0; x < 16; x++) {
+                        hash = fold(hash, Block.getId(section.getBlockState(x, y, z)));
+                    }
+                }
+            }
+        }
+        return hash;
+    }
+
+    private static long fold(long hash, int value) {
+        hash ^= Integer.toUnsignedLong(value);
+        return hash * 0x100000001b3L;
+    }
+
+    private void writeDigestSnapshot(Path output, long expectedChunks) {
+        if (measuredChunkDigests.size() != expectedChunks) {
+            throw new IllegalStateException("Cannot write complete chunk digest: expected="
+                    + expectedChunks + " actual=" + measuredChunkDigests.size());
+        }
+        try {
+            Path absolute = output.toAbsolutePath();
+            Files.createDirectories(absolute.getParent());
+            try (BufferedWriter writer = Files.newBufferedWriter(absolute, StandardCharsets.UTF_8)) {
+                writer.write("# jpe-chunk-blockstate-fnv64-v1 seed=" + level.getSeed()
+                        + " chunks=" + expectedChunks
+                        + " minBuildHeight=" + level.getMinBuildHeight()
+                        + " maxBuildHeight=" + level.getMaxBuildHeight()
+                        + " sections=" + level.getSectionsCount());
+                writer.newLine();
+                for (Map.Entry<Long, Long> entry : measuredChunkDigests.entrySet()) {
+                    int x = (int) (entry.getKey() >> 32);
+                    int z = (int) (long) entry.getKey();
+                    writer.write(x + "," + z + "," + String.format(java.util.Locale.ROOT, "%016x", entry.getValue()));
+                    writer.newLine();
+                }
+            }
+            JPEOptimizer.LOGGER.info("JPE chunk block-state digest snapshot written: path={} chunks={} seed={} "
+                            + "scope=all-block-states-in-all-chunk-sections",
+                    absolute, measuredChunkDigests.size(), level.getSeed());
+        } catch (IOException failure) {
+            throw new IllegalStateException("Unable to write chunk digest snapshot to " + output, failure);
         }
     }
 
