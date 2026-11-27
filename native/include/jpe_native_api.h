@@ -13,7 +13,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* ABI v7. Axis coordinates use min + index * step with Java int wrap semantics. */
+/* ABI v10. Axis coordinates use min + index * step with Java int wrap semantics. */
 JPE_API uint32_t jpe_runtime_abi_version(void);
 /* requested=0 selects all process-visible CPUs; positive values are capped to that count. */
 /* Zero selects available CPUs. Repeating the active count is safe after startup;
@@ -52,6 +52,18 @@ JPE_API int32_t jpe_runtime_perlin_add_stack(
 JPE_API uint64_t jpe_runtime_prepare_perlin_stack(const JpePerlinLayer *layers, uint32_t layer_count);
 JPE_API int32_t jpe_runtime_evaluate_prepared_perlin_stack(
     uint64_t handle, double xz_scale, double y_scale, float amplitude,
+    uint32_t size_x, uint32_t size_y, uint32_t size_z,
+    int32_t min_x, int32_t min_y, int32_t min_z,
+    int32_t step_x, int32_t step_y, int32_t step_z,
+    float *output, uint64_t output_length, uint32_t flags
+);
+/* Prepared SmearedPerlin stack. Each layer's input scales are already baked
+ * into JpePerlinLayer; fudge_y_scales are the exact per-layer Y smear thresholds. */
+JPE_API uint64_t jpe_runtime_prepare_smeared_perlin_stack(
+    const JpePerlinLayer *layers, const double *fudge_y_scales, uint32_t layer_count
+);
+JPE_API int32_t jpe_runtime_evaluate_prepared_smeared_perlin_stack(
+    uint64_t handle,
     uint32_t size_x, uint32_t size_y, uint32_t size_z,
     int32_t min_x, int32_t min_y, int32_t min_z,
     int32_t step_x, int32_t step_y, int32_t step_z,
