@@ -6,7 +6,7 @@ use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-const ABI_VERSION: u32 = 10;
+const ABI_VERSION: u32 = 11;
 const STATUS_OK: i32 = 0;
 const STATUS_INVALID_ARGUMENT: i32 = 1;
 const STATUS_CPP_FAILURE: i32 = 2;
@@ -33,6 +33,45 @@ struct JpeDensityNode {
 }
 
 const _: [(); 40] = [(); std::mem::size_of::<JpeDensityNode>()];
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+struct JpeBeardifierRigid {
+    min_x: i32, min_y: i32, min_z: i32,
+    max_x: i32, max_y: i32, max_z: i32,
+    ground_level_delta: i32,
+    terrain_adjustment: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+struct JpeBeardifierJunction {
+    source_x: i32,
+    source_ground_y: i32,
+    source_z: i32,
+}
+
+#[repr(C)]
+struct JpeBeardifierContextCreateInfo {
+    pieces: *const JpeBeardifierRigid,
+    piece_count: u32,
+    reserved0: u32,
+    junctions: *const JpeBeardifierJunction,
+    junction_count: u32,
+    has_affected_box: u32,
+    beard_kernel: *const f32,
+    beard_kernel_count: u32,
+    reserved1: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    max_x: i32, max_y: i32, max_z: i32,
+    reserved2: u32,
+    reserved3: u32,
+}
+
+const _: [(); 32] = [(); std::mem::size_of::<JpeBeardifierRigid>()];
+const _: [(); 12] = [(); std::mem::size_of::<JpeBeardifierJunction>()];
+const _: [(); 80] = [(); std::mem::size_of::<JpeBeardifierContextCreateInfo>()];
+
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -151,6 +190,7 @@ const DENSITY_PERLIN_STACK_WARP: u32 = 31;
 const DENSITY_SLICE: u32 = 32;
 const DENSITY_FIND_TOP_SURFACE: u32 = 34;
 const DENSITY_SMEARED_PERLIN_STACK: u32 = 35;
+const DENSITY_BEARDIFIER: u32 = 36;
 
 unsafe extern "C" {
     fn jpe_cpp_density_graph_compile(
@@ -172,6 +212,17 @@ unsafe extern "C" {
         output: *mut f32, output_length: u64,
     ) -> i32;
     fn jpe_cpp_density_graph_release(graph_handle: u64) -> i32;
+
+    fn jpe_cpp_beardifier_context_create(info: *const JpeBeardifierContextCreateInfo) -> u64;
+    fn jpe_cpp_beardifier_context_destroy(context_handle: u64) -> i32;
+    fn jpe_cpp_density_graph_evaluate_f32_with_beardifier(
+        graph_handle: u64, beardifier_context_handle: u64,
+        size_x: u32, size_y: u32, size_z: u32,
+        min_x: i32, min_y: i32, min_z: i32,
+        step_x: i32, step_y: i32, step_z: i32,
+        output: *mut f32, output_length: u64,
+    ) -> i32;
+
     fn jpe_cpp_density_graph_evaluate_points(
         graph_handle: u64,
         point_x: *const i32, point_y: *const i32, point_z: *const i32,
@@ -442,6 +493,90 @@ pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate_f32(
             min_x, min_y, min_z, step_x, step_y, step_z,
             output, output_length,
         )
+    }
+}
+
+
+/// Creates an immutable per-chunk structure-bearding context. All input arrays are copied.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_beardifier_context_create(
+    info: *const JpeBeardifierContextCreateInfo,
+) -> u64 {
+    if info.is_null() {
+        return 0;
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        let value = &*info;
+        if value.piece_count > 16_384 || value.junction_count > 65_536
+            || (value.piece_count != 0 && value.pieces.is_null())
+            || (value.junction_count != 0 && value.junctions.is_null())
+            || value.has_affected_box > 1
+            || value.reserved0 != 0 || value.reserved1 != 0
+            || value.reserved2 != 0 || value.reserved3 != 0
+            || (value.has_affected_box != 0
+                && (value.min_x > value.max_x || value.min_y > value.max_y || value.min_z > value.max_z))
+            || ((value.piece_count != 0 || value.junction_count != 0)
+                && (value.beard_kernel.is_null() || value.beard_kernel_count != 13_824))
+        {
+            return 0;
+        }
+        jpe_cpp_beardifier_context_create(info)
+    })) {
+        Ok(handle) => handle,
+        Err(_) => 0,
+    }
+}
+
+/// Releases one per-chunk Beardifier context. Active evaluations retain their context.
+#[no_mangle]
+pub extern "C" fn jpe_runtime_beardifier_context_destroy(context_handle: u64) -> i32 {
+    if context_handle == 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        jpe_cpp_beardifier_context_destroy(context_handle)
+    })) {
+        Ok(STATUS_OK) => STATUS_OK,
+        Ok(STATUS_INVALID_ARGUMENT) => STATUS_INVALID_ARGUMENT,
+        Ok(_) => STATUS_CPP_FAILURE,
+        Err(_) => STATUS_RUST_PANIC,
+    }
+}
+
+/// Evaluates a density volume whose IR may contain the per-chunk Beardifier node.
+#[no_mangle]
+pub unsafe extern "C" fn jpe_runtime_density_graph_evaluate_f32_with_beardifier(
+    graph_handle: u64,
+    beardifier_context_handle: u64,
+    size_x: u32, size_y: u32, size_z: u32,
+    min_x: i32, min_y: i32, min_z: i32,
+    step_x: i32, step_y: i32, step_z: i32,
+    output: *mut f32, output_length: u64,
+) -> i32 {
+    if graph_handle == 0 || beardifier_context_handle == 0 || output.is_null()
+        || size_x == 0 || size_y == 0 || size_z == 0
+        || step_x == 0 || step_y == 0 || step_z == 0 {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    let Some(length) = (size_x as u64)
+        .checked_mul(size_y as u64)
+        .and_then(|xy| xy.checked_mul(size_z as u64)) else {
+            return STATUS_INVALID_ARGUMENT;
+        };
+    if length > MAX_VOLUME_ELEMENTS as u64 || output_length != length {
+        return STATUS_INVALID_ARGUMENT;
+    }
+    match catch_unwind(AssertUnwindSafe(|| unsafe {
+        jpe_cpp_density_graph_evaluate_f32_with_beardifier(
+            graph_handle, beardifier_context_handle,
+            size_x, size_y, size_z, min_x, min_y, min_z,
+            step_x, step_y, step_z, output, output_length,
+        )
+    })) {
+        Ok(STATUS_OK) => STATUS_OK,
+        Ok(STATUS_INVALID_ARGUMENT) => STATUS_INVALID_ARGUMENT,
+        Ok(_) => STATUS_CPP_FAILURE,
+        Err(_) => STATUS_RUST_PANIC,
     }
 }
 
@@ -1881,6 +2016,61 @@ mod tests {
             )
         }, STATUS_INVALID_ARGUMENT);
         assert!(untouched.iter().all(|value| *value == 0xfeed_face_dead_beef));
+    }
+
+
+    #[test]
+    fn beardifier_density_node_uses_immutable_chunk_context() {
+        let piece = JpeBeardifierRigid {
+            min_x: 0, min_y: 0, min_z: 0,
+            max_x: 0, max_y: 0, max_z: 0,
+            ground_level_delta: 0,
+            terrain_adjustment: 1,
+        };
+        let kernel = [0.0_f32; 13_824];
+        let info = JpeBeardifierContextCreateInfo {
+            pieces: &piece,
+            piece_count: 1,
+            reserved0: 0,
+            junctions: std::ptr::null(),
+            junction_count: 0,
+            has_affected_box: 1,
+            beard_kernel: kernel.as_ptr(),
+            beard_kernel_count: kernel.len() as u32,
+            reserved1: 0,
+            min_x: 0, min_y: 0, min_z: 0,
+            max_x: 0, max_y: 0, max_z: 0,
+            reserved2: 0,
+            reserved3: 0,
+        };
+        let context = unsafe { jpe_runtime_beardifier_context_create(&info) };
+        assert_ne!(context, 0);
+
+        let nodes = [JpeDensityNode {
+            opcode: DENSITY_BEARDIFIER,
+            input_a: DENSITY_NO_INPUT,
+            input_b: DENSITY_NO_INPUT,
+            reserved: 0,
+            immediate: 0.0,
+            auxiliary: 0.0,
+            tertiary: 0.0,
+        }];
+        let graph = unsafe {
+            jpe_runtime_density_graph_compile(nodes.as_ptr(), 1, 0, 0x4A50452603000009)
+        };
+        assert_ne!(graph, 0);
+        let mut output = [0.0_f32; 1];
+        let status = unsafe {
+            jpe_runtime_density_graph_evaluate_f32_with_beardifier(
+                graph, context, 1, 1, 1, 0, 0, 0, 1, 1, 1,
+                output.as_mut_ptr(), 1,
+            )
+        };
+        assert_eq!(status, STATUS_OK);
+        assert_eq!(output[0], 1.0);
+
+        assert_eq!(jpe_runtime_density_graph_release(graph), STATUS_OK);
+        assert_eq!(jpe_runtime_beardifier_context_destroy(context), STATUS_OK);
     }
 
     #[test]
