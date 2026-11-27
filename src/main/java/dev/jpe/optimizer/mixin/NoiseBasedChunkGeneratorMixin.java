@@ -275,13 +275,13 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                             BlockState state;
                             boolean scheduleFluidUpdate;
                             if (nativeVolumeAccepted) {
-                                if (nativeAquiferResults.hasBlockState(densityIndex)) {
-                                    state = nativeAquiferPrepared.blockStateForToken(
-                                            nativeAquiferResults.blockStateToken(densityIndex));
+                                long packedResult = nativeAquiferResults.packedResult(densityIndex);
+                                if ((packedResult & (1L << 32)) != 0L) {
+                                    state = nativeAquiferPrepared.blockStateForToken((int) packedResult);
                                 } else {
                                     state = null;
                                 }
-                                scheduleFluidUpdate = nativeAquiferResults.shouldScheduleFluidUpdate(densityIndex);
+                                scheduleFluidUpdate = (packedResult & (1L << 33)) != 0L;
                                 if (profile) ++aquiferCallsExecuted;
                             } else if (POSITIVE_DENSITY_AQUIFER_FAST_PATH
                                     && density > 0.0F && noiseAquifer != null) {
