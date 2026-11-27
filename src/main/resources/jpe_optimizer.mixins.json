@@ -22,6 +22,7 @@
     "MaterialRuleContextBufferMixin",
     "MaterialSystemBufferPoolMixin",
     "GradientNoiseAccessor",
+    "SmearedPerlinNoiseAccessor",
     "NoiseStackLayerAccessor",
     "NoiseStackPerlinMixin",
     "PerlinNoiseVolumeMixin",
