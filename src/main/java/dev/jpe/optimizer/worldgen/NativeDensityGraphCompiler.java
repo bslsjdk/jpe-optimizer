@@ -1074,7 +1074,7 @@ public final class NativeDensityGraphCompiler {
             }
             List<NativeRuntime.DensityNode> portableNodes = new ArrayList<>(nodes.size());
             for (NativeRuntime.DensityNode node : nodes) {
-                if (node.opcode() == 7 || node.opcode() == 31) {
+                if (node.opcode() == 7 || node.opcode() == 31 || node.opcode() == 33) {
                     Integer slot = preparedHandleSlots.get((long) node.immediate());
                     if (slot == null) {
                         throw new IllegalStateException("Native Perlin handle has no portable descriptor slot");
