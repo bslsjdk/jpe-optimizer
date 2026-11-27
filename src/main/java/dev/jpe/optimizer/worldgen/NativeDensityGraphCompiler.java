@@ -76,7 +76,7 @@ import java.util.concurrent.ExecutionException;
  * graph, leaving the existing vanilla sampler untouched.
  */
 public final class NativeDensityGraphCompiler {
-    private static final long CONFIGURATION_FINGERPRINT = 0x4A50452603000008L;
+    private static final long CONFIGURATION_FINGERPRINT = 0x4A50452603000009L;
     private static final Object LOCK = new Object();
 
     // Density graphs repeatedly read the same record components while lowering
@@ -317,10 +317,6 @@ public final class NativeDensityGraphCompiler {
             }
             Beardifier beardifier = samplerContext.getField(Beardifier.CONTEXT_KEY);
             boolean beardifierEmpty = beardifier == null || beardifier == Beardifier.EMPTY;
-            if (!beardifierEmpty) {
-                throw new UnsupportedOperationException(
-                        "Non-empty Beardifier requires a native Beardifier node");
-            }
 
             long[] handles = new long[roots.size()];
             for (int i = 0; i < roots.size(); i++) {
@@ -429,12 +425,104 @@ public final class NativeDensityGraphCompiler {
         }
     }
 
+
+    /**
+     * Copies this NoiseChunk's structure context into a short-lived native handle.
+     * The returned context is never included in the RandomState-shared density graph.
+     */
+    public static long prepareBeardifierContext(NoiseChunk noiseChunk) {
+        if (noiseChunk == null) throw new IllegalArgumentException("NoiseChunk is required");
+        NativeRuntime runtime = NativePerlinNoiseBackend.runtimeForDensityGraph();
+        if (runtime == null) throw new IllegalStateException("Native runtime is unavailable for Beardifier");
+        try {
+            SamplerContext samplerContext = capturedSamplerContext(noiseChunk.cachingSamplers());
+            Beardifier beardifier = samplerContext.getField(Beardifier.CONTEXT_KEY);
+            if (beardifier == null) beardifier = Beardifier.EMPTY;
+
+            List<?> pieces = (List<?>) component(beardifier, "pieces");
+            List<?> junctions = (List<?>) component(beardifier, "junctions");
+            Object affected = component(beardifier, "affectedBox");
+            int[] pieceData = new int[Math.multiplyExact(pieces.size(), 8)];
+            for (int i = 0; i < pieces.size(); i++) {
+                Object rigid = pieces.get(i);
+                Object box = component(rigid, "box");
+                Object adjustment = component(rigid, "terrainAdjustment");
+                Object groundDelta = component(rigid, "groundLevelDelta");
+                int base = i * 8;
+                pieceData[base] = ((Number) member(box, "minX")).intValue();
+                pieceData[base + 1] = ((Number) member(box, "minY")).intValue();
+                pieceData[base + 2] = ((Number) member(box, "minZ")).intValue();
+                pieceData[base + 3] = ((Number) member(box, "maxX")).intValue();
+                pieceData[base + 4] = ((Number) member(box, "maxY")).intValue();
+                pieceData[base + 5] = ((Number) member(box, "maxZ")).intValue();
+                pieceData[base + 6] = ((Number) groundDelta).intValue();
+                String terrain = adjustment.toString();
+                pieceData[base + 7] = switch (terrain) {
+                    case "NONE" -> 0;
+                    case "BURY" -> 1;
+                    case "BEARD_THIN" -> 2;
+                    case "BEARD_BOX" -> 3;
+                    case "ENCAPSULATE" -> 4;
+                    default -> throw new UnsupportedOperationException("Unknown Beardifier terrain adjustment " + terrain);
+                };
+            }
+
+            int[] junctionData = new int[Math.multiplyExact(junctions.size(), 3)];
+            for (int i = 0; i < junctions.size(); i++) {
+                Object junction = junctions.get(i);
+                int base = i * 3;
+                junctionData[base] = ((Number) member(junction, "getSourceX")).intValue();
+                junctionData[base + 1] = ((Number) member(junction, "getSourceGroundY")).intValue();
+                junctionData[base + 2] = ((Number) member(junction, "getSourceZ")).intValue();
+            }
+
+            int[] affectedBox = null;
+            if (affected != null) {
+                affectedBox = new int[] {
+                        ((Number) member(affected, "minX")).intValue(),
+                        ((Number) member(affected, "minY")).intValue(),
+                        ((Number) member(affected, "minZ")).intValue(),
+                        ((Number) member(affected, "maxX")).intValue(),
+                        ((Number) member(affected, "maxY")).intValue(),
+                        ((Number) member(affected, "maxZ")).intValue()
+                };
+            }
+            float[] kernel = null;
+            if (!pieces.isEmpty() || !junctions.isEmpty()) {
+                try {
+                    Field kernelField = Beardifier.class.getDeclaredField("BEARD_KERNEL");
+                    if (!kernelField.trySetAccessible()) {
+                        throw new IllegalStateException("Unable to access Minecraft's Beardifier kernel");
+                    }
+                    kernel = (float[]) kernelField.get(null);
+                    if (kernel == null || kernel.length != 13_824) {
+                        throw new IllegalStateException("Minecraft Beardifier kernel has an unexpected size");
+                    }
+                } catch (ReflectiveOperationException failure) {
+                    throw new IllegalStateException("Unable to extract Minecraft's exact Beardifier kernel", failure);
+                }
+            }
+            return runtime.createBeardifierContext(pieceData, junctionData, affectedBox, kernel);
+        } catch (RuntimeException | LinkageError failure) {
+            throw new IllegalStateException("Unable to prepare native per-chunk Beardifier context: "
+                    + describe(failure), failure);
+        }
+    }
+
+    public static void releaseBeardifierContext(long handle) {
+        if (handle == 0L) return;
+        NativeRuntime runtime = NativePerlinNoiseBackend.runtimeForDensityGraph();
+        if (runtime == null) throw new IllegalStateException("Native runtime disappeared before Beardifier release");
+        runtime.destroyBeardifierContext(handle);
+    }
+
     /**
      * Returns a pooled density buffer filled by one native DAG evaluation, or
      * null when the graph contains an unsupported node or native execution fails.
      */
     public static ScopedDensityBuffer trySampleVolume(
-            DensityFunction root, DensitySampler.Bound vanillaSampler, NoiseChunk noiseChunk, DensityVolume volume
+            DensityFunction root, DensitySampler.Bound vanillaSampler, NoiseChunk noiseChunk,
+            DensityVolume volume, long beardifierContextHandle
     ) {
         NativeRuntime runtime;
         try {
@@ -463,13 +551,6 @@ public final class NativeDensityGraphCompiler {
         }
         Beardifier beardifier = samplerContext.getField(Beardifier.CONTEXT_KEY);
         boolean beardifierEmpty = beardifier == null || beardifier == Beardifier.EMPTY;
-        // The current native DAG lowers BEARDIFIER to zero only for the empty
-        // context. Handles are cached by root identity within RandomState, so
-        // never allow a non-empty context to reuse a graph compiled for empty.
-        // Full native Beardifier lowering is a separate implementation stage.
-        if (!beardifierEmpty) {
-            return fallback("Non-empty Beardifier requires a native Beardifier node");
-        }
         long handle;
         try {
             handle = graphHandle(root, randomState, context, true, beardifierEmpty, runtime);
@@ -481,8 +562,8 @@ public final class NativeDensityGraphCompiler {
         DensityBufferPool pool = noiseChunkAccess.jpe$getBufferPool();
         ScopedDensityBuffer output = pool.acquire(volume.size());
         try {
-            runtime.evaluateDensityGraphF32(
-                    handle,
+            runtime.evaluateDensityGraphF32WithBeardifier(
+                    handle, beardifierContextHandle,
                     volume.sizeX(), volume.sizeY(), volume.sizeZ(),
                     volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(),
                     volume.stepBlockX(), volume.stepBlockY(), volume.stepBlockZ(),
@@ -1341,22 +1422,25 @@ public final class NativeDensityGraphCompiler {
                     }
                     case "SimpleDensityFunction" -> {
                         String simpleName = function.toString();
-                        float value = switch (simpleName) {
-                            case "BLEND_ALPHA" -> {
-                                if (!blenderEmpty) throw new UnsupportedOperationException("Non-empty blend alpha");
-                                yield 1.0F;
-                            }
-                            case "BLEND_OFFSET" -> {
-                                if (!blenderEmpty) throw new UnsupportedOperationException("Non-empty blend offset");
-                                yield 0.0F;
-                            }
-                            case "BEARDIFIER" -> {
-                                if (!beardifierEmpty) throw new UnsupportedOperationException("Non-empty beardifier");
-                                yield 0.0F;
-                            }
-                            default -> throw new UnsupportedOperationException("Unsupported simple density function " + simpleName);
-                        };
-                        result = append(NativeRuntime.DensityNode.constant(value));
+                        if (simpleName.equals("BEARDIFIER")) {
+                            // Context is supplied per chunk at evaluation time. Never bake it into
+                            // the RandomState-shared graph or portable disk cache.
+                            portableGraphSupported = false;
+                            result = append(NativeRuntime.DensityNode.beardifier());
+                        } else {
+                            float value = switch (simpleName) {
+                                case "BLEND_ALPHA" -> {
+                                    if (!blenderEmpty) throw new UnsupportedOperationException("Non-empty blend alpha");
+                                    yield 1.0F;
+                                }
+                                case "BLEND_OFFSET" -> {
+                                    if (!blenderEmpty) throw new UnsupportedOperationException("Non-empty blend offset");
+                                    yield 0.0F;
+                                }
+                                default -> throw new UnsupportedOperationException("Unsupported simple density function " + simpleName);
+                            };
+                            result = append(NativeRuntime.DensityNode.constant(value));
+                        }
                     }
                     case "ConstantFunction" -> {
                         Number value = (Number) component(function, "value");
