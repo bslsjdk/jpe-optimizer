@@ -32,6 +32,9 @@ jobs:
             echo "--- full link (exactly as CI) ---" >> $OUT
             $CXX $FLAGS src/generator.cpp src/terrain_api.cpp src/chunk_cache.cpp src/terrain_stream_api.cpp test/test_chunk_cache.cpp -o /tmp/t -lpthread >> $OUT 2>&1
             echo "exit=$?" >> $OUT
+            echo "--- run cache tests ---" >> $OUT
+            /tmp/t >> $OUT 2>&1
+            echo "run_exit=$?" >> $OUT
           done
           cd /home/runner/work/jpe-optimizer/jpe-optimizer
           mkdir -p ci-out
