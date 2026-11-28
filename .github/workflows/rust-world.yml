@@ -207,6 +207,21 @@ jobs:
           set -euo pipefail
           cargo test --features cpp-bridge --lib terrain_path 2>&1 | tee /tmp/tp.log
           grep -E "^test result: ok\. [1-9][0-9]* passed" /tmp/tp.log
+      - name: Run the world with no host-supplied blocks
+        working-directory: native/rust-world
+        run: |
+          set -euo pipefail
+          # A real run, not a compile: build a pipeline whose only block source
+          # is the C++ generator, draw frames, read the framebuffer back, and
+          # fail if the image is empty. Unit tests can all pass while this seam
+          # is disconnected, which is exactly what this step rules out.
+          icd="$(bash ci/vulkan-icd.sh || true)"
+          if [ -n "${icd:-}" ]; then
+            export VK_DRIVER_FILES="$icd" VK_ICD_FILENAMES="$icd"
+          fi
+          export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe XDG_RUNTIME_DIR=/tmp
+          cargo run --features cpp-bridge --example native_terrain_world 2>&1 | tee /tmp/ntw.log
+          grep -q "OK: native terrain generated and rendered" /tmp/ntw.log
       - name: The bridge itself still passes its own tests
         working-directory: native/rust-world
         run: |
