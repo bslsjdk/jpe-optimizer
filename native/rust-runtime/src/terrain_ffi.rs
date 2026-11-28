@@ -22,8 +22,6 @@
 //! and `abi_probe` checks the same numbers against the loaded library at
 //! startup.
 
-use std::ffi::c_void;
-
 /// Streaming ABI version implemented by the C++ side. v2 added the resident
 /// chunk cache (`jpe_terrain_stream`, `jpe_terrain_cache_*`).
 pub const TERRAIN_STREAM_ABI_VERSION: u32 = 2;

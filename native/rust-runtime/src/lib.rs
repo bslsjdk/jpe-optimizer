@@ -4516,7 +4516,7 @@ mod terrain_link_tests {
     fn chunk_geometry_is_as_documented() {
         let engine = TerrainEngine::overworld(1).expect("create");
         assert_eq!(engine.chunk_blocks(), CHUNK_BLOCKS_DEFAULT_HEIGHT);
-        assert_eq!(engine.chunk_bytes(), CHUNK_BLOCKS_DEFAULT_HEIGHT as usize * 2);
+        assert_eq!(engine.chunk_bytes(), CHUNK_BLOCKS_DEFAULT_HEIGHT * 2);
     }
 
     /// The whole point of the cache: reading a chunk through it must equal
