@@ -7,6 +7,7 @@
 //! unchanged.
 
 use crate::coords::SECTION_SIZE;
+use crate::render::atlas;
 use std::sync::Arc;
 
 /// One 16x16x16 section. `0` is air; every non-zero value is opaque for now.
@@ -471,11 +472,15 @@ fn mesh_padded(
                     continue;
                 }
                 let (fx, fy, fz) = (ox + x as f32, oy + y as f32, oz + z as f32);
-                for (offset, face) in FACE_OFFSETS.iter().zip(FACES.iter()) {
+                let block = pad[here as usize];
+                for (face_index, (offset, face)) in
+                    FACE_OFFSETS.iter().zip(FACES.iter()).enumerate()
+                {
                     if pad[(here + offset) as usize] != 0 {
                         continue;
                     }
                     let base = vertices.len() as u32;
+                    let tile = atlas::tile_for_face(block, face_index);
                     for (corner, uv) in face.corners.iter().zip(UVS.iter()) {
                         vertices.push(Vertex {
                             position: [fx + corner[0], fy + corner[1], fz + corner[2]],
@@ -484,7 +489,7 @@ fn mesh_padded(
                                 face.normal[1] as f32,
                                 face.normal[2] as f32,
                             ],
-                            uv: *uv,
+                            uv: atlas::tile_uv(tile, *uv),
                         });
                     }
                     indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
@@ -884,7 +889,8 @@ mod tests {
                     if !section.is_solid(x, y, z) {
                         continue;
                     }
-                    for face in FACES.iter() {
+                    let block = section.get(x, y, z);
+                    for (face_index, face) in FACES.iter().enumerate() {
                         let nx = x as i32 + face.normal[0] as i32;
                         let ny = y as i32 + face.normal[1] as i32;
                         let nz = z as i32 + face.normal[2] as i32;
@@ -892,6 +898,7 @@ mod tests {
                             continue;
                         }
                         let base = vertices.len() as u32;
+                        let tile = atlas::tile_for_face(block, face_index);
                         for (corner, uv) in face.corners.iter().zip(UVS.iter()) {
                             vertices.push(Vertex {
                                 position: [
@@ -904,7 +911,7 @@ mod tests {
                                     face.normal[1] as f32,
                                     face.normal[2] as f32,
                                 ],
-                                uv: *uv,
+                                uv: atlas::tile_uv(tile, *uv),
                             });
                         }
                         indices.extend_from_slice(&[

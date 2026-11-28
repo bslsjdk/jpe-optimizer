@@ -8,3 +8,6 @@ build/
 .mc-server/
 .gradle/
 /run/
+
+# native crash dumps
+core.*

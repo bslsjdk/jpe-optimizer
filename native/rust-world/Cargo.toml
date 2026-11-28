@@ -12,9 +12,15 @@ crate-type = ["rlib", "cdylib"]
 
 [features]
 default = []
-# Link against the existing C++ terrain kernels (ABI v8) built by
-# native/rust-runtime. Never changes the C++ ABI; it only declares it.
+# Link the native terrain generator (native/cpp-world) and the existing C++
+# kernels (ABI v8). The build script compiles the generator into this crate when
+# the feature is on; the default build stays pure Rust with zero C++.
 cpp-bridge = []
+
+[build-dependencies]
+# Build-only: compiles native/cpp-world into the crate under `cpp-bridge`.
+# Nothing is added to the runtime dependency graph.
+cc = "1.2"
 
 [profile.release]
 lto = "thin"

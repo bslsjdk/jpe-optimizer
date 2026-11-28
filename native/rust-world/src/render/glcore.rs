@@ -348,27 +348,10 @@ pub struct GlCore {
 }
 
 /// Width of the built-in block atlas in texels.
-pub const ATLAS_SIZE: i32 = 8;
-
-/// Build the built-in block atlas: an 8x8 two-tone checker in RGBA8.
 ///
-/// It is a real GPU texture sampled by the fragment shader through the mesh's
-/// UVs; a per-block texture atlas loaded from the game's resource pack replaces
-/// it once the Minecraft integration supplies one.
-pub fn atlas_pixels() -> Vec<u8> {
-    let mut px = vec![0u8; (ATLAS_SIZE * ATLAS_SIZE * 4) as usize];
-    for y in 0..ATLAS_SIZE {
-        for x in 0..ATLAS_SIZE {
-            let tone = if (x + y) % 2 == 0 { 235 } else { 175 };
-            let o = ((y * ATLAS_SIZE + x) * 4) as usize;
-            px[o] = tone;
-            px[o + 1] = tone;
-            px[o + 2] = tone;
-            px[o + 3] = 255;
-        }
-    }
-    px
-}
+/// Re-exported from [`super::atlas`] so the Vulkan path can size its image
+/// without knowing where the table lives.
+pub use super::atlas::{atlas_pixels, ATLAS_SIZE};
 
 impl GlCore {
     /// Create a headless renderer for `profile`.

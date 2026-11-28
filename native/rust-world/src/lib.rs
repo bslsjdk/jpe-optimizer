@@ -77,6 +77,7 @@ pub mod render;
 pub mod scheduler;
 pub mod task;
 pub mod terrain;
+pub mod terrain_gen;
 pub mod terrain_source;
 
 pub use chunk::{ChunkEntry, ChunkState, ChunkStore, ChunkStoreError, WorldEpoch};

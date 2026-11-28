@@ -362,6 +362,7 @@ pub trait Renderer {
     }
 }
 
+pub mod atlas;
 pub mod egl;
 pub mod glcore;
 pub mod gles;
