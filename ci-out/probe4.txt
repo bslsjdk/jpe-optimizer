@@ -6,67 +6,64 @@ exit=0
 src/terrain_api.cpp:134:5: error: ‘ChunkCache’ does not name a type
   134 |     ChunkCache cache;
       |     ^~~~~~~~~~
-src/terrain_api.cpp:158:34: error: ‘HandleView’ has not been declared
-  158 | bool resolve_handle(uint64_t id, HandleView *out) {
+src/terrain_api.cpp:165:34: error: ‘HandleView’ has not been declared
+  165 | bool resolve_handle(uint64_t id, HandleView *out) {
       |                                  ^~~~~~~~~~
 src/terrain_api.cpp: In function ‘bool {anonymous}::jpe::resolve_handle(uint64_t, int*)’:
-src/terrain_api.cpp:162:10: error: request for member ‘gen’ in ‘* out’, which is of non-class type ‘int’
-  162 |     out->gen = &h->gen;
+src/terrain_api.cpp:169:10: error: request for member ‘gen’ in ‘* out’, which is of non-class type ‘int’
+  169 |     out->gen = &h->gen;
       |          ^~~
-src/terrain_api.cpp:163:10: error: request for member ‘cache’ in ‘* out’, which is of non-class type ‘int’
-  163 |     out->cache = &h->cache;
+src/terrain_api.cpp:170:10: error: request for member ‘cache’ in ‘* out’, which is of non-class type ‘int’
+  170 |     out->cache = &h->cache;
       |          ^~~~~
-src/terrain_api.cpp:163:22: error: ‘struct {anonymous}::Handle’ has no member named ‘cache’
-  163 |     out->cache = &h->cache;
+src/terrain_api.cpp:170:22: error: ‘struct {anonymous}::Handle’ has no member named ‘cache’
+  170 |     out->cache = &h->cache;
       |                      ^~~~~
-src/terrain_api.cpp:164:10: error: request for member ‘bytes_per_chunk’ in ‘* out’, which is of non-class type ‘int’
-  164 |     out->bytes_per_chunk = h->cfg.chunk_blocks() * sizeof(uint16_t);
+src/terrain_api.cpp:171:10: error: request for member ‘bytes_per_chunk’ in ‘* out’, which is of non-class type ‘int’
+  171 |     out->bytes_per_chunk = h->cfg.chunk_blocks() * sizeof(uint16_t);
       |          ^~~~~~~~~~~~~~~
 src/terrain_api.cpp: At global scope:
-src/terrain_api.cpp:171:40: error: ‘BLOCK_COUNT’ is not a member of ‘{anonymous}::jpe’; did you mean ‘jpe::BLOCK_COUNT’?
-  171 | constexpr const char *kBlockNames[jpe::BLOCK_COUNT] = {
+src/terrain_api.cpp:181:40: error: ‘BLOCK_COUNT’ is not a member of ‘{anonymous}::jpe’; did you mean ‘jpe::BLOCK_COUNT’?
+  181 | constexpr const char *kBlockNames[jpe::BLOCK_COUNT] = {
       |                                        ^~~~~~~~~~~
 In file included from src/chunk_cache.h:36,
                  from src/terrain_api.cpp:15:
 src/jpe_terrain_internal.h:51:5: note: ‘jpe::BLOCK_COUNT’ declared here
    51 |     BLOCK_COUNT = 28
       |     ^~~~~~~~~~~
-src/terrain_api.cpp: In function ‘int32_t jpe_terrain_stats(uint64_t, JpeTerrainStats*)’:
-src/terrain_api.cpp:348:46: error: reference to ‘jpe’ is ambiguous
-  348 |     out->biome_count = static_cast<uint32_t>(jpe::BIOME_COUNT);
-      |                                              ^~~
-src/terrain_api.cpp:157:11: note: candidates are: ‘namespace <unnamed>::jpe { }’
-  157 | namespace jpe {
-      |           ^~~
-src/jpe_terrain_internal.h:16:11: note:                 ‘namespace jpe { }’
-   16 | namespace jpe {
-      |           ^~~
-src/terrain_api.cpp: In function ‘const char* jpe_terrain_block_name(uint16_t)’:
-src/terrain_api.cpp:353:15: error: reference to ‘jpe’ is ambiguous
-  353 |     if (id >= jpe::BLOCK_COUNT) return "unknown";
-      |               ^~~
-src/terrain_api.cpp:157:11: note: candidates are: ‘namespace <unnamed>::jpe { }’
-  157 | namespace jpe {
-      |           ^~~
-src/jpe_terrain_internal.h:16:11: note:                 ‘namespace jpe { }’
-   16 | namespace jpe {
-      |           ^~~
-src/terrain_api.cpp:354:12: error: ‘kBlockNames’ was not declared in this scope
-  354 |     return kBlockNames[id];
+src/terrain_api.cpp: In function ‘int32_t {anonymous}::jpe_terrain_stats(uint64_t, JpeTerrainStats*)’:
+src/terrain_api.cpp:358:51: error: ‘BIOME_COUNT’ is not a member of ‘{anonymous}::jpe’; did you mean ‘jpe::BIOME_COUNT’?
+  358 |     out->biome_count = static_cast<uint32_t>(jpe::BIOME_COUNT);
+      |                                                   ^~~~~~~~~~~
+src/jpe_terrain_internal.h:87:5: note: ‘jpe::BIOME_COUNT’ declared here
+   87 |     BIOME_COUNT
+      |     ^~~~~~~~~~~
+src/terrain_api.cpp: In function ‘const char* {anonymous}::jpe_terrain_block_name(uint16_t)’:
+src/terrain_api.cpp:363:20: error: ‘BLOCK_COUNT’ is not a member of ‘{anonymous}::jpe’; did you mean ‘jpe::BLOCK_COUNT’?
+  363 |     if (id >= jpe::BLOCK_COUNT) return "unknown";
+      |                    ^~~~~~~~~~~
+src/jpe_terrain_internal.h:51:5: note: ‘jpe::BLOCK_COUNT’ declared here
+   51 |     BLOCK_COUNT = 28
+      |     ^~~~~~~~~~~
+src/terrain_api.cpp:364:12: error: ‘kBlockNames’ was not declared in this scope
+  364 |     return kBlockNames[id];
       |            ^~~~~~~~~~~
-src/terrain_api.cpp: In function ‘const char* jpe_terrain_biome_name(int32_t)’:
-src/terrain_api.cpp:358:12: error: reference to ‘jpe’ is ambiguous
-  358 |     return jpe::biome_def(id).name;
-      |            ^~~
-src/terrain_api.cpp:157:11: note: candidates are: ‘namespace <unnamed>::jpe { }’
-  157 | namespace jpe {
-      |           ^~~
-src/jpe_terrain_internal.h:16:11: note:                 ‘namespace jpe { }’
-   16 | namespace jpe {
-      |           ^~~
+src/terrain_api.cpp: In function ‘const char* {anonymous}::jpe_terrain_biome_name(int32_t)’:
+src/terrain_api.cpp:368:17: error: ‘biome_def’ is not a member of ‘{anonymous}::jpe’; did you mean ‘jpe::biome_def’?
+  368 |     return jpe::biome_def(id).name;
+      |                 ^~~~~~~~~
+src/jpe_terrain_internal.h:122:17: note: ‘jpe::biome_def’ declared here
+  122 | const BiomeDef &biome_def(int32_t id);
+      |                 ^~~~~~~~~
 src/terrain_api.cpp: At global scope:
-src/terrain_api.cpp:158:6: error: ‘bool {anonymous}::jpe::resolve_handle(uint64_t, int*)’ defined but not used [-Werror=unused-function]
-  158 | bool resolve_handle(uint64_t id, HandleView *out) {
+src/terrain_api.cpp:371:2: error: expected ‘}’ at end of input
+  371 | }  // extern "C"
+      |  ^
+src/terrain_api.cpp:19:11: note: to match this ‘{’
+   19 | namespace {
+      |           ^
+src/terrain_api.cpp:165:6: error: ‘bool {anonymous}::jpe::resolve_handle(uint64_t, int*)’ defined but not used [-Werror=unused-function]
+  165 | bool resolve_handle(uint64_t id, HandleView *out) {
       |      ^~~~~~~~~~~~~~
 cc1plus: all warnings being treated as errors
 exit=1
@@ -78,68 +75,65 @@ exit=0
 src/terrain_api.cpp:134:5: error: ‘ChunkCache’ does not name a type
   134 |     ChunkCache cache;
       |     ^~~~~~~~~~
-src/terrain_api.cpp:158:34: error: ‘HandleView’ has not been declared; did you mean ‘Handle’?
-  158 | bool resolve_handle(uint64_t id, HandleView *out) {
+src/terrain_api.cpp:165:34: error: ‘HandleView’ has not been declared; did you mean ‘Handle’?
+  165 | bool resolve_handle(uint64_t id, HandleView *out) {
       |                                  ^~~~~~~~~~
       |                                  Handle
 src/terrain_api.cpp: In function ‘bool {anonymous}::jpe::resolve_handle(uint64_t, int*)’:
-src/terrain_api.cpp:162:10: error: request for member ‘gen’ in ‘* out’, which is of non-class type ‘int’
-  162 |     out->gen = &h->gen;
+src/terrain_api.cpp:169:10: error: request for member ‘gen’ in ‘* out’, which is of non-class type ‘int’
+  169 |     out->gen = &h->gen;
       |          ^~~
-src/terrain_api.cpp:163:10: error: request for member ‘cache’ in ‘* out’, which is of non-class type ‘int’
-  163 |     out->cache = &h->cache;
+src/terrain_api.cpp:170:10: error: request for member ‘cache’ in ‘* out’, which is of non-class type ‘int’
+  170 |     out->cache = &h->cache;
       |          ^~~~~
-src/terrain_api.cpp:163:22: error: ‘struct {anonymous}::Handle’ has no member named ‘cache’
-  163 |     out->cache = &h->cache;
+src/terrain_api.cpp:170:22: error: ‘struct {anonymous}::Handle’ has no member named ‘cache’
+  170 |     out->cache = &h->cache;
       |                      ^~~~~
-src/terrain_api.cpp:164:10: error: request for member ‘bytes_per_chunk’ in ‘* out’, which is of non-class type ‘int’
-  164 |     out->bytes_per_chunk = h->cfg.chunk_blocks() * sizeof(uint16_t);
+src/terrain_api.cpp:171:10: error: request for member ‘bytes_per_chunk’ in ‘* out’, which is of non-class type ‘int’
+  171 |     out->bytes_per_chunk = h->cfg.chunk_blocks() * sizeof(uint16_t);
       |          ^~~~~~~~~~~~~~~
 src/terrain_api.cpp: At global scope:
-src/terrain_api.cpp:171:40: error: ‘BLOCK_COUNT’ is not a member of ‘{anonymous}::jpe’; did you mean ‘jpe::BLOCK_COUNT’?
-  171 | constexpr const char *kBlockNames[jpe::BLOCK_COUNT] = {
+src/terrain_api.cpp:181:40: error: ‘BLOCK_COUNT’ is not a member of ‘{anonymous}::jpe’; did you mean ‘jpe::BLOCK_COUNT’?
+  181 | constexpr const char *kBlockNames[jpe::BLOCK_COUNT] = {
       |                                        ^~~~~~~~~~~
 In file included from src/chunk_cache.h:36,
                  from src/terrain_api.cpp:15:
 src/jpe_terrain_internal.h:51:5: note: ‘jpe::BLOCK_COUNT’ declared here
    51 |     BLOCK_COUNT = 28
       |     ^~~~~~~~~~~
-src/terrain_api.cpp: In function ‘int32_t jpe_terrain_stats(uint64_t, JpeTerrainStats*)’:
-src/terrain_api.cpp:348:46: error: reference to ‘jpe’ is ambiguous
-  348 |     out->biome_count = static_cast<uint32_t>(jpe::BIOME_COUNT);
-      |                                              ^~~
-src/terrain_api.cpp:157:11: note: candidates are: ‘namespace <unnamed>::jpe { }’
-  157 | namespace jpe {
-      |           ^~~
-src/jpe_terrain_internal.h:16:11: note:                 ‘namespace jpe { }’
-   16 | namespace jpe {
-      |           ^~~
-src/terrain_api.cpp: In function ‘const char* jpe_terrain_block_name(uint16_t)’:
-src/terrain_api.cpp:353:15: error: reference to ‘jpe’ is ambiguous
-  353 |     if (id >= jpe::BLOCK_COUNT) return "unknown";
-      |               ^~~
-src/terrain_api.cpp:157:11: note: candidates are: ‘namespace <unnamed>::jpe { }’
-  157 | namespace jpe {
-      |           ^~~
-src/jpe_terrain_internal.h:16:11: note:                 ‘namespace jpe { }’
-   16 | namespace jpe {
-      |           ^~~
-src/terrain_api.cpp:354:12: error: ‘kBlockNames’ was not declared in this scope
-  354 |     return kBlockNames[id];
+src/terrain_api.cpp: In function ‘int32_t {anonymous}::jpe_terrain_stats(uint64_t, JpeTerrainStats*)’:
+src/terrain_api.cpp:358:51: error: ‘BIOME_COUNT’ is not a member of ‘{anonymous}::jpe’; did you mean ‘jpe::BIOME_COUNT’?
+  358 |     out->biome_count = static_cast<uint32_t>(jpe::BIOME_COUNT);
+      |                                                   ^~~~~~~~~~~
+src/jpe_terrain_internal.h:87:5: note: ‘jpe::BIOME_COUNT’ declared here
+   87 |     BIOME_COUNT
+      |     ^~~~~~~~~~~
+src/terrain_api.cpp: In function ‘const char* {anonymous}::jpe_terrain_block_name(uint16_t)’:
+src/terrain_api.cpp:363:20: error: ‘BLOCK_COUNT’ is not a member of ‘{anonymous}::jpe’; did you mean ‘jpe::BLOCK_COUNT’?
+  363 |     if (id >= jpe::BLOCK_COUNT) return "unknown";
+      |                    ^~~~~~~~~~~
+src/jpe_terrain_internal.h:51:5: note: ‘jpe::BLOCK_COUNT’ declared here
+   51 |     BLOCK_COUNT = 28
+      |     ^~~~~~~~~~~
+src/terrain_api.cpp:364:12: error: ‘kBlockNames’ was not declared in this scope
+  364 |     return kBlockNames[id];
       |            ^~~~~~~~~~~
-src/terrain_api.cpp: In function ‘const char* jpe_terrain_biome_name(int32_t)’:
-src/terrain_api.cpp:358:12: error: reference to ‘jpe’ is ambiguous
-  358 |     return jpe::biome_def(id).name;
-      |            ^~~
-src/terrain_api.cpp:157:11: note: candidates are: ‘namespace <unnamed>::jpe { }’
-  157 | namespace jpe {
-      |           ^~~
-src/jpe_terrain_internal.h:16:11: note:                 ‘namespace jpe { }’
-   16 | namespace jpe {
-      |           ^~~
+src/terrain_api.cpp: In function ‘const char* {anonymous}::jpe_terrain_biome_name(int32_t)’:
+src/terrain_api.cpp:368:17: error: ‘biome_def’ is not a member of ‘{anonymous}::jpe’; did you mean ‘jpe::biome_def’?
+  368 |     return jpe::biome_def(id).name;
+      |                 ^~~~~~~~~
+src/jpe_terrain_internal.h:122:17: note: ‘jpe::biome_def’ declared here
+  122 | const BiomeDef &biome_def(int32_t id);
+      |                 ^~~~~~~~~
 src/terrain_api.cpp: At global scope:
-src/terrain_api.cpp:158:6: error: ‘bool {anonymous}::jpe::resolve_handle(uint64_t, int*)’ defined but not used [-Werror=unused-function]
-  158 | bool resolve_handle(uint64_t id, HandleView *out) {
+src/terrain_api.cpp:371:2: error: expected ‘}’ at end of input
+  371 | }  // extern "C"
+      |  ^
+src/terrain_api.cpp:19:11: note: to match this ‘{’
+   19 | namespace {
+      |           ^
+src/terrain_api.cpp:165:6: error: ‘bool {anonymous}::jpe::resolve_handle(uint64_t, int*)’ defined but not used [-Werror=unused-function]
+  165 | bool resolve_handle(uint64_t id, HandleView *out) {
       |      ^~~~~~~~~~~~~~
 cc1plus: all warnings being treated as errors
 exit=1
