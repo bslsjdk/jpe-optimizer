@@ -24,6 +24,11 @@ pub mod terrain_source;
 // make the memory model depend on the frame rate.
 pub mod stream_scheduler;
 
+// The C ABI Java actually calls for frame-budgeted streaming: it owns the
+// scheduler, the scratch buffer and the cache budget behind one opaque
+// pointer so the JNI layer never touches a Rust type.
+pub mod world_abi;
+
 const ABI_VERSION: u32 = 8;
 const STATUS_OK: i32 = 0;
 const STATUS_INVALID_ARGUMENT: i32 = 1;
