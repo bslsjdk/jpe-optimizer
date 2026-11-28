@@ -88,38 +88,56 @@ sourceSets.main.resources.srcDir(generateModMetadata)
 // resources into the JVM temporary directory instead.
 // ---------------------------------------------------------------------------
 def bundledNatives = layout.projectDirectory.dir('native/bundled')
+def nativeCrates = ['jpe_runtime', 'jpe_world']
 def nativeFallbackDirs = [
         'jpe_runtime': layout.projectDirectory.dir('native/rust-runtime/target/release'),
         'jpe_world'  : layout.projectDirectory.dir('native/rust-world/target/release'),
 ]
-def nativeFileNames = {
-    String base, String platform ->
-        platform.startsWith('windows') ? base + '.dll'
-                : platform.startsWith('macos') ? 'lib' + base + '.dylib'
-                : 'lib' + base + '.so'
-}
 
 /** Platforms the jar can carry a native payload for. */
-ext.bundledPlatforms = ['linux-x86_64', 'linux-aarch64', 'macos-x86_64', 'macos-aarch64',
+def bundledPlatforms = ['linux-x86_64', 'linux-aarch64', 'macos-x86_64', 'macos-aarch64',
                         'windows-x86_64', 'android-aarch64']
 
-// Collect what the jar will ship. Missing platforms are skipped, so a desktop
-// build still produces a jar rather than failing on an absent cross target.
-ext.collectNatives = { Directory target ->
+/** Platform-specific file name of a cdylib. */
+def nativeFileName = { String base, String platform ->
+    platform.startsWith('windows') ? base + '.dll'
+            : platform.startsWith('macos') ? 'lib' + base + '.dylib'
+            : 'lib' + base + '.so'
+}
+
+/**
+ * Collects the native payload that ships inside the mod jar.
+ *
+ * <p>Both cdylibs are read from a staging tree, native/bundled/<platform>/<file>,
+ * so the jar always packs exactly what the build produced and one platform never
+ * overwrites another's. A cross-compiled matrix fills that tree; a plain local
+ * build falls back to the crate target directories, so a developer does not have
+ * to run the matrix just to get a working jar.
+ *
+ * <p>Missing platforms are skipped rather than failing the build: shipping five
+ * of six platforms is useful, shipping nothing is not. The workflow that matters
+ * asserts the Android payload separately.
+ */
+def stageNativePayload = { Directory target ->
     def produced = []
-    ext.bundledPlatforms.each { platform ->
-        nativeFileNames.keySet().each { base ->
-            String name = nativeFileNames(base, platform)
+    def missing = []
+    bundledPlatforms.each { platform ->
+        nativeCrates.each { base ->
+            String name = nativeFileName(base, platform)
             File staged = bundledNatives.dir(platform).file(name).asFile
-            File source = staged.exists() ? staged
-                    : nativeFallbackDirs[base].file(name).asFile
-            if (source.exists()) {
-                target.dir(platform).file(name).bytes = source.bytes
-                produced << platform + '/' + name
+            File fallback = nativeFallbackDirs[base].file(name).asFile
+            File source = staged.exists() ? staged : (fallback.exists() ? fallback : null)
+            if (source == null) {
+                missing << platform + '/' + name
+                return
             }
+            File destination = target.dir(platform).file(name).asFile
+            destination.parentFile.mkdirs()
+            destination.bytes = source.bytes
+            produced << platform + '/' + name
         }
     }
-    return produced
+    return [produced, missing]
 }
 
 def stagedNatives = layout.buildDirectory.dir('natives')
@@ -129,11 +147,12 @@ def stageNatives = tasks.register('stageNatives') {
     def target = stagedNatives
     outputs.dir(target)
     doLast {
-        def produced = ext.collectNatives(target.get())
-        if (produced.isEmpty()) {
+        def result = stageNativePayload(target.get())
+        result[0].each { logger.lifecycle('jpe native: ' + it) }
+        if (result[0].isEmpty()) {
             logger.warn('jpe: no native payload found; the jar will ship without one')
-        } else {
-            produced.each { logger.lifecycle('jpe native: ' + it) }
+        } else if (!result[1].isEmpty()) {
+            logger.lifecycle('jpe native: not built for ' + result[1].join(', '))
         }
     }
 }
