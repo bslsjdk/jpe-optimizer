@@ -1424,6 +1424,162 @@ mod tests {
         sorted.sort_unstable();
         assert_eq!(keys, sorted, "resident keys must be reported in order");
     }
+
+    /// A [`BlockSource`] whose per-section cost is one 8 KiB copy: the sections
+    /// are built once per Y level and handed out as clones.
+    ///
+    /// `FlatSource::section` writes 4096 blocks through a nested loop on every
+    /// call. With 8 sections per chunk and 6 prefetched neighbours per section
+    /// that made the *mock generator* 44% of the fill, which hid what the
+    /// pipeline itself costs. The engine does not generate terrain (the Java host
+    /// pushes finished sections through `PushSource`), so the benchmark should
+    /// measure the pipeline, not the stand-in.
+    struct CachedFlatSource {
+        templates: std::collections::BTreeMap<i32, ChunkSection>,
+        calls: u64,
+    }
+
+    impl CachedFlatSource {
+        fn new(surface_y: i32, section_y: (i32, i32)) -> Self {
+            let mut builder = FlatSource::new(surface_y);
+            let mut templates = std::collections::BTreeMap::new();
+            for y in section_y.0..=section_y.1 {
+                let template = builder.section(SectionPos::new(0, y, 0));
+                templates.insert(y, template);
+            }
+            Self { templates, calls: 0 }
+        }
+    }
+
+    impl BlockSource for CachedFlatSource {
+        fn section(&mut self, pos: SectionPos) -> ChunkSection {
+            self.calls += 1;
+            self.templates.get(&pos.y).cloned().unwrap_or_default()
+        }
+    }
+
+    /// Whole-frame throughput report, not a CI gate:
+    /// `cargo test --release frame_throughput_report -- --ignored --nocapture`.
+    ///
+    /// `mesh_throughput_report` and `plan_throughput_report` each measure one
+    /// function in isolation. This one measures the loop a host actually drives:
+    /// `load_area` over a 17x17 chunk block (Minecraft's default view distance of
+    /// 8), frames until the work converges, then idle frames — which is where the
+    /// per-frame cost that scales with *resident* sections rather than with new
+    /// work shows up. Budgets are deliberately large so the fill is bounded by
+    /// throughput, not by pacing.
+    #[test]
+    #[ignore = "throughput report; run with --ignored --nocapture"]
+    fn frame_throughput_report() {
+        const RADIUS: i32 = 8;
+        const IDLE_FRAMES: u32 = 200;
+        let config = PipelineConfig {
+            terrain_budget: 512,
+            mesh_budget: 512,
+            remesh_budget: 512,
+            threads: 4,
+            section_y: (
+                crate::coords::MIN_SECTION_Y,
+                crate::coords::MIN_SECTION_Y + 7,
+            ),
+            extent: [256, 256],
+        };
+        // A queue deep enough to hold the whole area, so the fill measures
+        // throughput instead of the bounded-queue back-pressure path.
+        let mut world =
+            WorldPipeline::new(1, 4096, config, CachedFlatSource::new(17, config.section_y));
+        let mut renderer = HeadlessRenderer::new();
+        let mut chunks = 0usize;
+        let mut frames = 0u32;
+
+        let fill_start = Instant::now();
+        loop {
+            let queued = world.load_area(ChunkPos::ZERO, RADIUS);
+            chunks += queued;
+            // Drain this burst completely: an idle frame means no job ran, not
+            // that the work is done, because deferred chunks re-enter the queue
+            // through `retry_deferred` on the next frame.
+            loop {
+                let frame = world.frame(&mut renderer, camera()).expect("fill frame");
+                frames += 1;
+                let pending = world.stats().pending_mesh + world.stats().pending_remesh;
+                let idle = frame.terrain_jobs == 0
+                    && frame.mesh_jobs == 0
+                    && frame.remesh_chunks == 0
+                    && world.scheduler().queue_len() == 0
+                    && pending == 0;
+                if idle {
+                    break;
+                }
+                assert!(frames < 10_000, "fill must converge: {frame:?}");
+            }
+            if queued == 0 {
+                break;
+            }
+        }
+        let fill = fill_start.elapsed();
+        let sections = chunks * config.sections_per_chunk();
+
+        // Sampled before the idle frames, so the phase split describes the fill
+        // rather than being diluted by 200 empty frames.
+        let timing = world.timing();
+        let busy_frames = timing.samples.max(1) as f64;
+
+        let idle_start = Instant::now();
+        let mut batches = 0usize;
+        for _ in 0..IDLE_FRAMES {
+            let frame = world.frame(&mut renderer, camera()).expect("idle frame");
+            batches = frame.batches;
+        }
+        let idle = idle_start.elapsed();
+
+        let stats = world.stats();
+        let ms = |ns: u64| ns as f64 / 1e6;
+        let per_busy = |ns: u64| ns as f64 / busy_frames / 1e3;
+        println!(
+            "fill    chunks={chunks} sections={sections} frames={frames} \
+             total={:.1}ms chunk={:.2}us section={:.3}us",
+            fill.as_secs_f64() * 1e3,
+            fill.as_secs_f64() * 1e9 / chunks as f64 / 1e3,
+            fill.as_secs_f64() * 1e9 / sections as f64 / 1e3,
+        );
+        println!(
+            "phases  fill ms: pump={:.2} targets={:.2} build={:.2} publish={:.2} draw={:.2} \
+             (sum={:.2} of {:.2})",
+            ms(timing.pump_ns),
+            ms(timing.targets_ns),
+            ms(timing.build_ns),
+            ms(timing.publish_ns),
+            ms(timing.draw_ns),
+            ms(timing.pump_ns + timing.targets_ns + timing.build_ns + timing.publish_ns
+                + timing.draw_ns),
+            fill.as_secs_f64() * 1e3,
+        );
+        println!(
+            "busy    per-frame us: pump={:.1} targets={:.1} build={:.1} publish={:.1} draw={:.1}",
+            per_busy(timing.pump_ns),
+            per_busy(timing.targets_ns),
+            per_busy(timing.build_ns),
+            per_busy(timing.publish_ns),
+            per_busy(timing.draw_ns),
+        );
+        println!(
+            "steady  resident={} batches={batches} frames={IDLE_FRAMES} frame={:.2}us",
+            world.registry.len(),
+            idle.as_secs_f64() * 1e9 / IDLE_FRAMES as f64 / 1e3,
+        );
+        println!(
+            "totals  frames={} terrain_jobs={} mesh_jobs={} remesh={} published={} empty={} \
+             source_calls={}",
+            stats.frames,
+            stats.terrain_jobs,
+            stats.mesh_jobs,
+            stats.remesh_chunks,
+            stats.published,
+            stats.empty_sections,
+            world.source().calls,
+        );
+    }
 }
 
 #[cfg(test)]
