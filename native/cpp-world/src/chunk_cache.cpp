@@ -162,25 +162,45 @@ uint32_t ChunkCache::stream_window(Generator &gen, int32_t center_x, int32_t cen
 
     // Evict down to the budget. Chunks outside the visible radius go first,
     // then LRU order decides among the rest.
-    auto outside_first = [&](const CachedChunk &a, const CachedChunk &b) {
-        const int64_t adx = a.key.x - center_x;
-        const int64_t adz = a.key.z - center_z;
-        const int64_t bdx = b.key.x - center_x;
-        const int64_t bdz = b.key.z - center_z;
-        const bool a_out = adx * adx + adz * adz > inner_sq;
-        const bool b_out = bdx * bdx + bdz * bdz > inner_sq;
-        if (a_out != b_out) return a_out;      // outside sorts first
-        return a.last_use < b.last_use;        // then coldest first
+    // Sorting has to compare snapshots rather than live nodes. Two bugs are
+    // avoided here:
+    //   1. std::sort over CachedChunk* cannot use a comparator taking
+    //      (const CachedChunk&, const CachedChunk&); the pointer does not
+    //      convert, and -Werror turns that into a build failure.
+    //   2. Keeping CachedChunk* in a vector and then calling evict() is unsafe:
+    //      erase and any rehash invalidate every stored pointer. Sorting a
+    //      value snapshot and re-looking the node up by key right before
+    //      erasing keeps the loop valid whatever the container does.
+    struct OrderItem {
+        uint64_t packed;
+        int32_t dx;
+        int32_t dz;
+        uint64_t last_use;
     };
 
-    std::vector<CachedChunk *> order;
+    std::vector<OrderItem> order;
     order.reserve(chunks_.size());
-    for (auto &entry : chunks_) order.push_back(&entry.second);
-    std::sort(order.begin(), order.end(), outside_first);
+    for (auto &entry : chunks_) {
+        order.push_back(OrderItem{entry.first,
+                                  entry.second.key.x - center_x,
+                                  entry.second.key.z - center_z,
+                                  entry.second.last_use});
+    }
 
-    for (CachedChunk *c : order) {
+    const int32_t visible_sq = inner_sq;
+    std::sort(order.begin(), order.end(),
+              [visible_sq](const OrderItem &a, const OrderItem &b) {
+                  const bool a_out = a.dx * a.dx + a.dz * a.dz > visible_sq;
+                  const bool b_out = b.dx * b.dx + b.dz * b.dz > visible_sq;
+                  if (a_out != b_out) return a_out;  // outside sorts first
+                  return a.last_use < b.last_use;    // then coldest first
+              });
+
+    for (const OrderItem &item : order) {
         if (chunks_.size() <= capacity_) break;
-        evict(c);
+        auto victim = chunks_.find(item.packed);
+        if (victim == chunks_.end()) continue;
+        evict(&victim->second);
     }
 
     stats_.streamed += generated;
