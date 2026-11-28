@@ -25,6 +25,12 @@ use std::sync::Arc;
 #[derive(Clone, Debug)]
 pub struct ChunkSection {
     blocks: Arc<Vec<u16>>,
+    /// Non-air blocks, maintained on every write so [`Self::is_empty`] and
+    /// [`Self::is_full`] are O(1). The mesher uses them to skip a section
+    /// outright: an air section emits nothing, and a full section whose six
+    /// neighbour layers are solid emits nothing either — which is most of the
+    /// underground, and used to cost a full 4096-block scan to discover.
+    non_air: u32,
 }
 
 impl ChunkSection {
@@ -33,6 +39,7 @@ impl ChunkSection {
     pub fn new() -> Self {
         Self {
             blocks: Arc::new(vec![0; Self::VOLUME]),
+            non_air: 0,
         }
     }
 
@@ -51,7 +58,17 @@ impl ChunkSection {
     #[inline]
     pub fn set(&mut self, x: usize, y: usize, z: usize, block: u16) {
         let index = Self::index(x, y, z);
-        Arc::make_mut(&mut self.blocks)[index] = block;
+        let slot = &mut Arc::make_mut(&mut self.blocks)[index];
+        let was_air = *slot == 0;
+        let is_air = block == 0;
+        if was_air != is_air {
+            if is_air {
+                self.non_air -= 1;
+            } else {
+                self.non_air += 1;
+            }
+        }
+        *slot = block;
     }
 
     #[inline]
@@ -59,8 +76,23 @@ impl ChunkSection {
         self.get(x, y, z) != 0
     }
 
+    /// True if every block is air. O(1): the count is maintained on write.
+    #[inline]
     pub fn is_empty(&self) -> bool {
-        self.blocks.iter().all(|&b| b == 0)
+        self.non_air == 0
+    }
+
+    /// True if every block is solid, so the only faces this section can emit are
+    /// the ones its neighbours expose. O(1).
+    #[inline]
+    pub fn is_full(&self) -> bool {
+        self.non_air as usize == Self::VOLUME
+    }
+
+    /// Non-air blocks in this section.
+    #[inline]
+    pub fn non_air(&self) -> u32 {
+        self.non_air
     }
 
     /// Section from a flat block-index array in `(y << 8) | (z << 4) | x` order,
@@ -74,6 +106,7 @@ impl ChunkSection {
             return None;
         }
         Some(Self {
+            non_air: blocks.iter().filter(|&&b| b != 0).count() as u32,
             blocks: Arc::new(blocks.to_vec()),
         })
     }
@@ -280,6 +313,39 @@ pub struct Neighbors<'a> {
 }
 
 impl Neighbors<'_> {
+    /// True if the six layers that touch this section are entirely solid. A
+    /// missing neighbour counts as air, so it can never be solid.
+    ///
+    /// Only 6 x 256 blocks are read, against the 4096 x 7 a full meshing pass
+    /// would load, which is what makes the "nothing to draw" short-circuit worth
+    /// taking for a full section.
+    fn layers_all_solid(&self) -> bool {
+        fn layer(section: Option<&ChunkSection>, axis: usize, coord: usize) -> bool {
+            let Some(section) = section else {
+                return false;
+            };
+            // A full neighbour's facing layer is solid by definition, so the
+            // underground case (full section, full neighbours) costs six O(1)
+            // checks instead of six 256-block scans.
+            if section.is_full() {
+                return true;
+            }
+            (0..16).all(|a| {
+                (0..16).all(|b| match axis {
+                    0 => section.is_solid(coord, a, b),
+                    1 => section.is_solid(a, coord, b),
+                    _ => section.is_solid(a, b, coord),
+                })
+            })
+        }
+        layer(self.pos_x, 0, 0)
+            && layer(self.neg_x, 0, 15)
+            && layer(self.pos_y, 1, 0)
+            && layer(self.neg_y, 1, 15)
+            && layer(self.pos_z, 2, 0)
+            && layer(self.neg_z, 2, 15)
+    }
+
     /// No neighbour loaded: every boundary face is emitted.
     pub fn none() -> Self {
         Self {
@@ -438,9 +504,19 @@ pub fn build_section_mesh_with_neighbors(
     origin: [i32; 3],
     scratch: &mut MeshScratch,
 ) -> u32 {
-    fill_padded(&mut scratch.pad, section, neighbors);
     scratch.vertices.clear();
     scratch.indices.clear();
+    // Two sections cannot emit a single face, and both are common: all air
+    // (everything above the surface) and all solid with solid neighbours (most
+    // of the underground). Both used to pay the full pad fill plus a 4096-block
+    // scan to find nothing.
+    if section.is_empty() {
+        return 0;
+    }
+    if section.is_full() && neighbors.layers_all_solid() {
+        return 0;
+    }
+    fill_padded(&mut scratch.pad, section, neighbors);
     mesh_padded(
         &scratch.pad,
         origin,
@@ -560,6 +636,101 @@ mod tests {
         let mut s = ChunkSection::new();
         s.set(3, 3, 3, 1);
         s
+    }
+
+    fn full_section() -> ChunkSection {
+        let mut s = ChunkSection::new();
+        for y in 0..16 {
+            for z in 0..16 {
+                for x in 0..16 {
+                    s.set(x, y, z, 1);
+                }
+            }
+        }
+        s
+    }
+
+    /// The non-air count is what makes the empty/full short-circuits O(1), so it
+    /// has to stay exact through rewrites and through a copy-on-write split.
+    #[test]
+    fn the_non_air_count_tracks_every_write() {
+        let mut s = ChunkSection::new();
+        assert!(s.is_empty());
+        assert_eq!(s.non_air(), 0);
+
+        s.set(0, 0, 0, 3);
+        assert!(!s.is_empty());
+        assert_eq!(s.non_air(), 1);
+
+        s.set(0, 0, 0, 7); // solid -> solid: count unchanged
+        assert_eq!(s.non_air(), 1);
+
+        s.set(0, 0, 0, 0); // solid -> air
+        assert!(s.is_empty());
+        assert_eq!(s.non_air(), 0);
+
+        let mut full = full_section();
+        assert!(full.is_full());
+        let peer = full.clone();
+        full.set(1, 1, 1, 0);
+        assert!(!full.is_full());
+        assert_eq!(full.non_air(), ChunkSection::VOLUME as u32 - 1);
+        assert!(peer.is_full(), "the clone must not observe the write");
+        assert_eq!(peer.non_air(), ChunkSection::VOLUME as u32);
+    }
+
+    /// Both short-circuits must produce exactly what the full pass produces:
+    /// nothing. The `padded_mesher_reproduces_the_reference_exactly` test covers
+    /// the general case against the old per-face implementation; this pins the
+    /// two paths it would otherwise only reach through 640 random densities.
+    #[test]
+    fn air_and_enclosed_full_sections_short_circuit_to_nothing() {
+        let mut scratch = MeshScratch::new();
+
+        let air = ChunkSection::new();
+        assert_eq!(build_section_mesh_into(&air, [0, 0, 0], &mut scratch), 0);
+        assert!(scratch.vertices.is_empty(), "an air section draws nothing");
+        assert!(scratch.indices.is_empty());
+
+        let full = full_section();
+        let solid = full_section();
+        let enclosed = Neighbors {
+            pos_x: Some(&solid),
+            neg_x: Some(&solid),
+            pos_y: Some(&solid),
+            neg_y: Some(&solid),
+            pos_z: Some(&solid),
+            neg_z: Some(&solid),
+        };
+        assert_eq!(
+            build_section_mesh_with_neighbors(&full, &enclosed, [0, 0, 0], &mut scratch),
+            0,
+            "a full section with six solid neighbours has no visible face"
+        );
+        assert!(scratch.vertices.is_empty());
+
+        // The same section with no neighbours must still emit all six sides, so
+        // the short-circuit cannot be swallowing faces.
+        assert_eq!(
+            build_section_mesh_into(&full, [0, 0, 0], &mut scratch),
+            6 * 256,
+            "six 16x16 faces"
+        );
+
+        // One missing neighbour (air) re-opens exactly one side.
+        let one_open = Neighbors {
+            pos_x: Some(&solid),
+            neg_x: Some(&solid),
+            pos_y: Some(&solid),
+            neg_y: Some(&solid),
+            pos_z: Some(&solid),
+            neg_z: None,
+        };
+        assert_eq!(
+            build_section_mesh_with_neighbors(&full, &one_open, [0, 0, 0], &mut scratch),
+            256,
+            "only the -Z face stays visible"
+        );
     }
 
     #[test]

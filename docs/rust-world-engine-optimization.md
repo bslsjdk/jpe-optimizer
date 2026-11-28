@@ -182,6 +182,37 @@ pushed_sections_reach_the_mesher_without_being_copied` proves the caller's
 buffer, the source's copy and the pipeline's block cache are the same allocation
 end to end.
 
+### 9. Air and enclosed sections cost nothing to mesh
+
+Two shapes of section cannot emit a single face: all air (everything above the
+surface) and all solid with solid neighbours (most of the underground). Both used
+to pay the full path — an 18³ pad fill plus a 4096-block scan — to discover that.
+
+`ChunkSection` now carries a `non_air` count maintained on every `set` and
+computed once in `from_indices`, so `is_empty()` and `is_full()` are O(1) instead
+of a 4096-element scan. The mesher returns before touching the pad when either
+holds. The full-section case additionally needs its six neighbour layers to be
+solid; a *full* neighbour satisfies that by definition, so the underground case is
+six O(1) checks rather than six 256-block scans, and only a partial neighbour is
+actually walked.
+
+| measurement | before | after |
+|---|---|---|
+| `frame_throughput_report` build phase | 8.78 ms | 6.58 ms |
+| `frame_throughput_report` fill total | 14.1 ms | 12.6 ms |
+| `mesh_throughput_report` (half-solid section) | 17,764 ns | 15,690 ns |
+| padded vs reference (same report) | 2.28x | 2.38x |
+
+The half-solid benchmark section is neither empty nor full, so it sees only the
+side effects (one pointer hoist, no re-scan); the short-circuit win is on the
+sections the report does not sample.
+
+What is left in `build` is mostly *boundary* faces: during a bulk fill a
+section's neighbour chunks often have no terrain yet, so its six faces are
+emitted conservatively and `remesh_chunks` is 0 in that report — the geometry is
+correct but larger than a steady state would carry. That makes the fill a
+worst-case geometry measurement, not a steady-state one.
+
 ### Measurement first: a whole-frame report
 
 The two reports above each measure one function. Nothing measured the loop a host
@@ -195,7 +226,7 @@ diluted by them.
 
 ## Verification
 
-- `cargo test` (in `native/rust-world`): **119 passed, 3 ignored** (the throughput
+- `cargo test` (in `native/rust-world`): **121 passed, 3 ignored** (the throughput
   reports), warning-free `cargo build` and `cargo build --release`; the release
   `.so` still exports the same 33 `jpe_world_*` symbols.
 - Live Minecraft 26.3 GameTest (`native/rust-world/java/run_minecraft_gametest.sh`,
