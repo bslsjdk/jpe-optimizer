@@ -76,12 +76,16 @@ void test_hit_matches_fresh() {
                       static_cast<size_t>(blocks) * sizeof(uint16_t)) == 0,
           "cache hit is bit-identical to fresh generation");
 
-    // And it really was a hit the second time.
+    // Exactly one acquire so far went through the cache as a miss, so the
+    // second one is the first possible hit: hits must be exactly 1. Asserting
+    // >= 2 here could never hold and was a broken expectation, not a bug.
     const uint16_t *again = jpe_terrain_acquire(h, cx, cz);
     check(again != nullptr, "second acquire");
     JpeTerrainCacheStats st;
     check(jpe_terrain_cache_stats(h, &st) == 0, "stats readable");
-    check(st.hits >= 2, "second acquire counted as a hit");
+    check(st.hits == 1, "second acquire counted as a hit");
+    check(st.misses == 1, "only the first acquire missed");
+    check(st.generated == 1, "the chunk was built once");
     check(st.resident == 1, "one resident chunk");
     jpe_terrain_release(h, cx, cz);
 
