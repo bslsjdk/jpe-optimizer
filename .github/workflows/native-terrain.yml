@@ -198,7 +198,7 @@ jobs:
         working-directory: native/rust-runtime
         run: |
           set +e -o pipefail
-          cargo test --release terrain -- --test-threads=1 --nocapture > /tmp/terrain-tests.log 2>&1
+          cargo test --release --lib -- --test-threads=1 --nocapture > /tmp/terrain-tests.log 2>&1
           status=$?
           grep -E "^(test |error|failures|---- )" /tmp/terrain-tests.log | head -60 || true
           echo "=== tail ==="

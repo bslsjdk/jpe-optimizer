@@ -79,7 +79,7 @@ jobs:
         run: |
           set +e -o pipefail
           mkdir -p "${GITHUB_WORKSPACE}/ci-out"
-          cargo test --release terrain -- --test-threads=1 --nocapture > /tmp/terrain-tests.log 2>&1
+          cargo test --release --lib -- --test-threads=1 --nocapture > /tmp/terrain-tests.log 2>&1
           status=$?
           echo "=== cargo test exit: $status ==="
           grep -E "^(test |error|failures|---- )" /tmp/terrain-tests.log | head -60 || true
