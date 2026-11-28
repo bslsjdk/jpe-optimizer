@@ -77,8 +77,24 @@ jobs:
       - name: Run the smoke test
         working-directory: native/rust-runtime
         run: |
-          set -euo pipefail
-          cargo test --release terrain 2>&1 | tail -40
+          set -uo pipefail
+          mkdir -p "${GITHUB_WORKSPACE}/ci-out"
+          cargo test --release terrain -- --test-threads=1 --nocapture > /tmp/terrain-tests.log 2>&1
+          status=$?
+          echo "=== cargo test exit: $status ==="
+          grep -E "^(test |error|failures|---- )" /tmp/terrain-tests.log | head -60 || true
+          echo "=== tail ==="
+          tail -80 /tmp/terrain-tests.log
+          cp /tmp/terrain-tests.log "${GITHUB_WORKSPACE}/ci-out/terrain-tests.log" 2>/dev/null || true
+          exit $status
+
+      - name: Upload the test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terrain-tests-log
+          path: ci-out/terrain-tests.log
+          if-no-files-found: warn
 
       - name: Report result
         if: always()
