@@ -197,8 +197,13 @@ jobs:
       - name: Terrain tests
         working-directory: native/rust-runtime
         run: |
-          set -euo pipefail
-          cargo test --release terrain -- --test-threads=1 --nocapture 2>&1 | tail -60
+          set +e -o pipefail
+          cargo test --release terrain -- --test-threads=1 --nocapture > /tmp/terrain-tests.log 2>&1
+          status=$?
+          grep -E "^(test |error|failures|---- )" /tmp/terrain-tests.log | head -60 || true
+          echo "=== tail ==="
+          tail -60 /tmp/terrain-tests.log
+          exit $status
 
       - name: Report
         if: always()

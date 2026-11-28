@@ -77,7 +77,7 @@ jobs:
       - name: Run the smoke test
         working-directory: native/rust-runtime
         run: |
-          set -uo pipefail
+          set +e -o pipefail
           mkdir -p "${GITHUB_WORKSPACE}/ci-out"
           cargo test --release terrain -- --test-threads=1 --nocapture > /tmp/terrain-tests.log 2>&1
           status=$?
