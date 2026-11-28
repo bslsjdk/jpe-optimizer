@@ -12,6 +12,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
+import dev.jpe.optimizer.runtime.NativeLibraryLoader;
 import dev.jpe.world.JpeWorldNative;
 
 /**
@@ -88,13 +89,21 @@ public final class RustWorldBridge implements AutoCloseable {
         this.engineThreadId = engineThreadId;
     }
 
-    /** Configured library path, if any. */
+    /**
+     * Resolves the world engine library.
+     *
+     * <p>{@code -Djpe.worldLibrary} still wins, which is what the development run
+     * configurations and the CI rigs use. When it is unset the library is taken
+     * from the mod jar itself ({@code META-INF/natives/<platform>/libjpe_world.so}),
+     * so dropping the jar into {@code mods} is enough on a machine with no build
+     * tree. An empty result means this platform carries no bundled engine.
+     */
     public static Optional<Path> configuredLibrary() {
         String raw = System.getProperty(LIBRARY_PROPERTY);
-        if (raw == null || raw.isBlank()) {
-            return Optional.empty();
+        if (raw != null && !raw.isBlank()) {
+            return Optional.of(Path.of(raw));
         }
-        return Optional.of(Path.of(raw));
+        return Optional.ofNullable(NativeLibraryLoader.resolve(NativeLibraryLoader.WORLD_LIBRARY));
     }
 
     public static boolean required() {
