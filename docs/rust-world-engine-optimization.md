@@ -144,10 +144,60 @@ draw, and this does not claim a frame-time win. Greedy merging would cut the qua
 count itself (the next real win) but changes UV semantics, so it needs a texture
 tiling decision first.
 
+### 8. Section block arrays are shared, not copied (1.64x fill)
+
+Every hand-off between ingest and the mesher wanted a `ChunkSection` of its own:
+Java hands one in, `PushSource::put_chunk` stored a clone, `PushSource::section`
+handed out another clone, and the pipeline cached that. With a plain `Vec<u16>`
+inside the section that was **two 8 KiB allocations and two 8 KiB copies per
+section**, with two live copies of every section at once — at view distance 8
+(289 chunks x 8 sections) 37 MiB of block data where 18.5 MiB would do, and the
+copies were the single largest phase of a fill.
+
+The array now lives behind an `Arc<Vec<u16>>`, so a hand-off is a refcount bump
+and all three owners share one allocation. `set` is copy-on-write
+(`Arc::make_mut`): a section being filled is uniquely owned, so writes stay in
+place; only a write to a section someone else still holds splits the buffer,
+which is the same visible semantics as the `Vec` clone it replaced.
+`fill_padded` hoists `section.indices()` out of its row loop so the padded grid
+fill still chases one pointer per row rather than two.
+
+Measured with the new whole-frame report (`cargo test --release
+frame_throughput_report -- --ignored --nocapture`, 289 chunks / 2312 sections,
+8 sections per column):
+
+| phase | before | after |
+|---|---|---|
+| targets (ingest + neighbour gather) | 11.04 ms | 2.59 ms |
+| build (meshing, 4 workers) | 9.77 ms | 8.78 ms |
+| publish (upload) | 1.76 ms | 2.19 ms |
+| draw (cull + order + submit) | 0.07 ms | 0.08 ms |
+| **fill total** | **23.1 ms** | **14.1 ms** |
+| per chunk | 80.0 µs | 48.7 µs |
+
+Tests: `mesh::tests::clone_shares_the_block_buffer_until_written` proves the
+clone is a refcount bump (same buffer pointer) and that a write splits it without
+disturbing the peer; `pipeline::push_source_tests::
+pushed_sections_reach_the_mesher_without_being_copied` proves the caller's
+buffer, the source's copy and the pipeline's block cache are the same allocation
+end to end.
+
+### Measurement first: a whole-frame report
+
+The two reports above each measure one function. Nothing measured the loop a host
+drives, so "what is a frame made of" was guesswork — and the first guess was
+wrong: with `FlatSource` as the source, the *mock generator* (4096 `set` calls per
+section) was 44% of the fill and hid the pipeline behind it. The benchmark now
+uses `CachedFlatSource` (pre-built sections, one hand-off per section, the same
+order as the real `PushSource` ingest path) and reports the phase split both as
+fill totals and per busy frame, sampled before the idle frames rather than
+diluted by them.
+
 ## Verification
 
-- `cargo test` (in `native/rust-world`): **117 passed, 1 ignored** (the throughput
-  report), warning-free `cargo build` and `cargo build --release`.
+- `cargo test` (in `native/rust-world`): **119 passed, 3 ignored** (the throughput
+  reports), warning-free `cargo build` and `cargo build --release`; the release
+  `.so` still exports the same 33 `jpe_world_*` symbols.
 - Live Minecraft 26.3 GameTest (`native/rust-world/java/run_minecraft_gametest.sh`,
   lavapipe), run after the Java batches, identical metrics before/after:
   `result=passed backend=vulkan litPixels=1508 of=16384 awayLitPixels=0
@@ -176,8 +226,11 @@ tiling decision first.
   in `pipeline.rs` for a while: remeshes drew from the mesh budget, and the mesh
   budget itself only applied once the terrain budget was exhausted.)
 - **CPU culling is O(resident) per frame** (`plan_draws` over `registry.records()`).
-  Reducing this needs GPU-side occlusion (HZB), which is a later stage, not a tuning
-  change.
+  It is also *not* where the frame time is: the whole-frame report puts cull +
+  order + submit for 834 resident sections at 0.08 ms of a 14 ms fill, and 8 µs on
+  an idle frame. Making it sublinear (column-level hierarchy, or HZB occlusion)
+  would be optimising 0.6% of the fill, so it stays as it is until the meshing and
+  upload paths below are done.
 - **Presentation / swapchain / context sharing.** Still none across the three
   backends; output is offscreen. Adopting Minecraft's own window/context and present
   is the next stage and needs a real (non-headless) GPU host.

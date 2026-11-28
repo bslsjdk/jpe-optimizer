@@ -7,11 +7,24 @@
 //! unchanged.
 
 use crate::coords::SECTION_SIZE;
+use std::sync::Arc;
 
 /// One 16x16x16 section. `0` is air; every non-zero value is opaque for now.
+///
+/// The block array is shared behind an [`Arc`]. Every owner between ingest and
+/// the mesher wants a `ChunkSection` of its own — Java hands one in, `PushSource`
+/// stores it, the pipeline copies it into its block cache, and the mesher reads
+/// it — so a plain `Vec` meant one 8 KiB allocation and one 8 KiB copy per hand
+/// off, two live copies of every section at once. At view distance 8 that is
+/// 289 chunks x 8 sections x 16 KiB = 37 MiB and ~11 ms of a 23 ms fill spent in
+/// `memcpy`. Cloning now bumps a refcount instead.
+///
+/// `set` is copy-on-write: a section being filled is uniquely owned, so writes
+/// stay in place; only a write to a section someone else still holds copies the
+/// array, which is the same visible semantics as the old `Vec` clone.
 #[derive(Clone, Debug)]
 pub struct ChunkSection {
-    blocks: Vec<u16>,
+    blocks: Arc<Vec<u16>>,
 }
 
 impl ChunkSection {
@@ -19,7 +32,7 @@ impl ChunkSection {
 
     pub fn new() -> Self {
         Self {
-            blocks: vec![0; Self::VOLUME],
+            blocks: Arc::new(vec![0; Self::VOLUME]),
         }
     }
 
@@ -33,9 +46,12 @@ impl ChunkSection {
         self.blocks[Self::index(x, y, z)]
     }
 
+    /// Write one block. Copy-on-write: no copy while this section is the only
+    /// owner, which is the case for every source filling a fresh section.
     #[inline]
     pub fn set(&mut self, x: usize, y: usize, z: usize, block: u16) {
-        self.blocks[Self::index(x, y, z)] = block;
+        let index = Self::index(x, y, z);
+        Arc::make_mut(&mut self.blocks)[index] = block;
     }
 
     #[inline]
@@ -58,13 +74,13 @@ impl ChunkSection {
             return None;
         }
         Some(Self {
-            blocks: blocks.to_vec(),
+            blocks: Arc::new(blocks.to_vec()),
         })
     }
 
     /// The block indices in the same order [`ChunkSection::from_indices`] expects.
     pub fn indices(&self) -> &[u16] {
-        &self.blocks
+        self.blocks.as_slice()
     }
 }
 
@@ -319,11 +335,14 @@ const FACE_OFFSETS: [isize; 6] = [
 /// previous section's values.
 fn fill_padded(pad: &mut [u16; PAD_VOLUME], section: &ChunkSection, neighbors: &Neighbors<'_>) {
     pad.fill(0);
+    // Hoisted once: the section's buffer is behind an `Arc`, so indexing it in
+    // the loop would chase two pointers per row instead of one.
+    let blocks = section.indices();
     for y in 0..16 {
         for z in 0..16 {
             let src = (y << 8) | (z << 4);
             let dst = pad_index(0, y, z);
-            pad[dst..dst + 16].copy_from_slice(&section.blocks[src..src + 16]);
+            pad[dst..dst + 16].copy_from_slice(&blocks[src..src + 16]);
         }
     }
     for y in 0..16 {
@@ -503,6 +522,38 @@ mod tests {
         let mut sparse = ChunkSection::new();
         sparse.set(1, 1, 1, 4);
         assert_eq!(sparse.indices()[(1 << 8) | (1 << 4) | 1], 4);
+    }
+
+    /// The whole point of the `Arc`: handing a section to a second owner must
+    /// not copy 8 KiB. `indices().as_ptr()` is the buffer identity, so equal
+    /// pointers prove one allocation is shared.
+    #[test]
+    fn clone_shares_the_block_buffer_until_written() {
+        let mut original = ChunkSection::new();
+        original.set(1, 2, 3, 7);
+
+        let shared = original.clone();
+        assert_eq!(
+            original.indices().as_ptr(),
+            shared.indices().as_ptr(),
+            "a clone must be a refcount bump, not a copy"
+        );
+        assert_eq!(shared.get(1, 2, 3), 7);
+
+        // Copy-on-write: writing through one handle must be invisible to the
+        // other, exactly like the `Vec` clone this replaced.
+        let mut written = original.clone();
+        written.set(1, 2, 3, 9);
+        assert_eq!(original.get(1, 2, 3), 7, "the writer must not mutate its peers");
+        assert_eq!(written.get(1, 2, 3), 9);
+        assert_ne!(
+            original.indices().as_ptr(),
+            written.indices().as_ptr(),
+            "a write to a shared section must split the buffer"
+        );
+        // Splitting must not corrupt the rest of the array.
+        assert_eq!(written.indices()[ChunkSection::index(1, 2, 3)], 9);
+        assert_eq!(original.indices()[ChunkSection::index(1, 2, 3)], 7);
     }
 
     fn solid_cube() -> ChunkSection {

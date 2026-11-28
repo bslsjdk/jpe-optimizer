@@ -1629,8 +1629,7 @@ mod push_source_tests {
         assert_eq!(source.missing_reads, 1);
 
         source.put_chunk(ChunkPos::ZERO, 1, &[filled(true)]);
-        assert!(source.has_chunk(ChunkPos::ZERO));
-        assert_eq!(source.section_count(), 1);
+        assert!(source.has_chunk(ChunkPos::ZERO));        assert_eq!(source.section_count(), 1);
         assert_eq!(source.chunk_count(), 1);
         assert_eq!(source.put_chunk(ChunkPos::ZERO, 1, &[]), 0);
 
@@ -1715,5 +1714,43 @@ mod push_source_tests {
         assert_eq!(world.flush_source_data(), 1, "source data must not outlive the chunk");
         assert_eq!(world.source().section_count(), 0);
         assert_eq!(renderer.live_mesh_count(), 0);
+    }
+
+    /// A pushed section must reach the mesher without being copied. Three owners
+    /// hold it in turn — the caller's slice, `PushSource`, and the pipeline's
+    /// block cache — and with a plain `Vec` inside `ChunkSection` that was two
+    /// 8 KiB copies per section. `indices().as_ptr()` is the buffer identity, so
+    /// equal pointers across all three prove one allocation is shared.
+    #[test]
+    fn pushed_sections_reach_the_mesher_without_being_copied() {
+        let mut world = pushed();
+        let mut renderer = HeadlessRenderer::new();
+        let sections = [filled(true)];
+        let caller_buffer = sections[0].indices().as_ptr();
+
+        world.submit_chunk(ChunkPos::ZERO, 1, &sections);
+        let stored = world
+            .source()
+            .chunks
+            .get(&ChunkPos::ZERO)
+            .and_then(|column| column.get(&1))
+            .expect("the source must hold the submitted section");
+        assert_eq!(
+            stored.indices().as_ptr(),
+            caller_buffer,
+            "ingest must share the caller's buffer, not copy it"
+        );
+
+        world.frame(&mut renderer, camera()).expect("frame");
+        let cached = world
+            .blocks
+            .get(&SectionPos::new(0, 1, 0))
+            .expect("the mesher's block cache must hold the section");
+        assert_eq!(
+            cached.indices().as_ptr(),
+            caller_buffer,
+            "the block cache must share the same buffer too"
+        );
+        assert_eq!(world.stats().published, 1, "and it must still have been meshed");
     }
 }
