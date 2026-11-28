@@ -1,0 +1,567 @@
+### pwd
+/home/runner/work/jpe-optimizer/jpe-optimizer/native/cpp-world
+### src
+include:
+jpe_terrain_api.h
+jpe_terrain_stream_api.h
+
+src:
+chunk_cache.cpp
+chunk_cache.h
+generator.cpp
+jpe_terrain_handle.h
+jpe_terrain_internal.h
+terrain_api.cpp
+terrain_stream_api.cpp
+
+test:
+test_chunk_cache.cpp
+
+===== src/chunk_cache.cpp =====
+In file included from /usr/include/c++/15/bits/stl_algobase.h:71,
+                 from /usr/include/c++/15/bits/hashtable_policy.h:36,
+                 from /usr/include/c++/15/bits/hashtable.h:37,
+                 from /usr/include/c++/15/bits/unordered_map.h:33,
+                 from /usr/include/c++/15/unordered_map:43,
+                 from src/chunk_cache.h:33,
+                 from src/chunk_cache.cpp:1:
+/usr/include/c++/15/bits/predefined_ops.h: In instantiation of ‘constexpr bool __gnu_cxx::__ops::_Iter_comp_iter<_Compare>::operator()(_Iterator1, _Iterator2) [with _Iterator1 = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, std::vector<jpe::CachedChunk*> >; _Iterator2 = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, std::vector<jpe::CachedChunk*> >; _Compare = jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>]’:
+/usr/include/c++/15/bits/stl_algo.h:1778:14:   required from ‘constexpr void std::__insertion_sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1778 |           if (__comp(__i, __first))
+      |               ~~~~~~^~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1818:25:   required from ‘constexpr void std::__final_insertion_sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1818 |           std::__insertion_sort(__first, __first + int(_S_threshold), __comp);
+      |           ~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1909:31:   required from ‘constexpr void std::__sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1909 |           std::__final_insertion_sort(__first, __last, __comp);
+      |           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:4874:18:   required from ‘constexpr void std::sort(_RAIter, _RAIter, _Compare) [with _RAIter = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>]’
+ 4874 |       std::__sort(__first, __last, __gnu_cxx::__ops::__iter_comp_iter(__comp));
+      |       ~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/chunk_cache.cpp:179:14:   required from here
+  179 |     std::sort(order.begin(), order.end(), outside_first);
+      |     ~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/predefined_ops.h:158:30: error: no match for call to ‘(jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>) (jpe::CachedChunk*&, jpe::CachedChunk*&)’
+  158 |         { return bool(_M_comp(*__it1, *__it2)); }
+      |                       ~~~~~~~^~~~~~~~~~~~~~~~
+src/chunk_cache.cpp:165:28: note: there is 1 candidate
+  165 |     auto outside_first = [&](const CachedChunk &a, const CachedChunk &b) {
+      |                            ^
+src/chunk_cache.cpp:165:26: note: candidate 1: ‘jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>’
+  165 |     auto outside_first = [&](const CachedChunk &a, const CachedChunk &b) {
+      |                          ^
+src/chunk_cache.cpp:165:26: note: no known conversion for argument 1 from ‘jpe::CachedChunk*’ to ‘const jpe::CachedChunk&’
+/usr/include/c++/15/bits/predefined_ops.h: In instantiation of ‘constexpr bool __gnu_cxx::__ops::_Val_comp_iter<_Compare>::operator()(_Value&, _Iterator) [with _Value = jpe::CachedChunk*; _Iterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, std::vector<jpe::CachedChunk*> >; _Compare = jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>]’:
+/usr/include/c++/15/bits/stl_algo.h:1758:20:   required from ‘constexpr void std::__unguarded_linear_insert(_RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Val_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1758 |       while (__comp(__val, __next))
+      |              ~~~~~~^~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1786:36:   required from ‘constexpr void std::__insertion_sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1786 |             std::__unguarded_linear_insert(__i,
+      |             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~
+ 1787 |                                 __gnu_cxx::__ops::__val_comp_iter(__comp));
+      |                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1818:25:   required from ‘constexpr void std::__final_insertion_sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1818 |           std::__insertion_sort(__first, __first + int(_S_threshold), __comp);
+      |           ~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1909:31:   required from ‘constexpr void std::__sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1909 |           std::__final_insertion_sort(__first, __last, __comp);
+      |           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:4874:18:   required from ‘constexpr void std::sort(_RAIter, _RAIter, _Compare) [with _RAIter = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>]’
+ 4874 |       std::__sort(__first, __last, __gnu_cxx::__ops::__iter_comp_iter(__comp));
+      |       ~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/chunk_cache.cpp:179:14:   required from here
+  179 |     std::sort(order.begin(), order.end(), outside_first);
+      |     ~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/predefined_ops.h:240:30: error: no match for call to ‘(jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>) (jpe::CachedChunk*&, jpe::CachedChunk*&)’
+  240 |         { return bool(_M_comp(__val, *__it)); }
+      |                       ~~~~~~~^~~~~~~~~~~~~~
+src/chunk_cache.cpp:165:28: note: there is 1 candidate
+  165 |     auto outside_first = [&](const CachedChunk &a, const CachedChunk &b) {
+      |                            ^
+src/chunk_cache.cpp:165:26: note: candidate 1: ‘jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>’
+  165 |     auto outside_first = [&](const CachedChunk &a, const CachedChunk &b) {
+      |                          ^
+src/chunk_cache.cpp:165:26: note: no known conversion for argument 1 from ‘jpe::CachedChunk*’ to ‘const jpe::CachedChunk&’
+/usr/include/c++/15/bits/predefined_ops.h: In instantiation of ‘constexpr bool __gnu_cxx::__ops::_Iter_comp_val<_Compare>::operator()(_Iterator, _Value&) [with _Iterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, std::vector<jpe::CachedChunk*> >; _Value = jpe::CachedChunk*; _Compare = jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>]’:
+/usr/include/c++/15/bits/stl_heap.h:140:48:   required from ‘constexpr void std::__push_heap(_RandomAccessIterator, _Distance, _Distance, _Tp, _Compare&) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Distance = long int; _Tp = jpe::CachedChunk*; _Compare = __gnu_cxx::__ops::_Iter_comp_val<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+  140 |       while (__holeIndex > __topIndex && __comp(__first + __parent, __value))
+      |                                          ~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_heap.h:247:23:   required from ‘constexpr void std::__adjust_heap(_RandomAccessIterator, _Distance, _Distance, _Tp, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Distance = long int; _Tp = jpe::CachedChunk*; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+  247 |       std::__push_heap(__first, __holeIndex, __topIndex,
+      |       ~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  248 |                        _GLIBCXX_MOVE(__value), __cmp);
+      |                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_heap.h:356:22:   required from ‘constexpr void std::__make_heap(_RandomAccessIterator, _RandomAccessIterator, _Compare&) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+  356 |           std::__adjust_heap(__first, __parent, __len, _GLIBCXX_MOVE(__value),
+      |           ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  357 |                              __comp);
+      |                              ~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1594:23:   required from ‘constexpr void std::__heap_select(_RandomAccessIterator, _RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1594 |       std::__make_heap(__first, __middle, __comp);
+      |       ~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1869:25:   required from ‘constexpr void std::__partial_sort(_RandomAccessIterator, _RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1869 |       std::__heap_select(__first, __middle, __last, __comp);
+      |       ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1885:27:   required from ‘constexpr void std::__introsort_loop(_RandomAccessIterator, _RandomAccessIterator, _Size, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Size = long int; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1885 |               std::__partial_sort(__first, __last, __last, __comp);
+      |               ~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1906:25:   required from ‘constexpr void std::__sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1906 |           std::__introsort_loop(__first, __last,
+      |           ~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~
+ 1907 |                                 std::__lg(__last - __first) * 2,
+      |                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ 1908 |                                 __comp);
+      |                                 ~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:4874:18:   required from ‘constexpr void std::sort(_RAIter, _RAIter, _Compare) [with _RAIter = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>]’
+ 4874 |       std::__sort(__first, __last, __gnu_cxx::__ops::__iter_comp_iter(__comp));
+      |       ~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/chunk_cache.cpp:179:14:   required from here
+  179 |     std::sort(order.begin(), order.end(), outside_first);
+      |     ~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/predefined_ops.h:196:30: error: no match for call to ‘(jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>) (jpe::CachedChunk*&, jpe::CachedChunk*&)’
+  196 |         { return bool(_M_comp(*__it, __val)); }
+      |                       ~~~~~~~^~~~~~~~~~~~~~
+src/chunk_cache.cpp:165:28: note: there is 1 candidate
+  165 |     auto outside_first = [&](const CachedChunk &a, const CachedChunk &b) {
+      |                            ^
+src/chunk_cache.cpp:165:26: note: candidate 1: ‘jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>’
+  165 |     auto outside_first = [&](const CachedChunk &a, const CachedChunk &b) {
+      |                          ^
+src/chunk_cache.cpp:165:26: note: no known conversion for argument 1 from ‘jpe::CachedChunk*’ to ‘const jpe::CachedChunk&’
+exit=1
+
+===== src/terrain_stream_api.cpp =====
+exit=0
+
+===== src/terrain_api.cpp =====
+src/terrain_api.cpp:134:5: error: ‘ChunkCache’ does not name a type
+  134 |     ChunkCache cache;
+      |     ^~~~~~~~~~
+src/terrain_api.cpp:158:34: error: ‘HandleView’ has not been declared; did you mean ‘Handle’?
+  158 | bool resolve_handle(uint64_t id, HandleView *out) {
+      |                                  ^~~~~~~~~~
+      |                                  Handle
+src/terrain_api.cpp: In function ‘bool {anonymous}::jpe::resolve_handle(uint64_t, int*)’:
+src/terrain_api.cpp:162:10: error: request for member ‘gen’ in ‘* out’, which is of non-class type ‘int’
+  162 |     out->gen = &h->gen;
+      |          ^~~
+src/terrain_api.cpp:163:10: error: request for member ‘cache’ in ‘* out’, which is of non-class type ‘int’
+  163 |     out->cache = &h->cache;
+      |          ^~~~~
+src/terrain_api.cpp:163:22: error: ‘struct {anonymous}::Handle’ has no member named ‘cache’
+  163 |     out->cache = &h->cache;
+      |                      ^~~~~
+src/terrain_api.cpp:164:10: error: request for member ‘bytes_per_chunk’ in ‘* out’, which is of non-class type ‘int’
+  164 |     out->bytes_per_chunk = h->cfg.chunk_blocks() * sizeof(uint16_t);
+      |          ^~~~~~~~~~~~~~~
+src/terrain_api.cpp: At global scope:
+src/terrain_api.cpp:171:40: error: ‘BLOCK_COUNT’ is not a member of ‘{anonymous}::jpe’; did you mean ‘jpe::BLOCK_COUNT’?
+  171 | constexpr const char *kBlockNames[jpe::BLOCK_COUNT] = {
+      |                                        ^~~~~~~~~~~
+In file included from src/chunk_cache.h:36,
+                 from src/terrain_api.cpp:15:
+src/jpe_terrain_internal.h:51:5: note: ‘jpe::BLOCK_COUNT’ declared here
+   51 |     BLOCK_COUNT = 28
+      |     ^~~~~~~~~~~
+src/terrain_api.cpp: In function ‘int32_t jpe_terrain_stats(uint64_t, JpeTerrainStats*)’:
+src/terrain_api.cpp:348:46: error: reference to ‘jpe’ is ambiguous
+  348 |     out->biome_count = static_cast<uint32_t>(jpe::BIOME_COUNT);
+      |                                              ^~~
+src/terrain_api.cpp:157:11: note: candidates are: ‘namespace <unnamed>::jpe { }’
+  157 | namespace jpe {
+      |           ^~~
+src/jpe_terrain_internal.h:16:11: note:                 ‘namespace jpe { }’
+   16 | namespace jpe {
+      |           ^~~
+src/terrain_api.cpp: In function ‘const char* jpe_terrain_block_name(uint16_t)’:
+src/terrain_api.cpp:353:15: error: reference to ‘jpe’ is ambiguous
+  353 |     if (id >= jpe::BLOCK_COUNT) return "unknown";
+      |               ^~~
+src/terrain_api.cpp:157:11: note: candidates are: ‘namespace <unnamed>::jpe { }’
+  157 | namespace jpe {
+      |           ^~~
+src/jpe_terrain_internal.h:16:11: note:                 ‘namespace jpe { }’
+   16 | namespace jpe {
+      |           ^~~
+src/terrain_api.cpp:354:12: error: ‘kBlockNames’ was not declared in this scope
+  354 |     return kBlockNames[id];
+      |            ^~~~~~~~~~~
+src/terrain_api.cpp: In function ‘const char* jpe_terrain_biome_name(int32_t)’:
+src/terrain_api.cpp:358:12: error: reference to ‘jpe’ is ambiguous
+  358 |     return jpe::biome_def(id).name;
+      |            ^~~
+src/terrain_api.cpp:157:11: note: candidates are: ‘namespace <unnamed>::jpe { }’
+  157 | namespace jpe {
+      |           ^~~
+src/jpe_terrain_internal.h:16:11: note:                 ‘namespace jpe { }’
+   16 | namespace jpe {
+      |           ^~~
+src/terrain_api.cpp: At global scope:
+src/terrain_api.cpp:158:6: error: ‘bool {anonymous}::jpe::resolve_handle(uint64_t, int*)’ defined but not used [-Werror=unused-function]
+  158 | bool resolve_handle(uint64_t id, HandleView *out) {
+      |      ^~~~~~~~~~~~~~
+cc1plus: all warnings being treated as errors
+exit=1
+
+===== src/generator.cpp =====
+exit=0
+
+===== link test =====
+In file included from /usr/include/c++/15/bits/stl_algobase.h:71,
+                 from /usr/include/c++/15/bits/hashtable_policy.h:36,
+                 from /usr/include/c++/15/bits/hashtable.h:37,
+                 from /usr/include/c++/15/bits/unordered_map.h:33,
+                 from /usr/include/c++/15/unordered_map:43,
+                 from src/chunk_cache.h:33,
+                 from src/chunk_cache.cpp:1:
+/usr/include/c++/15/bits/predefined_ops.h: In instantiation of ‘constexpr bool __gnu_cxx::__ops::_Iter_comp_iter<_Compare>::operator()(_Iterator1, _Iterator2) [with _Iterator1 = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, std::vector<jpe::CachedChunk*> >; _Iterator2 = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, std::vector<jpe::CachedChunk*> >; _Compare = jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>]’:
+/usr/include/c++/15/bits/stl_algo.h:1778:14:   required from ‘constexpr void std::__insertion_sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1778 |           if (__comp(__i, __first))
+      |               ~~~~~~^~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1818:25:   required from ‘constexpr void std::__final_insertion_sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1818 |           std::__insertion_sort(__first, __first + int(_S_threshold), __comp);
+      |           ~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1909:31:   required from ‘constexpr void std::__sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1909 |           std::__final_insertion_sort(__first, __last, __comp);
+      |           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:4874:18:   required from ‘constexpr void std::sort(_RAIter, _RAIter, _Compare) [with _RAIter = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>]’
+ 4874 |       std::__sort(__first, __last, __gnu_cxx::__ops::__iter_comp_iter(__comp));
+      |       ~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/chunk_cache.cpp:179:14:   required from here
+  179 |     std::sort(order.begin(), order.end(), outside_first);
+      |     ~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/predefined_ops.h:158:30: error: no match for call to ‘(jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>) (jpe::CachedChunk*&, jpe::CachedChunk*&)’
+  158 |         { return bool(_M_comp(*__it1, *__it2)); }
+      |                       ~~~~~~~^~~~~~~~~~~~~~~~
+src/chunk_cache.cpp:165:28: note: there is 1 candidate
+  165 |     auto outside_first = [&](const CachedChunk &a, const CachedChunk &b) {
+      |                            ^
+src/chunk_cache.cpp:165:26: note: candidate 1: ‘jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>’
+  165 |     auto outside_first = [&](const CachedChunk &a, const CachedChunk &b) {
+      |                          ^
+src/chunk_cache.cpp:165:26: note: no known conversion for argument 1 from ‘jpe::CachedChunk*’ to ‘const jpe::CachedChunk&’
+/usr/include/c++/15/bits/predefined_ops.h: In instantiation of ‘constexpr bool __gnu_cxx::__ops::_Val_comp_iter<_Compare>::operator()(_Value&, _Iterator) [with _Value = jpe::CachedChunk*; _Iterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, std::vector<jpe::CachedChunk*> >; _Compare = jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>]’:
+/usr/include/c++/15/bits/stl_algo.h:1758:20:   required from ‘constexpr void std::__unguarded_linear_insert(_RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Val_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1758 |       while (__comp(__val, __next))
+      |              ~~~~~~^~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1786:36:   required from ‘constexpr void std::__insertion_sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1786 |             std::__unguarded_linear_insert(__i,
+      |             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~
+ 1787 |                                 __gnu_cxx::__ops::__val_comp_iter(__comp));
+      |                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1818:25:   required from ‘constexpr void std::__final_insertion_sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1818 |           std::__insertion_sort(__first, __first + int(_S_threshold), __comp);
+      |           ~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1909:31:   required from ‘constexpr void std::__sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1909 |           std::__final_insertion_sort(__first, __last, __comp);
+      |           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:4874:18:   required from ‘constexpr void std::sort(_RAIter, _RAIter, _Compare) [with _RAIter = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>]’
+ 4874 |       std::__sort(__first, __last, __gnu_cxx::__ops::__iter_comp_iter(__comp));
+      |       ~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/chunk_cache.cpp:179:14:   required from here
+  179 |     std::sort(order.begin(), order.end(), outside_first);
+      |     ~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/predefined_ops.h:240:30: error: no match for call to ‘(jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>) (jpe::CachedChunk*&, jpe::CachedChunk*&)’
+  240 |         { return bool(_M_comp(__val, *__it)); }
+      |                       ~~~~~~~^~~~~~~~~~~~~~
+src/chunk_cache.cpp:165:28: note: there is 1 candidate
+  165 |     auto outside_first = [&](const CachedChunk &a, const CachedChunk &b) {
+      |                            ^
+src/chunk_cache.cpp:165:26: note: candidate 1: ‘jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>’
+  165 |     auto outside_first = [&](const CachedChunk &a, const CachedChunk &b) {
+      |                          ^
+src/chunk_cache.cpp:165:26: note: no known conversion for argument 1 from ‘jpe::CachedChunk*’ to ‘const jpe::CachedChunk&’
+/usr/include/c++/15/bits/predefined_ops.h: In instantiation of ‘constexpr bool __gnu_cxx::__ops::_Iter_comp_val<_Compare>::operator()(_Iterator, _Value&) [with _Iterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, std::vector<jpe::CachedChunk*> >; _Value = jpe::CachedChunk*; _Compare = jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>]’:
+/usr/include/c++/15/bits/stl_heap.h:140:48:   required from ‘constexpr void std::__push_heap(_RandomAccessIterator, _Distance, _Distance, _Tp, _Compare&) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Distance = long int; _Tp = jpe::CachedChunk*; _Compare = __gnu_cxx::__ops::_Iter_comp_val<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+  140 |       while (__holeIndex > __topIndex && __comp(__first + __parent, __value))
+      |                                          ~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_heap.h:247:23:   required from ‘constexpr void std::__adjust_heap(_RandomAccessIterator, _Distance, _Distance, _Tp, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Distance = long int; _Tp = jpe::CachedChunk*; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+  247 |       std::__push_heap(__first, __holeIndex, __topIndex,
+      |       ~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  248 |                        _GLIBCXX_MOVE(__value), __cmp);
+      |                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_heap.h:356:22:   required from ‘constexpr void std::__make_heap(_RandomAccessIterator, _RandomAccessIterator, _Compare&) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+  356 |           std::__adjust_heap(__first, __parent, __len, _GLIBCXX_MOVE(__value),
+      |           ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  357 |                              __comp);
+      |                              ~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1594:23:   required from ‘constexpr void std::__heap_select(_RandomAccessIterator, _RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1594 |       std::__make_heap(__first, __middle, __comp);
+      |       ~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1869:25:   required from ‘constexpr void std::__partial_sort(_RandomAccessIterator, _RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1869 |       std::__heap_select(__first, __middle, __last, __comp);
+      |       ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1885:27:   required from ‘constexpr void std::__introsort_loop(_RandomAccessIterator, _RandomAccessIterator, _Size, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Size = long int; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1885 |               std::__partial_sort(__first, __last, __last, __comp);
+      |               ~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1906:25:   required from ‘constexpr void std::__sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1906 |           std::__introsort_loop(__first, __last,
+      |           ~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~
+ 1907 |                                 std::__lg(__last - __first) * 2,
+      |                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ 1908 |                                 __comp);
+      |                                 ~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:4874:18:   required from ‘constexpr void std::sort(_RAIter, _RAIter, _Compare) [with _RAIter = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>]’
+ 4874 |       std::__sort(__first, __last, __gnu_cxx::__ops::__iter_comp_iter(__comp));
+      |       ~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/chunk_cache.cpp:179:14:   required from here
+  179 |     std::sort(order.begin(), order.end(), outside_first);
+      |     ~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/predefined_ops.h:196:30: error: no match for call to ‘(jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>) (jpe::CachedChunk*&, jpe::CachedChunk*&)’
+  196 |         { return bool(_M_comp(*__it, __val)); }
+      |                       ~~~~~~~^~~~~~~~~~~~~~
+src/chunk_cache.cpp:165:28: note: there is 1 candidate
+  165 |     auto outside_first = [&](const CachedChunk &a, const CachedChunk &b) {
+      |                            ^
+src/chunk_cache.cpp:165:26: note: candidate 1: ‘jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>’
+  165 |     auto outside_first = [&](const CachedChunk &a, const CachedChunk &b) {
+      |                          ^
+src/chunk_cache.cpp:165:26: note: no known conversion for argument 1 from ‘jpe::CachedChunk*’ to ‘const jpe::CachedChunk&’
+src/terrain_api.cpp:134:5: error: ‘ChunkCache’ does not name a type
+  134 |     ChunkCache cache;
+      |     ^~~~~~~~~~
+src/terrain_api.cpp:158:34: error: ‘HandleView’ has not been declared; did you mean ‘Handle’?
+  158 | bool resolve_handle(uint64_t id, HandleView *out) {
+      |                                  ^~~~~~~~~~
+      |                                  Handle
+src/terrain_api.cpp: In function ‘bool {anonymous}::jpe::resolve_handle(uint64_t, int*)’:
+src/terrain_api.cpp:162:10: error: request for member ‘gen’ in ‘* out’, which is of non-class type ‘int’
+  162 |     out->gen = &h->gen;
+      |          ^~~
+src/terrain_api.cpp:163:10: error: request for member ‘cache’ in ‘* out’, which is of non-class type ‘int’
+  163 |     out->cache = &h->cache;
+      |          ^~~~~
+src/terrain_api.cpp:163:22: error: ‘struct {anonymous}::Handle’ has no member named ‘cache’
+  163 |     out->cache = &h->cache;
+      |                      ^~~~~
+src/terrain_api.cpp:164:10: error: request for member ‘bytes_per_chunk’ in ‘* out’, which is of non-class type ‘int’
+  164 |     out->bytes_per_chunk = h->cfg.chunk_blocks() * sizeof(uint16_t);
+      |          ^~~~~~~~~~~~~~~
+src/terrain_api.cpp: At global scope:
+src/terrain_api.cpp:171:40: error: ‘BLOCK_COUNT’ is not a member of ‘{anonymous}::jpe’; did you mean ‘jpe::BLOCK_COUNT’?
+  171 | constexpr const char *kBlockNames[jpe::BLOCK_COUNT] = {
+      |                                        ^~~~~~~~~~~
+In file included from src/chunk_cache.h:36,
+                 from src/terrain_api.cpp:15:
+src/jpe_terrain_internal.h:51:5: note: ‘jpe::BLOCK_COUNT’ declared here
+   51 |     BLOCK_COUNT = 28
+      |     ^~~~~~~~~~~
+src/terrain_api.cpp: In function ‘int32_t jpe_terrain_stats(uint64_t, JpeTerrainStats*)’:
+src/terrain_api.cpp:348:46: error: reference to ‘jpe’ is ambiguous
+  348 |     out->biome_count = static_cast<uint32_t>(jpe::BIOME_COUNT);
+      |                                              ^~~
+src/terrain_api.cpp:157:11: note: candidates are: ‘namespace <unnamed>::jpe { }’
+  157 | namespace jpe {
+      |           ^~~
+src/jpe_terrain_internal.h:16:11: note:                 ‘namespace jpe { }’
+   16 | namespace jpe {
+      |           ^~~
+src/terrain_api.cpp: In function ‘const char* jpe_terrain_block_name(uint16_t)’:
+src/terrain_api.cpp:353:15: error: reference to ‘jpe’ is ambiguous
+  353 |     if (id >= jpe::BLOCK_COUNT) return "unknown";
+      |               ^~~
+src/terrain_api.cpp:157:11: note: candidates are: ‘namespace <unnamed>::jpe { }’
+  157 | namespace jpe {
+      |           ^~~
+src/jpe_terrain_internal.h:16:11: note:                 ‘namespace jpe { }’
+   16 | namespace jpe {
+      |           ^~~
+src/terrain_api.cpp:354:12: error: ‘kBlockNames’ was not declared in this scope
+  354 |     return kBlockNames[id];
+      |            ^~~~~~~~~~~
+src/terrain_api.cpp: In function ‘const char* jpe_terrain_biome_name(int32_t)’:
+src/terrain_api.cpp:358:12: error: reference to ‘jpe’ is ambiguous
+  358 |     return jpe::biome_def(id).name;
+      |            ^~~
+src/terrain_api.cpp:157:11: note: candidates are: ‘namespace <unnamed>::jpe { }’
+  157 | namespace jpe {
+      |           ^~~
+src/jpe_terrain_internal.h:16:11: note:                 ‘namespace jpe { }’
+   16 | namespace jpe {
+      |           ^~~
+src/terrain_api.cpp: At global scope:
+src/terrain_api.cpp:158:6: error: ‘bool {anonymous}::jpe::resolve_handle(uint64_t, int*)’ defined but not used [-Werror=unused-function]
+  158 | bool resolve_handle(uint64_t id, HandleView *out) {
+      |      ^~~~~~~~~~~~~~
+cc1plus: all warnings being treated as errors
+exit=1
+
+===== link so + nm =====
+In file included from /usr/include/c++/15/bits/stl_algobase.h:71,
+                 from /usr/include/c++/15/bits/hashtable_policy.h:36,
+                 from /usr/include/c++/15/bits/hashtable.h:37,
+                 from /usr/include/c++/15/bits/unordered_map.h:33,
+                 from /usr/include/c++/15/unordered_map:43,
+                 from src/chunk_cache.h:33,
+                 from src/chunk_cache.cpp:1:
+/usr/include/c++/15/bits/predefined_ops.h: In instantiation of ‘constexpr bool __gnu_cxx::__ops::_Iter_comp_iter<_Compare>::operator()(_Iterator1, _Iterator2) [with _Iterator1 = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, std::vector<jpe::CachedChunk*> >; _Iterator2 = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, std::vector<jpe::CachedChunk*> >; _Compare = jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>]’:
+/usr/include/c++/15/bits/stl_algo.h:1778:14:   required from ‘constexpr void std::__insertion_sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1778 |           if (__comp(__i, __first))
+      |               ~~~~~~^~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1818:25:   required from ‘constexpr void std::__final_insertion_sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1818 |           std::__insertion_sort(__first, __first + int(_S_threshold), __comp);
+      |           ~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1909:31:   required from ‘constexpr void std::__sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1909 |           std::__final_insertion_sort(__first, __last, __comp);
+      |           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:4874:18:   required from ‘constexpr void std::sort(_RAIter, _RAIter, _Compare) [with _RAIter = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>]’
+ 4874 |       std::__sort(__first, __last, __gnu_cxx::__ops::__iter_comp_iter(__comp));
+      |       ~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/chunk_cache.cpp:179:14:   required from here
+  179 |     std::sort(order.begin(), order.end(), outside_first);
+      |     ~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/predefined_ops.h:158:30: error: no match for call to ‘(jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>) (jpe::CachedChunk*&, jpe::CachedChunk*&)’
+  158 |         { return bool(_M_comp(*__it1, *__it2)); }
+      |                       ~~~~~~~^~~~~~~~~~~~~~~~
+src/chunk_cache.cpp:165:28: note: there is 1 candidate
+  165 |     auto outside_first = [&](const CachedChunk &a, const CachedChunk &b) {
+      |                            ^
+src/chunk_cache.cpp:165:26: note: candidate 1: ‘jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>’
+  165 |     auto outside_first = [&](const CachedChunk &a, const CachedChunk &b) {
+      |                          ^
+src/chunk_cache.cpp:165:26: note: no known conversion for argument 1 from ‘jpe::CachedChunk*’ to ‘const jpe::CachedChunk&’
+/usr/include/c++/15/bits/predefined_ops.h: In instantiation of ‘constexpr bool __gnu_cxx::__ops::_Val_comp_iter<_Compare>::operator()(_Value&, _Iterator) [with _Value = jpe::CachedChunk*; _Iterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, std::vector<jpe::CachedChunk*> >; _Compare = jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>]’:
+/usr/include/c++/15/bits/stl_algo.h:1758:20:   required from ‘constexpr void std::__unguarded_linear_insert(_RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Val_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1758 |       while (__comp(__val, __next))
+      |              ~~~~~~^~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1786:36:   required from ‘constexpr void std::__insertion_sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1786 |             std::__unguarded_linear_insert(__i,
+      |             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~
+ 1787 |                                 __gnu_cxx::__ops::__val_comp_iter(__comp));
+      |                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1818:25:   required from ‘constexpr void std::__final_insertion_sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1818 |           std::__insertion_sort(__first, __first + int(_S_threshold), __comp);
+      |           ~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1909:31:   required from ‘constexpr void std::__sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1909 |           std::__final_insertion_sort(__first, __last, __comp);
+      |           ~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:4874:18:   required from ‘constexpr void std::sort(_RAIter, _RAIter, _Compare) [with _RAIter = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>]’
+ 4874 |       std::__sort(__first, __last, __gnu_cxx::__ops::__iter_comp_iter(__comp));
+      |       ~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/chunk_cache.cpp:179:14:   required from here
+  179 |     std::sort(order.begin(), order.end(), outside_first);
+      |     ~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/predefined_ops.h:240:30: error: no match for call to ‘(jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>) (jpe::CachedChunk*&, jpe::CachedChunk*&)’
+  240 |         { return bool(_M_comp(__val, *__it)); }
+      |                       ~~~~~~~^~~~~~~~~~~~~~
+src/chunk_cache.cpp:165:28: note: there is 1 candidate
+  165 |     auto outside_first = [&](const CachedChunk &a, const CachedChunk &b) {
+      |                            ^
+src/chunk_cache.cpp:165:26: note: candidate 1: ‘jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>’
+  165 |     auto outside_first = [&](const CachedChunk &a, const CachedChunk &b) {
+      |                          ^
+src/chunk_cache.cpp:165:26: note: no known conversion for argument 1 from ‘jpe::CachedChunk*’ to ‘const jpe::CachedChunk&’
+/usr/include/c++/15/bits/predefined_ops.h: In instantiation of ‘constexpr bool __gnu_cxx::__ops::_Iter_comp_val<_Compare>::operator()(_Iterator, _Value&) [with _Iterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, std::vector<jpe::CachedChunk*> >; _Value = jpe::CachedChunk*; _Compare = jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>]’:
+/usr/include/c++/15/bits/stl_heap.h:140:48:   required from ‘constexpr void std::__push_heap(_RandomAccessIterator, _Distance, _Distance, _Tp, _Compare&) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Distance = long int; _Tp = jpe::CachedChunk*; _Compare = __gnu_cxx::__ops::_Iter_comp_val<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+  140 |       while (__holeIndex > __topIndex && __comp(__first + __parent, __value))
+      |                                          ~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_heap.h:247:23:   required from ‘constexpr void std::__adjust_heap(_RandomAccessIterator, _Distance, _Distance, _Tp, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Distance = long int; _Tp = jpe::CachedChunk*; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+  247 |       std::__push_heap(__first, __holeIndex, __topIndex,
+      |       ~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  248 |                        _GLIBCXX_MOVE(__value), __cmp);
+      |                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_heap.h:356:22:   required from ‘constexpr void std::__make_heap(_RandomAccessIterator, _RandomAccessIterator, _Compare&) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+  356 |           std::__adjust_heap(__first, __parent, __len, _GLIBCXX_MOVE(__value),
+      |           ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  357 |                              __comp);
+      |                              ~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1594:23:   required from ‘constexpr void std::__heap_select(_RandomAccessIterator, _RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1594 |       std::__make_heap(__first, __middle, __comp);
+      |       ~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1869:25:   required from ‘constexpr void std::__partial_sort(_RandomAccessIterator, _RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1869 |       std::__heap_select(__first, __middle, __last, __comp);
+      |       ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1885:27:   required from ‘constexpr void std::__introsort_loop(_RandomAccessIterator, _RandomAccessIterator, _Size, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Size = long int; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1885 |               std::__partial_sort(__first, __last, __last, __comp);
+      |               ~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:1906:25:   required from ‘constexpr void std::__sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)> >]’
+ 1906 |           std::__introsort_loop(__first, __last,
+      |           ~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~
+ 1907 |                                 std::__lg(__last - __first) * 2,
+      |                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ 1908 |                                 __comp);
+      |                                 ~~~~~~~
+/usr/include/c++/15/bits/stl_algo.h:4874:18:   required from ‘constexpr void std::sort(_RAIter, _RAIter, _Compare) [with _RAIter = __gnu_cxx::__normal_iterator<jpe::CachedChunk**, vector<jpe::CachedChunk*> >; _Compare = jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>]’
+ 4874 |       std::__sort(__first, __last, __gnu_cxx::__ops::__iter_comp_iter(__comp));
+      |       ~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/chunk_cache.cpp:179:14:   required from here
+  179 |     std::sort(order.begin(), order.end(), outside_first);
+      |     ~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/usr/include/c++/15/bits/predefined_ops.h:196:30: error: no match for call to ‘(jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>) (jpe::CachedChunk*&, jpe::CachedChunk*&)’
+  196 |         { return bool(_M_comp(*__it, __val)); }
+      |                       ~~~~~~~^~~~~~~~~~~~~~
+src/chunk_cache.cpp:165:28: note: there is 1 candidate
+  165 |     auto outside_first = [&](const CachedChunk &a, const CachedChunk &b) {
+      |                            ^
+src/chunk_cache.cpp:165:26: note: candidate 1: ‘jpe::ChunkCache::stream_window(jpe::Generator&, int32_t, int32_t, int32_t, int32_t)::<lambda(const jpe::CachedChunk&, const jpe::CachedChunk&)>’
+  165 |     auto outside_first = [&](const CachedChunk &a, const CachedChunk &b) {
+      |                          ^
+src/chunk_cache.cpp:165:26: note: no known conversion for argument 1 from ‘jpe::CachedChunk*’ to ‘const jpe::CachedChunk&’
+src/terrain_api.cpp:134:5: error: ‘ChunkCache’ does not name a type
+  134 |     ChunkCache cache;
+      |     ^~~~~~~~~~
+src/terrain_api.cpp:158:34: error: ‘HandleView’ has not been declared; did you mean ‘Handle’?
+  158 | bool resolve_handle(uint64_t id, HandleView *out) {
+      |                                  ^~~~~~~~~~
+      |                                  Handle
+src/terrain_api.cpp: In function ‘bool {anonymous}::jpe::resolve_handle(uint64_t, int*)’:
+src/terrain_api.cpp:162:10: error: request for member ‘gen’ in ‘* out’, which is of non-class type ‘int’
+  162 |     out->gen = &h->gen;
+      |          ^~~
+src/terrain_api.cpp:163:10: error: request for member ‘cache’ in ‘* out’, which is of non-class type ‘int’
+  163 |     out->cache = &h->cache;
+      |          ^~~~~
+src/terrain_api.cpp:163:22: error: ‘struct {anonymous}::Handle’ has no member named ‘cache’
+  163 |     out->cache = &h->cache;
+      |                      ^~~~~
+src/terrain_api.cpp:164:10: error: request for member ‘bytes_per_chunk’ in ‘* out’, which is of non-class type ‘int’
+  164 |     out->bytes_per_chunk = h->cfg.chunk_blocks() * sizeof(uint16_t);
+      |          ^~~~~~~~~~~~~~~
+src/terrain_api.cpp: At global scope:
+src/terrain_api.cpp:171:40: error: ‘BLOCK_COUNT’ is not a member of ‘{anonymous}::jpe’; did you mean ‘jpe::BLOCK_COUNT’?
+  171 | constexpr const char *kBlockNames[jpe::BLOCK_COUNT] = {
+      |                                        ^~~~~~~~~~~
+In file included from src/chunk_cache.h:36,
+                 from src/terrain_api.cpp:15:
+src/jpe_terrain_internal.h:51:5: note: ‘jpe::BLOCK_COUNT’ declared here
+   51 |     BLOCK_COUNT = 28
+      |     ^~~~~~~~~~~
+src/terrain_api.cpp: In function ‘int32_t jpe_terrain_stats(uint64_t, JpeTerrainStats*)’:
+src/terrain_api.cpp:348:46: error: reference to ‘jpe’ is ambiguous
+  348 |     out->biome_count = static_cast<uint32_t>(jpe::BIOME_COUNT);
+      |                                              ^~~
+src/terrain_api.cpp:157:11: note: candidates are: ‘namespace <unnamed>::jpe { }’
+  157 | namespace jpe {
+      |           ^~~
+src/jpe_terrain_internal.h:16:11: note:                 ‘namespace jpe { }’
+   16 | namespace jpe {
+      |           ^~~
+src/terrain_api.cpp: In function ‘const char* jpe_terrain_block_name(uint16_t)’:
+src/terrain_api.cpp:353:15: error: reference to ‘jpe’ is ambiguous
+  353 |     if (id >= jpe::BLOCK_COUNT) return "unknown";
+      |               ^~~
+src/terrain_api.cpp:157:11: note: candidates are: ‘namespace <unnamed>::jpe { }’
+  157 | namespace jpe {
+      |           ^~~
+src/jpe_terrain_internal.h:16:11: note:                 ‘namespace jpe { }’
+   16 | namespace jpe {
+      |           ^~~
+src/terrain_api.cpp:354:12: error: ‘kBlockNames’ was not declared in this scope
+  354 |     return kBlockNames[id];
+      |            ^~~~~~~~~~~
+src/terrain_api.cpp: In function ‘const char* jpe_terrain_biome_name(int32_t)’:
+src/terrain_api.cpp:358:12: error: reference to ‘jpe’ is ambiguous
+  358 |     return jpe::biome_def(id).name;
+      |            ^~~
+src/terrain_api.cpp:157:11: note: candidates are: ‘namespace <unnamed>::jpe { }’
+  157 | namespace jpe {
+      |           ^~~
+src/jpe_terrain_internal.h:16:11: note:                 ‘namespace jpe { }’
+   16 | namespace jpe {
+      |           ^~~
+src/terrain_api.cpp: At global scope:
+src/terrain_api.cpp:158:6: error: ‘bool {anonymous}::jpe::resolve_handle(uint64_t, int*)’ defined but not used [-Werror=unused-function]
+  158 | bool resolve_handle(uint64_t id, HandleView *out) {
+      |      ^~~~~~~~~~~~~~
+cc1plus: all warnings being treated as errors
+exit=1
