@@ -6,6 +6,13 @@ use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
+
+// Terrain worldgen bindings: the native C++ generator and its streaming cache.
+// Kept in its own module on purpose -- `lib.rs` is already large, and these
+// bindings have their own unsafe surface (raw chunk pointers, borrowed slices)
+// that deserves to be read in isolation.
+pub mod terrain_ffi;
+
 const ABI_VERSION: u32 = 8;
 const STATUS_OK: i32 = 0;
 const STATUS_INVALID_ARGUMENT: i32 = 1;
@@ -4459,4 +4466,142 @@ mod tests {
         assert_eq!(unsafe { jpe_runtime_density_graph_release(precision_handle) }, STATUS_OK);
     }
 
+}
+
+
+#[cfg(test)]
+mod terrain_link_tests {
+    use crate::terrain_ffi::{
+        native_terrain_abi, native_default_config, TerrainConfig, TerrainEngine,
+        CHUNK_BLOCKS_DEFAULT_HEIGHT, TERRAIN_CONFIG_BYTES, TERRAIN_STREAM_ABI_VERSION,
+    };
+
+    /// The two ABI numbers are maintained by hand on both sides. If they ever
+    /// drift, every other test in this module is meaningless.
+    #[test]
+    fn terrain_abi_versions_match() {
+        let abi = native_terrain_abi();
+        assert_eq!(
+            abi.stream, TERRAIN_STREAM_ABI_VERSION,
+            "Rust expects stream ABI {}, C++ reports {}",
+            TERRAIN_STREAM_ABI_VERSION, abi.stream
+        );
+        assert!(
+            abi.generator >= 1,
+            "generator ABI too old: {}",
+            abi.generator
+        );
+    }
+
+    /// Field order and widths must match `JpeTerrainConfig` byte for byte. A
+    /// mismatch here does not fail loudly -- it produces a config with a
+    /// plausible-looking seed and a nonsense height.
+    #[test]
+    fn rust_defaults_match_cpp_defaults() {
+        use std::mem::{align_of, size_of};
+        assert_eq!(size_of::<TerrainConfig>(), TERRAIN_CONFIG_BYTES);
+        assert_eq!(align_of::<TerrainConfig>(), 8);
+
+        let ours = TerrainConfig::overworld(0);
+        let theirs = native_default_config();
+        assert_eq!(ours.min_y, theirs.min_y, "min_y drifted");
+        assert_eq!(ours.height, theirs.height, "height drifted");
+        assert_eq!(ours.sea_level, theirs.sea_level, "sea_level drifted");
+        assert_eq!(ours.lava_level, theirs.lava_level, "lava_level drifted");
+        assert_eq!(ours.stages, theirs.stages, "stages drifted");
+    }
+
+    /// The chunk size is baked into pointer arithmetic on both sides.
+    #[test]
+    fn chunk_geometry_is_as_documented() {
+        let engine = TerrainEngine::overworld(1).expect("create");
+        assert_eq!(engine.chunk_blocks(), CHUNK_BLOCKS_DEFAULT_HEIGHT);
+        assert_eq!(engine.chunk_bytes(), CHUNK_BLOCKS_DEFAULT_HEIGHT as usize * 2);
+    }
+
+    /// The whole point of the cache: reading a chunk through it must equal
+    /// generating that chunk directly. Anything else means corrupted terrain.
+    #[test]
+    fn cached_chunk_matches_direct_chunk() {
+        let mut engine = TerrainEngine::overworld(42).expect("create");
+        engine.set_budget(32 * 1024 * 1024).expect("budget");
+        engine.stream(0, 0, 2, 0).expect("stream");
+
+        let mut direct = vec![0u16; engine.chunk_blocks() as usize];
+
+        for cz in -1..=1i32 {
+            for cx in -1..=1i32 {
+                engine.generate_chunk(cx, cz, &mut direct).expect("generate");
+                let cached = engine.acquire(cx, cz).expect("acquire");
+                assert_eq!(direct.len(), cached.len(), "length at {},{}", cx, cz);
+                assert!(
+                    direct.iter().eq(cached.iter()),
+                    "cached chunk differs from direct chunk at {},{}",
+                    cx,
+                    cz
+                );
+                engine.release(cx, cz);
+            }
+        }
+    }
+
+    /// Streaming a second, adjacent window must cost less than the window
+    /// itself: only the difference is generated. This is the property that
+    /// makes continuous loading cheap, so it is asserted rather than assumed.
+    #[test]
+    fn moving_the_window_generates_only_the_difference() {
+        let mut engine = TerrainEngine::overworld(7).expect("create");
+        engine.set_budget(96 * 1024 * 1024).expect("budget");
+
+        let radius = 4i32;
+        let window = ((2 * radius + 1) * (2 * radius + 1)) as i32;
+        let first = engine.stream(0, 0, radius, 0).expect("first stream");
+        assert_eq!(first, window, "first stream should generate the whole window");
+
+        // One chunk to the right: a column leaves and a column enters.
+        let second = engine.stream(1, 0, radius, 0).expect("second stream");
+        let column = (2 * radius + 1) as i32;
+        assert!(
+            second <= column,
+            "moving one chunk generated {} chunks, expected at most {}",
+            second,
+            column
+        );
+    }
+
+    /// The budget must hold: resident never exceeds capacity, no matter how
+    /// far the window travels.
+    #[test]
+    fn resident_never_exceeds_capacity() {
+        let mut engine = TerrainEngine::overworld(11).expect("create");
+        // Two chunks' worth: the cache must evict on every move.
+        let per_chunk = engine.chunk_bytes();
+        engine.set_budget(per_chunk * 2).expect("budget");
+
+        for step in 0..6i32 {
+            engine.stream(step, 0, 3, 0).expect("stream");
+            let stats = engine.stats().expect("stats");
+            assert!(
+                stats.resident <= stats.capacity,
+                "resident {} > capacity {} at step {}",
+                stats.resident,
+                stats.capacity,
+                step
+            );
+        }
+    }
+
+    /// A budget smaller than one chunk disables the cache outright instead of
+    /// pretending to work. acquire must then fail rather than return garbage.
+    #[test]
+    fn budget_below_one_chunk_disables_the_cache() {
+        let mut engine = TerrainEngine::overworld(3).expect("create");
+        let per_chunk = engine.chunk_bytes();
+        engine.set_budget(per_chunk - 1).expect("budget accepted");
+
+        assert!(
+            engine.acquire(0, 0).is_none(),
+            "acquire succeeded with a budget of zero chunks"
+        );
+    }
 }
