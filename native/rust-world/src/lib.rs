@@ -85,6 +85,11 @@ pub mod terrain_source;
 #[cfg(feature = "cpp-bridge")]
 pub mod native_terrain_source;
 
+// Where a pipeline's blocks come from, behind one switch. Defaults to the
+// host-driven path so an unset flag never changes behaviour.
+#[cfg(feature = "cpp-bridge")]
+pub mod terrain_path;
+
 pub use chunk::{ChunkEntry, ChunkState, ChunkStore, ChunkStoreError, WorldEpoch};
 pub use coords::{
     BlockPos, ChunkPos, SectionPos, MAX_SECTION_Y, MIN_SECTION_Y, MIN_Y, SECTION_COUNT, WORLD_HEIGHT,
