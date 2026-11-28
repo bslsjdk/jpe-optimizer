@@ -12,6 +12,10 @@
 //! when no render backend is available. A fallback would let a broken native
 //! path still "pass", which is the failure mode this file exists to rule out.
 //!
+//! Declared with `required-features = ["cpp-bridge"]` in Cargo.toml, because
+//! `terrain_path` does not exist without the feature; a default-feature build
+//! must skip this example rather than fail on a missing module.
+//!
 //! Exit status is the contract: 0 only if a non-empty frame was drawn.
 
 use jpe_world::coords::{ChunkPos, MIN_SECTION_Y};
@@ -19,6 +23,62 @@ use jpe_world::pipeline::{Camera, PipelineConfig, WorldPipeline};
 use jpe_world::render::{create_best_headless, mat4_mul, Mat4, Renderer};
 use jpe_world::terrain_gen::TerrainConfig;
 use jpe_world::terrain_path::{TerrainPath, TerrainSource};
+
+/// Perspective view-projection with a 0..1 depth range (Vulkan convention).
+///
+/// Local to this example, matching `native_world`'s helper: `Mat4` is a bare
+/// `[f32; 16]` and the crate exposes only `mat4_mul`, so there is no shared
+/// camera builder to call.
+fn perspective_look_at(
+    eye: [f32; 3],
+    target: [f32; 3],
+    up: [f32; 3],
+    fov_y_degrees: f32,
+    aspect: f32,
+    near: f32,
+    far: f32,
+) -> Option<Mat4> {
+    let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let cross = |a: [f32; 3], b: [f32; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let normalize = |v: [f32; 3]| {
+        let len = dot(v, v).sqrt();
+        if len <= f32::EPSILON {
+            None
+        } else {
+            Some([v[0] / len, v[1] / len, v[2] / len])
+        }
+    };
+
+    let f = normalize(sub(target, eye))?;
+    let s = normalize(cross(f, up))?;
+    let u = cross(s, f);
+    if aspect <= 0.0 || far <= near || fov_y_degrees <= 0.0 || fov_y_degrees >= 180.0 {
+        return None;
+    }
+
+    let view: Mat4 = [
+        s[0], u[0], -f[0], 0.0, //
+        s[1], u[1], -f[1], 0.0, //
+        s[2], u[2], -f[2], 0.0, //
+        -dot(s, eye), -dot(u, eye), dot(f, eye), 1.0,
+    ];
+
+    let f_scale = 1.0 / (fov_y_degrees.to_radians() * 0.5).tan();
+    let proj: Mat4 = [
+        f_scale / aspect, 0.0, 0.0, 0.0, //
+        0.0, f_scale, 0.0, 0.0, //
+        0.0, 0.0, far / (near - far), -1.0, //
+        0.0, 0.0, far * near / (near - far), 0.0,
+    ];
+    Some(mat4_mul(&proj, &view))
+}
 
 fn main() {
     let config = TerrainConfig {
@@ -70,11 +130,16 @@ fn main() {
     };
     println!("backend: {:?}", renderer.capabilities().backend);
 
-    let aspect = 1.0f32;
-    let proj = Mat4::perspective(60f32.to_radians(), aspect, 0.1, 2000.0);
-    let view = Mat4::look_at([40.0, 90.0, 40.0], [0.0, 40.0, 0.0], [0.0, 1.0, 0.0]);
+    let eye = [40.0f32, 90.0, 40.0];
+    let view_proj = match perspective_look_at(eye, [0.0, 40.0, 0.0], [0.0, 1.0, 0.0], 60.0, 1.0, 0.1, 2000.0) {
+        Some(m) => m,
+        None => {
+            eprintln!("FAIL: could not build the camera");
+            std::process::exit(1);
+        }
+    };
     let cam = Camera {
-        view_proj: mat4_mul(proj, view),
+        view_proj,
         eye: [0.0, 96.0, 0.0],
     };
 

@@ -25,3 +25,11 @@ cc = "1.2"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# This example imports `terrain_path`, which is `#[cfg(feature = "cpp-bridge")]`.
+# Without `required-features` a plain `cargo build --all-targets` would try to
+# compile it and fail on a missing module -- so the feature gate has to be
+# declared here, not just on the module.
+[[example]]
+name = "native_terrain_world"
+required-features = ["cpp-bridge"]
