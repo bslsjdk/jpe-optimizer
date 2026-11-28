@@ -1,1 +1,198 @@
-===== 1G cap =====
+===== 1G heap: budget sweep at radius 20 =====
+##### cap=3145728KB budget=128MB radius=20
+stream_abi=2 chunk_bytes=196608 budget_mb=128 radius=20 moves=6
+cache_config rc=0
+planned capacity=682 chunks (budget=134086656 bytes)
+window=1681 chunks window_bytes=330498048 fits=NO
+move=0 gen=1373 resident=682 cap=682 hits=586 miss=1095 evict=1786 gen_total=2468 streamed=1373 reject=0 rss_mb=134
+move=1 gen=1236 resident=682 cap=682 hits=975 miss=2511 evict=4438 gen_total=5120 streamed=2609 reject=0 rss_mb=134
+move=2 gen=1239 resident=682 cap=682 hits=1427 miss=3865 evict=7031 gen_total=7713 streamed=3848 reject=0 rss_mb=134
+move=3 gen=1176 resident=682 cap=682 hits=1904 miss=5252 evict=9594 gen_total=10276 streamed=5024 reject=0 rss_mb=134
+move=4 gen=1336 resident=682 cap=682 hits=2003 miss=6865 evict=12543 gen_total=13225 streamed=6360 reject=0 rss_mb=134
+move=5 gen=1286 resident=682 cap=682 hits=2281 miss=8351 evict=15315 gen_total=15997 streamed=7646 reject=0 rss_mb=134
+RESULT budget_mb=128 radius=20 capacity=682 resident=682 checks=10086 failed=0 peak_rss_mb=134 sum=131118
+run_exit=0
+##### cap=3145728KB budget=192MB radius=20
+stream_abi=2 chunk_bytes=196608 budget_mb=192 radius=20 moves=6
+cache_config rc=0
+planned capacity=1024 chunks (budget=201326592 bytes)
+window=1681 chunks window_bytes=330498048 fits=NO
+move=0 gen=1373 resident=1024 cap=1024 hits=888 miss=793 evict=1142 gen_total=2166 streamed=1373 reject=0 rss_mb=199
+move=1 gen=1126 resident=1024 cap=1024 hits=1522 miss=2062 evict=3537 gen_total=4561 streamed=2499 reject=0 rss_mb=199
+move=2 gen=1179 resident=1024 cap=1024 hits=2177 miss=3269 evict=5923 gen_total=6947 streamed=3678 reject=0 rss_mb=199
+move=3 gen=1088 resident=1024 cap=1024 hits=2905 miss=4490 evict=8232 gen_total=9256 streamed=4766 reject=0 rss_mb=199
+move=4 gen=1298 resident=1024 cap=1024 hits=3104 miss=6034 evict=11074 gen_total=12098 streamed=6064 reject=0 rss_mb=199
+move=5 gen=1269 resident=1024 cap=1024 hits=3449 miss=7466 evict=13775 gen_total=14799 streamed=7333 reject=0 rss_mb=199
+RESULT budget_mb=192 radius=20 capacity=1024 resident=1024 checks=10086 failed=0 peak_rss_mb=199 sum=131118
+run_exit=0
+##### cap=3145728KB budget=256MB radius=20
+stream_abi=2 chunk_bytes=196608 budget_mb=256 radius=20 moves=6
+cache_config rc=0
+planned capacity=1365 chunks (budget=268369920 bytes)
+window=1681 chunks window_bytes=330498048 fits=NO
+move=0 gen=1373 resident=1365 cap=1365 hits=1263 miss=418 evict=426 gen_total=1791 streamed=1373 reject=0 rss_mb=265
+move=1 gen=747 resident=1365 cap=1365 hits=2592 miss=1355 evict=2110 gen_total=3475 streamed=2120 reject=0 rss_mb=265
+move=2 gen=1306 resident=1365 cap=1365 hits=2981 miss=2700 evict=4761 gen_total=6126 streamed=3426 reject=0 rss_mb=265
+move=3 gen=1097 resident=1365 cap=1365 hits=3778 miss=3850 evict=7008 gen_total=8373 streamed=4523 reject=0 rss_mb=265
+move=4 gen=1083 resident=1365 cap=1365 hits=4425 miss=5142 evict=9383 gen_total=10748 streamed=5606 reject=0 rss_mb=265
+move=5 gen=1169 resident=1365 cap=1365 hits=4912 miss=6519 evict=11929 gen_total=13294 streamed=6775 reject=0 rss_mb=265
+RESULT budget_mb=256 radius=20 capacity=1365 resident=1365 checks=10086 failed=0 peak_rss_mb=265 sum=131118
+run_exit=0
+##### cap=3145728KB budget=320MB radius=20
+stream_abi=2 chunk_bytes=196608 budget_mb=320 radius=20 moves=6
+cache_config rc=0
+planned capacity=1706 chunks (budget=335413248 bytes)
+window=1681 chunks window_bytes=330498048 fits=yes
+move=0 gen=1373 resident=1685 cap=1706 hits=1369 miss=312 evict=0 gen_total=1685 streamed=1373 reject=0 rss_mb=326
+move=1 gen=714 resident=1706 cap=1706 hits=2829 miss=1144 evict=1525 gen_total=3231 streamed=2087 reject=0 rss_mb=330
+move=2 gen=1280 resident=1706 cap=1706 hits=3347 miss=2386 evict=4047 gen_total=5753 streamed=3367 reject=0 rss_mb=330
+move=3 gen=1018 resident=1706 cap=1706 hits=4329 miss=3418 evict=6097 gen_total=7803 streamed=4385 reject=0 rss_mb=330
+move=4 gen=1015 resident=1706 cap=1706 hits=5138 miss=4614 evict=8308 gen_total=10014 streamed=5400 reject=0 rss_mb=330
+move=5 gen=1149 resident=1706 cap=1706 hits=5663 miss=5968 evict=10811 gen_total=12517 streamed=6549 reject=0 rss_mb=330
+RESULT budget_mb=320 radius=20 capacity=1706 resident=1706 checks=10086 failed=0 peak_rss_mb=330 sum=131118
+run_exit=0
+##### cap=3145728KB budget=384MB radius=20
+stream_abi=2 chunk_bytes=196608 budget_mb=384 radius=20 moves=6
+cache_config rc=0
+planned capacity=2048 chunks (budget=402653184 bytes)
+window=1681 chunks window_bytes=330498048 fits=yes
+move=0 gen=1373 resident=1685 cap=2048 hits=1369 miss=312 evict=0 gen_total=1685 streamed=1373 reject=0 rss_mb=326
+move=1 gen=666 resident=2048 cap=2048 hits=3188 miss=824 evict=815 gen_total=2863 streamed=2039 reject=0 rss_mb=395
+move=2 gen=1169 resident=2048 cap=2048 hits=3862 miss=2006 evict=3166 gen_total=5214 streamed=3208 reject=0 rss_mb=395
+move=3 gen=972 resident=2048 cap=2048 hits=4984 miss=2938 evict=5070 gen_total=7118 streamed=4180 reject=0 rss_mb=395
+move=4 gen=938 resident=2048 cap=2048 hits=5961 miss=4037 evict=7107 gen_total=9155 streamed=5118 reject=0 rss_mb=395
+move=5 gen=1109 resident=2048 cap=2048 hits=6562 miss=5347 evict=9526 gen_total=11574 streamed=6227 reject=0 rss_mb=395
+RESULT budget_mb=384 radius=20 capacity=2048 resident=2048 checks=10086 failed=0 peak_rss_mb=395 sum=131118
+run_exit=0
+===== 1G heap: radius sweep at 256MB =====
+##### cap=3145728KB budget=256MB radius=8
+stream_abi=2 chunk_bytes=196608 budget_mb=256 radius=8 moves=6
+cache_config rc=0
+planned capacity=1365 chunks (budget=268369920 bytes)
+window=289 chunks window_bytes=56819712 fits=yes
+move=0 gen=253 resident=293 cap=1365 hits=249 miss=40 evict=0 gen_total=293 streamed=253 reject=0 rss_mb=59
+move=1 gen=118 resident=431 cap=1365 hits=626 miss=60 evict=0 gen_total=431 streamed=371 reject=0 rss_mb=86
+move=2 gen=118 resident=569 cap=1365 hits=1003 miss=80 evict=0 gen_total=569 streamed=489 reject=0 rss_mb=112
+move=3 gen=118 resident=707 cap=1365 hits=1380 miss=100 evict=0 gen_total=707 streamed=607 reject=0 rss_mb=139
+move=4 gen=116 resident=843 cap=1365 hits=1757 miss=120 evict=0 gen_total=843 streamed=723 reject=0 rss_mb=165
+move=5 gen=54 resident=907 cap=1365 hits=2192 miss=130 evict=0 gen_total=907 streamed=777 reject=0 rss_mb=177
+RESULT budget_mb=256 radius=8 capacity=1365 resident=907 checks=1734 failed=0 peak_rss_mb=177 sum=22542
+run_exit=0
+##### cap=3145728KB budget=256MB radius=12
+stream_abi=2 chunk_bytes=196608 budget_mb=256 radius=12 moves=6
+cache_config rc=0
+planned capacity=1365 chunks (budget=268369920 bytes)
+window=625 chunks window_bytes=122880000 fits=yes
+move=0 gen=529 resident=629 cap=1365 hits=525 miss=100 evict=0 gen_total=629 streamed=529 reject=0 rss_mb=124
+move=1 gen=252 resident=931 cap=1365 hits=1334 miss=150 evict=0 gen_total=931 streamed=781 reject=0 rss_mb=182
+move=2 gen=252 resident=1233 cap=1365 hits=2143 miss=200 evict=0 gen_total=1233 streamed=1033 reject=0 rss_mb=239
+move=3 gen=252 resident=1365 cap=1365 hits=2783 miss=419 evict=339 gen_total=1704 streamed=1285 reject=0 rss_mb=265
+move=4 gen=250 resident=1365 cap=1365 hits=3431 miss=630 evict=800 gen_total=2165 streamed=1535 reject=0 rss_mb=265
+move=5 gen=197 resident=1365 cap=1365 hits=4112 miss=857 evict=1224 gen_total=2589 streamed=1732 reject=0 rss_mb=265
+RESULT budget_mb=256 radius=12 capacity=1365 resident=1365 checks=3750 failed=0 peak_rss_mb=265 sum=48750
+run_exit=0
+##### cap=3145728KB budget=256MB radius=16
+stream_abi=2 chunk_bytes=196608 budget_mb=256 radius=16 moves=6
+cache_config rc=0
+planned capacity=1365 chunks (budget=268369920 bytes)
+window=1089 chunks window_bytes=214106112 fits=yes
+move=0 gen=901 resident=1093 cap=1365 hits=897 miss=192 evict=0 gen_total=1093 streamed=901 reject=0 rss_mb=213
+move=1 gen=434 resident=1365 cap=1365 hits=2105 miss=489 evict=459 gen_total=1824 streamed=1335 reject=0 rss_mb=265
+move=2 gen=741 resident=1365 cap=1365 hits=2478 miss=1337 evict=2048 gen_total=3413 streamed=2076 reject=0 rss_mb=265
+move=3 gen=777 resident=1365 cap=1365 hits=2852 miss=2164 evict=3652 gen_total=5017 streamed=2853 reject=0 rss_mb=265
+move=4 gen=490 resident=1365 cap=1365 hits=3713 miss=2770 evict=4748 gen_total=6113 streamed=3343 reject=0 rss_mb=265
+move=5 gen=652 resident=1365 cap=1365 hits=4216 miss=3584 evict=6214 gen_total=7579 streamed=3995 reject=0 rss_mb=265
+RESULT budget_mb=256 radius=16 capacity=1365 resident=1365 checks=6534 failed=0 peak_rss_mb=265 sum=84942
+run_exit=0
+##### cap=3145728KB budget=256MB radius=20
+stream_abi=2 chunk_bytes=196608 budget_mb=256 radius=20 moves=6
+cache_config rc=0
+planned capacity=1365 chunks (budget=268369920 bytes)
+window=1681 chunks window_bytes=330498048 fits=NO
+move=0 gen=1373 resident=1365 cap=1365 hits=1263 miss=418 evict=426 gen_total=1791 streamed=1373 reject=0 rss_mb=265
+move=1 gen=747 resident=1365 cap=1365 hits=2592 miss=1355 evict=2110 gen_total=3475 streamed=2120 reject=0 rss_mb=265
+move=2 gen=1306 resident=1365 cap=1365 hits=2981 miss=2700 evict=4761 gen_total=6126 streamed=3426 reject=0 rss_mb=265
+move=3 gen=1097 resident=1365 cap=1365 hits=3778 miss=3850 evict=7008 gen_total=8373 streamed=4523 reject=0 rss_mb=265
+move=4 gen=1083 resident=1365 cap=1365 hits=4425 miss=5142 evict=9383 gen_total=10748 streamed=5606 reject=0 rss_mb=265
+move=5 gen=1169 resident=1365 cap=1365 hits=4912 miss=6519 evict=11929 gen_total=13294 streamed=6775 reject=0 rss_mb=265
+RESULT budget_mb=256 radius=20 capacity=1365 resident=1365 checks=10086 failed=0 peak_rss_mb=265 sum=131118
+run_exit=0
+##### cap=3145728KB budget=256MB radius=24
+stream_abi=2 chunk_bytes=196608 budget_mb=256 radius=24 moves=6
+cache_config rc=0
+planned capacity=1365 chunks (budget=268369920 bytes)
+window=2401 chunks window_bytes=472055808 fits=NO
+move=0 gen=1961 resident=1365 cap=1365 hits=1272 miss=1129 evict=1725 gen_total=3090 streamed=1961 reject=0 rss_mb=265
+move=1 gen=1246 resident=1365 cap=1365 hits=2838 miss=2642 evict=4484 gen_total=5849 streamed=3207 reject=0 rss_mb=265
+move=2 gen=1834 resident=1365 cap=1365 hits=3381 miss=4607 evict=8283 gen_total=9648 streamed=5041 reject=0 rss_mb=265
+move=3 gen=1631 resident=1365 cap=1365 hits=4139 miss=6562 evict=11869 gen_total=13234 streamed=6672 reject=0 rss_mb=265
+move=4 gen=1688 resident=1365 cap=1365 hits=4843 miss=8492 evict=15487 gen_total=16852 streamed=8360 reject=0 rss_mb=265
+move=5 gen=1685 resident=1365 cap=1365 hits=5467 miss=10516 evict=19196 gen_total=20561 streamed=10045 reject=0 rss_mb=265
+RESULT budget_mb=256 radius=24 capacity=1365 resident=1365 checks=14406 failed=0 peak_rss_mb=265 sum=187278
+run_exit=0
+##### cap=3145728KB budget=256MB radius=28
+stream_abi=2 chunk_bytes=196608 budget_mb=256 radius=28 moves=6
+cache_config rc=0
+planned capacity=1365 chunks (budget=268369920 bytes)
+window=3249 chunks window_bytes=638779392 fits=NO
+move=0 gen=2629 resident=1365 cap=1365 hits=1282 miss=1967 evict=3231 gen_total=4596 streamed=2629 reject=0 rss_mb=265
+move=1 gen=1981 resident=1365 cap=1365 hits=2821 miss=4304 evict=7549 gen_total=8914 streamed=4610 reject=0 rss_mb=265
+move=2 gen=2418 resident=1365 cap=1365 hits=3582 miss=6993 evict=12656 gen_total=14021 streamed=7028 reject=0 rss_mb=265
+move=3 gen=2251 resident=1365 cap=1365 hits=4378 miss=9814 evict=17728 gen_total=19093 streamed=9279 reject=0 rss_mb=265
+move=4 gen=2426 resident=1365 cap=1365 hits=5034 miss=12577 evict=22917 gen_total=24282 streamed=11705 reject=0 rss_mb=265
+move=5 gen=2308 resident=1365 cap=1365 hits=5771 miss=15378 evict=28026 gen_total=29391 streamed=14013 reject=0 rss_mb=265
+RESULT budget_mb=256 radius=28 capacity=1365 resident=1365 checks=19494 failed=0 peak_rss_mb=265 sum=253422
+run_exit=0
+===== 2G heap: budget sweep at radius 28 =====
+##### cap=4194304KB budget=384MB radius=28
+stream_abi=2 chunk_bytes=196608 budget_mb=384 radius=28 moves=6
+cache_config rc=0
+planned capacity=2048 chunks (budget=402653184 bytes)
+window=3249 chunks window_bytes=638779392 fits=NO
+move=0 gen=2629 resident=2048 cap=2048 hits=1959 miss=1290 evict=1871 gen_total=3919 streamed=2629 reject=0 rss_mb=395
+move=1 gen=1838 resident=2048 cap=2048 hits=4049 miss=3199 evict=5618 gen_total=7666 streamed=4467 reject=0 rss_mb=395
+move=2 gen=2199 resident=2048 cap=2048 hits=5380 miss=5534 evict=10152 gen_total=12200 streamed=6666 reject=0 rss_mb=395
+move=3 gen=2100 resident=2048 cap=2048 hits=6576 miss=8090 evict=14808 gen_total=16856 streamed=8766 reject=0 rss_mb=395
+move=4 gen=2343 resident=2048 cap=2048 hits=7526 miss=10637 evict=19698 gen_total=21746 streamed=11109 reject=0 rss_mb=395
+move=5 gen=2192 resident=2048 cap=2048 hits=8558 miss=13247 evict=24500 gen_total=26548 streamed=13301 reject=0 rss_mb=395
+RESULT budget_mb=384 radius=28 capacity=2048 resident=2048 checks=19494 failed=0 peak_rss_mb=395 sum=253422
+run_exit=0
+##### cap=4194304KB budget=512MB radius=28
+stream_abi=2 chunk_bytes=196608 budget_mb=512 radius=28 moves=6
+cache_config rc=0
+planned capacity=2730 chunks (budget=536739840 bytes)
+window=3249 chunks window_bytes=638779392 fits=NO
+move=0 gen=2629 resident=2730 cap=2730 hits=2573 miss=676 evict=575 gen_total=3305 streamed=2629 reject=0 rss_mb=526
+move=1 gen=1508 resident=2730 cap=2730 hits=5007 miss=2553 evict=3960 gen_total=6690 streamed=4137 reject=0 rss_mb=526
+move=2 gen=2559 resident=2730 cap=2730 hits=5169 miss=5686 evict=9652 gen_total=12382 streamed=6696 reject=0 rss_mb=526
+move=3 gen=2629 resident=2730 cap=2730 hits=5169 miss=8935 evict=15530 gen_total=18260 streamed=9325 reject=0 rss_mb=526
+move=4 gen=1634 resident=2730 cap=2730 hits=7395 miss=10892 evict=19121 gen_total=21851 streamed=10959 reject=0 rss_mb=526
+move=5 gen=2067 resident=2730 cap=2730 hits=8632 miss=13424 evict=23720 gen_total=26450 streamed=13026 reject=0 rss_mb=526
+RESULT budget_mb=512 radius=28 capacity=2730 resident=2730 checks=19494 failed=0 peak_rss_mb=526 sum=253422
+run_exit=0
+##### cap=4194304KB budget=640MB radius=28
+stream_abi=2 chunk_bytes=196608 budget_mb=640 radius=28 moves=6
+cache_config rc=0
+planned capacity=3413 chunks (budget=671023104 bytes)
+window=3249 chunks window_bytes=638779392 fits=yes
+move=0 gen=2629 resident=3253 cap=3413 hits=2625 miss=624 evict=0 gen_total=3253 streamed=2629 reject=0 rss_mb=626
+move=1 gen=1309 resident=3413 cap=3413 hits=5619 miss=2116 evict=2641 gen_total=6054 streamed=3938 reject=0 rss_mb=657
+move=2 gen=2512 resident=3413 cap=3413 hits=5930 miss=5132 evict=8169 gen_total=11582 streamed=6450 reject=0 rss_mb=657
+move=3 gen=2629 resident=3413 cap=3413 hits=5939 miss=8372 evict=14038 gen_total=17451 streamed=9079 reject=0 rss_mb=657
+move=4 gen=1316 resident=3413 cap=3413 hits=8855 miss=9935 evict=16917 gen_total=20330 streamed=10395 reject=0 rss_mb=657
+move=5 gen=1886 resident=3413 cap=3413 hits=10448 miss=12287 evict=21155 gen_total=24568 streamed=12281 reject=0 rss_mb=657
+RESULT budget_mb=640 radius=28 capacity=3413 resident=3413 checks=19494 failed=0 peak_rss_mb=657 sum=253422
+run_exit=0
+##### cap=4194304KB budget=768MB radius=28
+stream_abi=2 chunk_bytes=196608 budget_mb=768 radius=28 moves=6
+cache_config rc=0
+planned capacity=4096 chunks (budget=805306368 bytes)
+window=3249 chunks window_bytes=638779392 fits=yes
+move=0 gen=2629 resident=3253 cap=4096 hits=2625 miss=624 evict=0 gen_total=3253 streamed=2629 reject=0 rss_mb=626
+move=1 gen=1286 resident=4096 cap=4096 hits=6308 miss=1446 evict=1265 gen_total=5361 streamed=3915 reject=0 rss_mb=788
+move=2 gen=2038 resident=4096 cap=4096 hits=7676 miss=3860 evict=5717 gen_total=9813 streamed=5953 reject=0 rss_mb=788
+move=3 gen=2596 resident=4096 cap=4096 hits=7752 miss=7058 evict=11511 gen_total=15607 streamed=8549 reject=0 rss_mb=788
+move=4 gen=1286 resident=4096 cap=4096 hits=10979 miss=8336 evict=14075 gen_total=18171 streamed=9835 reject=0 rss_mb=788
+move=5 gen=1722 resident=4096 cap=4096 hits=12907 miss=10506 evict=17967 gen_total=22063 streamed=11557 reject=0 rss_mb=788
+RESULT budget_mb=768 radius=28 capacity=4096 resident=4096 checks=19494 failed=0 peak_rss_mb=788 sum=253422
+run_exit=0
