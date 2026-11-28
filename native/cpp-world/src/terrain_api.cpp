@@ -152,6 +152,8 @@ Handle *lookup(uint64_t handle) {
     return it == g_handles.end() ? nullptr : it->second.get();
 }
 
+}  // namespace
+
 /// Streaming-layer bridge. Declared in jpe_terrain_handle.h; defined here
 /// because the handle map is internal to this translation unit.
 ///
