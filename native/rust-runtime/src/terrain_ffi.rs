@@ -31,6 +31,11 @@ pub const TERRAIN_STREAM_ABI_VERSION: u32 = 2;
 /// runtime and in the probe cannot drift apart.
 pub const CHUNK_BLOCKS_DEFAULT_HEIGHT: u64 = 16 * 16 * 384;
 
+/// Mirrors `JPE_TERRAIN_STAGE_ALL` on the C++ side. Zero also means
+/// "all" at runtime, but `jpe_terrain_default_config` hands back the
+/// explicit mask, so the byte-for-byte default comparison needs it.
+pub const TERRAIN_STAGE_ALL: u32 = 0x1F;
+
 /// Byte size of `JpeTerrainConfig` as the C++ side defines it:
 /// i64 + i32 + i32 + i32 + i32 + u32 + u32 = 8 + 4*4 + 4 + 4 = 32.
 pub const TERRAIN_CONFIG_BYTES: usize = 32;
@@ -66,7 +71,7 @@ impl TerrainConfig {
             height: 384,
             sea_level: 63,
             lava_level: -54,
-            stages: 0,
+            stages: TERRAIN_STAGE_ALL,
             threads: 0,
         }
     }

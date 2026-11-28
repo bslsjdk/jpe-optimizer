@@ -4473,7 +4473,8 @@ mod tests {
 mod terrain_link_tests {
     use crate::terrain_ffi::{
         native_terrain_abi, native_default_config, TerrainConfig, TerrainEngine,
-        CHUNK_BLOCKS_DEFAULT_HEIGHT, TERRAIN_CONFIG_BYTES, TERRAIN_STREAM_ABI_VERSION,
+        CHUNK_BLOCKS_DEFAULT_HEIGHT, TERRAIN_CONFIG_BYTES, TERRAIN_STAGE_ALL,
+        TERRAIN_STREAM_ABI_VERSION,
     };
 
     /// The two ABI numbers are maintained by hand on both sides. If they ever
@@ -4554,7 +4555,13 @@ mod terrain_link_tests {
         engine.set_budget(96 * 1024 * 1024).expect("budget");
 
         let radius = 4i32;
-        let window = ((2 * radius + 1) * (2 * radius + 1)) as i32;
+        // stream_window fills a disc of radius `radius`, not a square, so the
+        // first pass generates exactly the lattice points inside it (49 for
+        // r = 4); the prefetch ring is only used when the caller asks for one.
+        let window = (-radius..=radius)
+            .flat_map(|dz| (-radius..=radius).map(move |dx| (dx, dz)))
+            .filter(|&(dx, dz)| dx * dx + dz * dz <= radius * radius)
+            .count() as i32;
         let first = engine.stream(0, 0, radius, 0).expect("first stream");
         assert_eq!(first, window, "first stream should generate the whole window");
 
