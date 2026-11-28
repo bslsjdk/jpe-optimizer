@@ -1,4 +1,4 @@
-name: native terrain
+name: native terrain v2
 
 # The C++ world generator is a standalone library: no NeoForge, no Gradle, no
 # JVM. It deserves a build that reflects that, so a change to the generator or
