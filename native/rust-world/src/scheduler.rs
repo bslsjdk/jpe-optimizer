@@ -54,6 +54,29 @@ pub enum Completion {
     Missing,
 }
 
+/// State a chunk must still be in for a job of this `kind` to start. This is
+/// the state that queueing the job put it in; anything else means the entry is
+/// stale (unloaded, re-queued, or from another world epoch's lifecycle).
+fn expected_state(kind: JobKind) -> Option<ChunkState> {
+    match kind {
+        JobKind::GenerateTerrain => Some(ChunkState::TerrainQueued),
+        JobKind::BuildMesh | JobKind::RemeshMesh => Some(ChunkState::MeshQueued),
+        JobKind::UploadMesh => Some(ChunkState::MeshReady),
+        JobKind::Unload => Some(ChunkState::Unloading),
+    }
+}
+
+/// State the chunk moves to while a job of this `kind` runs. `Unload` keeps
+/// `Unloading` and is transitioned by `unload_now`, not here.
+fn in_progress_state(kind: JobKind) -> Option<ChunkState> {
+    match kind {
+        JobKind::GenerateTerrain => Some(ChunkState::TerrainGenerating),
+        JobKind::BuildMesh | JobKind::RemeshMesh => Some(ChunkState::Meshing),
+        JobKind::UploadMesh => Some(ChunkState::Uploaded),
+        JobKind::Unload => None,
+    }
+}
+
 pub struct SchedulerCore {
     store: ChunkStore,
     queue: BoundedJobQueue,
@@ -189,30 +212,42 @@ impl SchedulerCore {
     /// Pop the next runnable job and mark its chunk as in progress. Stale
     /// entries are skipped and counted.
     pub fn take_job(&mut self) -> Option<ChunkJob> {
+        self.take_job_where(|_| true)
+    }
+
+    /// [`Self::take_job`], but only for kinds `admissible` accepts.
+    ///
+    /// A head job of a declined kind is neither popped nor transitioned: it
+    /// stays queued and its chunk keeps its queued state, so a caller whose
+    /// per-frame budget for that kind is spent simply leaves it for the next
+    /// frame — no in-progress transition to roll back, no spurious state
+    /// change — while the other kinds queued behind it can still run.
+    /// Stale entries of every kind are discarded exactly as `take_job` does.
+    pub fn take_job_where(
+        &mut self,
+        mut admissible: impl FnMut(JobKind) -> bool,
+    ) -> Option<ChunkJob> {
         loop {
-            let job = self.queue.pop()?;
-            if job.epoch != self.world_epoch() {
-                self.stats.stale_discarded += 1;
-                continue;
-            }
-            let (expected, in_progress) = match job.kind {
-                JobKind::GenerateTerrain => (ChunkState::TerrainQueued, ChunkState::TerrainGenerating),
-                JobKind::BuildMesh | JobKind::RemeshMesh => {
-                    (ChunkState::MeshQueued, ChunkState::Meshing)
-                }
-                JobKind::UploadMesh => (ChunkState::MeshReady, ChunkState::Uploaded),
-                JobKind::Unload => (ChunkState::Unloading, ChunkState::Unloading),
-            };
-            if self.store.state(job.pos) != Some(expected) {
+            let job = self.queue.pop_where(&mut admissible)?;
+            if !self.runnable(job) {
                 self.stats.stale_discarded += 1;
                 continue;
             }
             if job.kind != JobKind::Unload {
-                let _ = self.store.transition(job.pos, in_progress);
+                if let Some(in_progress) = in_progress_state(job.kind) {
+                    let _ = self.store.transition(job.pos, in_progress);
+                }
             }
             self.stats.started += 1;
             return Some(job);
         }
+    }
+
+    /// True when `job` may start now: it belongs to the current world epoch and
+    /// its chunk still sits in the state that queueing put it in.
+    fn runnable(&self, job: ChunkJob) -> bool {
+        job.epoch == self.world_epoch()
+            && expected_state(job.kind).is_some_and(|expected| self.store.state(job.pos) == Some(expected))
     }
 
     /// Feed a finished job back. The result is only committed when the world
@@ -413,6 +448,53 @@ mod tests {
         assert_eq!(st.submitted, 2);
         assert_eq!(st.started, 2);
         assert_eq!(st.completed, 2);
+    }
+
+    #[test]
+    fn take_job_where_leaves_a_declined_head_queued_and_untouched() {
+        let mut s = SchedulerCore::new(1, 64);
+        let a = ChunkPos::new(0, 0);
+        let b = ChunkPos::new(1, 0);
+        drive_terrain(&mut s, a);
+        drive_terrain(&mut s, b);
+        s.request_mesh(a).unwrap();
+        s.request_mesh(b).unwrap();
+        assert_eq!(s.queue_len(), 2);
+
+        // The budget for mesh work is spent: nothing is started, nothing moves.
+        assert!(s.take_job_where(|k| k == JobKind::RemeshMesh).is_none());
+        assert_eq!(s.queue_len(), 2, "declined jobs must stay queued");
+        assert_eq!(s.store().state(a), Some(ChunkState::MeshQueued));
+        assert_eq!(s.store().state(b), Some(ChunkState::MeshQueued));
+        assert_eq!(s.stats().started, 2, "no in-progress transition was taken");
+
+        // The declined work is still runnable on a later frame, unchanged.
+        let job = s.take_job().expect("the mesh job is still there");
+        assert_eq!(job.kind, JobKind::BuildMesh);
+        assert_eq!(s.store().state(job.pos), Some(ChunkState::Meshing));
+        assert_eq!(s.stats().started, 3);
+    }
+
+    #[test]
+    fn take_job_where_discards_stale_entries_of_the_requested_kind() {
+        let mut s = SchedulerCore::new(1, 64);
+        let a = ChunkPos::new(0, 0);
+        drive_terrain(&mut s, a);
+        s.request_mesh(a).unwrap();
+        let job = s.take_job().expect("mesh job");
+        assert!(matches!(s.complete(job), Completion::Committed { .. }));
+        s.mark_uploaded(a).unwrap();
+        s.request_remesh(a).unwrap();
+        assert_eq!(s.queue_len(), 1);
+
+        // `a` is unloaded while its remesh sits in the queue, so the entry is
+        // stale. The filtered take must discard it exactly like `take_job`
+        // would, rather than report "nothing of that kind" and leave it behind.
+        s.unload_now(a).unwrap();
+        assert!(s.take_job_where(|k| k == JobKind::RemeshMesh).is_none());
+        assert_eq!(s.queue_len(), 0, "the stale remesh was dropped");
+        assert_eq!(s.stats().stale_discarded, 1);
+        assert_eq!(s.stats().started, 2, "the stale job never started");
     }
 
     #[test]

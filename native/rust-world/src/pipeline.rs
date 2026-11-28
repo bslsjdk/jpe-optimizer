@@ -203,8 +203,11 @@ pub struct PipelineConfig {
     /// Maximum mesh jobs built and uploaded per frame.
     pub mesh_budget: usize,
     /// Upper bound on chunks re-meshed per frame because new neighbour terrain
-    /// made their boundary faces hidden. Remeshes queue alongside fresh meshes,
-    /// so the frame processes at most `mesh_budget + remesh_budget` mesh jobs.
+    /// made their boundary faces hidden. Remeshes draw from this budget, not
+    /// from `mesh_budget`, and a remesh declined here stays queued untouched,
+    /// so the frame processes at most `mesh_budget` fresh meshes plus at most
+    /// `remesh_budget` remeshes, and fresh meshes are never held behind remeshes
+    /// whose budget is already spent.
     pub remesh_budget: usize,
     /// Worker threads used for geometry construction.
     pub threads: usize,
@@ -606,22 +609,38 @@ impl<S: BlockSource> WorldPipeline<S> {
         self.stats.frames += 1;
         self.retry_deferred();
 
-        // Phases 1+2: one pump over both budgets. Terrain completions enqueue mesh
+        // Phases 1+2: one pump over the budgets. Terrain completions enqueue mesh
         // work, so mesh jobs have to be taken in the same pass — a separate terrain
         // loop would let that newly queued work bypass the mesh budget.
-        // NOTE: `remesh_budget` is still not enforced here (remeshes consume the
-        // mesh budget). Enforcing it requires the queue to be able to defer an
-        // already-dequeued remesh without a spurious state transition, which is a
-        // separate scheduler change; until then this stays an honest TODO and the
-        // doc comment on the field must not be read as a guarantee.
+        //
+        // Fresh meshes and remeshes draw from *separate* budgets: the pump asks
+        // the scheduler for a job of a kind whose budget is not yet spent. A
+        // declined head stays queued with no in-progress transition (see
+        // `SchedulerCore::take_job_where`), so an exhausted remesh budget neither
+        // runs extra remeshes nor holds fresh meshes hostage behind them.
         let pump_start = Instant::now();
         let mut mesh_jobs: Vec<(ChunkJob, bool)> = Vec::new();
         let terrain_budget = self.config.terrain_budget;
         let mesh_budget = self.config.mesh_budget;
+        let remesh_budget = self.config.remesh_budget;
         let mut terrain_done = 0usize;
         let mut mesh_taken = 0usize;
-        while terrain_done < terrain_budget || mesh_taken < mesh_budget {
-            let Some(job) = self.scheduler.take_job() else {
+        let mut remesh_taken = 0usize;
+        while terrain_done < terrain_budget
+            || mesh_taken < mesh_budget
+            || remesh_taken < remesh_budget
+        {
+            let terrain_left = terrain_done < terrain_budget;
+            let mesh_left = mesh_taken < mesh_budget;
+            let remesh_left = remesh_taken < remesh_budget;
+            let Some(job) = self.scheduler.take_job_where(|kind| match kind {
+                JobKind::GenerateTerrain => terrain_left,
+                JobKind::BuildMesh => mesh_left,
+                JobKind::RemeshMesh => remesh_left,
+                // Lifecycle work (upload/unload) is not budgeted: it is cheap
+                // and delaying it would only stall a chunk's state machine.
+                JobKind::UploadMesh | JobKind::Unload => true,
+            }) else {
                 break;
             };
             match job.kind {
@@ -636,7 +655,11 @@ impl<S: BlockSource> WorldPipeline<S> {
                 JobKind::BuildMesh | JobKind::RemeshMesh => {
                     let is_remesh = job.kind == JobKind::RemeshMesh;
                     mesh_jobs.push((job, is_remesh));
-                    mesh_taken += 1;
+                    if is_remesh {
+                        remesh_taken += 1;
+                    } else {
+                        mesh_taken += 1;
+                    }
                 }
                 _ => {
                     self.scheduler.complete(job);
@@ -1166,6 +1189,95 @@ mod tests {
         assert_eq!(frame.mesh_jobs, 1, "mesh budget respected");
         assert!(world.scheduler().queue_len() > 0, "the rest stays queued");
         assert_eq!(world.stats().terrain_jobs, 2);
+    }
+
+    #[test]
+    fn remesh_budget_is_a_separate_hard_upper_bound_per_frame() {
+        // Remeshes used to draw from the mesh budget, so the documented
+        // "at most mesh_budget + remesh_budget mesh jobs per frame" was false and
+        // a burst of remeshes could crowd fresh meshes out of a frame entirely.
+        // A 3x3 block is uploaded in one frame, then a new block of terrain lands
+        // beside it: that queues several remeshes *and* several fresh meshes at
+        // once — exactly the burst the two budgets must bound separately.
+        let config = PipelineConfig {
+            terrain_budget: 16,
+            mesh_budget: 1,
+            remesh_budget: 1,
+            section_y: (1, 1),
+            ..PipelineConfig::default()
+        };
+        let mut world = pipeline(17, config);
+        let mut renderer = HeadlessRenderer::new();
+        assert_eq!(world.load_area(ChunkPos::ZERO, 1), 9);
+        drain_until_idle(&mut world, &mut renderer);
+        let stats = world.stats();
+        assert_eq!(
+            (stats.terrain_jobs, stats.mesh_jobs, stats.remesh_chunks),
+            (9, 9, 0),
+            "the initial block uploads cleanly; nothing to remesh yet"
+        );
+        assert_eq!(world.registry().len(), 9);
+
+        // Nine new chunks in the x=2..=4 columns. Each of the three uploaded
+        // chunks at x=1 gains a loaded neighbour, so three remeshes queue
+        // alongside nine fresh meshes.
+        assert_eq!(world.load_area(ChunkPos::new(3, 0), 1), 9);
+        let second = world.frame(&mut renderer, camera()).expect("frame 2");
+        assert_eq!(second.terrain_jobs, 9, "terrain has its own budget");
+        assert_eq!(second.remesh_chunks, 1, "at most remesh_budget remeshes per frame");
+        assert_eq!(second.mesh_jobs, 1, "at most mesh_budget fresh meshes per frame");
+        assert_eq!(world.scheduler().queue_len(), 10, "eight meshes and two remeshes stay queued");
+        let in_flight: Vec<_> = world
+            .scheduler()
+            .store()
+            .iter()
+            .filter(|e| e.state == ChunkState::Meshing)
+            .map(|e| e.pos)
+            .collect();
+        assert!(
+            in_flight.is_empty(),
+            "a declined job must not have been started (no in-progress transition): {in_flight:?}"
+        );
+
+        // Drain under the same limits: every frame respects both bounds, the
+        // remeshes never spend the fresh meshes' budget, and the work converges
+        // with nothing stranded in the queue.
+        let mut frames = 0;
+        loop {
+            let frame = world.frame(&mut renderer, camera()).expect("drain frame");
+            frames += 1;
+            assert!(frame.remesh_chunks <= 1, "remesh budget: {frame:?}");
+            assert!(frame.mesh_jobs <= 1, "mesh budget: {frame:?}");
+            let idle = frame.terrain_jobs == 0 && frame.mesh_jobs == 0 && frame.remesh_chunks == 0;
+            if idle {
+                assert_eq!((world.stats().pending_mesh, world.stats().pending_remesh), (0, 0));
+                assert_eq!(world.scheduler().queue_len(), 0, "nothing stranded");
+                break;
+            }
+            assert!(frames < 64, "work must converge: {frame:?}");
+        }
+        let stats = world.stats();
+        assert_eq!(stats.terrain_jobs, 18);
+        assert_eq!(stats.mesh_jobs, 18, "every chunk built a fresh mesh");
+        assert_eq!(stats.remesh_chunks, 3, "each x=1 chunk remeshed exactly once");
+    }
+
+    /// Run frames, each under the pipeline's own budgets, until one does no
+    /// queued work. Returns the number of frames that did work.
+    fn drain_until_idle(
+        world: &mut WorldPipeline<FlatSource>,
+        renderer: &mut HeadlessRenderer,
+    ) -> usize {
+        for busy in 0..64 {
+            let frame = world.frame(renderer, camera()).expect("frame");
+            let idle = frame.terrain_jobs == 0 && frame.mesh_jobs == 0 && frame.remesh_chunks == 0;
+            if idle {
+                assert_eq!((world.stats().pending_mesh, world.stats().pending_remesh), (0, 0));
+                assert_eq!(world.scheduler().queue_len(), 0, "nothing stranded");
+                return busy;
+            }
+        }
+        panic!("work must converge within 64 frames");
     }
 
     #[test]

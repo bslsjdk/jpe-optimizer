@@ -182,6 +182,33 @@ impl BoundedJobQueue {
         self.heap.pop().map(|e| e.job)
     }
 
+    /// Pop the best job whose kind `admissible` accepts.
+    ///
+    /// When the head is admissible this is exactly [`Self::pop`]. Otherwise the
+    /// heap is scanned for the best admissible entry and rebuilt: O(n), but the
+    /// queue is bounded so that stays cheap. Declined entries are left in place
+    /// in their existing order, so a caller that has spent its budget for one
+    /// kind neither starts that job nor blocks the other kinds queued behind it.
+    pub fn pop_where(&mut self, admissible: &mut dyn FnMut(JobKind) -> bool) -> Option<ChunkJob> {
+        if self.heap.peek().is_some_and(|e| admissible(e.job.kind)) {
+            return self.pop();
+        }
+        if self.heap.is_empty() {
+            return None;
+        }
+        let mut items: Vec<QueueEntry> = self.heap.drain().collect();
+        // Best = minimum key; `seq` makes keys unique, so there is one winner.
+        let best = items
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| admissible(e.job.kind))
+            .min_by_key(|(_, e)| e.key())
+            .map(|(i, _)| i);
+        let job = best.map(|i| items.swap_remove(i).job);
+        self.heap = BinaryHeap::from(items);
+        job
+    }
+
     pub fn peek(&self) -> Option<&ChunkJob> {
         self.heap.peek().map(|e| &e.job)
     }
@@ -299,6 +326,42 @@ mod tests {
         assert_eq!(jobs.len(), 2);
         assert_eq!(jobs[0].priority, Priority::Urgent);
         assert_eq!(jobs[1].pos.x, 8); // the farther (worse) Far job was evicted
+    }
+
+    #[test]
+    fn pop_where_skips_declined_kinds_and_keeps_them_in_order() {
+        let mut q = BoundedJobQueue::new(16);
+        q.submit(Priority::Urgent, JobKind::RemeshMesh, ChunkPos::new(1, 0), 1, 1);
+        q.submit(Priority::Near, JobKind::BuildMesh, ChunkPos::new(2, 0), 1, 4);
+        q.submit(Priority::Far, JobKind::RemeshMesh, ChunkPos::new(3, 0), 1, 100);
+        q.submit(Priority::Near, JobKind::BuildMesh, ChunkPos::new(4, 0), 1, 9);
+
+        // Nothing admissible: nothing changes.
+        assert!(q.pop_where(&mut |_| false).is_none());
+        assert_eq!(q.len(), 4);
+
+        // The declined Urgent head is skipped, not popped; the best admissible
+        // (nearest BuildMesh) comes out and the rest keep their order.
+        let mesh = q.pop_where(&mut |k| k == JobKind::BuildMesh).expect("a mesh job");
+        assert_eq!((mesh.kind, mesh.pos.x), (JobKind::BuildMesh, 2));
+        assert_eq!(q.len(), 3);
+        assert_eq!(q.peek().map(|j| (j.kind, j.pos.x)), Some((JobKind::RemeshMesh, 1)));
+
+        // An admissible head takes the plain pop path.
+        let remesh = q.pop_where(&mut |k| k == JobKind::RemeshMesh).expect("a remesh job");
+        assert_eq!(remesh.pos.x, 1);
+        // Remaining order is intact: Near mesh (4) before Far remesh (3).
+        let rest: Vec<_> = q.drain_sorted().into_iter().map(|j| (j.kind, j.pos.x)).collect();
+        assert_eq!(
+            rest,
+            vec![(JobKind::BuildMesh, 4), (JobKind::RemeshMesh, 3)]
+        );
+    }
+
+    #[test]
+    fn pop_where_on_an_empty_queue_is_none() {
+        let mut q = BoundedJobQueue::new(1);
+        assert!(q.pop_where(&mut |_| true).is_none());
     }
 
     #[test]

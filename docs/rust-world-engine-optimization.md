@@ -76,6 +76,43 @@ full 4096-element pass purely to recount that section's non-air blocks for the
 palette cross-check. The per-section count now accumulates inside the fill loop.
 File: `src/main/java/dev/jpe/optimizer/world/MinecraftChunkReader.java`.
 
+### 6. remesh_budget is a real per-frame bound (follow-up)
+
+The pump used to be `while terrain_done < terrain_budget || mesh_taken < mesh_budget`
+over an undifferentiated `take_job()`. Two consequences, both fixed:
+
+- Remeshes drew from the **mesh** budget, so the documented
+  `mesh_budget + remesh_budget` bound on `PipelineConfig::remesh_budget` was not true.
+- Because the loop continued while *either* budget had room, the mesh budget was only
+  enforced once the terrain budget was exhausted; a frame with a spare terrain slot
+  built every queued mesh.
+
+The scheduler now exposes `take_job_where(admissible)`, backed by
+`BoundedJobQueue::pop_where`: it returns the best job whose kind the caller still has
+budget for. A declined head job is **neither popped nor transitioned** — the chunk
+stays in its queued state (no in-progress transition to roll back), and the other
+kinds behind it can still run, so an exhausted remesh budget never holds fresh meshes
+hostage. Stale entries of the requested kind are discarded exactly as `take_job` did;
+`take_job()` is now `take_job_where(|_| true)` and shares the same runnable check.
+O(n) only when the head is declined; the queue is bounded, so that is cheap.
+
+Files: `src/task.rs` (`pop_where`), `src/scheduler.rs` (`take_job_where`, shared
+`runnable`), `src/pipeline.rs` (per-kind admissibility in `frame()`).
+No FFI symbol, struct layout or ABI change (`JAVA_ABI_VERSION` stays `2`; the release
+`.so` still exports the same 33 `jpe_world_*` symbols).
+
+Verified: `cargo test` (lavapipe) **115 passed** (was 110). New:
+`task::tests::pop_where_skips_declined_kinds_and_keeps_them_in_order`,
+`pop_where_on_an_empty_queue_is_none`,
+`scheduler::tests::take_job_where_leaves_a_declined_head_queued_and_untouched`,
+`take_job_where_discards_stale_entries_of_the_requested_kind`, and
+`pipeline::tests::remesh_budget_is_a_separate_hard_upper_bound_per_frame`, which
+uploads a 3×3 block, loads nine more chunks beside it (3 remeshes + 9 fresh meshes
+queued at once), and asserts each frame does ≤ `remesh_budget` remeshes and ≤
+`mesh_budget` fresh meshes, that no declined job left a chunk in `Meshing`, and that the
+work converges to `mesh_jobs == 18`, `remesh_chunks == 3` with an empty queue. A
+mutation that lets remeshes draw from the mesh budget again makes that test fail.
+
 ## Verification
 
 - `cargo test` (in `native/rust-world`): **103 passed, 0 failed**, warning-free
@@ -104,9 +141,9 @@ File: `src/main/java/dev/jpe/optimizer/world/MinecraftChunkReader.java`.
   native work behind each call (a whole scheduled/meshed/submitted frame) and by the
   bulk copy that was the real cost (fixed in #4). The benefit is marginal and the
   per-call-site exact-signature rewrite is broad and runtime-fragile; deferred.
-- **remesh_budget enforcement.** Still an honest TODO in `pipeline.rs` — remeshes
-  draw from the mesh budget; enforcing a separate remesh budget needs the queue to
-  defer an already-dequeued job without a spurious state transition (scheduler change).
+- **remesh_budget enforcement.** Done — see section 6 above. (It was an honest TODO
+  in `pipeline.rs` for a while: remeshes drew from the mesh budget, and the mesh
+  budget itself only applied once the terrain budget was exhausted.)
 - **CPU culling is O(resident) per frame** (`plan_draws` over `registry.records()`).
   Reducing this needs GPU-side occlusion (HZB), which is a later stage, not a tuning
   change.

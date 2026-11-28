@@ -2,7 +2,10 @@ name: Rust World Engine
 
 on:
   push:
-    branches: ["work/rust-world-engine"]
+    # Any development branch, not just the original feature branch: the engine is
+    # merged into the `work/*` integration line, and a change to it must be tested
+    # wherever it lands. The `paths` filter keeps unrelated pushes from paying for it.
+    branches: ["work/**"]
     paths:
       - "native/rust-world/**"
       - ".github/workflows/rust-world.yml"
