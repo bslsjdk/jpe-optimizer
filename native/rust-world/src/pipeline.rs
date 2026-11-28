@@ -683,13 +683,26 @@ impl<S: BlockSource> WorldPipeline<S> {
         }
         let targets_ns = targets_start.elapsed().as_nanos() as u64;
 
-        let build_start = Instant::now();
-        let meshes = self.build_geometry(&targets);
-        let build_ns = build_start.elapsed().as_nanos() as u64;
-
-        let publish_start = Instant::now();
-        self.publish_geometry(renderer, &targets, meshes, &mut outcome)?;
-        let publish_ns = publish_start.elapsed().as_nanos() as u64;
+        // Build and upload in bounded batches.
+        //
+        // `targets` can hold every section of a view-distance-20 world: 14k
+        // sections, 2.5M quads, 240 MiB of vertices. Building all of them
+        // before uploading any holds that whole set in CPU memory *at the same
+        // time* as the GPU copy it is about to become, which is what pushed
+        // peak RSS to 940 MiB. Meshing 256 sections, uploading them, and
+        // dropping the CPU copy caps the transient at 4 MiB. The batches are
+        // still built in parallel; only the publication is incremental.
+        const UPLOAD_BATCH: usize = 256;
+        let mut build_ns = 0u64;
+        let mut publish_ns = 0u64;
+        for batch in targets.chunks(UPLOAD_BATCH) {
+            let t0 = Instant::now();
+            let meshes = self.build_geometry(batch);
+            build_ns += t0.elapsed().as_nanos() as u64;
+            let t1 = Instant::now();
+            self.publish_geometry(renderer, batch, meshes, &mut outcome)?;
+            publish_ns += t1.elapsed().as_nanos() as u64;
+        }
 
         // Counters are derived from the jobs actually accepted (a job whose chunk
         // produced no targets was completed and excluded above), split by kind, so

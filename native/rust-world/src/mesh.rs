@@ -34,12 +34,36 @@ pub struct ChunkSection {
     non_air: u32,
 }
 
+/// Highest block id that gets a shared uniform array. The native generator uses
+/// ids 0..=27; 64 leaves room for a resource pack and costs 512 KiB of static
+/// table, which is nothing against the 250 MiB it saves.
+const UNIFORM_CACHE: u16 = 64;
+
+/// One shared block array per block id, for sections that are entirely that
+/// block.
+///
+/// A view-distance-20 world holds ~40k sections and roughly three quarters of
+/// them are uniformly air (everything above the surface) or uniformly stone
+/// (everything below it). Giving each its own 8 KiB array spent 250 MiB storing
+/// copies of the same two values. They now share one array per id; `set` goes
+/// through `Arc::make_mut`, which sees the shared refcount and copies before
+/// writing, so the copy-on-write contract is unchanged.
+fn uniform_blocks(block: u16) -> Arc<Vec<u16>> {
+    static TABLE: std::sync::OnceLock<Vec<Arc<Vec<u16>>>> = std::sync::OnceLock::new();
+    let table = TABLE.get_or_init(|| {
+        (0..UNIFORM_CACHE)
+            .map(|id| Arc::new(vec![id; ChunkSection::VOLUME]))
+            .collect()
+    });
+    table[block.min(UNIFORM_CACHE - 1) as usize].clone()
+}
+
 impl ChunkSection {
     pub const VOLUME: usize = (SECTION_SIZE * SECTION_SIZE * SECTION_SIZE) as usize; // 4096
 
     pub fn new() -> Self {
         Self {
-            blocks: Arc::new(vec![0; Self::VOLUME]),
+            blocks: uniform_blocks(0),
             non_air: 0,
         }
     }
@@ -106,9 +130,26 @@ impl ChunkSection {
         if blocks.len() != Self::VOLUME {
             return None;
         }
+        // One pass computes both the air count and whether the section is
+        // uniform, which is what decides between a shared array and a copy.
+        let first = blocks[0];
+        let mut non_air = 0u32;
+        let mut uniform = true;
+        for &b in blocks {
+            if b != 0 {
+                non_air += 1;
+            }
+            if b != first {
+                uniform = false;
+            }
+        }
         Some(Self {
-            non_air: blocks.iter().filter(|&&b| b != 0).count() as u32,
-            blocks: Arc::new(blocks.to_vec()),
+            non_air,
+            blocks: if uniform && first < UNIFORM_CACHE {
+                uniform_blocks(first)
+            } else {
+                Arc::new(blocks.to_vec())
+            },
         })
     }
 
@@ -126,34 +167,73 @@ impl Default for ChunkSection {
 
 /// Interleaved vertex layout shared by every renderer backend.
 ///
-/// Layout (32 bytes): position f32x3, normal f32x3, uv f32x2. All little-endian.
+/// 24 bytes: position f32x3, quad-local uv f32x2, packed metadata u32. All
+/// little-endian.
+///
+/// Two things here are unusual on purpose.
+///
+/// `uv` is measured in *tiles*, not in atlas coordinates. A greedy quad that
+/// spans 7 blocks of grass carries `0..7` across its width, and the fragment
+/// shader wraps it with `fract` before mapping into the atlas. That is the only
+/// thing that makes merged geometry possible at all: without it a merged quad
+/// would stretch one tile over seven blocks instead of repeating it seven
+/// times.
+///
+/// `meta` packs `tile | face << 16`. There is no normal attribute because there
+/// are only six possible normals and all six are known at mesh time, so the
+/// fragment shader rebuilds the light term from `face` through a constant table.
+/// Those three floats were 12 of the old 32 bytes, and the old layout also spent
+/// 8 bytes on a UV pair that was always an affine map of the corner.
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(C)]
 pub struct Vertex {
     pub position: [f32; 3],
-    pub normal: [f32; 3],
+    /// UV inside the quad's tile, in tiles: 0..u_span, 0..v_span.
     pub uv: [f32; 2],
+    /// `tile as u32 | (face as u32) << 16`; see [`Vertex::pack`].
+    pub meta: u32,
 }
 
 impl Vertex {
-    pub const STRIDE: usize = 32;
+    pub const STRIDE: usize = 24;
+
+    /// Pack a tile id (0..=65535) and a face index (0..=5).
+    #[inline]
+    pub const fn pack(tile: u16, face: u8) -> u32 {
+        tile as u32 | ((face as u32) << 16)
+    }
+
+    #[inline]
+    pub const fn tile(&self) -> u16 {
+        (self.meta & 0xffff) as u16
+    }
+
+    #[inline]
+    pub const fn face(&self) -> u8 {
+        (self.meta >> 16) as u8
+    }
 
     pub fn write_le(&self, out: &mut [u8]) {
         assert!(out.len() >= Self::STRIDE, "vertex output buffer too small");
         let mut offset = 0;
-        for v in self.position.iter().chain(self.normal.iter()).chain(self.uv.iter()) {
+        for v in self.position.iter().chain(self.uv.iter()) {
             out[offset..offset + 4].copy_from_slice(&v.to_le_bytes());
             offset += 4;
         }
+        out[offset..offset + 4].copy_from_slice(&self.meta.to_le_bytes());
     }
 }
 
+/// Reference face table, used only by the per-face mesher the greedy one is
+/// checked against.
+#[cfg(test)]
 struct FaceDef {
     normal: [i8; 3],
     /// Counter-clockwise corner order, local 0/1 coordinates.
     corners: [[f32; 3]; 4],
 }
 
+#[cfg(test)]
 const FACES: [FaceDef; 6] = [
     // +X
     FaceDef {
@@ -217,6 +297,7 @@ const FACES: [FaceDef; 6] = [
     },
 ];
 
+#[cfg(test)]
 const UVS: [[f32; 2]; 4] = [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]];
 
 /// Reusable mesh buffers, intended to be held per worker thread.
@@ -444,8 +525,201 @@ fn fill_padded(pad: &mut [u16; PAD_VOLUME], section: &ChunkSection, neighbors: &
     }
 }
 
-/// Emit every visible face of a filled padded grid.
+// ---------------------------------------------------------------------------
+// Greedy meshing
+//
+// The per-face mesher emits one quad per visible block face. That is the
+// obvious thing and it is what Minecraft does, but at a 448-block view it is
+// 4.0M quads: 600 MiB of vertices, and a player's whole memory budget.
+//
+// Almost every one of those faces is coplanar with its neighbour. A flat plain
+// is 200k identical grass tops; the underground is pure stone. Greedy meshing
+// merges each maximal rectangle of same-block, same-face cells into one quad,
+// which turns the plain into a few hundred quads and a solid section's side
+// into a single one.
+//
+// The merge runs per face direction and per 16-block slice, on a 16x16 mask.
+// It never merges across block ids, so the atlas lookup stays a per-quad
+// constant, and it never merges across a slice, so every quad stays planar.
+// ---------------------------------------------------------------------------
+
+/// Slice geometry for one face direction.
+///
+/// `axis` is the block axis the slices run along; `u_axis`/`v_axis` are the two
+/// block axes that become the quad's local u and v. `order` lists the four
+/// corners in the winding [`FACES`] uses, encoded as bits: bit 0 selects the
+/// far side in u, bit 1 the far side in v. Keeping the original winding is what
+/// lets the back-face culling in both backends stay on.
+struct FacePlane {
+    axis: usize,
+    u_axis: usize,
+    v_axis: usize,
+    order: [u8; 4],
+}
+
+/// The u/v axis assignment is not free: it has to match the UVs the reference
+/// face table gives each corner, or every texture lands rotated 90 degrees.
+/// Reading `FACES` and `UVS` together, corner 0 has uv (0,0) and corner 1 has
+/// (0,1), so the *second* corner always moves along the quad's v axis.
+///
+/// With that constraint every face ends up with the same corner order,
+/// `[0, 2, 3, 1]`: bottom-left, top-left, top-right, bottom-right in u/v space.
+/// Only the axis assignment differs.
+const PLANES: [FacePlane; 6] = [
+    // +X: u = y, v = z
+    FacePlane { axis: 0, u_axis: 1, v_axis: 2, order: [0, 2, 3, 1] },
+    // -X: u = z, v = y
+    FacePlane { axis: 0, u_axis: 2, v_axis: 1, order: [0, 2, 3, 1] },
+    // +Y: u = x, v = z
+    FacePlane { axis: 1, u_axis: 0, v_axis: 2, order: [0, 2, 3, 1] },
+    // -Y: u = z, v = x
+    FacePlane { axis: 1, u_axis: 2, v_axis: 0, order: [0, 2, 3, 1] },
+    // +Z: u = y, v = x
+    FacePlane { axis: 2, u_axis: 1, v_axis: 0, order: [0, 2, 3, 1] },
+    // -Z: u = x, v = y
+    FacePlane { axis: 2, u_axis: 0, v_axis: 1, order: [0, 2, 3, 1] },
+];
+
+/// Emit one merged quad.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn emit_quad(
+    plane: &FacePlane,
+    plane_coord: f32,
+    u0: usize,
+    v0: usize,
+    w: usize,
+    h: usize,
+    block: u16,
+    face: u8,
+    origin: [i32; 3],
+    vertices: &mut Vec<Vertex>,
+    indices: &mut Vec<u32>,
+) {
+    let tile = atlas::tile_for_face(block, face as usize);
+    let meta = Vertex::pack(tile, face);
+    let base = vertices.len() as u32;
+    for &corner in &plane.order {
+        let du = (corner & 1) as usize;
+        let dv = ((corner >> 1) & 1) as usize;
+        let uu = u0 + du * w;
+        let vv = v0 + dv * h;
+        let mut position = [0.0f32; 3];
+        position[plane.axis] = plane_coord;
+        position[plane.u_axis] = origin[plane.u_axis] as f32 + uu as f32;
+        position[plane.v_axis] = origin[plane.v_axis] as f32 + vv as f32;
+        vertices.push(Vertex {
+            position,
+            uv: [(du * w) as f32, (dv * h) as f32],
+            meta,
+        });
+    }
+    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+/// Merge one 16x16 slice mask into maximal same-block rectangles.
+fn greedy_slice(
+    mask: &mut [u16; 256],
+    plane: &FacePlane,
+    slice: usize,
+    positive: bool,
+    face: u8,
+    origin: [i32; 3],
+    vertices: &mut Vec<Vertex>,
+    indices: &mut Vec<u32>,
+) -> u32 {
+    let plane_coord =
+        origin[plane.axis] as f32 + slice as f32 + if positive { 1.0 } else { 0.0 };
+    let mut quads = 0u32;
+    for v in 0..16usize {
+        for u in 0..16usize {
+            let block = mask[v * 16 + u];
+            if block == 0 {
+                continue;
+            }
+            // Widest run of the same block on this row...
+            let mut w = 1usize;
+            while u + w < 16 && mask[v * 16 + u + w] == block {
+                w += 1;
+            }
+            // ...then as many identical rows below it as fit.
+            let mut h = 1usize;
+            'grow: while v + h < 16 {
+                for k in 0..w {
+                    if mask[(v + h) * 16 + u + k] != block {
+                        break 'grow;
+                    }
+                }
+                h += 1;
+            }
+            for dv in 0..h {
+                let row = (v + dv) * 16 + u;
+                mask[row..row + w].fill(0);
+            }
+            emit_quad(
+                plane, plane_coord, u, v, w, h, block, face, origin, vertices, indices,
+            );
+            quads += 1;
+        }
+    }
+    quads
+}
+
+/// Emit the merged geometry of a filled padded grid.
 fn mesh_padded(
+    pad: &[u16; PAD_VOLUME],
+    origin: [i32; 3],
+    vertices: &mut Vec<Vertex>,
+    indices: &mut Vec<u32>,
+) -> u32 {
+    let mut quads = 0u32;
+    let mut mask = [0u16; 256];
+    for (face_index, plane) in PLANES.iter().enumerate() {
+        let positive = face_index % 2 == 0;
+        let offset = FACE_OFFSETS[face_index];
+        for slice in 0..16usize {
+            // Build the visibility mask for this slice. `any` skips the merge
+            // pass entirely for the slices that are fully interior -- most of a
+            // solid section.
+            let mut any = false;
+            for v in 0..16usize {
+                for u in 0..16usize {
+                    let mut cell = [0usize; 3];
+                    cell[plane.axis] = slice;
+                    cell[plane.u_axis] = u;
+                    cell[plane.v_axis] = v;
+                    let here = pad_index(cell[0], cell[1], cell[2]);
+                    let block = pad[here];
+                    let visible = block != 0 && pad[(here as isize + offset) as usize] == 0;
+                    mask[v * 16 + u] = if visible { block } else { 0 };
+                    any |= visible;
+                }
+            }
+            if !any {
+                continue;
+            }
+            quads += greedy_slice(
+                &mut mask,
+                plane,
+                slice,
+                positive,
+                face_index as u8,
+                origin,
+                vertices,
+                indices,
+            );
+        }
+    }
+    quads
+}
+
+/// Emit every visible face of a filled padded grid, one quad per block face.
+///
+/// Kept as the reference the greedy mesher is checked against: it is the
+/// obvious implementation, and "same set of covered faces" is a much stronger
+/// assertion than "same quad count".
+#[cfg(test)]
+fn mesh_padded_per_face(
     pad: &[u16; PAD_VOLUME],
     origin: [i32; 3],
     vertices: &mut Vec<Vertex>,
@@ -462,9 +736,6 @@ fn mesh_padded(
                 if pad[here as usize] == 0 {
                     continue;
                 }
-                // A block enclosed on all six sides emits nothing. Testing that
-                // once skips six face tests for every interior block, which is
-                // most of a solid section.
                 if FACE_OFFSETS
                     .iter()
                     .all(|offset| pad[(here + offset) as usize] != 0)
@@ -481,15 +752,12 @@ fn mesh_padded(
                     }
                     let base = vertices.len() as u32;
                     let tile = atlas::tile_for_face(block, face_index);
+                    let meta = Vertex::pack(tile, face_index as u8);
                     for (corner, uv) in face.corners.iter().zip(UVS.iter()) {
                         vertices.push(Vertex {
                             position: [fx + corner[0], fy + corner[1], fz + corner[2]],
-                            normal: [
-                                face.normal[0] as f32,
-                                face.normal[1] as f32,
-                                face.normal[2] as f32,
-                            ],
-                            uv: atlas::tile_uv(tile, *uv),
+                            uv: *uv,
+                            meta,
                         });
                     }
                     indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
@@ -715,11 +983,12 @@ mod tests {
         assert!(scratch.vertices.is_empty());
 
         // The same section with no neighbours must still emit all six sides, so
-        // the short-circuit cannot be swallowing faces.
+        // the short-circuit cannot be swallowing faces. Greedy meshing turns
+        // each 16x16 side into a single quad.
         assert_eq!(
             build_section_mesh_into(&full, [0, 0, 0], &mut scratch),
-            6 * 256,
-            "six 16x16 faces"
+            6,
+            "six 16x16 faces, one merged quad each"
         );
 
         // One missing neighbour (air) re-opens exactly one side.
@@ -733,8 +1002,8 @@ mod tests {
         };
         assert_eq!(
             build_section_mesh_with_neighbors(&full, &one_open, [0, 0, 0], &mut scratch),
-            256,
-            "only the -Z face stays visible"
+            1,
+            "only the -Z face stays visible, merged into one quad"
         );
     }
 
@@ -754,9 +1023,10 @@ mod tests {
         s.set(0, 0, 0, 1);
         s.set(1, 0, 0, 1);
         let mesh = build_section_mesh(&s, [0, 0, 0]);
-        // 6 + 6 faces minus the two internal ones.
-        assert_eq!(mesh.quad_count, 10);
-        assert_eq!(mesh.vertices.len(), 40);
+        // 6 + 6 faces minus the two internal ones, then the four remaining
+        // coplanar pairs (top, bottom, +Z, -Z) merge into one quad each.
+        assert_eq!(mesh.quad_count, 6);
+        assert_eq!(mesh.vertices.len(), 24);
     }
 
     #[test]
@@ -769,19 +1039,22 @@ mod tests {
     }
 
     #[test]
-    fn vertex_encoding_is_32_bytes_little_endian() {
+    fn vertex_encoding_is_24_bytes_little_endian() {
         let v = Vertex {
             position: [1.0, 2.0, 3.0],
-            normal: [0.0, 1.0, 0.0],
             uv: [0.5, 0.25],
+            meta: Vertex::pack(28, 5),
         };
         let mut buf = [0u8; Vertex::STRIDE];
         v.write_le(&mut buf);
-        assert_eq!(buf.len(), 32);
+        assert_eq!(buf.len(), 24);
         let x = f32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-        let vv = f32::from_le_bytes([buf[28], buf[29], buf[30], buf[31]]);
+        let u = f32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
+        let meta = u32::from_le_bytes([buf[20], buf[21], buf[22], buf[23]]);
         assert_eq!(x, 1.0);
-        assert_eq!(vv, 0.25);
+        assert_eq!(u, 0.5);
+        assert_eq!(meta & 0xffff, 28);
+        assert_eq!(meta >> 16, 5);
     }
 
     #[test]
@@ -899,6 +1172,7 @@ mod tests {
                         }
                         let base = vertices.len() as u32;
                         let tile = atlas::tile_for_face(block, face_index);
+                        let meta = Vertex::pack(tile, face_index as u8);
                         for (corner, uv) in face.corners.iter().zip(UVS.iter()) {
                             vertices.push(Vertex {
                                 position: [
@@ -906,12 +1180,8 @@ mod tests {
                                     origin[1] as f32 + y as f32 + corner[1],
                                     origin[2] as f32 + z as f32 + corner[2],
                                 ],
-                                normal: [
-                                    face.normal[0] as f32,
-                                    face.normal[1] as f32,
-                                    face.normal[2] as f32,
-                                ],
-                                uv: atlas::tile_uv(tile, *uv),
+                                uv: *uv,
+                                meta,
                             });
                         }
                         indices.extend_from_slice(&[
@@ -929,12 +1199,63 @@ mod tests {
         (vertices, indices)
     }
 
-    fn vertex_bytes(vertices: &[Vertex]) -> Vec<u8> {
-        let mut out = vec![0u8; vertices.len() * Vertex::STRIDE];
-        for (i, v) in vertices.iter().enumerate() {
-            v.write_le(&mut out[i * Vertex::STRIDE..(i + 1) * Vertex::STRIDE]);
+    /// Expand a mesh into the set of unit block faces it covers, sorted.
+    ///
+    /// A merged quad covers `u_span * v_span` of them; a per-face quad covers
+    /// one. Comparing these sets is the contract the greedy mesher has to keep:
+    /// same blocks, same faces, same tiles, no overlaps, no holes.
+    fn covered_faces(vertices: &[Vertex], indices: &[u32]) -> Vec<(i32, i32, i32, u8, u16)> {
+        let mut out = Vec::new();
+        for quad in indices.chunks(6) {
+            let first = vertices[quad[0] as usize];
+            let face = first.face();
+            let plane = &PLANES[face as usize];
+            let axis_coord = first.position[plane.axis];
+            let mut min_u = f32::MAX;
+            let mut max_u = f32::MIN;
+            let mut min_v = f32::MAX;
+            let mut max_v = f32::MIN;
+            for &i in quad {
+                let p = vertices[i as usize].position;
+                assert_eq!(p[plane.axis], axis_coord, "quad is not planar");
+                min_u = min_u.min(p[plane.u_axis]);
+                max_u = max_u.max(p[plane.u_axis]);
+                min_v = min_v.min(p[plane.v_axis]);
+                max_v = max_v.max(p[plane.v_axis]);
+            }
+            for u in min_u as i32..max_u as i32 {
+                for v in min_v as i32..max_v as i32 {
+                    out.push((u, v, axis_coord as i32, face, first.tile()));
+                }
+            }
         }
+        out.sort_unstable();
         out
+    }
+
+    /// Sign of the triangle normal along the face direction, for the reference
+    /// corner order in [`FACES`]. The greedy mesher has to reproduce this sign.
+    fn reference_winding_sign(face: u8) -> f32 {
+        let f = &FACES[face as usize];
+        let p0 = f.corners[0];
+        let p1 = f.corners[1];
+        let p2 = f.corners[2];
+        let a = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let b = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+        let c = [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ];
+        let n = face_normal(face);
+        c[0] * n[0] + c[1] * n[1] + c[2] * n[2]
+    }
+
+    /// Outward normal of a face index, matching the winding in [`FACES`].
+    fn face_normal(face: u8) -> [f32; 3] {
+        let mut n = [0.0f32; 3];
+        n[(face / 2) as usize] = if face % 2 == 0 { 1.0 } else { -1.0 };
+        n
     }
 
     /// Deterministic pseudo-random section with the given density: one block per
@@ -955,7 +1276,7 @@ mod tests {
     }
 
     #[test]
-    fn padded_mesher_reproduces_the_reference_exactly() {
+    fn greedy_mesher_covers_exactly_the_reference_faces() {
         let mut state = 0x9E37_79B9_7F4A_7C15u64;
         let dense = random_section(&mut state, 2);
         let sparse = random_section(&mut state, 29);
@@ -990,14 +1311,15 @@ mod tests {
                     origin,
                     &mut scratch,
                 );
+                // Byte-for-byte equality is impossible now: the greedy mesher
+                // deliberately emits fewer, larger quads. What must still hold
+                // is that the two cover exactly the same unit faces -- same
+                // block position, same face direction, same atlas tile -- which
+                // also catches a merge that wrongly spans two block ids.
                 assert_eq!(
-                    vertex_bytes(&scratch.vertices),
-                    vertex_bytes(&ref_v),
-                    "vertex bytes differ (modulus={modulus}, mask={mask})"
-                );
-                assert_eq!(
-                    scratch.indices, ref_i,
-                    "indices differ (modulus={modulus}, mask={mask})"
+                    covered_faces(&scratch.vertices, &scratch.indices),
+                    covered_faces(&ref_v, &ref_i),
+                    "covered faces differ (modulus={modulus}, mask={mask})"
                 );
                 assert_eq!(quads as usize * 4, scratch.vertices.len());
                 assert_eq!(quads as usize * 6, scratch.indices.len());
@@ -1005,6 +1327,91 @@ mod tests {
             }
         }
         assert_eq!(cases, 5 * 128, "every density x neighbour combination ran");
+    }
+
+    #[test]
+    fn every_quad_winds_outward() {
+        // Back-face culling is on in both backends, so a quad wound the wrong
+        // way is an invisible hole. The greedy mesher takes its corner order
+        // from a per-face table rather than from the reference face list, so
+        // each of the six entries has to be checked.
+        let mut state = 0x1234_5678_9ABC_DEF0u64;
+        let mut scratch = MeshScratch::new();
+        let mut checked = 0usize;
+        for modulus in [101u64, 13, 3, 1] {
+            let section = random_section(&mut state, modulus);
+            let quads = build_section_mesh_with_neighbors(
+                &section,
+                &Neighbors::none(),
+                [0, 0, 0],
+                &mut scratch,
+            );
+            assert!(quads > 0);
+            for quad in scratch.indices.chunks(6) {
+                let p: Vec<[f32; 3]> = quad
+                    .iter()
+                    .map(|&i| scratch.vertices[i as usize].position)
+                    .collect();
+                let face = scratch.vertices[quad[0] as usize].face();
+                let n = face_normal(face);
+                let a = [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]];
+                let b = [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]];
+                let cross = [
+                    a[1] * b[2] - a[2] * b[1],
+                    a[2] * b[0] - a[0] * b[2],
+                    a[0] * b[1] - a[1] * b[0],
+                ];
+                let dot = cross[0] * n[0] + cross[1] * n[1] + cross[2] * n[2];
+                // Compared against the reference table rather than against
+                // zero: the projection is left-handed somewhere upstream, so
+                // the whole world's winding is "inward" in pure math terms and
+                // only consistency between faces matters.
+                let expected = reference_winding_sign(face);
+                assert_eq!(
+                    dot.signum(),
+                    expected.signum(),
+                    "quad winding disagrees with the reference table for face {face}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 1000, "checked only {checked} quads");
+    }
+
+    #[test]
+    fn greedy_meshing_collapses_flat_ground() {
+        // A flat 16x16 layer is the case greedy meshing exists for: 256 top
+        // faces and 4x16 side faces become a handful of quads.
+        let mut section = ChunkSection::new();
+        for z in 0..16 {
+            for x in 0..16 {
+                section.set(x, 0, z, 2);
+            }
+        }
+        let mesh = build_section_mesh(&section, [0, 0, 0]);
+        assert!(
+            mesh.quad_count <= 12,
+            "flat layer still costs {} quads",
+            mesh.quad_count
+        );
+        // Top + bottom are one quad each, the four sides are one quad each.
+        assert_eq!(mesh.quad_count, 6);
+    }
+
+    #[test]
+    fn greedy_never_merges_across_block_ids() {
+        // Two adjacent blocks of different ids must stay two quads even though
+        // they are coplanar: they sample different atlas tiles.
+        let mut section = ChunkSection::new();
+        section.set(0, 0, 0, 1);
+        section.set(1, 0, 0, 2);
+        let mesh = build_section_mesh(&section, [0, 0, 0]);
+        let tops = mesh
+            .indices
+            .chunks(6)
+            .filter(|q| mesh.vertices[q[0] as usize].face() == 2)
+            .count();
+        assert_eq!(tops, 2, "the +Y faces of two different blocks merged");
     }
 
     #[test]

@@ -76,6 +76,9 @@ const QUEUE_COMPUTE_BIT: u32 = 0x0000_0002;
 const FORMAT_R8G8B8A8_UNORM: u32 = 37;
 const FORMAT_R32G32B32_SFLOAT: u32 = 106;
 const FORMAT_R32G32_SFLOAT: u32 = 103;
+/// VK_FORMAT_R32_UINT. The packed tile/face word; a float format here would
+/// reinterpret the bits and the atlas lookup would read garbage.
+const FORMAT_R32_UINT: u32 = 98;
 const FORMAT_D32_SFLOAT: u32 = 126;
 
 const IMAGE_TILING_OPTIMAL: u32 = 0;
@@ -1597,14 +1600,14 @@ impl VulkanRenderer {
             VertexInputAttributeDescription {
                 location: 1,
                 binding: 0,
-                format: FORMAT_R32G32B32_SFLOAT,
+                format: FORMAT_R32G32_SFLOAT,
                 offset: 12,
             },
             VertexInputAttributeDescription {
                 location: 2,
                 binding: 0,
-                format: FORMAT_R32G32_SFLOAT,
-                offset: 24,
+                format: FORMAT_R32_UINT,
+                offset: 20,
             },
         ];
         let vertex_input = PipelineVertexInputStateCreateInfo {

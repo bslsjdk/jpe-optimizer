@@ -167,25 +167,6 @@ fn main() {
 
     let per_chunk = source.blocks_per_chunk();
     let batch = 64usize;
-    let mut generated = 0usize;
-    let mut gen_ms = 0.0f64;
-    let mut buffers: Vec<Vec<u16>> = Vec::new();
-    let t_gen = Instant::now();
-    for window in coords.chunks(batch) {
-        let mut data = vec![0u16; per_chunk * window.len()];
-        let t0 = Instant::now();
-        source.generate(window, &mut data, 8);
-        gen_ms += t0.elapsed().as_secs_f64() * 1000.0;
-        generated += window.len();
-        buffers.push(data);
-    }
-    let gen_total = t_gen.elapsed().as_secs_f64() * 1000.0;
-    println!(
-        "generated {generated} chunks in {gen_total:.1} ms ({:.2} ms/chunk, {:.0} chunks/s)",
-        gen_total / generated as f64,
-        generated as f64 * 1000.0 / gen_total
-    );
-    let _ = gen_ms;
 
     // --- Pipeline ---------------------------------------------------------
     let extent = [1280u32, 720u32];
@@ -200,8 +181,32 @@ fn main() {
     let mut pipeline = WorldPipeline::new(1, 8192, pipeline_config, PushSource::new());
     pipeline.set_player(ChunkPos::new(0, 0));
 
+    // --- Generate and submit, streaming ------------------------------------
+    //
+    // The obvious shape -- generate every chunk into a `Vec<Vec<u16>>`, then
+    // submit them all -- keeps a full copy of the world in raw block ids. At
+    // radius 20 that is 1681 chunks x 384 x 256 x 2 bytes = 315 MiB, on top of
+    // the copy the pipeline caches for meshing. Streaming a batch through the
+    // pipeline and reusing one buffer drops that to a few MiB.
+    let mut generated = 0usize;
     let mut submitted = 0usize;
-    for (window, data) in coords.chunks(batch).zip(buffers.iter()) {
+    let mut gen_ms = 0.0f64;
+    let mut data = vec![0u16; per_chunk * batch];
+    let rss_now = || -> f64 {
+        std::fs::read_to_string("/proc/self/statm")
+            .ok()
+            .and_then(|s| s.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()))
+            .map(|p| p as f64 * 4096.0 / 1048576.0)
+            .unwrap_or(0.0)
+    };
+    println!("rss after pipeline init: {:.0} MB", rss_now());
+    let t_gen = Instant::now();
+    for window in coords.chunks(batch) {
+        let span = per_chunk * window.len();
+        data[..span].fill(0);
+        let t0 = Instant::now();
+        source.generate(window, &mut data[..span], 8);
+        gen_ms += t0.elapsed().as_secs_f64() * 1000.0;
         for (i, (cx, cz)) in window.iter().enumerate() {
             let column = &data[i * per_chunk..(i + 1) * per_chunk];
             let sections = sections_from_chunk(column, config.sections());
@@ -212,9 +217,21 @@ fn main() {
             );
             submitted += 1;
         }
+        generated += window.len();
+        if generated % 400 < batch {
+            println!("  rss @ {generated} chunks: {:.0} MB", rss_now());
+        }
     }
+    let gen_total = t_gen.elapsed().as_secs_f64() * 1000.0;
+    println!(
+        "generated {generated} chunks in {gen_total:.1} ms ({:.2} ms/chunk, {:.0} chunks/s)",
+        gen_total / generated as f64,
+        generated as f64 * 1000.0 / gen_total
+    );
+    let _ = gen_ms;
+    println!("rss after submit: {:.0} MB", rss_now());
+    drop(data);
     println!("submitted {submitted} chunks x {} sections", config.sections());
-    drop(buffers);
 
     let mut renderer: Box<dyn Renderer> = match create_best_headless() {
         Ok(r) => r,
@@ -330,6 +347,14 @@ fn main() {
 
     // --- Frames -----------------------------------------------------------
     let t_frames = Instant::now();
+    let rss_mb = || -> f64 {
+        std::fs::read_to_string("/proc/self/statm")
+            .ok()
+            .and_then(|s| s.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()))
+            .map(|p| p as f64 * 4096.0 / 1048576.0)
+            .unwrap_or(0.0)
+    };
+    println!("rss before frames: {:.0} MB", rss_mb());
     let mut frames = 0usize;
     let mut last_resident = 0usize;
     let mut idle = 0;
@@ -338,7 +363,11 @@ fn main() {
     let mut visible = 0usize;
     let mut batches = 0usize;
     let mut outcome_last = None;
-    for _ in 0..600 {
+    let max_frames: usize = std::env::var("JPE_FRAMES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(600);
+    for _ in 0..max_frames {
         let outcome = match pipeline.frame(&mut *renderer, camera) {
             Ok(o) => o,
             Err(e) => {
@@ -347,13 +376,16 @@ fn main() {
             }
         };
         frames += 1;
+        if frames <= 4 || frames % 20 == 0 {
+            println!("rss after frame {frames}: {:.0} MB", rss_mb());
+        }
         outcome_last = Some(outcome);
         last_resident = outcome.resident;
         visible = outcome.plan.visible as usize;
         batches = outcome.batches;
         if outcome.terrain_jobs == 0 && outcome.mesh_jobs == 0 && outcome.remesh_chunks == 0 {
             idle += 1;
-            if idle >= 3 {
+            if idle >= 3 && frames >= 8 {
                 break;
             }
         } else {

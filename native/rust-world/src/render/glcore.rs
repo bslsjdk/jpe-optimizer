@@ -118,9 +118,7 @@ gl_fns! {
     glClearColor: fn(f32, f32, f32, f32) -> ();
     glClear: fn(u32) -> ();
     glEnable: fn(u32) -> ();
-    glDisable: fn(u32) -> ();
     glDepthFunc: fn(u32) -> ();
-    glFinish: fn() -> ();
     glFlush: fn() -> ();
     glPixelStorei: fn(u32, i32) -> ();
     glGenVertexArrays: fn(i32, *mut u32) -> ();
@@ -132,6 +130,9 @@ gl_fns! {
     glDeleteBuffers: fn(i32, *const u32) -> ();
     glEnableVertexAttribArray: fn(u32) -> ();
     glVertexAttribPointer: fn(u32, i32, u32, u8, i32, *const c_void) -> ();
+    // Integer attribute upload, used for the packed tile/face word. Passing it
+    // through glVertexAttribPointer would convert it to float.
+    glVertexAttribIPointer: fn(u32, i32, u32, i32, *const c_void) -> ();
     glCreateShader: fn(u32) -> u32;
     glShaderSource: fn(u32, i32, *const *const c_char, *const i32) -> ();
     glCompileShader: fn(u32) -> ();
@@ -240,51 +241,70 @@ impl Profile {
     }
 
     fn vertex_source(self) -> &'static CStr {
-        // Both profiles take the same attribute layout as the shared mesh
-        // format: position (0), normal (1), uv (2).
+        // Attribute 2 is an integer word, not a float vector: it packs the
+        // atlas tile and the face index. Uploading it through the float path
+        // would convert it, so the VAO uses glVertexAttribIPointer.
         match self {
             Profile::Core => c"#version 330\n\
                 layout(location = 0) in vec3 aPos;\n\
-                layout(location = 1) in vec3 aNormal;\n\
-                layout(location = 2) in vec2 aUv;\n\
+                layout(location = 1) in vec2 aUv;\n\
+                layout(location = 2) in uint aMeta;\n\
                 uniform mat4 uViewProj;\n\
-                out vec3 vNormal;\n\
                 out vec2 vUv;\n\
-                void main() { vNormal = aNormal; vUv = aUv; \
+                flat out uint vTile;\n\
+                flat out uint vFace;\n\
+                void main() { vUv = aUv; vTile = aMeta & 0xFFFFu; vFace = aMeta >> 16; \
                 gl_Position = uViewProj * vec4(aPos, 1.0); }\n",
             Profile::Es => c"#version 300 es\n\
                 layout(location = 0) in vec3 aPos;\n\
-                layout(location = 1) in vec3 aNormal;\n\
-                layout(location = 2) in vec2 aUv;\n\
+                layout(location = 1) in vec2 aUv;\n\
+                layout(location = 2) in uint aMeta;\n\
                 uniform mat4 uViewProj;\n\
-                out vec3 vNormal;\n\
                 out vec2 vUv;\n\
-                void main() { vNormal = aNormal; vUv = aUv; \
+                flat out uint vTile;\n\
+                flat out uint vFace;\n\
+                void main() { vUv = aUv; vTile = aMeta & 0xFFFFu; vFace = aMeta >> 16; \
                 gl_Position = uViewProj * vec4(aPos, 1.0); }\n",
         }
     }
 
     fn fragment_source(self) -> &'static CStr {
-        // One directional light term plus the chunk atlas: identical GLSL for
-        // both profiles apart from the version and float precision.
+        // `vUv` is measured in tiles, so `fract` turns a merged quad back into
+        // a repeating tile pattern. `SHADE` is the old dot(normal, light) term
+        // precomputed for the six axis directions: the normal is no longer a
+        // vertex attribute, only the face index is.
         match self {
             Profile::Core => c"#version 330\n\
-                in vec3 vNormal;\n\
                 in vec2 vUv;\n\
+                flat in uint vTile;\n\
+                flat in uint vFace;\n\
                 uniform sampler2D uAtlas;\n\
                 out vec4 fragColor;\n\
-                void main() { vec3 light = vec3(0.40824829, 0.81649658, 0.40824829); \
-                float shade = 0.5 + 0.5 * max(dot(normalize(vNormal), light), 0.0); \
-                fragColor = vec4(texture(uAtlas, vUv).rgb * shade, 1.0); }\n",
+                const float TILES = 8.0;\n\
+                const float HALF_TEXEL = 0.5 / 256.0;\n\
+                const float SHADE[6] = float[6](0.704, 0.5, 0.908, 0.5, 0.704, 0.5);\n\
+                void main() {\n\
+                    vec2 cell = vec2(float(vTile & 7u), float(vTile >> 3u));\n\
+                    vec2 span = vec2(1.0 / TILES) - 2.0 * HALF_TEXEL;\n\
+                    vec2 uv = cell / TILES + HALF_TEXEL + fract(vUv) * span;\n\
+                    fragColor = vec4(texture(uAtlas, uv).rgb * SHADE[int(vFace)], 1.0);\n\
+                }\n",
             Profile::Es => c"#version 300 es\n\
                 precision mediump float;\n\
-                in vec3 vNormal;\n\
                 in vec2 vUv;\n\
+                flat in uint vTile;\n\
+                flat in uint vFace;\n\
                 uniform sampler2D uAtlas;\n\
                 out vec4 fragColor;\n\
-                void main() { vec3 light = vec3(0.40824829, 0.81649658, 0.40824829); \
-                float shade = 0.5 + 0.5 * max(dot(normalize(vNormal), light), 0.0); \
-                fragColor = vec4(texture(uAtlas, vUv).rgb * shade, 1.0); }\n",
+                const float TILES = 8.0;\n\
+                const float HALF_TEXEL = 0.5 / 256.0;\n\
+                const float SHADE[6] = float[6](0.704, 0.5, 0.908, 0.5, 0.704, 0.5);\n\
+                void main() {\n\
+                    vec2 cell = vec2(float(vTile & 7u), float(vTile >> 3u));\n\
+                    vec2 span = vec2(1.0 / TILES) - 2.0 * HALF_TEXEL;\n\
+                    vec2 uv = cell / TILES + HALF_TEXEL + fract(vUv) * span;\n\
+                    fragColor = vec4(texture(uAtlas, uv).rgb * SHADE[int(vFace)], 1.0);\n\
+                }\n",
         }
     }
 
@@ -645,25 +665,25 @@ impl GlCore {
                 Vertex::STRIDE as i32,
                 std::ptr::null(),
             );
-            // Normal (location 1) and uv (location 2) from the same 32-byte
-            // vertex; offsets match `Vertex` in `crate::mesh`.
+            // Quad-local uv (location 1) and the packed tile/face word
+            // (location 2) out of the same 24-byte vertex; offsets match
+            // `Vertex` in `crate::mesh`.
             (gl.glEnableVertexAttribArray)(1);
             (gl.glVertexAttribPointer)(
                 1,
-                3,
+                2,
                 GL_FLOAT,
                 GL_FALSE,
                 Vertex::STRIDE as i32,
                 12usize as *const c_void,
             );
             (gl.glEnableVertexAttribArray)(2);
-            (gl.glVertexAttribPointer)(
+            (gl.glVertexAttribIPointer)(
                 2,
-                2,
-                GL_FLOAT,
-                GL_FALSE,
+                1,
+                GL_UNSIGNED_INT,
                 Vertex::STRIDE as i32,
-                24usize as *const c_void,
+                20usize as *const c_void,
             );
 
             let mut ibo = 0u32;

@@ -129,8 +129,9 @@ mod integration {
             }
         }
         let mesh = mesh::build_section_mesh(&section, [0, 0, 0]);
-        // A solid 16x16 layer: top + bottom + 4 side strips.
-        assert_eq!(mesh.quad_count, 16 * 16 * 2 + 4 * 16);
+        // A solid 16x16 layer: top, bottom and four side strips, each merged
+        // into a single quad.
+        assert_eq!(mesh.quad_count, 6);
 
         let mut renderer = HeadlessRenderer::new();
         let handle = renderer.create_mesh(&mesh).unwrap();
