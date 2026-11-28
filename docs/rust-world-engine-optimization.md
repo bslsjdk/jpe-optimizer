@@ -113,10 +113,41 @@ queued at once), and asserts each frame does ≤ `remesh_budget` remeshes and �
 work converges to `mesh_jobs == 18`, `remesh_chunks == 3` with an empty queue. A
 mutation that lets remeshes draw from the mesh budget again makes that test fail.
 
+### 7. Padded-grid mesher (2.28x meshing throughput)
+
+The mesher tested every face with `(0..16).contains(&nx)` on three axes, then a
+six-arm `match` to pick the neighbour section. It now copies the section and its
+six neighbour boundary layers once into an 18³ padded grid held in `MeshScratch`
+(reused per worker thread, zero per-section allocation), so every face test is one
+indexed load at a precomputed ±1/±18/±324 offset. An interior block — enclosed on
+all six sides — is rejected by a single six-load test instead of six separate face
+tests, which is most of a solid section.
+
+The vertex/index stream is unchanged byte for byte: the same corners, the same
+addition order (`origin + block + corner`, so the f32 rounding is identical), the
+same index pattern. `mesh::tests::padded_mesher_reproduces_the_reference_exactly`
+keeps the old implementation in the test module and compares 640 cases (five
+densities × 128 neighbour combinations) as raw vertex bytes and indices;
+`reused_scratch_never_leaks_a_previous_section` covers the pad-reuse hazard.
+
+Measured on this host (release, `cargo test -- --ignored --nocapture
+mesh_throughput_report`), one half-solid section at the 16³ scale:
+
+| implementation | ns / section |
+|---|---|
+| reference (per-face) | 40,481.7 |
+| padded grid | 17,764.2 |
+| **throughput** | **2.28x** |
+
+That is meshing arithmetic only; the frame budget is spent mostly on upload and
+draw, and this does not claim a frame-time win. Greedy merging would cut the quad
+count itself (the next real win) but changes UV semantics, so it needs a texture
+tiling decision first.
+
 ## Verification
 
-- `cargo test` (in `native/rust-world`): **103 passed, 0 failed**, warning-free
-  `cargo build` and `cargo build --release`.
+- `cargo test` (in `native/rust-world`): **117 passed, 1 ignored** (the throughput
+  report), warning-free `cargo build` and `cargo build --release`.
 - Live Minecraft 26.3 GameTest (`native/rust-world/java/run_minecraft_gametest.sh`,
   lavapipe), run after the Java batches, identical metrics before/after:
   `result=passed backend=vulkan litPixels=1508 of=16384 awayLitPixels=0

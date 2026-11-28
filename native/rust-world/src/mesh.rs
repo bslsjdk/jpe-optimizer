@@ -170,15 +170,30 @@ const FACES: [FaceDef; 6] = [
 const UVS: [[f32; 2]; 4] = [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]];
 
 /// Reusable mesh buffers, intended to be held per worker thread.
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct MeshScratch {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
+    /// Padded block grid for the section currently being meshed: one extra cell
+    /// on every side, filled from the neighbouring sections. Reused across
+    /// sections so a frame's meshing allocates nothing.
+    pad: [u16; PAD_VOLUME],
+}
+
+impl Default for MeshScratch {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MeshScratch {
-    pub fn new() -> Self {
-        Self::default()
+    /// Const so the pipeline can build one in a `const` thread-local initialiser.
+    pub const fn new() -> Self {
+        Self {
+            vertices: Vec::new(),
+            indices: Vec::new(),
+            pad: [0; PAD_VOLUME],
+        }
     }
 
     pub fn clear(&mut self) {
@@ -222,51 +237,7 @@ pub fn build_section_mesh_into(
     origin: [i32; 3],
     scratch: &mut MeshScratch,
 ) -> u32 {
-    scratch.clear();
-    let mut quads = 0u32;
-
-    for y in 0..16usize {
-        for z in 0..16usize {
-            for x in 0..16usize {
-                if !section.is_solid(x, y, z) {
-                    continue;
-                }
-                for face in FACES.iter() {
-                    let nx = x as i32 + face.normal[0] as i32;
-                    let ny = y as i32 + face.normal[1] as i32;
-                    let nz = z as i32 + face.normal[2] as i32;
-                    let neighbor_solid = (0..16).contains(&nx)
-                        && (0..16).contains(&ny)
-                        && (0..16).contains(&nz)
-                        && section.is_solid(nx as usize, ny as usize, nz as usize);
-                    if neighbor_solid {
-                        continue;
-                    }
-                    let base = scratch.vertices.len() as u32;
-                    for (corner, uv) in face.corners.iter().zip(UVS.iter()) {
-                        scratch.vertices.push(Vertex {
-                            position: [
-                                origin[0] as f32 + x as f32 + corner[0],
-                                origin[1] as f32 + y as f32 + corner[1],
-                                origin[2] as f32 + z as f32 + corner[2],
-                            ],
-                            normal: [
-                                face.normal[0] as f32,
-                                face.normal[1] as f32,
-                                face.normal[2] as f32,
-                            ],
-                            uv: *uv,
-                        });
-                    }
-                    scratch
-                        .indices
-                        .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-                    quads += 1;
-                }
-            }
-        }
-    }
-    quads
+    build_section_mesh_with_neighbors(section, &Neighbors::none(), origin, scratch)
 }
 
 /// Convenience: build into fresh buffers and return owned [`MeshData`].
@@ -292,39 +263,137 @@ pub struct Neighbors<'a> {
     pub neg_z: Option<&'a ChunkSection>,
 }
 
-/// Like [`build_section_mesh_into`] but culls boundary faces against loaded
-/// neighbouring sections. Missing neighbours are treated as air.
-pub fn build_section_mesh_with_neighbors(
-    section: &ChunkSection,
-    neighbors: &Neighbors<'_>,
-    origin: [i32; 3],
-    scratch: &mut MeshScratch,
-) -> u32 {
-    scratch.clear();
-    let mut quads = 0u32;
+impl Neighbors<'_> {
+    /// No neighbour loaded: every boundary face is emitted.
+    pub fn none() -> Self {
+        Self {
+            pos_x: None,
+            neg_x: None,
+            pos_y: None,
+            neg_y: None,
+            pos_z: None,
+            neg_z: None,
+        }
+    }
+}
 
+// ---------------------------------------------------------------------------
+// Padded-grid meshing
+//
+// The section and its six neighbour boundary layers are copied once into an
+// 18³ grid with one extra cell on every side. Every face test is then a single
+// indexed load — no `(0..16).contains(...)` per face, no per-axis neighbour
+// match — and the block loop never branches on which axis a face belongs to.
+// The output is byte-for-byte what the per-face version produced; the
+// `padded_mesher_reproduces_the_reference_exactly` test proves it.
+// ---------------------------------------------------------------------------
+
+/// Padded edge length: the 16³ section plus one cell on every side.
+const PAD: usize = SECTION_SIZE as usize + 2; // 18
+const PAD_AREA: usize = PAD * PAD; // 324
+const PAD_VOLUME: usize = PAD * PAD * PAD; // 5832
+
+/// Index of local block (x, y, z) in the padded grid. Local 0..16 maps to padded
+/// 1..=16, so padded 0 and 17 are the neighbour layers.
+#[inline]
+fn pad_index(x: usize, y: usize, z: usize) -> usize {
+    (y + 1) * PAD_AREA + (z + 1) * PAD + (x + 1)
+}
+
+/// Neighbour offsets in the padded grid, one per [`FACES`] entry (+X, -X, +Y,
+/// -Y, +Z, -Z): adding one to a cell's index reaches that face's neighbour.
+const FACE_OFFSETS: [isize; 6] = [
+    1,
+    -1,
+    PAD_AREA as isize,
+    -(PAD_AREA as isize),
+    PAD as isize,
+    -(PAD as isize),
+];
+
+/// Copy the section and its six neighbour boundary layers into `pad`.
+///
+/// A missing neighbour stays air, which is the previous semantics: a boundary
+/// face with no loaded neighbour was emitted. Only face-adjacent cells are ever
+/// read, but the whole pad is zeroed so a reused scratch can never leak a
+/// previous section's values.
+fn fill_padded(pad: &mut [u16; PAD_VOLUME], section: &ChunkSection, neighbors: &Neighbors<'_>) {
+    pad.fill(0);
+    for y in 0..16 {
+        for z in 0..16 {
+            let src = (y << 8) | (z << 4);
+            let dst = pad_index(0, y, z);
+            pad[dst..dst + 16].copy_from_slice(&section.blocks[src..src + 16]);
+        }
+    }
+    for y in 0..16 {
+        for z in 0..16 {
+            if let Some(n) = neighbors.neg_x {
+                pad[pad_index(0, y, z) - 1] = n.get(15, y, z);
+            }
+            if let Some(n) = neighbors.pos_x {
+                pad[pad_index(16, y, z)] = n.get(0, y, z);
+            }
+        }
+    }
+    for x in 0..16 {
+        for z in 0..16 {
+            if let Some(n) = neighbors.neg_y {
+                pad[pad_index(x, 0, z) - PAD_AREA] = n.get(x, 15, z);
+            }
+            if let Some(n) = neighbors.pos_y {
+                pad[pad_index(x, 16, z)] = n.get(x, 0, z);
+            }
+        }
+    }
+    for x in 0..16 {
+        for y in 0..16 {
+            if let Some(n) = neighbors.neg_z {
+                pad[pad_index(x, y, 0) - PAD] = n.get(x, y, 15);
+            }
+            if let Some(n) = neighbors.pos_z {
+                pad[pad_index(x, y, 16)] = n.get(x, y, 0);
+            }
+        }
+    }
+}
+
+/// Emit every visible face of a filled padded grid.
+fn mesh_padded(
+    pad: &[u16; PAD_VOLUME],
+    origin: [i32; 3],
+    vertices: &mut Vec<Vertex>,
+    indices: &mut Vec<u32>,
+) -> u32 {
+    let mut quads = 0u32;
+    let ox = origin[0] as f32;
+    let oy = origin[1] as f32;
+    let oz = origin[2] as f32;
     for y in 0..16usize {
         for z in 0..16usize {
             for x in 0..16usize {
-                if !section.is_solid(x, y, z) {
+                let here = pad_index(x, y, z) as isize;
+                if pad[here as usize] == 0 {
                     continue;
                 }
-                for face in FACES.iter() {
-                    let nx = x as i32 + face.normal[0] as i32;
-                    let ny = y as i32 + face.normal[1] as i32;
-                    let nz = z as i32 + face.normal[2] as i32;
-                    let neighbor_solid = boundary_neighbor_solid(neighbors, section, nx, ny, nz);
-                    if neighbor_solid {
+                // A block enclosed on all six sides emits nothing. Testing that
+                // once skips six face tests for every interior block, which is
+                // most of a solid section.
+                if FACE_OFFSETS
+                    .iter()
+                    .all(|offset| pad[(here + offset) as usize] != 0)
+                {
+                    continue;
+                }
+                let (fx, fy, fz) = (ox + x as f32, oy + y as f32, oz + z as f32);
+                for (offset, face) in FACE_OFFSETS.iter().zip(FACES.iter()) {
+                    if pad[(here + offset) as usize] != 0 {
                         continue;
                     }
-                    let base = scratch.vertices.len() as u32;
+                    let base = vertices.len() as u32;
                     for (corner, uv) in face.corners.iter().zip(UVS.iter()) {
-                        scratch.vertices.push(Vertex {
-                            position: [
-                                origin[0] as f32 + x as f32 + corner[0],
-                                origin[1] as f32 + y as f32 + corner[1],
-                                origin[2] as f32 + z as f32 + corner[2],
-                            ],
+                        vertices.push(Vertex {
+                            position: [fx + corner[0], fy + corner[1], fz + corner[2]],
                             normal: [
                                 face.normal[0] as f32,
                                 face.normal[1] as f32,
@@ -333,9 +402,7 @@ pub fn build_section_mesh_with_neighbors(
                             uv: *uv,
                         });
                     }
-                    scratch
-                        .indices
-                        .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+                    indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
                     quads += 1;
                 }
             }
@@ -344,54 +411,23 @@ pub fn build_section_mesh_with_neighbors(
     quads
 }
 
-fn boundary_neighbor_solid(
-    neighbors: &Neighbors<'_>,
+/// Like [`build_section_mesh_into`] but culls boundary faces against loaded
+/// neighbouring sections. Missing neighbours are treated as air.
+pub fn build_section_mesh_with_neighbors(
     section: &ChunkSection,
-    nx: i32,
-    ny: i32,
-    nz: i32,
-) -> bool {
-    let inside = |v: i32| (0..16).contains(&v);
-    if inside(nx) && inside(ny) && inside(nz) {
-        return section.is_solid(nx as usize, ny as usize, nz as usize);
-    }
-    let in_x = inside(nx);
-    let in_y = inside(ny);
-    let in_z = inside(nz);
-    if !in_x && in_y && in_z {
-        return match nx {
-            16 => neighbors
-                .pos_x
-                .is_some_and(|s| s.is_solid(0, ny as usize, nz as usize)),
-            -1 => neighbors
-                .neg_x
-                .is_some_and(|s| s.is_solid(15, ny as usize, nz as usize)),
-            _ => false,
-        };
-    }
-    if in_x && !in_y && in_z {
-        return match ny {
-            16 => neighbors
-                .pos_y
-                .is_some_and(|s| s.is_solid(nx as usize, 0, nz as usize)),
-            -1 => neighbors
-                .neg_y
-                .is_some_and(|s| s.is_solid(nx as usize, 15, nz as usize)),
-            _ => false,
-        };
-    }
-    if in_x && in_y && !in_z {
-        return match nz {
-            16 => neighbors
-                .pos_z
-                .is_some_and(|s| s.is_solid(nx as usize, ny as usize, 0)),
-            -1 => neighbors
-                .neg_z
-                .is_some_and(|s| s.is_solid(nx as usize, ny as usize, 15)),
-            _ => false,
-        };
-    }
-    false
+    neighbors: &Neighbors<'_>,
+    origin: [i32; 3],
+    scratch: &mut MeshScratch,
+) -> u32 {
+    fill_padded(&mut scratch.pad, section, neighbors);
+    scratch.vertices.clear();
+    scratch.indices.clear();
+    mesh_padded(
+        &scratch.pad,
+        origin,
+        &mut scratch.vertices,
+        &mut scratch.indices,
+    )
 }
 
 /// Axis-aligned bounding box in world space.
@@ -559,5 +595,272 @@ mod tests {
         let behind = Aabb::section([0, 0, -32]);
         assert!(frustum.intersects(&in_front));
         assert!(!frustum.intersects(&behind));
+    }
+
+    // --- Padded mesher: equivalence against the pre-optimisation code -------
+
+    /// The per-face implementation, kept verbatim as the reference the padded
+    /// mesher must reproduce exactly. Never used in production.
+    fn reference_neighbor_solid(
+        neighbors: &Neighbors<'_>,
+        section: &ChunkSection,
+        nx: i32,
+        ny: i32,
+        nz: i32,
+    ) -> bool {
+        let inside = |v: i32| (0..16).contains(&v);
+        if inside(nx) && inside(ny) && inside(nz) {
+            return section.is_solid(nx as usize, ny as usize, nz as usize);
+        }
+        let (in_x, in_y, in_z) = (inside(nx), inside(ny), inside(nz));
+        if !in_x && in_y && in_z {
+            return match nx {
+                16 => neighbors
+                    .pos_x
+                    .is_some_and(|s| s.is_solid(0, ny as usize, nz as usize)),
+                -1 => neighbors
+                    .neg_x
+                    .is_some_and(|s| s.is_solid(15, ny as usize, nz as usize)),
+                _ => false,
+            };
+        }
+        if in_x && !in_y && in_z {
+            return match ny {
+                16 => neighbors
+                    .pos_y
+                    .is_some_and(|s| s.is_solid(nx as usize, 0, nz as usize)),
+                -1 => neighbors
+                    .neg_y
+                    .is_some_and(|s| s.is_solid(nx as usize, 15, nz as usize)),
+                _ => false,
+            };
+        }
+        if in_x && in_y && !in_z {
+            return match nz {
+                16 => neighbors
+                    .pos_z
+                    .is_some_and(|s| s.is_solid(nx as usize, ny as usize, 0)),
+                -1 => neighbors
+                    .neg_z
+                    .is_some_and(|s| s.is_solid(nx as usize, ny as usize, 15)),
+                _ => false,
+            };
+        }
+        false
+    }
+
+    fn reference_mesh(
+        section: &ChunkSection,
+        neighbors: &Neighbors<'_>,
+        origin: [i32; 3],
+    ) -> (Vec<Vertex>, Vec<u32>) {
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        for y in 0..16usize {
+            for z in 0..16usize {
+                for x in 0..16usize {
+                    if !section.is_solid(x, y, z) {
+                        continue;
+                    }
+                    for face in FACES.iter() {
+                        let nx = x as i32 + face.normal[0] as i32;
+                        let ny = y as i32 + face.normal[1] as i32;
+                        let nz = z as i32 + face.normal[2] as i32;
+                        if reference_neighbor_solid(neighbors, section, nx, ny, nz) {
+                            continue;
+                        }
+                        let base = vertices.len() as u32;
+                        for (corner, uv) in face.corners.iter().zip(UVS.iter()) {
+                            vertices.push(Vertex {
+                                position: [
+                                    origin[0] as f32 + x as f32 + corner[0],
+                                    origin[1] as f32 + y as f32 + corner[1],
+                                    origin[2] as f32 + z as f32 + corner[2],
+                                ],
+                                normal: [
+                                    face.normal[0] as f32,
+                                    face.normal[1] as f32,
+                                    face.normal[2] as f32,
+                                ],
+                                uv: *uv,
+                            });
+                        }
+                        indices.extend_from_slice(&[
+                            base,
+                            base + 1,
+                            base + 2,
+                            base,
+                            base + 2,
+                            base + 3,
+                        ]);
+                    }
+                }
+            }
+        }
+        (vertices, indices)
+    }
+
+    fn vertex_bytes(vertices: &[Vertex]) -> Vec<u8> {
+        let mut out = vec![0u8; vertices.len() * Vertex::STRIDE];
+        for (i, v) in vertices.iter().enumerate() {
+            v.write_le(&mut out[i * Vertex::STRIDE..(i + 1) * Vertex::STRIDE]);
+        }
+        out
+    }
+
+    /// Deterministic pseudo-random section with the given density: one block per
+    /// `modulus` cells is solid (`modulus == 0` means empty).
+    fn random_section(state: &mut u64, modulus: u64) -> ChunkSection {
+        let mut section = ChunkSection::new();
+        for i in 0..ChunkSection::VOLUME {
+            *state ^= *state << 13;
+            *state ^= *state >> 7;
+            *state ^= *state << 17;
+            let r = *state;
+            if modulus != 0 && r.is_multiple_of(modulus) {
+                let (x, y, z) = (i & 15, (i >> 4) & 15, (i >> 8) & 15);
+                section.set(x, y, z, 1 + (r % 5) as u16);
+            }
+        }
+        section
+    }
+
+    #[test]
+    fn padded_mesher_reproduces_the_reference_exactly() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let dense = random_section(&mut state, 2);
+        let sparse = random_section(&mut state, 29);
+        let origin = [8, -16, 24];
+        let mut cases = 0;
+        // Empty, sparse, mixed, dense, fully solid, with every combination of
+        // loaded/unloaded neighbours (and two different neighbour fillings).
+        for modulus in [0u64, 101, 13, 3, 1] {
+            let section = random_section(&mut state, modulus);
+            for mask in 0..128u32 {
+                let fill = if mask & 64 != 0 { &dense } else { &sparse };
+                let pick = |bit: u32| {
+                    if mask & (1 << bit) != 0 {
+                        Some(fill)
+                    } else {
+                        None
+                    }
+                };
+                let neighbors = Neighbors {
+                    pos_x: pick(0),
+                    neg_x: pick(1),
+                    pos_y: pick(2),
+                    neg_y: pick(3),
+                    pos_z: pick(4),
+                    neg_z: pick(5),
+                };
+                let (ref_v, ref_i) = reference_mesh(&section, &neighbors, origin);
+                let mut scratch = MeshScratch::new();
+                let quads = build_section_mesh_with_neighbors(
+                    &section,
+                    &neighbors,
+                    origin,
+                    &mut scratch,
+                );
+                assert_eq!(
+                    vertex_bytes(&scratch.vertices),
+                    vertex_bytes(&ref_v),
+                    "vertex bytes differ (modulus={modulus}, mask={mask})"
+                );
+                assert_eq!(
+                    scratch.indices, ref_i,
+                    "indices differ (modulus={modulus}, mask={mask})"
+                );
+                assert_eq!(quads as usize * 4, scratch.vertices.len());
+                assert_eq!(quads as usize * 6, scratch.indices.len());
+                cases += 1;
+            }
+        }
+        assert_eq!(cases, 5 * 128, "every density x neighbour combination ran");
+    }
+
+    #[test]
+    fn reused_scratch_never_leaks_a_previous_section() {
+        // The pad is reused across sections, so a dense section followed by an
+        // empty one must still produce an empty mesh (stale solid cells would
+        // otherwise show up as phantom faces).
+        let mut scratch = MeshScratch::new();
+        let dense = random_section(&mut 0xDEAD_BEEF_CAFE_F00Du64, 1);
+        let quads = build_section_mesh_with_neighbors(
+            &dense,
+            &Neighbors::none(),
+            [0, 0, 0],
+            &mut scratch,
+        );
+        assert!(quads > 0);
+        let empty = ChunkSection::new();
+        let quads = build_section_mesh_with_neighbors(
+            &empty,
+            &Neighbors::none(),
+            [0, 0, 0],
+            &mut scratch,
+        );
+        assert_eq!(quads, 0);
+        assert!(scratch.vertices.is_empty() && scratch.indices.is_empty());
+    }
+
+    /// Throughput report, not a CI gate: `cargo test -- --ignored --nocapture
+    /// mesh_throughput_report`. Both implementations run on the same input so
+    /// the ratio is meaningful on the host that runs it.
+    #[test]
+    #[ignore = "throughput report; run with --ignored --nocapture"]
+    fn mesh_throughput_report() {
+        use std::time::Instant;
+        let mut state = 0x1234_5678_9ABC_DEF0u64;
+        // A realistic column section: solid bottom half, sparse above.
+        let mut section = ChunkSection::new();
+        for y in 0..8 {
+            for z in 0..16 {
+                for x in 0..16 {
+                    section.set(x, y, z, 1);
+                }
+            }
+        }
+        for y in 8..16 {
+            for z in 0..16 {
+                for x in 0..16 {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    if state.is_multiple_of(23) {
+                        section.set(x, y, z, 2);
+                    }
+                }
+            }
+        }
+        let neighbors = Neighbors::none();
+        let iterations = 500;
+        let time = |label: &str, f: &mut dyn FnMut() -> usize| {
+            for _ in 0..50 {
+                f();
+            }
+            let start = Instant::now();
+            for _ in 0..iterations {
+                f();
+            }
+            let ns = start.elapsed().as_nanos() as f64 / iterations as f64;
+            println!("{label:<10} {ns:8.1} ns/section");
+            ns
+        };
+        let mut scratch = MeshScratch::new();
+        let padded = time(
+            "padded",
+            &mut || {
+                build_section_mesh_with_neighbors(&section, &neighbors, [0, 0, 0], &mut scratch)
+                    as usize
+            },
+        );
+        let reference = time(
+            "reference",
+            &mut || reference_mesh(&section, &neighbors, [0, 0, 0]).0.len(),
+        );
+        println!(
+            "padded is {:.2}x the reference throughput",
+            reference / padded
+        );
     }
 }

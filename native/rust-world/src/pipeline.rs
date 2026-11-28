@@ -447,7 +447,7 @@ impl<S: BlockSource> WorldPipeline<S> {
         // `MeshScratch::new()` paid for each section.
         std::thread_local! {
             static SCRATCH: std::cell::RefCell<MeshScratch> =
-                const { std::cell::RefCell::new(MeshScratch { vertices: Vec::new(), indices: Vec::new() }) };
+                const { std::cell::RefCell::new(MeshScratch::new()) };
         }
         let blocks = &self.blocks;
         parallel_map(targets, self.config.threads, |_index, target| {
