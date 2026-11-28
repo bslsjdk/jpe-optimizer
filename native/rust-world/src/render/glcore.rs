@@ -48,7 +48,6 @@ const GL_LINK_STATUS: u32 = 0x8B82;
 const GL_ARRAY_BUFFER: u32 = 0x8892;
 const GL_ELEMENT_ARRAY_BUFFER: u32 = 0x8893;
 const GL_STATIC_DRAW: u32 = 0x88E4;
-const GL_FLOAT: u32 = 0x1406;
 const GL_FALSE: u8 = 0;
 
 const GL_TRIANGLES: u32 = 0x0004;
@@ -129,7 +128,6 @@ gl_fns! {
     glBufferData: fn(u32, isize, *const c_void, u32) -> ();
     glDeleteBuffers: fn(i32, *const u32) -> ();
     glEnableVertexAttribArray: fn(u32) -> ();
-    glVertexAttribPointer: fn(u32, i32, u32, u8, i32, *const c_void) -> ();
     // Integer attribute upload, used for the packed tile/face word. Passing it
     // through glVertexAttribPointer would convert it to float.
     glVertexAttribIPointer: fn(u32, i32, u32, i32, *const c_void) -> ();
@@ -149,6 +147,7 @@ gl_fns! {
     glGetUniformLocation: fn(u32, *const c_char) -> i32;
     glUniform1i: fn(i32, i32) -> ();
     glUniformMatrix4fv: fn(i32, i32, u8, *const f32) -> ();
+    glUniform3f: fn(i32, f32, f32, f32) -> ();
     glGenTextures: fn(i32, *mut u32) -> ();
     glDeleteTextures: fn(i32, *const u32) -> ();
     glBindTexture: fn(u32, u32) -> ();
@@ -241,30 +240,47 @@ impl Profile {
     }
 
     fn vertex_source(self) -> &'static CStr {
-        // Attribute 2 is an integer word, not a float vector: it packs the
-        // atlas tile and the face index. Uploading it through the float path
-        // would convert it, so the VAO uses glVertexAttribIPointer.
+        // Both attributes are integer words. `aPosUv` packs the section-local
+        // corner (5 bits per axis) and the quad-local uv (5 bits per axis);
+        // `aMeta` packs the atlas tile and the face index. They must arrive
+        // through glVertexAttribIPointer -- the float path would convert them.
+        //
+        // The position is section-local and the section origin comes from a
+        // per-draw uniform: 8 bytes per vertex instead of 32, and the addition
+        // is exact because both are small integers.
         match self {
             Profile::Core => c"#version 330\n\
-                layout(location = 0) in vec3 aPos;\n\
-                layout(location = 1) in vec2 aUv;\n\
-                layout(location = 2) in uint aMeta;\n\
+                layout(location = 0) in uint aPosUv;\n\
+                layout(location = 1) in uint aMeta;\n\
                 uniform mat4 uViewProj;\n\
+                uniform vec3 uOrigin;\n\
                 out vec2 vUv;\n\
                 flat out uint vTile;\n\
                 flat out uint vFace;\n\
-                void main() { vUv = aUv; vTile = aMeta & 0xFFFFu; vFace = aMeta >> 16; \
-                gl_Position = uViewProj * vec4(aPos, 1.0); }\n",
+                void main() {\n\
+                    vec3 local = vec3(float(aPosUv & 31u), float((aPosUv >> 5) & 31u), \
+                                      float((aPosUv >> 10) & 31u));\n\
+                    vUv = vec2(float((aPosUv >> 15) & 31u), float((aPosUv >> 20) & 31u));\n\
+                    vTile = aMeta & 0xFFFFu;\n\
+                    vFace = aMeta >> 16;\n\
+                    gl_Position = uViewProj * vec4(local + uOrigin, 1.0);\n\
+                }\n",
             Profile::Es => c"#version 300 es\n\
-                layout(location = 0) in vec3 aPos;\n\
-                layout(location = 1) in vec2 aUv;\n\
-                layout(location = 2) in uint aMeta;\n\
+                layout(location = 0) in uint aPosUv;\n\
+                layout(location = 1) in uint aMeta;\n\
                 uniform mat4 uViewProj;\n\
+                uniform vec3 uOrigin;\n\
                 out vec2 vUv;\n\
                 flat out uint vTile;\n\
                 flat out uint vFace;\n\
-                void main() { vUv = aUv; vTile = aMeta & 0xFFFFu; vFace = aMeta >> 16; \
-                gl_Position = uViewProj * vec4(aPos, 1.0); }\n",
+                void main() {\n\
+                    vec3 local = vec3(float(aPosUv & 31u), float((aPosUv >> 5) & 31u), \
+                                      float((aPosUv >> 10) & 31u));\n\
+                    vUv = vec2(float((aPosUv >> 15) & 31u), float((aPosUv >> 20) & 31u));\n\
+                    vTile = aMeta & 0xFFFFu;\n\
+                    vFace = aMeta >> 16;\n\
+                    gl_Position = uViewProj * vec4(local + uOrigin, 1.0);\n\
+                }\n",
         }
     }
 
@@ -324,6 +340,9 @@ struct GlMesh {
     vbo: u32,
     ibo: u32,
     index_count: u32,
+    /// Block-space origin of the section. Vertices are section-local, so this
+    /// is what puts the section in the world, as a per-draw uniform.
+    origin: [f32; 3],
 }
 
 struct GlTarget {
@@ -351,6 +370,8 @@ pub struct GlCore {
     u_view_proj: i32,
     /// Location of `uAtlas` in `program`, or -1 if unused.
     u_atlas: i32,
+    /// Location of `uOrigin`: the block-space origin of the section being drawn.
+    u_origin: i32,
     /// Built-in block atlas (see [`atlas_pixels`]).
     atlas: u32,
     /// Column-major view-projection applied to every frame.
@@ -478,7 +499,9 @@ impl GlCore {
             let u_view_proj = (gl.glGetUniformLocation)(program, name);
             let name = c"uAtlas".as_ptr();
             let u_atlas = (gl.glGetUniformLocation)(program, name);
-            if u_view_proj < 0 || u_atlas < 0 {
+            let name = c"uOrigin".as_ptr();
+            let u_origin = (gl.glGetUniformLocation)(program, name);
+            if u_view_proj < 0 || u_atlas < 0 || u_origin < 0 {
                 (gl.glDeleteProgram)(program);
                 return Err(RenderError::Api("gl: shader uniform missing"));
             }
@@ -494,6 +517,7 @@ impl GlCore {
                 program,
                 u_view_proj,
                 u_atlas,
+                u_origin,
                 atlas,
                 view_proj: MAT4_IDENTITY,
                 meshes: Vec::new(),
@@ -631,10 +655,25 @@ impl GlCore {
         if mesh.vertices.is_empty() || mesh.indices.is_empty() {
             return Err(RenderError::InvalidMesh);
         }
-        let mut vertex_bytes = vec![0u8; mesh.vertices.len() * Vertex::STRIDE];
-        for (i, v) in mesh.vertices.iter().enumerate() {
-            v.write_le(&mut vertex_bytes[i * Vertex::STRIDE..(i + 1) * Vertex::STRIDE]);
-        }
+        // Uploaded straight from the vertex array. `Vertex` is `repr(C)` over
+        // two u32 and the file format is little-endian, so on a little-endian
+        // host the in-memory bytes *are* the wire bytes; the old path built a
+        // full byte-for-byte copy of every section just to hand it to the
+        // driver. On a big-endian host the copy stays.
+        let vertex_bytes: std::borrow::Cow<'_, [u8]> = if cfg!(target_endian = "little") {
+            std::borrow::Cow::Borrowed(unsafe {
+                std::slice::from_raw_parts(
+                    mesh.vertices.as_ptr() as *const u8,
+                    mesh.vertices.len() * Vertex::STRIDE,
+                )
+            })
+        } else {
+            let mut buf = vec![0u8; mesh.vertices.len() * Vertex::STRIDE];
+            for (i, v) in mesh.vertices.iter().enumerate() {
+                v.write_le(&mut buf[i * Vertex::STRIDE..(i + 1) * Vertex::STRIDE]);
+            }
+            std::borrow::Cow::Owned(buf)
+        };
         let index_bytes = mesh.indices.len() * std::mem::size_of::<u32>();
 
         let gl = &self.gl;
@@ -656,34 +695,24 @@ impl GlCore {
                 vertex_bytes.as_ptr() as *const c_void,
                 GL_STATIC_DRAW,
             );
+            // Both attributes are integer words and must reach the shader
+            // unmodified: glVertexAttribPointer would convert them to float and
+            // destroy the bit fields.
             (gl.glEnableVertexAttribArray)(0);
-            (gl.glVertexAttribPointer)(
-                0,
-                3,
-                GL_FLOAT,
-                GL_FALSE,
-                Vertex::STRIDE as i32,
-                std::ptr::null(),
-            );
-            // Quad-local uv (location 1) and the packed tile/face word
-            // (location 2) out of the same 24-byte vertex; offsets match
-            // `Vertex` in `crate::mesh`.
-            (gl.glEnableVertexAttribArray)(1);
-            (gl.glVertexAttribPointer)(
-                1,
-                2,
-                GL_FLOAT,
-                GL_FALSE,
-                Vertex::STRIDE as i32,
-                12usize as *const c_void,
-            );
-            (gl.glEnableVertexAttribArray)(2);
             (gl.glVertexAttribIPointer)(
-                2,
+                0,
                 1,
                 GL_UNSIGNED_INT,
                 Vertex::STRIDE as i32,
-                20usize as *const c_void,
+                std::ptr::null(),
+            );
+            (gl.glEnableVertexAttribArray)(1);
+            (gl.glVertexAttribIPointer)(
+                1,
+                1,
+                GL_UNSIGNED_INT,
+                Vertex::STRIDE as i32,
+                4usize as *const c_void,
             );
 
             let mut ibo = 0u32;
@@ -706,6 +735,11 @@ impl GlCore {
                 vbo,
                 ibo,
                 index_count: mesh.indices.len() as u32,
+                origin: [
+                    mesh.origin[0] as f32,
+                    mesh.origin[1] as f32,
+                    mesh.origin[2] as f32,
+                ],
             }));
             Ok(handle)
         }
@@ -784,6 +818,15 @@ impl GlCore {
                 let idx = batch.mesh.0 as usize - 1;
                 if let Some(Some(mesh)) = self.meshes.get(idx) {
                     (gl.glBindVertexArray)(mesh.vao);
+                    // Vertices are section-local; this is the only per-section
+                    // state, and it is one uniform call against 4 vertices of
+                    // saved position data.
+                    (gl.glUniform3f)(
+                        self.u_origin,
+                        mesh.origin[0],
+                        mesh.origin[1],
+                        mesh.origin[2],
+                    );
                     let count = batch.index_count.min(mesh.index_count) as i32;
                     let instances = batch.instance_count.max(1) as i32;
                     if instances > 1 {

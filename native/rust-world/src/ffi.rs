@@ -1626,8 +1626,13 @@ mod tests {
         );
         assert_eq!(n, 24);
         assert_eq!(quad_count, 6);
-        // First face is +X of block (0,0,0): its first corner is (1,0,0).
-        assert_eq!(f32::from_le_bytes([vbuf[0], vbuf[1], vbuf[2], vbuf[3]]), 1.0);
+        // Vertices are section-local packed words: the first face is +X of
+        // block (0,0,0) and its first corner is (1,0,0), so the low five bits
+        // of the first word are 1 and y/z are 0.
+        let pos_uv = u32::from_le_bytes([vbuf[0], vbuf[1], vbuf[2], vbuf[3]]);
+        assert_eq!(pos_uv & 31, 1);
+        assert_eq!((pos_uv >> 5) & 31, 0);
+        assert_eq!((pos_uv >> 10) & 31, 0);
     }
 
     #[test]

@@ -72,7 +72,7 @@ public final class JpeWorldNative implements AutoCloseable {
     public record Stats(long submitted, long started, long completed, long staleDiscarded,
                         long rejectedFull, long evicted, long epochBumps) {}
 
-    public record Mesh(int vertexCount, int quadCount, float firstVertexX) {}
+    public record Mesh(int vertexCount, int quadCount, int firstVertexX) {}
 
     /** Native renderer capabilities. {@code backend} is one of the BACKEND_* codes. */
     public record RendererCaps(int backend, int apiMajor, int apiMinor, int maxTextureSize,
@@ -390,8 +390,8 @@ public final class JpeWorldNative implements AutoCloseable {
 
     /**
      * Build a section mesh from 4096 block ids indexed {@code (y<<8)|(z<<4)|x}.
-     * Returns the vertex count, quad count and the first vertex X for a cheap
-     * sanity check.
+     * Returns the vertex count, quad count and the first vertex's world X for a
+     * cheap sanity check.
      */
     public Mesh meshSection(short[] blocks, int originX, int originY, int originZ) {
         if (blocks.length != 4096) {
@@ -403,7 +403,8 @@ public final class JpeWorldNative implements AutoCloseable {
             for (int i = 0; i < blocks.length; i++) {
                 section.setAtIndex(ValueLayout.JAVA_SHORT, i, blocks[i]);
             }
-            long vertexCapacity = (long) maxQuads * 4 * 32;
+            // 8 bytes per vertex: two packed u32 words (see mesh.rs).
+            long vertexCapacity = (long) maxQuads * 4 * 8;
             long indexCapacity = (long) maxQuads * 6 * 4;
             MemorySegment vertices = a.allocate(vertexCapacity);
             MemorySegment indices = a.allocate(indexCapacity);
@@ -414,7 +415,12 @@ public final class JpeWorldNative implements AutoCloseable {
             if (vertexCount < 0) {
                 throw new IllegalStateException("meshSection failed: status " + vertexCount);
             }
-            float firstX = vertexCount == 0 ? 0.0f : vertices.get(ValueLayout.JAVA_FLOAT, 0);
+            // Vertices are section-local packed words: x lives in the low five
+            // bits of the first u32, so the world-space x of the first vertex is
+            // the section origin plus that field.
+            int firstX = vertexCount == 0
+                    ? 0
+                    : originX + (vertices.get(ValueLayout.JAVA_INT, 0) & 31);
             return new Mesh((int) vertexCount, quadOut.get(ValueLayout.JAVA_INT, 0), firstX);
         }
     }

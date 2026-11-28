@@ -167,40 +167,73 @@ impl Default for ChunkSection {
 
 /// Interleaved vertex layout shared by every renderer backend.
 ///
-/// 24 bytes: position f32x3, quad-local uv f32x2, packed metadata u32. All
-/// little-endian.
+/// 8 bytes: two packed u32 words. All little-endian.
 ///
-/// Two things here are unusual on purpose.
+/// The previous layout was 32 bytes (position f32x3, normal f32x3, uv f32x2),
+/// then 24 (position, uv, meta). Both spent floats on things that are not
+/// floats. This one spends none:
 ///
-/// `uv` is measured in *tiles*, not in atlas coordinates. A greedy quad that
-/// spans 7 blocks of grass carries `0..7` across its width, and the fragment
-/// shader wraps it with `fract` before mapping into the atlas. That is the only
-/// thing that makes merged geometry possible at all: without it a merged quad
-/// would stretch one tile over seven blocks instead of repeating it seven
-/// times.
+/// * Position is *section-local* and integral. A section is 16 blocks, so a
+///   corner is 0..=16 and fits in five bits per axis; the section's block-space
+///   origin travels as a per-draw uniform instead, which costs one uniform call
+///   per section and saves 8 bytes on every vertex in it.
+/// * `uv` is measured in *tiles*, not atlas coordinates, and is also integral:
+///   a greedy quad spanning 7 blocks of grass carries 0..7 across its width and
+///   the fragment shader repeats the tile with `fract`. Atlas coordinates could
+///   not be merged at all -- a 7-block quad would stretch one tile across seven
+///   blocks. Since the quad's uv origin is an integer, packing the section-local
+///   coordinate and letting `fract` drop the offset is exact.
+/// * There is no normal. There are six possible ones, all known at mesh time,
+///   so `meta` carries the face index and the fragment shader looks the light
+///   term up in a six-entry table.
 ///
-/// `meta` packs `tile | face << 16`. There is no normal attribute because there
-/// are only six possible normals and all six are known at mesh time, so the
-/// fragment shader rebuilds the light term from `face` through a constant table.
-/// Those three floats were 12 of the old 32 bytes, and the old layout also spent
-/// 8 bytes on a UV pair that was always an affine map of the corner.
-#[derive(Copy, Clone, Debug, PartialEq)]
+/// At 2.5M quads that is 320 MiB of vertices instead of 960.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub struct Vertex {
-    pub position: [f32; 3],
-    /// UV inside the quad's tile, in tiles: 0..u_span, 0..v_span.
-    pub uv: [f32; 2],
+    /// `x | y << 5 | z << 10 | u << 15 | v << 20`, every field section-local
+    /// and in 0..=16. See [`Vertex::pack`].
+    pub pos_uv: u32,
     /// `tile as u32 | (face as u32) << 16`; see [`Vertex::pack`].
     pub meta: u32,
 }
 
 impl Vertex {
-    pub const STRIDE: usize = 24;
+    pub const STRIDE: usize = 8;
 
-    /// Pack a tile id (0..=65535) and a face index (0..=5).
+    /// Pack a section-local corner and its quad-local uv, each in 0..=31.
     #[inline]
-    pub const fn pack(tile: u16, face: u8) -> u32 {
-        tile as u32 | ((face as u32) << 16)
+    pub const fn pack(x: u32, y: u32, z: u32, u: u32, v: u32, tile: u16, face: u8) -> Self {
+        debug_assert!(x < 32 && y < 32 && z < 32 && u < 32 && v < 32);
+        Self {
+            pos_uv: x | (y << 5) | (z << 10) | (u << 15) | (v << 20),
+            meta: tile as u32 | ((face as u32) << 16),
+        }
+    }
+
+    #[inline]
+    pub const fn x(&self) -> u32 {
+        self.pos_uv & 31
+    }
+
+    #[inline]
+    pub const fn y(&self) -> u32 {
+        (self.pos_uv >> 5) & 31
+    }
+
+    #[inline]
+    pub const fn z(&self) -> u32 {
+        (self.pos_uv >> 10) & 31
+    }
+
+    #[inline]
+    pub const fn u(&self) -> u32 {
+        (self.pos_uv >> 15) & 31
+    }
+
+    #[inline]
+    pub const fn v(&self) -> u32 {
+        (self.pos_uv >> 20) & 31
     }
 
     #[inline]
@@ -213,14 +246,16 @@ impl Vertex {
         (self.meta >> 16) as u8
     }
 
+    /// Section-local position, in blocks.
+    #[inline]
+    pub const fn local(&self) -> [u32; 3] {
+        [self.x(), self.y(), self.z()]
+    }
+
     pub fn write_le(&self, out: &mut [u8]) {
         assert!(out.len() >= Self::STRIDE, "vertex output buffer too small");
-        let mut offset = 0;
-        for v in self.position.iter().chain(self.uv.iter()) {
-            out[offset..offset + 4].copy_from_slice(&v.to_le_bytes());
-            offset += 4;
-        }
-        out[offset..offset + 4].copy_from_slice(&self.meta.to_le_bytes());
+        out[0..4].copy_from_slice(&self.pos_uv.to_le_bytes());
+        out[4..8].copy_from_slice(&self.meta.to_le_bytes());
     }
 }
 
@@ -581,38 +616,45 @@ const PLANES: [FacePlane; 6] = [
 ];
 
 /// Emit one merged quad.
+///
+/// `slice` is the section-local coordinate along the face axis and `u0`/`v0`
+/// are section-local too: the vertex is section-local, and the block-space
+/// origin is applied by the renderer as a per-draw uniform.
 #[allow(clippy::too_many_arguments)]
 #[inline]
 fn emit_quad(
     plane: &FacePlane,
-    plane_coord: f32,
+    slice: usize,
+    positive: bool,
     u0: usize,
     v0: usize,
     w: usize,
     h: usize,
     block: u16,
     face: u8,
-    origin: [i32; 3],
     vertices: &mut Vec<Vertex>,
     indices: &mut Vec<u32>,
 ) {
     let tile = atlas::tile_for_face(block, face as usize);
-    let meta = Vertex::pack(tile, face);
+    let along = (slice + positive as usize) as u32;
     let base = vertices.len() as u32;
     for &corner in &plane.order {
         let du = (corner & 1) as usize;
         let dv = ((corner >> 1) & 1) as usize;
-        let uu = u0 + du * w;
-        let vv = v0 + dv * h;
-        let mut position = [0.0f32; 3];
-        position[plane.axis] = plane_coord;
-        position[plane.u_axis] = origin[plane.u_axis] as f32 + uu as f32;
-        position[plane.v_axis] = origin[plane.v_axis] as f32 + vv as f32;
-        vertices.push(Vertex {
-            position,
-            uv: [(du * w) as f32, (dv * h) as f32],
-            meta,
-        });
+        let mut local = [0u32; 3];
+        local[plane.axis] = along;
+        local[plane.u_axis] = (u0 + du * w) as u32;
+        local[plane.v_axis] = (v0 + dv * h) as u32;
+        // Quad-local uv, not section-local: 0..span across this quad only. The
+        // fragment shader repeats the tile with fract(), so a quad spanning w
+        // blocks gets w tiles; starting the ramp at the quad's own corner keeps
+        // the interpolation identical to what a per-face quad would produce,
+        // which is what makes the compressed format pixel-identical.
+        let uv_u = (du * w) as u32;
+        let uv_v = (dv * h) as u32;
+        vertices.push(Vertex::pack(
+            local[0], local[1], local[2], uv_u, uv_v, tile, face,
+        ));
     }
     indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 }
@@ -624,12 +666,9 @@ fn greedy_slice(
     slice: usize,
     positive: bool,
     face: u8,
-    origin: [i32; 3],
     vertices: &mut Vec<Vertex>,
     indices: &mut Vec<u32>,
 ) -> u32 {
-    let plane_coord =
-        origin[plane.axis] as f32 + slice as f32 + if positive { 1.0 } else { 0.0 };
     let mut quads = 0u32;
     for v in 0..16usize {
         for u in 0..16usize {
@@ -657,7 +696,7 @@ fn greedy_slice(
                 mask[row..row + w].fill(0);
             }
             emit_quad(
-                plane, plane_coord, u, v, w, h, block, face, origin, vertices, indices,
+                plane, slice, positive, u, v, w, h, block, face, vertices, indices,
             );
             quads += 1;
         }
@@ -668,7 +707,6 @@ fn greedy_slice(
 /// Emit the merged geometry of a filled padded grid.
 fn mesh_padded(
     pad: &[u16; PAD_VOLUME],
-    origin: [i32; 3],
     vertices: &mut Vec<Vertex>,
     indices: &mut Vec<u32>,
 ) -> u32 {
@@ -704,7 +742,6 @@ fn mesh_padded(
                 slice,
                 positive,
                 face_index as u8,
-                origin,
                 vertices,
                 indices,
             );
@@ -726,9 +763,7 @@ fn mesh_padded_per_face(
     indices: &mut Vec<u32>,
 ) -> u32 {
     let mut quads = 0u32;
-    let ox = origin[0] as f32;
-    let oy = origin[1] as f32;
-    let oz = origin[2] as f32;
+    let _ = origin;
     for y in 0..16usize {
         for z in 0..16usize {
             for x in 0..16usize {
@@ -742,7 +777,6 @@ fn mesh_padded_per_face(
                 {
                     continue;
                 }
-                let (fx, fy, fz) = (ox + x as f32, oy + y as f32, oz + z as f32);
                 let block = pad[here as usize];
                 for (face_index, (offset, face)) in
                     FACE_OFFSETS.iter().zip(FACES.iter()).enumerate()
@@ -752,13 +786,16 @@ fn mesh_padded_per_face(
                     }
                     let base = vertices.len() as u32;
                     let tile = atlas::tile_for_face(block, face_index);
-                    let meta = Vertex::pack(tile, face_index as u8);
                     for (corner, uv) in face.corners.iter().zip(UVS.iter()) {
-                        vertices.push(Vertex {
-                            position: [fx + corner[0], fy + corner[1], fz + corner[2]],
-                            uv: *uv,
-                            meta,
-                        });
+                        vertices.push(Vertex::pack(
+                            x as u32 + corner[0] as u32,
+                            y as u32 + corner[1] as u32,
+                            z as u32 + corner[2] as u32,
+                            uv[0] as u32,
+                            uv[1] as u32,
+                            tile,
+                            face_index as u8,
+                        ));
                     }
                     indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
                     quads += 1;
@@ -771,10 +808,15 @@ fn mesh_padded_per_face(
 
 /// Like [`build_section_mesh_into`] but culls boundary faces against loaded
 /// neighbouring sections. Missing neighbours are treated as air.
+///
+/// `_origin` is not baked into the vertices: they are section-local and the
+/// renderer applies the block-space origin as a per-draw uniform. It stays in
+/// the signature so call sites keep reading the same and so a future mesher
+/// that does bake positions in does not change the API.
 pub fn build_section_mesh_with_neighbors(
     section: &ChunkSection,
     neighbors: &Neighbors<'_>,
-    origin: [i32; 3],
+    _origin: [i32; 3],
     scratch: &mut MeshScratch,
 ) -> u32 {
     scratch.vertices.clear();
@@ -790,12 +832,7 @@ pub fn build_section_mesh_with_neighbors(
         return 0;
     }
     fill_padded(&mut scratch.pad, section, neighbors);
-    mesh_padded(
-        &scratch.pad,
-        origin,
-        &mut scratch.vertices,
-        &mut scratch.indices,
-    )
+    mesh_padded(&scratch.pad, &mut scratch.vertices, &mut scratch.indices)
 }
 
 /// Axis-aligned bounding box in world space.
@@ -1039,22 +1076,27 @@ mod tests {
     }
 
     #[test]
-    fn vertex_encoding_is_24_bytes_little_endian() {
-        let v = Vertex {
-            position: [1.0, 2.0, 3.0],
-            uv: [0.5, 0.25],
-            meta: Vertex::pack(28, 5),
-        };
+    fn vertex_encoding_is_8_bytes_little_endian() {
+        let v = Vertex::pack(1, 2, 3, 4, 5, 28, 5);
+        assert_eq!(Vertex::STRIDE, 8);
+        assert_eq!(v.local(), [1, 2, 3]);
+        assert_eq!((v.u(), v.v()), (4, 5));
+        assert_eq!((v.tile(), v.face()), (28, 5));
+
         let mut buf = [0u8; Vertex::STRIDE];
         v.write_le(&mut buf);
-        assert_eq!(buf.len(), 24);
-        let x = f32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-        let u = f32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
-        let meta = u32::from_le_bytes([buf[20], buf[21], buf[22], buf[23]]);
-        assert_eq!(x, 1.0);
-        assert_eq!(u, 0.5);
-        assert_eq!(meta & 0xffff, 28);
-        assert_eq!(meta >> 16, 5);
+        let pos_uv = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        let meta = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
+        assert_eq!(pos_uv, 1 | (2 << 5) | (3 << 10) | (4 << 15) | (5 << 20));
+        assert_eq!(meta, 28 | (5 << 16));
+
+        // The corner values the mesher can actually produce all fit: a section
+        // is 16 blocks, so a corner is 0..=16 and a merged quad spans at most
+        // 16 blocks, which is exactly what five bits holds.
+        let corner = Vertex::pack(16, 16, 16, 16, 16, u16::MAX, 5);
+        assert_eq!(corner.local(), [16, 16, 16]);
+        assert_eq!((corner.u(), corner.v()), (16, 16));
+        assert_eq!(corner.tile(), u16::MAX);
     }
 
     #[test]
@@ -1152,7 +1194,7 @@ mod tests {
     fn reference_mesh(
         section: &ChunkSection,
         neighbors: &Neighbors<'_>,
-        origin: [i32; 3],
+        _origin: [i32; 3],
     ) -> (Vec<Vertex>, Vec<u32>) {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
@@ -1172,17 +1214,16 @@ mod tests {
                         }
                         let base = vertices.len() as u32;
                         let tile = atlas::tile_for_face(block, face_index);
-                        let meta = Vertex::pack(tile, face_index as u8);
                         for (corner, uv) in face.corners.iter().zip(UVS.iter()) {
-                            vertices.push(Vertex {
-                                position: [
-                                    origin[0] as f32 + x as f32 + corner[0],
-                                    origin[1] as f32 + y as f32 + corner[1],
-                                    origin[2] as f32 + z as f32 + corner[2],
-                                ],
-                                uv: *uv,
-                                meta,
-                            });
+                            vertices.push(Vertex::pack(
+                                x as u32 + corner[0] as u32,
+                                y as u32 + corner[1] as u32,
+                                z as u32 + corner[2] as u32,
+                                uv[0] as u32,
+                                uv[1] as u32,
+                                tile,
+                                face_index as u8,
+                            ));
                         }
                         indices.extend_from_slice(&[
                             base,
@@ -1210,22 +1251,22 @@ mod tests {
             let first = vertices[quad[0] as usize];
             let face = first.face();
             let plane = &PLANES[face as usize];
-            let axis_coord = first.position[plane.axis];
-            let mut min_u = f32::MAX;
-            let mut max_u = f32::MIN;
-            let mut min_v = f32::MAX;
-            let mut max_v = f32::MIN;
+            let axis_coord = first.local()[plane.axis];
+            let mut min_u = u32::MAX;
+            let mut max_u = 0u32;
+            let mut min_v = u32::MAX;
+            let mut max_v = 0u32;
             for &i in quad {
-                let p = vertices[i as usize].position;
+                let p = vertices[i as usize].local();
                 assert_eq!(p[plane.axis], axis_coord, "quad is not planar");
                 min_u = min_u.min(p[plane.u_axis]);
                 max_u = max_u.max(p[plane.u_axis]);
                 min_v = min_v.min(p[plane.v_axis]);
                 max_v = max_v.max(p[plane.v_axis]);
             }
-            for u in min_u as i32..max_u as i32 {
-                for v in min_v as i32..max_v as i32 {
-                    out.push((u, v, axis_coord as i32, face, first.tile()));
+            for u in min_u..max_u {
+                for v in min_v..max_v {
+                    out.push((u as i32, v as i32, axis_coord as i32, face, first.tile()));
                 }
             }
         }
@@ -1350,7 +1391,10 @@ mod tests {
             for quad in scratch.indices.chunks(6) {
                 let p: Vec<[f32; 3]> = quad
                     .iter()
-                    .map(|&i| scratch.vertices[i as usize].position)
+                    .map(|&i| {
+                        let l = scratch.vertices[i as usize].local();
+                        [l[0] as f32, l[1] as f32, l[2] as f32]
+                    })
                     .collect();
                 let face = scratch.vertices[quad[0] as usize].face();
                 let n = face_normal(face);

@@ -135,21 +135,20 @@ public final class WorldEngineHarness {
         JpeWorldNative.Mesh mesh = world.meshSection(blocks, 0, 0, 0);
         eq("single block vertices", 24, mesh.vertexCount());
         eq("single block quads", 6, mesh.quadCount());
-        check("single block first vertex x == 1.0",
-                Float.compare(1.0f, mesh.firstVertexX()) == 0);
+        eq("single block first vertex x", 1, mesh.firstVertexX());
 
         // An empty section produces no geometry.
         JpeWorldNative.Mesh empty = world.meshSection(new short[4096], 10, 20, 30);
         eq("empty section vertices", 0, empty.vertexCount());
         eq("empty section quads", 0, empty.quadCount());
 
-        // A full 16x16 solid layer: 2 caps + 4 sides = 16*16*2 + 4*16 quads.
+        // A full 16x16 solid layer: 2 caps + 4 sides, each merged into a single
+        // quad by greedy meshing.
         short[] layer = new short[4096];
         Arrays.fill(layer, 0, 256, (short) 1); // y=0 plane, all x,z
         JpeWorldNative.Mesh solid = world.meshSection(layer, 0, 0, 0);
-        int expectedQuads = 16 * 16 * 2 + 4 * 16;
-        eq("solid layer quads", expectedQuads, solid.quadCount());
-        eq("solid layer vertices", expectedQuads * 4, solid.vertexCount());
+        eq("solid layer quads", 6, solid.quadCount());
+        eq("solid layer vertices", 24, solid.vertexCount());
     }
 
     private static void epochInvalidation(JpeWorldNative world) {

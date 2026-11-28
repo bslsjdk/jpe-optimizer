@@ -74,8 +74,6 @@ const QUEUE_GRAPHICS_BIT: u32 = 0x0000_0001;
 const QUEUE_COMPUTE_BIT: u32 = 0x0000_0002;
 
 const FORMAT_R8G8B8A8_UNORM: u32 = 37;
-const FORMAT_R32G32B32_SFLOAT: u32 = 106;
-const FORMAT_R32G32_SFLOAT: u32 = 103;
 /// VK_FORMAT_R32_UINT. The packed tile/face word; a float format here would
 /// reinterpret the bits and the atlas lookup would read garbage.
 const FORMAT_R32_UINT: u32 = 98;
@@ -895,6 +893,8 @@ struct GpuMesh {
     index_buffer: u64,
     index_memory: u64,
     index_count: u32,
+    /// Block-space origin of the section; vertices are section-local.
+    origin: [f32; 4],
 }
 
 struct FrameTarget {
@@ -1194,7 +1194,8 @@ impl VulkanRenderer {
             let push_range = PushConstantRange {
                 stage_flags: SHADER_STAGE_VERTEX_FRAGMENT,
                 offset: 0,
-                size: (std::mem::size_of::<f32>() * 16) as u32,
+                // viewProj (64 bytes) followed by the section origin (16).
+                size: (std::mem::size_of::<f32>() * 20) as u32,
             };
             let plci = PipelineLayoutCreateInfo {
                 s_type: STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -1589,25 +1590,19 @@ impl VulkanRenderer {
             },
         ];
         let binding = VertexInputBindingDescription { binding: 0, stride: Vertex::STRIDE as u32, input_rate: 0 };
-        // Matches the shared 32-byte `Vertex`: position, normal, uv.
+        // Matches the shared 8-byte `Vertex`: two packed integer words.
         let attributes = [
             VertexInputAttributeDescription {
                 location: 0,
                 binding: 0,
-                format: FORMAT_R32G32B32_SFLOAT,
+                format: FORMAT_R32_UINT,
                 offset: 0,
             },
             VertexInputAttributeDescription {
                 location: 1,
                 binding: 0,
-                format: FORMAT_R32G32_SFLOAT,
-                offset: 12,
-            },
-            VertexInputAttributeDescription {
-                location: 2,
-                binding: 0,
                 format: FORMAT_R32_UINT,
-                offset: 20,
+                offset: 4,
             },
         ];
         let vertex_input = PipelineVertexInputStateCreateInfo {
@@ -2034,6 +2029,8 @@ impl VulkanRenderer {
                 (std::mem::size_of::<f32>() * 16) as u32,
                 self.view_proj.as_ptr() as *const c_void,
             );
+            // The section origin rides in the second half of the same push
+            // constant block and is rewritten per draw.
             for batch in &self.pending {
                 let idx = batch.mesh.0 as usize - 1;
                 if let Some(Some(mesh)) = self.meshes.get(idx) {
@@ -2041,6 +2038,14 @@ impl VulkanRenderer {
                     let offsets = [0u64];
                     (fns.vkCmdBindVertexBuffers)(self.command_buffer, 0, 1, buffers.as_ptr(), offsets.as_ptr());
                     (fns.vkCmdBindIndexBuffer)(self.command_buffer, mesh.index_buffer, 0, INDEX_TYPE_UINT32);
+                    (fns.vkCmdPushConstants)(
+                        self.command_buffer,
+                        self.pipeline_layout,
+                        SHADER_STAGE_VERTEX_FRAGMENT,
+                        (std::mem::size_of::<f32>() * 16) as u32,
+                        (std::mem::size_of::<f32>() * 4) as u32,
+                        mesh.origin.as_ptr() as *const c_void,
+                    );
                     (fns.vkCmdDrawIndexed)(
                         self.command_buffer,
                         batch.index_count.min(mesh.index_count),
@@ -2252,6 +2257,12 @@ impl Renderer for VulkanRenderer {
             index_buffer: ib,
             index_memory: ibm,
             index_count: mesh.indices.len() as u32,
+            origin: [
+                mesh.origin[0] as f32,
+                mesh.origin[1] as f32,
+                mesh.origin[2] as f32,
+                0.0,
+            ],
         }));
         Ok(handle)
     }
