@@ -52,37 +52,79 @@ pub fn plan_draws(
     eye: [f32; 3],
 ) -> (Vec<DrawBatch>, PlanStats) {
     let frustum = frustum_from_view_proj(view_proj);
-    let mut kept: Vec<(f32, SectionRecord)> = Vec::new();
-    let mut stats = PlanStats { considered: records.len() as u32, ..PlanStats::default() };
+    let mut stats = PlanStats {
+        considered: records.len() as u32,
+        ..PlanStats::default()
+    };
+    let mut batches = Vec::new();
 
-    for record in records {
-        let quads = quads_of(record.index_count);
-        let inside = record.index_count > 0
-            && frustum.intersects(&Aabb::section(record.origin));
-        if inside {
-            stats.visible += 1;
-            stats.visible_quads += quads;
-            let centre = section_centre(record.origin);
-            kept.push((distance_sq(centre, eye), *record));
-        } else {
-            stats.culled += 1;
-            stats.culled_quads += quads;
+    KEPT.with(|cell| {
+        // Reused across frames: the planner runs once per frame and the visible
+        // set is the same order of magnitude every time, so this stops being an
+        // allocation in the steady state.
+        let mut kept = cell.borrow_mut();
+        kept.clear();
+
+        for (index, record) in records.iter().enumerate() {
+            let quads = quads_of(record.index_count);
+            let inside = record.index_count > 0
+                && frustum.intersects(&Aabb::section(record.origin));
+            if inside {
+                stats.visible += 1;
+                stats.visible_quads += quads;
+                let centre = section_centre(record.origin);
+                kept.push((
+                    distance_key(distance_sq(centre, eye)),
+                    record.key,
+                    index as u32,
+                ));
+            } else {
+                stats.culled += 1;
+                stats.culled_quads += quads;
+            }
         }
-    }
 
-    // Total order: distance, then key, so the result is deterministic even when
-    // two sections sit at the same distance.
-    kept.sort_by(|a, b| {
-        a.0.partial_cmp(&b.0)
-            .unwrap_or(core::cmp::Ordering::Equal)
-            .then(a.1.key.cmp(&b.1.key))
+        // Integer keys, so the ordering is a plain lexicographic compare on a
+        // 24-byte tuple: no f32 `partial_cmp`, no comparison closure, and an
+        // unstable sort that never allocates. Distance then key is a total order
+        // (keys are unique), so the result does not depend on the registry's
+        // iteration order. Front-to-back order is unchanged.
+        kept.sort_unstable();
+
+        batches.reserve(kept.len());
+        for &(_, _, index) in kept.iter() {
+            let record = &records[index as usize];
+            batches.push(DrawBatch {
+                mesh: record.mesh,
+                index_count: record.index_count,
+                instance_count: 1,
+            });
+        }
     });
 
-    let batches = kept
-        .iter()
-        .map(|(_, r)| DrawBatch { mesh: r.mesh, index_count: r.index_count, instance_count: 1 })
-        .collect();
     (batches, stats)
+}
+
+thread_local! {
+    /// Visible-set scratch for [`plan_draws`], reused per frame and per thread.
+    static KEPT: std::cell::RefCell<Vec<KeptEntry>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// One visible section, as the planner sorts it: (distance key, section key,
+/// index into the caller's record slice).
+type KeptEntry = (u32, u64, u32);
+
+/// Monotonic f32 -> u32 map so integer comparison matches numeric order for the
+/// non-negative, finite squared distances the planner produces. NaN sorts last.
+#[inline]
+fn distance_key(distance_sq: f32) -> u32 {
+    let bits = distance_sq.to_bits();
+    if bits & 0x8000_0000 != 0 {
+        !bits
+    } else {
+        bits ^ 0x8000_0000
+    }
 }
 
 fn section_centre(origin: [i32; 3]) -> [f32; 3] {
@@ -198,6 +240,49 @@ mod tests {
             stats.visible_quads + stats.culled_quads,
             64 * quads_of(360),
             "every quad must be accounted for"
+        );
+    }
+
+    /// Throughput report, not a CI gate:
+    /// `cargo test --release -- --ignored --nocapture plan_throughput_report`.
+    ///
+    /// A 17x17 column ring of 8-section chunks — 2312 resident sections, the
+    /// shape a render distance of 8 produces — planned once per frame.
+    #[test]
+    #[ignore = "throughput report; run with --ignored --nocapture"]
+    fn plan_throughput_report() {
+        use std::time::Instant;
+        let mut records = Vec::new();
+        let mut key = 0u64;
+        for cx in -8..=8 {
+            for cz in -8..=8 {
+                for cy in 0..8 {
+                    records.push(record(
+                        key,
+                        [cx * 16, cy * 16 - 32, cz * 16],
+                        6 * 24,
+                    ));
+                    key += 1;
+                }
+            }
+        }
+        let eye = [0.0f32, 8.0, 200.0];
+        let view_proj = ortho_look_at(eye, [0.0, 8.0, 0.0], [0.0, 1.0, 0.0], 360.0, 360.0, 0.5, 500.0)
+            .expect("camera");
+        let iterations = 200;
+        for _ in 0..20 {
+            plan_draws(&records, &view_proj, eye);
+        }
+        let start = Instant::now();
+        let mut visible = 0;
+        for _ in 0..iterations {
+            visible += plan_draws(&records, &view_proj, eye).0.len();
+        }
+        let ns = start.elapsed().as_nanos() as f64 / iterations as f64;
+        println!(
+            "sections={} visible~{} {ns:8.1} ns/frame",
+            records.len(),
+            visible / iterations
         );
     }
 }
