@@ -164,3 +164,45 @@ jobs:
           icd="$(bash ci/vulkan-icd.sh)"
           if [ -n "$icd" ]; then export VK_DRIVER_FILES="$icd" VK_ICD_FILENAMES="$icd"; fi
           java/run_harness.sh
+
+  # The `cpp-bridge` feature is what compiles native/cpp-world into libjpe_world.
+  # Every other job here builds the default feature set, where that code is
+  # `#[cfg]`-ed out -- which means a default-feature green says nothing about
+  # the C++ bridge or about anything that talks to it. This job exists so the
+  # bridge and the terrain source that pulls from it are actually compiled and
+  # actually run, rather than merely not breaking a build that excludes them.
+  cpp-bridge-terrain:
+    name: cpp-bridge terrain source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cpp-bridge-${{ runner.os }}-${{ hashFiles('native/rust-world/Cargo.lock', 'native/rust-world/build.rs') }}
+          restore-keys: cpp-bridge-${{ runner.os }}-
+      - name: Build with the C++ generator linked in
+        working-directory: native/rust-world
+        run: |
+          set -euo pipefail
+          cargo build --features cpp-bridge 2>&1 | tail -40
+      - name: Terrain source tests (must not be filtered out)
+        working-directory: native/rust-world
+        run: |
+          set -euo pipefail
+          cargo test --features cpp-bridge --lib native_terrain_source 2>&1 | tee /tmp/nts.log
+          # A test filter that matches nothing exits 0. Prove the tests ran by
+          # requiring the count, so a renamed module cannot silently turn this
+          # job into a no-op the way a bare `cargo test <filter>` would.
+          grep -E "^test result: ok\. [1-9][0-9]* passed" /tmp/nts.log
+      - name: The bridge itself still passes its own tests
+        working-directory: native/rust-world
+        run: |
+          set -euo pipefail
+          cargo test --features cpp-bridge --lib terrain_gen 2>&1 | tail -20
