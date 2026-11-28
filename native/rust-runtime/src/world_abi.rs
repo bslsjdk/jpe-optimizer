@@ -22,11 +22,12 @@
 //! successful call. A negative return from a "count" function therefore means
 //! "failed", never "minus one column".
 //!
-//! The error channel is deliberately small. `set_cache_budget` is the only
-//! operation that can currently fail with a live handle, and only if the C++
-//! layer ever starts rejecting a budget it used to accept -- note that a budget
-//! of *zero bytes* is accepted on purpose and disables the cache rather than
-//! erroring, so it is not a failure path.
+//! The error channel is small. Two operations can fail with a live handle:
+//! `set_cache_budget`, when the C++ cache refuses the configuration, and
+//! `cache_stats`, when the cache is disabled -- `ChunkCache::enabled()` is
+//! `capacity_ > 0`, so a disabled cache has no stats to report rather than
+//! reporting zeros. A zero-byte budget lands in the second case: it is accepted
+//! (capacity_ = 0, cache cleared) and then every later `cache_stats` fails.
 
 use std::ffi::c_char;
 use std::time::Duration;
@@ -230,11 +231,14 @@ pub unsafe extern "C" fn jpe_world_set_max_columns_per_pump(
     s.scheduler.set_max_columns_per_pump(n) as i32
 }
 
-/// Sets the C++ cache budget in bytes. Returns 0 on success.
+/// Sets the C++ cache budget in bytes.
 ///
-/// `bytes == 0` is accepted and disables the cache -- that is the C++ contract
-/// (`ChunkCache::set_budget` keeps `capacity_ = 0` and clears), not an error, so
-/// it is passed straight through instead of being second-guessed here.
+/// `bytes` is rounded down to a whole number of columns by the cache, so
+/// `jpe_world_cache_stats` will report a capacity at or below this number, not
+/// this number itself.
+///
+/// Returns 0 on success. A budget smaller than one column leaves the cache
+/// disabled; see `jpe_world_cache_stats` for how that shows up.
 ///
 /// # Safety
 ///
@@ -284,9 +288,13 @@ pub unsafe extern "C" fn jpe_world_centre(
 ///
 /// Reports the *configured* budget as capacity rather than deriving it from the
 /// chunk count: the C++ side stores both, and recomputing one from the other is
-/// how a caller ends up disagreeing with the cache about its own size.
+/// how a caller ends up disagreeing with the cache about its own size. Note the
+/// value is the budget floored to whole columns, not the number passed to
+/// `jpe_world_set_cache_budget`.
 ///
-/// Returns 0 on success, or a negative error code.
+/// Returns 0 on success. Returns an error when the cache is disabled, because
+/// `enabled()` is `capacity_ > 0` and a disabled cache has nothing to report --
+/// zeros here would be indistinguishable from "configured but empty".
 ///
 /// # Safety
 ///
@@ -513,36 +521,54 @@ mod world_abi_tests {
     }
 
     #[test]
-    fn a_cache_budget_is_reported_back_verbatim() {
+    fn a_cache_budget_is_rounded_down_to_whole_chunks() {
+        // C++ stores a chunk count, not a byte count: capacity_ = bytes /
+        // bytes_per_chunk, and budget_bytes is that count multiplied back out.
+        // So the reported capacity is the budget rounded *down* to a whole
+        // number of columns, never the number the caller typed. Asserting the
+        // typed number would be asserting a lie.
         let h = make(0, 1);
         unsafe {
             let budget = 64u64 * 1024 * 1024;
+            let chunk = jpe_world_chunk_blocks(h) * 2; // u16 per block
             assert_eq!(jpe_world_set_cache_budget(h, budget), 0);
+
             let mut resident = u64::MAX;
             let mut capacity = 0u64;
             assert_eq!(jpe_world_cache_stats(h, &mut resident, &mut capacity), 0);
-            assert_eq!(capacity, budget, "capacity must be the configured budget");
+            assert!(capacity <= budget, "capacity must not exceed the budget");
+            assert!(
+                budget - capacity < chunk,
+                "capacity must be the budget floored to whole columns, not some other number"
+            );
+            assert_eq!(
+                capacity % chunk,
+                0,
+                "capacity must be a whole number of columns"
+            );
             assert!(resident <= capacity, "resident must fit inside capacity");
             jpe_world_destroy(h);
         }
     }
 
     #[test]
-    fn a_zero_budget_disables_the_cache_without_erroring() {
-        // Verified against ChunkCache::set_budget: bytes_per_chunk == 0 is the
-        // "no cache" signal, and a budget below one chunk leaves capacity_ at
-        // zero instead of thrashing. Neither is a failure, so the ABI must not
-        // pretend it is. Only the two facts the ABI promises are asserted here:
-        // the call succeeds, and the cache ends up holding nothing.
+    fn a_zero_budget_leaves_the_cache_disabled() {
+        // ChunkCache::set_budget leaves capacity_ at 0 for a sub-column budget
+        // and clear()s, and enabled() is exactly `capacity_ > 0`. A disabled
+        // cache therefore *reports* through a failed stats call rather than a
+        // zero reading -- so "is it disabled" is answered by the error, and the
+        // ABI must pass that through instead of inventing a fake zero.
         let h = make(0, 1);
         unsafe {
-            assert_eq!(jpe_world_set_cache_budget(h, 0), 0);
+            // Whatever set_budget returns for zero, the observable contract is
+            // that the cache is not enabled afterwards.
+            let _ = jpe_world_set_cache_budget(h, 0);
             let mut resident = u64::MAX;
             assert_eq!(
                 jpe_world_cache_stats(h, &mut resident, std::ptr::null_mut()),
-                0
+                JPE_WORLD_ERR_CACHE,
+                "a disabled cache has no stats to report"
             );
-            assert_eq!(resident, 0, "a disabled cache holds nothing");
             jpe_world_destroy(h);
         }
     }
@@ -582,37 +608,37 @@ mod world_abi_tests {
                 jpe_world_centre(h, std::ptr::null_mut(), std::ptr::null_mut()),
                 0
             );
-            assert_eq!(
-                jpe_world_cache_stats(h, std::ptr::null_mut(), std::ptr::null_mut()),
-                0
-            );
             jpe_world_destroy(h);
         }
     }
 
     #[test]
     fn streaming_a_full_view_terminates() {
-        // The guarantee that matters: repeated pumps reach zero remaining. If
-        // the budget logic ever regressed to "generate nothing", this loop
-        // would spin to the guard instead of finishing.
+        // The guarantee that matters: repeated zero-budget pumps still reach
+        // zero remaining. A zero budget generates exactly one column per pump
+        // by design, so a 29-column view needs exactly 29 pumps -- and if the
+        // budget check ever regressed to "generate nothing", this loop would
+        // hit the guard instead of finishing.
         let h = make(0, 3);
         unsafe {
-            jpe_world_set_max_columns_per_pump(h, 8);
             jpe_world_retarget(h, 0, 0);
+            let queued = jpe_world_remaining(h);
+            assert_eq!(queued, 29, "radius 3 must queue 29 columns");
+
             let mut frames = 0u32;
             while jpe_world_remaining(h) > 0 {
-                jpe_world_pump(
+                let generated = jpe_world_pump(
                     h,
                     0,
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
                     std::ptr::null_mut(),
                 );
+                assert_eq!(generated, 1, "a zero budget must generate exactly one column");
                 frames += 1;
                 assert!(frames < 1000, "streaming did not terminate");
             }
-            assert_eq!(jpe_world_remaining(h), 0);
-            assert_eq!(frames, 4, "29 columns at 8 per frame is four pumps");
+            assert_eq!(frames, queued as u32, "one column per pump, no stalls");
             jpe_world_destroy(h);
         }
     }
