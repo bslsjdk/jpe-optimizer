@@ -18,6 +18,7 @@
 
 namespace {
 
+using jpe::ChunkCache;
 using jpe::Config;
 using jpe::Generator;
 using jpe::Scratch;
