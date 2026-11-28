@@ -18,6 +18,12 @@ pub mod terrain_ffi;
 // rest of the runtime should reach for instead of touching columns directly.
 pub mod terrain_source;
 
+// Frame-budgeted streaming. Separate from `terrain_source` because that
+// module answers "what is in this column", and this one answers "how much
+// of the world may I build before the frame is due". Mixing the two would
+// make the memory model depend on the frame rate.
+pub mod stream_scheduler;
+
 const ABI_VERSION: u32 = 8;
 const STATUS_OK: i32 = 0;
 const STATUS_INVALID_ARGUMENT: i32 = 1;
