@@ -15,7 +15,10 @@ import net.minecraft.world.level.levelgen.densityfunction.ScopedDensityBuffer;
  *
  * <p>Modes, selected with {@code -Djpe.nativeFinalDensity=}:
  * <ul>
- *   <li>{@code off} (default): no work at all</li>
+ *   <li>{@code auto} (default): {@code commit} when the native kernels load on this
+ *       platform, {@code off} otherwise, so a jar in {@code mods} works with no JVM
+ *       arguments and degrades quietly where no native payload exists</li>
+ *   <li>{@code off}: no work at all</li>
  *   <li>{@code shadow}: compile and compare against the Java volume, never commit</li>
  *   <li>{@code commit}: warm up by comparing, then let native fill the volume and
  *       skip the Java sampler entirely for every later chunk</li>
@@ -34,10 +37,44 @@ import net.minecraft.world.level.levelgen.densityfunction.ScopedDensityBuffer;
 public final class NativeFinalDensityHooks {
     private static final System.Logger LOGGER =
             System.getLogger(NativeFinalDensityHooks.class.getName());
-    private static final String MODE =
-            System.getProperty("jpe.nativeFinalDensity", "off").trim().toLowerCase(java.util.Locale.ROOT);
-    private static final boolean SHADOW = MODE.equals("shadow") || MODE.equals("commit");
+    /**
+     * Default mode. {@code auto} means: use the native path when the kernels are
+     * loadable on this platform, otherwise stay entirely on Java.
+     *
+     * <p>The default used to be {@code off}, which made the mod a no-op unless the
+     * player edited JVM arguments. A jar dropped into {@code mods} cannot rely on
+     * that: it has to do something on its own, and it has to degrade quietly on a
+     * platform whose native payload is absent rather than crash a world load.
+     */
+    private static final String MODE = resolveMode();
+    private static final boolean SHADOW =
+            MODE.equals("shadow") || MODE.equals("commit");
     private static final boolean COMMIT = MODE.equals("commit");
+
+    /**
+     * Reads {@code jpe.nativeFinalDensity}, defaulting to {@code auto}. An explicit
+     * value always wins, so the existing off/shadow/commit rigs are unchanged.
+     */
+    private static String resolveMode() {
+        String raw = System.getProperty("jpe.nativeFinalDensity");
+        if (raw != null && !raw.isBlank()) {
+            return raw.trim().toLowerCase(java.util.Locale.ROOT);
+        }
+        return nativeAvailable() ? "commit" : "off";
+    }
+
+    /**
+     * True when the density kernels can actually be loaded here. This is the gate
+     * that keeps {@code auto} honest: promising a native path that cannot link
+     * would turn every chunk into a logged failure.
+     */
+    private static boolean nativeAvailable() {
+        try {
+            return dev.jpe.optimizer.runtime.NativeLibraryLoader.resolve() != null;
+        } catch (RuntimeException | LinkageError unavailable) {
+            return false;
+        }
+    }
     private static final int WARMUP = Math.max(0,
             Integer.getInteger("jpe.nativeFinalDensityWarmup", 8));
     private static final int MAX_TRACKED_SAMPLERS = 8;
