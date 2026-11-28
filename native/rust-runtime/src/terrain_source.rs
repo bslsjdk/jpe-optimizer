@@ -439,7 +439,10 @@ mod terrain_source_tests {
     fn sections_per_column_follows_the_height() {
         assert_eq!(SECTIONS_PER_COLUMN, 24);
         assert_eq!(SECTIONS_PER_COLUMN * SECTION_HEIGHT, 384);
-        assert_eq!(SECTION_BLOCKS * SECTIONS_PER_COLUMN as u64, CHUNK_BLOCKS_DEFAULT_HEIGHT);
+        assert_eq!(
+            SECTION_BLOCKS as u64 * SECTIONS_PER_COLUMN as u64,
+            CHUNK_BLOCKS_DEFAULT_HEIGHT
+        );
     }
 
     /// The trim is clamped, never zero and never past the column.
