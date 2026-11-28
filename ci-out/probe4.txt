@@ -4,9 +4,19 @@ g++-13 (Ubuntu 13.4.0-10ubuntu1) 13.4.0
 exit=0
 --- full link (exactly as CI) ---
 exit=0
+--- run cache tests ---
+stream cache tests
+FAIL second acquire counted as a hit
+1 failure(s)
+run_exit=1
 ########## compiler: g++ ##########
 g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0
 --- single TU: test_chunk_cache.cpp ---
 exit=0
 --- full link (exactly as CI) ---
 exit=0
+--- run cache tests ---
+stream cache tests
+FAIL second acquire counted as a hit
+1 failure(s)
+run_exit=1
