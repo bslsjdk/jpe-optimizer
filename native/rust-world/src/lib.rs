@@ -79,6 +79,11 @@ pub mod task;
 pub mod terrain;
 pub mod terrain_gen;
 pub mod terrain_source;
+// Terrain pulled straight from the C++ generator instead of pushed in by
+// the host: this is what lets a world load without a Java round-trip per
+// chunk. Gated because it needs the generator compiled in.
+#[cfg(feature = "cpp-bridge")]
+pub mod native_terrain_source;
 
 pub use chunk::{ChunkEntry, ChunkState, ChunkStore, ChunkStoreError, WorldEpoch};
 pub use coords::{
