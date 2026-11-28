@@ -1,0 +1,93 @@
+name: cache budget probe
+
+# Answers "how much chunk cache fits in a 1G / 2G heap, and what view radius
+# does that buy?" -- with the real allocator, under a real address-space cap,
+# not with arithmetic on a napkin.
+#
+# The probe never copies chunk data out: it streams a window, touches every
+# chunk, releases, and reads the counters. So peak RSS is essentially the
+# cache's own footprint, which is exactly the number a host has to budget.
+#
+# Runs under `ulimit -v`, so an over-budget configuration fails loudly instead
+# of quietly growing until the server OOMs three minutes later.
+
+on:
+  push:
+    paths:
+      - 'native/cpp-world/bench/cache_budget_probe.cpp'
+      - '.github/workflows/cache-budget.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile probe
+        working-directory: native/cpp-world
+        run: |
+          set -euo pipefail
+          CXXFLAGS="-std=c++20 -O2 -Wall -Wextra -fno-fast-math
+                    -ffp-contract=off -Iinclude -Isrc"
+          mkdir -p build
+          g++-13 $CXXFLAGS \
+            src/generator.cpp src/terrain_api.cpp \
+            src/chunk_cache.cpp src/terrain_stream_api.cpp \
+            bench/cache_budget_probe.cpp \
+            -o build/cache_budget_probe -lpthread
+          echo "compiled"
+
+      - name: Run probes under address-space caps
+        working-directory: native/cpp-world
+        run: |
+          set -uo pipefail
+          out=../../ci-out
+          mkdir -p "$out"
+          : > "$out/cache-budget.txt"
+
+          # cap_kb budget_mb radius
+          run() {
+            local cap_kb=$1 budget=$2 radius=$3
+            echo "##### cap=${cap_kb}KB budget=${budget}MB radius=${radius}"
+            ( ulimit -v "$cap_kb"; ./build/cache_budget_probe "$budget" "$radius" 10 )
+            echo "run_exit=$?"
+          } | tee -a "$out/cache-budget.txt"
+
+          # 1G heap: how far can the cache go before the cap bites?
+          echo "===== 1G cap =====" | tee -a "$out/cache-budget.txt"
+          for b in 128 192 256 320 384; do
+            run 1048576 "$b" 20
+          done
+
+          # What radius does a 256MB / 384MB budget actually cover?
+          echo "===== radius sweep at 1G cap =====" | tee -a "$out/cache-budget.txt"
+          for r in 8 12 16 20 24 28; do
+            run 1048576 256 "$r"
+          done
+
+          # 2G heap: the comfortable case.
+          echo "===== 2G cap =====" | tee -a "$out/cache-budget.txt"
+          for b in 384 512 640 768; do
+            run 2097152 "$b" 28
+          done
+
+      - name: Commit probe results
+        if: always()
+        run: |
+          set -euo pipefail
+          git config user.name  "ci-probe"
+          git config user.email "ci-probe@users.noreply.github.com"
+          git add -f ci-out/cache-budget.txt
+          git commit -m "ci: cache budget probe results [skip ci]" || echo "nothing to commit"
+          git push || echo "push skipped"
+
+      - name: Echo summary
+        if: always()
+        run: |
+          echo "=== RESULT lines ==="
+          grep -E 'RESULT|run_exit|FAIL' ci-out/cache-budget.txt || true
