@@ -1,0 +1,237 @@
+name: Native payload
+
+# Builds the two cdylibs for every platform the mod supports and produces one
+# jar that carries all of them. The jar is the only artifact: it is what a user
+# drops into `mods`.
+#
+# Android is the interesting target. Its JVM links against bionic, so a glibc
+# build of the same CPU cannot be loaded: android-aarch64 is a real, separate
+# build via the NDK, not a copy of linux-aarch64.
+
+on:
+  push:
+    branches:
+      - work/rust-world-frame-budget
+    paths:
+      - 'native/**'
+      - 'src/main/java/dev/jpe/optimizer/runtime/NativeLibraryLoader.java'
+      - 'build.gradle'
+      - '.github/workflows/native-payload.yml'
+  workflow_dispatch:
+
+jobs:
+  desktop:
+    name: desktop ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - platform: macos-aarch64
+            runner: macos-14
+            target: aarch64-apple-darwin
+          - platform: macos-x86_64
+            runner: macos-13
+            target: x86_64-apple-darwin
+          - platform: windows-x86_64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build world engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --target ${{ matrix.target }} --features cpp-bridge \
+            --manifest-path native/rust-world/Cargo.toml
+
+      - name: Build runtime kernels
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --target ${{ matrix.target }} \
+            --manifest-path native/rust-runtime/Cargo.toml
+
+      - name: Stage payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="native/bundled/${{ matrix.platform }}"
+          mkdir -p "$out"
+          case "${{ matrix.platform }}" in
+            windows-*) suffix=dll; prefix= ;;
+            macos-*)   suffix=dylib; prefix=lib ;;
+            *)         suffix=so; prefix=lib ;;
+          esac
+          cp "native/rust-world/target/${{ matrix.target }}/release/${prefix}jpe_world.${suffix}" "$out/"
+          cp "native/rust-runtime/target/${{ matrix.target }}/release/${prefix}jpe_runtime.${suffix}" "$out/"
+          ls -l "$out"
+
+      - name: Upload payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: natives-${{ matrix.platform }}
+          path: native/bundled/${{ matrix.platform }}/*
+          if-no-files-found: error
+
+  android:
+    name: android ${{ matrix.platform }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: android-aarch64
+            target: aarch64-linux-android
+            api: 26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Android NDK
+        run: |
+          set -euo pipefail
+          NDK_VERSION=r27c
+          curl -sSL -o /tmp/ndk.zip \
+            "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
+          unzip -q /tmp/ndk.zip -d "$HOME"
+          echo "NDK=$HOME/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Build both crates for Android
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CC_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android${{ matrix.api }}-clang"
+          export CXX_aarch64_linux_android="$TOOLCHAIN/aarch64-linux-android${{ matrix.api }}-clang++"
+          export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/aarch64-linux-android${{ matrix.api }}-clang"
+          cargo build --release --target ${{ matrix.target }} --features cpp-bridge \
+            --manifest-path native/rust-world/Cargo.toml
+          cargo build --release --target ${{ matrix.target }} \
+            --manifest-path native/rust-runtime/Cargo.toml
+
+      - name: Verify the libraries are Android, not glibc
+        run: |
+          set -euo pipefail
+          # A glibc library in an android- directory loads on a desktop and fails on
+          # every phone. The dynamic section is the cheap proof.
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          for lib in \
+            "native/rust-world/target/${{ matrix.target }}/release/libjpe_world.so" \
+            "native/rust-runtime/target/${{ matrix.target }}/release/libjpe_runtime.so"; do
+            echo "== $lib"
+            file "$lib"
+            if strings "$lib" | grep -q 'GLIBC_2'; then
+              echo "ERROR: $lib needs glibc; the Android loader cannot use it" >&2
+              exit 1
+            fi
+            "$TOOLCHAIN/llvm-readelf" -d "$lib" | grep -E 'NEEDED|SONAME' || true
+          done
+
+      - name: Stage payload
+        run: |
+          set -euo pipefail
+          out="native/bundled/${{ matrix.platform }}"
+          mkdir -p "$out"
+          cp "native/rust-world/target/${{ matrix.target }}/release/libjpe_world.so" "$out/"
+          cp "native/rust-runtime/target/${{ matrix.target }}/release/libjpe_runtime.so" "$out/"
+          ls -l "$out"
+
+      - name: Upload payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: natives-${{ matrix.platform }}
+          path: native/bundled/${{ matrix.platform }}/*
+          if-no-files-found: error
+
+  jar:
+    name: mod jar
+    needs: [desktop, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Download every platform payload
+        uses: actions/download-artifact@v4
+        with:
+          path: native/bundled
+          pattern: natives-*
+
+      # download-artifact nests each artifact in a directory named after it, so
+      # native/bundled/natives-linux-x86_64/... has to be flattened back to
+      # native/bundled/linux-x86_64/...
+      - name: Flatten payload tree
+        run: |
+          set -euo pipefail
+          cd native/bundled
+          for dir in natives-*; do
+            [ -d "$dir" ] || continue
+            platform="${dir#natives-}"
+            mkdir -p "$platform"
+            mv "$dir"/* "$platform"/ 2>/dev/null || true
+            rmdir "$dir" 2>/dev/null || true
+          done
+          echo '--- staged ---'
+          find . -type f | sort
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build the mod jar
+        run: ./gradlew --no-daemon build stageNatives -x test
+
+      - name: Verify the jar carries every platform
+        run: |
+          set -euo pipefail
+          jar=$(ls build/libs/*.jar | grep -v sources | head -1)
+          echo "jar: $jar"
+          unzip -l "$jar" | grep 'META-INF/natives' || true
+          missing=0
+          for platform in linux-x86_64 linux-aarch64 macos-x86_64 macos-aarch64 \
+                          windows-x86_64 android-aarch64; do
+            for base in jpe_runtime jpe_world; do
+              case "$platform" in
+                windows-*) name="$base.dll" ;;
+                macos-*)   name="lib$base.dylib" ;;
+                *)         name="lib$base.so" ;;
+              esac
+              if ! unzip -l "$jar" | grep -q "META-INF/natives/$platform/$name"; then
+                echo "MISSING $platform/$name" >&2
+                missing=1
+              fi
+            done
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo 'ERROR: the jar is missing a native payload' >&2
+            exit 1
+          fi
+          echo 'OK: every platform payload is inside the jar'
+
+      - name: Upload mod jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: jpe-optimizer-mod
+          path: build/libs/*.jar
+          if-no-files-found: error
