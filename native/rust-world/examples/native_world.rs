@@ -337,6 +337,7 @@ fn main() {
     let mut colours = 0usize;
     let mut visible = 0usize;
     let mut batches = 0usize;
+    let mut outcome_last = None;
     for _ in 0..600 {
         let outcome = match pipeline.frame(&mut *renderer, camera) {
             Ok(o) => o,
@@ -346,6 +347,7 @@ fn main() {
             }
         };
         frames += 1;
+        outcome_last = Some(outcome);
         last_resident = outcome.resident;
         visible = outcome.plan.visible as usize;
         batches = outcome.batches;
@@ -384,6 +386,20 @@ fn main() {
     }
 
     println!("frames={frames} in {frame_ms:.1} ms ({:.2} ms/frame)", frame_ms / frames as f64);
+    if let Some(o) = outcome_last {
+        println!(
+            "visible_quads={} considered={} culled={}",
+            o.plan.visible_quads, o.plan.considered, o.plan.culled
+        );
+    }
+    {
+        let t = pipeline.timing();
+        let ms = |ns: u64| ns as f64 / 1e6;
+        println!(
+            "phases over {} frames: pump={:.0} targets={:.0} build={:.0} publish={:.0} draw={:.0} ms",
+            t.samples, ms(t.pump_ns), ms(t.targets_ns), ms(t.build_ns), ms(t.publish_ns), ms(t.draw_ns)
+        );
+    }
     println!(
         "resident_sections={last_resident} visible={visible} batches={batches} \
          lit_pixels={lit}/{} distinct_colours={colours}",

@@ -744,7 +744,12 @@ impl GlCore {
         unsafe {
             (gl.glBindFramebuffer)(GL_FRAMEBUFFER, framebuffer);
             (gl.glViewport)(0, 0, width as i32, height as i32);
-            (gl.glDisable)(GL_CULL_FACE);
+            // Back faces are never visible: every section is a closed shell of
+            // outward-wound quads. Culling them halves the fragment work on a
+            // software rasteriser and costs nothing on a GPU. GL's default
+            // cullFace is BACK and frontFace is CCW, which is the winding the
+            // mesher emits, so enabling the capability is the whole change.
+            (gl.glEnable)(GL_CULL_FACE);
             (gl.glEnable)(GL_DEPTH_TEST);
             (gl.glDepthFunc)(GL_LESS);
             (gl.glClearColor)(0.05, 0.05, 0.1, 1.0);
@@ -782,7 +787,10 @@ impl GlCore {
 
             (gl.glBindVertexArray)(0);
             (gl.glUseProgram)(0);
-            (gl.glFinish)();
+            // No glFinish: it stalls until the driver has retired every draw,
+            // which serialises the CPU against a rasteriser it could otherwise
+            // run ahead of. The readback path issues its own glReadPixels, which
+            // is already a full sync, so nothing is lost by not waiting here.
             let err = (gl.glGetError)();
             if err != 0 {
                 eprintln!("gl: error 0x{err:04x} after frame");

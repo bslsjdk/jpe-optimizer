@@ -1639,6 +1639,11 @@ impl VulkanRenderer {
             depth_clamp_enable: 0,
             rasterizer_discard_enable: 0,
             polygon_mode: POLYGON_MODE_FILL,
+            // Left at NONE: Vulkan's clip space has Y pointing the other way
+            // from GL's, so the same outward-wound quads are clockwise here.
+            // Culling BACK without a device to verify against risks discarding
+            // every front face; the GL backend, which this sandbox can run,
+            // does cull and is measured.
             cull_mode: CULL_MODE_NONE,
             front_face: FRONT_FACE_COUNTER_CLOCKWISE,
             depth_bias_enable: 0,

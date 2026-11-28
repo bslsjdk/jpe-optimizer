@@ -155,6 +155,9 @@ mod tests {
 
         let mesh = one_block_mesh();
         let handle = renderer.create_mesh(&mesh).expect("create_mesh");
+        // A camera outside the block: back faces are culled, and the default
+        // identity projection puts the eye inside it.
+        renderer.set_view_proj(sample_camera()).expect("set_view_proj");
         renderer.begin_frame([128, 128]).expect("begin_frame");
         renderer
             .draw(DrawBatch { mesh: handle, index_count: mesh.indices.len() as u32, instance_count: 1 })
