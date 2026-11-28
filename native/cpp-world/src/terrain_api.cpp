@@ -12,6 +12,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "chunk_cache.h"
+#include "jpe_terrain_handle.h"
 #include "jpe_terrain_internal.h"
 
 namespace {
@@ -126,6 +128,11 @@ struct Handle {
     Generator gen;
     std::unique_ptr<Pool> pool;
 
+    // The streaming layer. Disabled (zero budget) until a host configures it,
+    // so a v1 caller that never calls jpe_terrain_cache_config pays nothing
+    // but one empty map and one branch.
+    ChunkCache cache;
+
     std::atomic<uint64_t> chunks{0};
     std::atomic<uint64_t> blocks{0};
     std::atomic<uint64_t> density_samples{0};
@@ -144,6 +151,20 @@ Handle *lookup(uint64_t handle) {
     auto it = g_handles.find(handle);
     return it == g_handles.end() ? nullptr : it->second.get();
 }
+
+/// Streaming-layer bridge. Declared in jpe_terrain_handle.h; defined here
+/// because the handle map is internal to this translation unit.
+namespace jpe {
+bool resolve_handle(uint64_t id, HandleView *out) {
+    if (!out) return false;
+    Handle *h = lookup(id);
+    if (!h) return false;
+    out->gen = &h->gen;
+    out->cache = &h->cache;
+    out->bytes_per_chunk = h->cfg.chunk_blocks() * sizeof(uint16_t);
+    return true;
+}
+}  // namespace jpe
 
 thread_local Scratch g_scratch;
 
