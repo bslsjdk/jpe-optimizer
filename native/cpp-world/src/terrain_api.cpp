@@ -154,7 +154,14 @@ Handle *lookup(uint64_t handle) {
 
 /// Streaming-layer bridge. Declared in jpe_terrain_handle.h; defined here
 /// because the handle map is internal to this translation unit.
+///
+/// Deliberately NOT nested inside the anonymous namespace above: a plain
+/// `namespace jpe {}` there would open (anonymous)::jpe, a different namespace
+/// from the real ::jpe, and every jpe type (ChunkCache, HandleView,
+/// BLOCK_COUNT) would fail to resolve. Closing the anonymous namespace first
+/// keeps this definition in the global ::jpe.
 namespace jpe {
+
 bool resolve_handle(uint64_t id, HandleView *out) {
     if (!out) return false;
     Handle *h = lookup(id);
@@ -164,7 +171,10 @@ bool resolve_handle(uint64_t id, HandleView *out) {
     out->bytes_per_chunk = h->cfg.chunk_blocks() * sizeof(uint16_t);
     return true;
 }
+
 }  // namespace jpe
+
+namespace {
 
 thread_local Scratch g_scratch;
 
