@@ -201,6 +201,12 @@ jobs:
           # requiring the count, so a renamed module cannot silently turn this
           # job into a no-op the way a bare `cargo test <filter>` would.
           grep -E "^test result: ok\. [1-9][0-9]* passed" /tmp/nts.log
+      - name: The terrain path switch
+        working-directory: native/rust-world
+        run: |
+          set -euo pipefail
+          cargo test --features cpp-bridge --lib terrain_path 2>&1 | tee /tmp/tp.log
+          grep -E "^test result: ok\. [1-9][0-9]* passed" /tmp/tp.log
       - name: The bridge itself still passes its own tests
         working-directory: native/rust-world
         run: |
