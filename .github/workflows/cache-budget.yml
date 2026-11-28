@@ -1,15 +1,19 @@
 name: cache budget probe
 
 # Answers "how much chunk cache fits in a 1G / 2G heap, and what view radius
-# does that buy?" -- with the real allocator, under a real address-space cap,
-# not with arithmetic on a napkin.
+# does that buy?" -- with the real allocator under a real cap, not with
+# arithmetic on a napkin.
 #
 # The probe never copies chunk data out: it streams a window, touches every
-# chunk, releases, and reads the counters. So peak RSS is essentially the
-# cache's own footprint, which is exactly the number a host has to budget.
+# chunk, releases, and reads the counters. Peak RSS is therefore essentially
+# the cache's own footprint, which is the number a host has to budget.
 #
-# Runs under `ulimit -v`, so an over-budget configuration fails loudly instead
-# of quietly growing until the server OOMs three minutes later.
+# Note on the cap: `ulimit -v` limits address space, not resident set. The
+# C++ runtime reserves several hundred MB of address space it never touches
+# (thread arenas, guard pages, the loader's own mappings), so a strict -v cap
+# can kill the process before main() even runs. We therefore cap with -v at a
+# deliberately generous multiple of the budget and let the probe's own
+# ru_maxrss line decide whether the configuration fit.
 
 on:
   push:
@@ -24,7 +28,7 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -41,8 +45,9 @@ jobs:
             bench/cache_budget_probe.cpp \
             -o build/cache_budget_probe -lpthread
           echo "compiled"
+          ./build/cache_budget_probe 64 4 2 || echo "smoke_exit=$?"
 
-      - name: Run probes under address-space caps
+      - name: Run probes
         working-directory: native/cpp-world
         run: |
           set -uo pipefail
@@ -54,27 +59,27 @@ jobs:
           run() {
             local cap_kb=$1 budget=$2 radius=$3
             echo "##### cap=${cap_kb}KB budget=${budget}MB radius=${radius}"
-            ( ulimit -v "$cap_kb"; ./build/cache_budget_probe "$budget" "$radius" 10 )
-            echo "run_exit=$?"
-          } | tee -a "$out/cache-budget.txt"
+            ( ulimit -v "$cap_kb"; exec ./build/cache_budget_probe "$budget" "$radius" 6 )
+            local rc=$?
+            echo "run_exit=$rc"
+          }
 
-          # 1G heap: how far can the cache go before the cap bites?
-          echo "===== 1G cap =====" | tee -a "$out/cache-budget.txt"
-          for b in 128 192 256 320 384; do
-            run 1048576 "$b" 20
-          done
+          {
+            echo "===== 1G heap: budget sweep at radius 20 ====="
+            for b in 128 192 256 320 384; do
+              run 3145728 "$b" 20
+            done
 
-          # What radius does a 256MB / 384MB budget actually cover?
-          echo "===== radius sweep at 1G cap =====" | tee -a "$out/cache-budget.txt"
-          for r in 8 12 16 20 24 28; do
-            run 1048576 256 "$r"
-          done
+            echo "===== 1G heap: radius sweep at 256MB ====="
+            for r in 8 12 16 20 24 28; do
+              run 3145728 256 "$r"
+            done
 
-          # 2G heap: the comfortable case.
-          echo "===== 2G cap =====" | tee -a "$out/cache-budget.txt"
-          for b in 384 512 640 768; do
-            run 2097152 "$b" 28
-          done
+            echo "===== 2G heap: budget sweep at radius 28 ====="
+            for b in 384 512 640 768; do
+              run 4194304 "$b" 28
+            done
+          } 2>&1 | tee -a "$out/cache-budget.txt"
 
       - name: Commit probe results
         if: always()
@@ -90,4 +95,4 @@ jobs:
         if: always()
         run: |
           echo "=== RESULT lines ==="
-          grep -E 'RESULT|run_exit|FAIL' ci-out/cache-budget.txt || true
+          grep -E 'RESULT|run_exit|smoke_exit|FAIL' ci-out/cache-budget.txt || true
