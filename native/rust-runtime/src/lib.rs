@@ -13,6 +13,11 @@ use std::time::Duration;
 // that deserves to be read in isolation.
 pub mod terrain_ffi;
 
+// Section-shaped terrain access. Kept separate from the raw bindings because
+// it is safe code with its own memory model, and because it is the module the
+// rest of the runtime should reach for instead of touching columns directly.
+pub mod terrain_source;
+
 const ABI_VERSION: u32 = 8;
 const STATUS_OK: i32 = 0;
 const STATUS_INVALID_ARGUMENT: i32 = 1;
