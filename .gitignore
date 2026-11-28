@@ -7,3 +7,4 @@ native/cpp-kernels/build/
 build/
 .mc-server/
 .gradle/
+/run/

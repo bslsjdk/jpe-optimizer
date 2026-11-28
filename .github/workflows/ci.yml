@@ -199,7 +199,21 @@ jobs:
             gradle runServer --no-daemon --stacktrace 2>&1 | tee build/sampler-parity/overworld.log
           grep -E 'JPE_NATIVE_SAMPLER_PARITY_BATCH .*exact=true|JPE_NATIVE_SAMPLER_PARITY_ISLAND .*exact=true' build/sampler-parity/overworld.log
           grep -F 'Compiled sampler graph inventory:' build/sampler-parity/overworld.log
-          grep -F 'JPE_NATIVE_OPAQUE_NODE' build/sampler-parity/overworld.log
+          # The inventory must classify every node it captured: a dropped node would
+          # silently shrink the graph the parity run then claims to cover.
+          grep -E 'Compiled sampler graph inventory: .* dropped=0, ' build/sampler-parity/overworld.log
+          # Opaque-node schemas are emitted only while the graph still contains nodes
+          # the classifier cannot name. That check used to be unconditional, which
+          # turned it into a demand for a limitation to keep existing: once the
+          # lowering work classified the last node the graph reported
+          # `opaqueClasses={}` and the job failed for the graph being complete.
+          # Assert the real invariant instead — if any opaque class remains, its
+          # schema must be in the log so the adapter can be written from it.
+          if grep -E 'Compiled sampler graph inventory: .*opaqueClasses=\{\}' build/sampler-parity/overworld.log; then
+            echo 'compiled sampler graph is fully classified; no opaque node schemas to emit'
+          else
+            grep -F 'JPE_NATIVE_OPAQUE_NODE' build/sampler-parity/overworld.log
+          fi
           grep -E 'JPE_NATIVE_SAMPLER_PARITY_SUMMARY testedIslands=[1-9][0-9]* failedIslands=0 compared=[1-9][0-9]* mismatches=0' build/sampler-parity/overworld.log
           grep -E 'JPE_CONTINUOUS_WORLDGEN_BENCH.*completedChunks=340.*failedChunks=0.*doFillCalls=[1-9][0-9]*.*doFillSamples=[1-9][0-9]*' build/sampler-parity/overworld.log
           grep -E 'JPE_AQUIFER_GRID_PREFILL_METRICS attempts=[1-9][0-9]* successes=[1-9][0-9]* failures=0 cells=[1-9][0-9]* nativeMs=' build/sampler-parity/overworld.log
