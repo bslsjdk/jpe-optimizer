@@ -3,24 +3,10 @@ g++-13 (Ubuntu 13.4.0-10ubuntu1) 13.4.0
 --- single TU: test_chunk_cache.cpp ---
 exit=0
 --- full link (exactly as CI) ---
-src/terrain_api.cpp:134:5: error: ‘ChunkCache’ does not name a type
-  134 |     ChunkCache cache;
-      |     ^~~~~~~~~~
-src/terrain_api.cpp: In function ‘bool jpe::resolve_handle(uint64_t, HandleView*)’:
-src/terrain_api.cpp:172:22: error: ‘struct {anonymous}::Handle’ has no member named ‘cache’
-  172 |     out->cache = &h->cache;
-      |                      ^~~~~
-exit=1
+exit=0
 ########## compiler: g++ ##########
 g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0
 --- single TU: test_chunk_cache.cpp ---
 exit=0
 --- full link (exactly as CI) ---
-src/terrain_api.cpp:134:5: error: ‘ChunkCache’ does not name a type
-  134 |     ChunkCache cache;
-      |     ^~~~~~~~~~
-src/terrain_api.cpp: In function ‘bool jpe::resolve_handle(uint64_t, HandleView*)’:
-src/terrain_api.cpp:172:22: error: ‘struct {anonymous}::Handle’ has no member named ‘cache’
-  172 |     out->cache = &h->cache;
-      |                      ^~~~~
-exit=1
+exit=0
