@@ -13,10 +13,12 @@ on:
   push:
     paths:
       - 'native/cpp-world/**'
+      - 'native/rust-runtime/**'
       - '.github/workflows/native-terrain.yml'
   pull_request:
     paths:
       - 'native/cpp-world/**'
+      - 'native/rust-runtime/**'
       - '.github/workflows/native-terrain.yml'
   workflow_dispatch:
 
@@ -113,3 +115,91 @@ jobs:
           name: libjpe_terrain-${{ matrix.compiler }}
           path: native/cpp-world/build/libjpe_terrain.so
           if-no-files-found: error
+
+
+  # ---------------------------------------------------------------------------
+  # The other half of the claim.
+  #
+  # `build-and-test` proves the generator exports its symbols. It does not prove
+  # anything in the Rust runtime can call them -- for a while it could not, and
+  # `jpe_terrain_*` was a set of exports nothing linked against. This job builds
+  # the crate with the generator compiled in and runs the tests that compare a
+  # cached chunk against a directly generated one, so "Rust drives worldgen" is
+  # a measured fact rather than an intended architecture.
+  # ---------------------------------------------------------------------------
+  rust-link:
+    name: rust links the generator
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/rust-runtime/target
+          key: ${{ runner.os }}-terrain-link-${{ hashFiles('native/rust-runtime/Cargo.lock') }}
+
+      # The C++ symbols are declared `unsafe extern "C"` in terrain_ffi.rs and
+      # resolved at link time. A typo in one of those names produces a link
+      # error naming the file, not the function, so the list is checked
+      # explicitly against the built library first.
+      - name: Verify every declared symbol is actually exported
+        working-directory: native/cpp-world
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          g++-13 -std=c++20 -O2 -fPIC -shared \
+            -ffp-contract=off -fno-fast-math -fno-strict-aliasing \
+            -Iinclude -Isrc \
+            src/generator.cpp src/terrain_api.cpp \
+            src/chunk_cache.cpp src/terrain_stream_api.cpp \
+            -o build/libjpe_terrain.so -lpthread
+          for sym in \
+            jpe_terrain_abi_version \
+            jpe_terrain_default_config \
+            jpe_terrain_create \
+            jpe_terrain_destroy \
+            jpe_terrain_chunk_blocks \
+            jpe_terrain_chunk_bytes \
+            jpe_terrain_generate_chunk \
+            jpe_terrain_stream_abi_version \
+            jpe_terrain_cache_config \
+            jpe_terrain_stream \
+            jpe_terrain_acquire \
+            jpe_terrain_release \
+            jpe_terrain_cache_stats \
+            jpe_terrain_cache_clear
+          do
+            if ! nm -D --defined-only build/libjpe_terrain.so | grep -q " $sym$"; then
+              echo "declared in terrain_ffi.rs but not exported: $sym"
+              exit 1
+            fi
+          done
+          echo "all 14 declared symbols exported"
+
+      - name: Build the runtime with the generator compiled in
+        working-directory: native/rust-runtime
+        run: |
+          set -euo pipefail
+          cargo build --release 2>&1 | tail -60
+
+      # These are the tests that matter: cached_chunk_matches_direct_chunk
+      # compares a chunk served from the cache with one generated straight from
+      # the generator, element by element. If the FFI layout is wrong, that test
+      # is where it shows up.
+      - name: Terrain tests
+        working-directory: native/rust-runtime
+        run: |
+          set -euo pipefail
+          cargo test --release terrain -- --test-threads=1 --nocapture 2>&1 | tail -60
+
+      - name: Report
+        if: always()
+        run: echo "rust-runtime terrain link: ${{ job.status }}"
