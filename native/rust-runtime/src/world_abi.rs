@@ -1,23 +1,37 @@
 //! C ABI for the frame-budgeted world streamer.
 //!
 //! The Java side never touches Rust types: it gets an opaque `*mut
-//! WorldStreamer`, calls `jpe_world_*` functions on it, and hands it back to
-//! `jpe_world_destroy`. Everything below that is Rust.
+//! WorldStreamer`, calls `jpe_stream_*` functions on it, and hands it back to
+//! `jpe_stream_destroy`. Everything below that is Rust.
 //!
 //! Why a separate handle instead of exposing `TerrainEngine` directly: a
 //! streamer is *stateful across frames* (queue + centre + scratch buffer), and
-//! that state has to live somewhere between two `jpe_world_pump` calls. Bundling
+//! that state has to live somewhere between two `jpe_stream_pump` calls. Bundling
 //! it here means Java holds one pointer and one integer, not five.
 //!
 //! # Threading
 //!
-//! Every `jpe_world_*` function is `&mut`-equivalent: the caller must not call
+//! Every `jpe_stream_*` function is `&mut`-equivalent: the caller must not call
 //! two of them on the same handle concurrently. The handle is `Send` (the
 //! engine already is), so it may be moved between threads, just not shared.
 //!
+//! # Namespace
+//!
+//! These symbols are `jpe_stream_*`, deliberately not `jpe_world_*`. The
+//! `jpe_world_*` namespace belongs to `libjpe_world` (`native/rust-world`),
+//! which the Java side already binds through FFM, and it exports 33 functions
+//! there -- including `jpe_world_create` and `jpe_world_destroy`. Both crates
+//! produce a `cdylib`, so two same-named exported symbols in one process is a
+//! collision waiting to happen, and the world engine has the prior claim.
+//!
+//! This module is transitional: the scheduler and section model below are
+//! meant to be folded into `native/rust-world` so the C++ generator and the
+//! frame budget live in one shared object with no boundary between them.
+//! Until that happens it stays out of the way of the namespace it is joining.
+//!
 //! # Errors
 //!
-//! Functions that can fail return a negative `i32`; `jpe_world_last_error`
+//! Functions that can fail return a negative `i32`; `jpe_stream_last_error`
 //! describes the most recent failure on that handle and is cleared by the next
 //! successful call. A negative return from a "count" function therefore means
 //! "failed", never "minus one column".
@@ -70,15 +84,15 @@ impl WorldStreamer {
 /// `radius` is the view radius in columns and must be `1..=32`; anything else
 /// is rejected rather than clamped, because a typo that silently becomes a
 /// 32-column view is a 3213-column stall nobody asked for. The queue starts
-/// empty -- call [`jpe_world_retarget`] to fill it.
+/// empty -- call [`jpe_stream_retarget`] to fill it.
 ///
 /// Returns null on failure.
 ///
 /// # Safety
 ///
-/// The returned pointer must be passed to [`jpe_world_destroy`] exactly once.
+/// The returned pointer must be passed to [`jpe_stream_destroy`] exactly once.
 #[no_mangle]
-pub unsafe extern "C" fn jpe_world_create(seed: i64, radius: i32) -> *mut WorldStreamer {
+pub unsafe extern "C" fn jpe_stream_create(seed: i64, radius: i32) -> *mut WorldStreamer {
     if !(1..=32).contains(&radius) {
         return std::ptr::null_mut();
     }
@@ -95,13 +109,13 @@ pub unsafe extern "C" fn jpe_world_create(seed: i64, radius: i32) -> *mut WorldS
     Box::into_raw(boxed)
 }
 
-/// Frees a streamer created by [`jpe_world_create`]. Null is a no-op.
+/// Frees a streamer created by [`jpe_stream_create`]. Null is a no-op.
 ///
 /// # Safety
 ///
-/// `handle` must come from `jpe_world_create` and must not be used afterwards.
+/// `handle` must come from `jpe_stream_create` and must not be used afterwards.
 #[no_mangle]
-pub unsafe extern "C" fn jpe_world_destroy(handle: *mut WorldStreamer) {
+pub unsafe extern "C" fn jpe_stream_destroy(handle: *mut WorldStreamer) {
     if handle.is_null() {
         return;
     }
@@ -114,9 +128,9 @@ pub unsafe extern "C" fn jpe_world_destroy(handle: *mut WorldStreamer) {
 ///
 /// # Safety
 ///
-/// `handle` must be a live pointer from [`jpe_world_create`].
+/// `handle` must be a live pointer from [`jpe_stream_create`].
 #[no_mangle]
-pub unsafe extern "C" fn jpe_world_retarget(
+pub unsafe extern "C" fn jpe_stream_retarget(
     handle: *mut WorldStreamer,
     chunk_x: i32,
     chunk_z: i32,
@@ -144,7 +158,7 @@ pub unsafe extern "C" fn jpe_world_retarget(
 /// `handle` must be live; the three out-pointers, when non-null, must be valid
 /// for writes of the stated width.
 #[no_mangle]
-pub unsafe extern "C" fn jpe_world_pump(
+pub unsafe extern "C" fn jpe_stream_pump(
     handle: *mut WorldStreamer,
     budget_us: u64,
     out_generated: *mut u32,
@@ -181,7 +195,7 @@ pub unsafe extern "C" fn jpe_world_pump(
 ///
 /// `handle` must be live.
 #[no_mangle]
-pub unsafe extern "C" fn jpe_world_drain(
+pub unsafe extern "C" fn jpe_stream_drain(
     handle: *mut WorldStreamer,
     budget_us: u64,
     max_frames: u32,
@@ -206,7 +220,7 @@ pub unsafe extern "C" fn jpe_world_drain(
 ///
 /// `handle` must be live.
 #[no_mangle]
-pub unsafe extern "C" fn jpe_world_remaining(handle: *const WorldStreamer) -> i32 {
+pub unsafe extern "C" fn jpe_stream_remaining(handle: *const WorldStreamer) -> i32 {
     match handle.as_ref() {
         Some(s) => s.scheduler.remaining() as i32,
         None => JPE_WORLD_ERR_NULL,
@@ -220,7 +234,7 @@ pub unsafe extern "C" fn jpe_world_remaining(handle: *const WorldStreamer) -> i3
 ///
 /// `handle` must be live.
 #[no_mangle]
-pub unsafe extern "C" fn jpe_world_set_max_columns_per_pump(
+pub unsafe extern "C" fn jpe_stream_set_max_columns_per_pump(
     handle: *mut WorldStreamer,
     n: u32,
 ) -> i32 {
@@ -234,17 +248,17 @@ pub unsafe extern "C" fn jpe_world_set_max_columns_per_pump(
 /// Sets the C++ cache budget in bytes.
 ///
 /// `bytes` is rounded down to a whole number of columns by the cache, so
-/// `jpe_world_cache_stats` will report a capacity at or below this number, not
+/// `jpe_stream_cache_stats` will report a capacity at or below this number, not
 /// this number itself.
 ///
 /// Returns 0 on success. A budget smaller than one column leaves the cache
-/// disabled; see `jpe_world_cache_stats` for how that shows up.
+/// disabled; see `jpe_stream_cache_stats` for how that shows up.
 ///
 /// # Safety
 ///
 /// `handle` must be live.
 #[no_mangle]
-pub unsafe extern "C" fn jpe_world_set_cache_budget(handle: *mut WorldStreamer, bytes: u64) -> i32 {
+pub unsafe extern "C" fn jpe_stream_set_cache_budget(handle: *mut WorldStreamer, bytes: u64) -> i32 {
     let s = match handle.as_mut() {
         Some(s) => s,
         None => return JPE_WORLD_ERR_NULL,
@@ -265,7 +279,7 @@ pub unsafe extern "C" fn jpe_world_set_cache_budget(handle: *mut WorldStreamer, 
 ///
 /// `handle` must be live; the out-pointers, when non-null, must be writable.
 #[no_mangle]
-pub unsafe extern "C" fn jpe_world_centre(
+pub unsafe extern "C" fn jpe_stream_centre(
     handle: *const WorldStreamer,
     out_x: *mut i32,
     out_z: *mut i32,
@@ -290,7 +304,7 @@ pub unsafe extern "C" fn jpe_world_centre(
 /// chunk count: the C++ side stores both, and recomputing one from the other is
 /// how a caller ends up disagreeing with the cache about its own size. Note the
 /// value is the budget floored to whole columns, not the number passed to
-/// `jpe_world_set_cache_budget`.
+/// `jpe_stream_set_cache_budget`.
 ///
 /// Returns 0 on success. Returns an error when the cache is disabled, because
 /// `enabled()` is `capacity_ > 0` and a disabled cache has nothing to report --
@@ -300,7 +314,7 @@ pub unsafe extern "C" fn jpe_world_centre(
 ///
 /// `handle` must be live; the out-pointers, when non-null, must be writable.
 #[no_mangle]
-pub unsafe extern "C" fn jpe_world_cache_stats(
+pub unsafe extern "C" fn jpe_stream_cache_stats(
     handle: *const WorldStreamer,
     out_resident_bytes: *mut u64,
     out_capacity_bytes: *mut u64,
@@ -325,13 +339,13 @@ pub unsafe extern "C" fn jpe_world_cache_stats(
 
 /// The last error message on this handle, as a NUL-terminated string, or an
 /// empty string when the last call succeeded. The pointer stays valid until the
-/// next `jpe_world_*` call on the same handle.
+/// next `jpe_stream_*` call on the same handle.
 ///
 /// # Safety
 ///
 /// `handle` must be live for as long as the returned pointer is used.
 #[no_mangle]
-pub unsafe extern "C" fn jpe_world_last_error(handle: *const WorldStreamer) -> *const c_char {
+pub unsafe extern "C" fn jpe_stream_last_error(handle: *const WorldStreamer) -> *const c_char {
     match handle.as_ref() {
         Some(s) => s.last_error.as_ptr() as *const c_char,
         None => std::ptr::null(),
@@ -345,7 +359,7 @@ pub unsafe extern "C" fn jpe_world_last_error(handle: *const WorldStreamer) -> *
 ///
 /// `handle` must be live.
 #[no_mangle]
-pub unsafe extern "C" fn jpe_world_chunk_blocks(handle: *const WorldStreamer) -> u64 {
+pub unsafe extern "C" fn jpe_stream_chunk_blocks(handle: *const WorldStreamer) -> u64 {
     match handle.as_ref() {
         Some(s) => s.engine.chunk_blocks(),
         None => 0,
@@ -358,7 +372,7 @@ mod world_abi_tests {
     use std::ffi::CStr;
 
     fn make(seed: i64, radius: i32) -> *mut WorldStreamer {
-        let h = unsafe { jpe_world_create(seed, radius) };
+        let h = unsafe { jpe_stream_create(seed, radius) };
         assert!(!h.is_null(), "create returned null");
         h
     }
@@ -368,33 +382,33 @@ mod world_abi_tests {
         let h = make(0, 1);
         unsafe {
             assert_eq!(
-                jpe_world_remaining(h),
+                jpe_stream_remaining(h),
                 0,
                 "a fresh scheduler must not queue anything before a retarget"
             );
             assert_eq!(
-                jpe_world_chunk_blocks(h),
+                jpe_stream_chunk_blocks(h),
                 crate::terrain_ffi::CHUNK_BLOCKS_DEFAULT_HEIGHT
             );
-            jpe_world_destroy(h);
+            jpe_stream_destroy(h);
         }
     }
 
     #[test]
     fn a_bad_radius_is_rejected_instead_of_clamped() {
         unsafe {
-            assert!(jpe_world_create(0, 0).is_null());
-            assert!(jpe_world_create(0, 33).is_null());
-            assert!(jpe_world_create(0, -1).is_null());
+            assert!(jpe_stream_create(0, 0).is_null());
+            assert!(jpe_stream_create(0, 33).is_null());
+            assert!(jpe_stream_create(0, -1).is_null());
         }
     }
 
     #[test]
     fn null_handles_are_rejected_not_dereferenced() {
         unsafe {
-            assert_eq!(jpe_world_remaining(std::ptr::null()), JPE_WORLD_ERR_NULL);
+            assert_eq!(jpe_stream_remaining(std::ptr::null()), JPE_WORLD_ERR_NULL);
             assert_eq!(
-                jpe_world_pump(
+                jpe_stream_pump(
                     std::ptr::null_mut(),
                     0,
                     std::ptr::null_mut(),
@@ -403,20 +417,20 @@ mod world_abi_tests {
                 ),
                 JPE_WORLD_ERR_NULL
             );
-            assert_eq!(jpe_world_retarget(std::ptr::null_mut(), 0, 0), JPE_WORLD_ERR_NULL);
-            assert_eq!(jpe_world_drain(std::ptr::null_mut(), 0, 1), JPE_WORLD_ERR_NULL);
+            assert_eq!(jpe_stream_retarget(std::ptr::null_mut(), 0, 0), JPE_WORLD_ERR_NULL);
+            assert_eq!(jpe_stream_drain(std::ptr::null_mut(), 0, 1), JPE_WORLD_ERR_NULL);
             assert_eq!(
-                jpe_world_set_cache_budget(std::ptr::null_mut(), 1),
+                jpe_stream_set_cache_budget(std::ptr::null_mut(), 1),
                 JPE_WORLD_ERR_NULL
             );
             assert_eq!(
-                jpe_world_set_max_columns_per_pump(std::ptr::null_mut(), 1),
+                jpe_stream_set_max_columns_per_pump(std::ptr::null_mut(), 1),
                 JPE_WORLD_ERR_NULL
             );
-            assert_eq!(jpe_world_chunk_blocks(std::ptr::null()), 0);
-            assert!(jpe_world_last_error(std::ptr::null()).is_null());
+            assert_eq!(jpe_stream_chunk_blocks(std::ptr::null()), 0);
+            assert!(jpe_stream_last_error(std::ptr::null()).is_null());
             // destroy(null) must be a no-op rather than UB.
-            jpe_world_destroy(std::ptr::null_mut());
+            jpe_stream_destroy(std::ptr::null_mut());
         }
     }
 
@@ -424,13 +438,13 @@ mod world_abi_tests {
     fn retarget_rebuilds_the_queue_and_reports_it() {
         let h = make(0, 2);
         unsafe {
-            let n = jpe_world_retarget(h, 7, -3);
+            let n = jpe_stream_retarget(h, 7, -3);
             assert_eq!(n, 13, "radius 2 must queue 13 columns");
             let mut x = 0i32;
             let mut z = 0i32;
-            assert_eq!(jpe_world_centre(h, &mut x, &mut z), 0);
+            assert_eq!(jpe_stream_centre(h, &mut x, &mut z), 0);
             assert_eq!((x, z), (7, -3));
-            jpe_world_destroy(h);
+            jpe_stream_destroy(h);
         }
     }
 
@@ -440,9 +454,9 @@ mod world_abi_tests {
         // queue, or a long walk would accumulate work instead of replacing it.
         let h = make(0, 1);
         unsafe {
-            assert_eq!(jpe_world_retarget(h, 0, 0), 5);
-            assert_eq!(jpe_world_retarget(h, 100, 100), 5);
-            jpe_world_destroy(h);
+            assert_eq!(jpe_stream_retarget(h, 0, 0), 5);
+            assert_eq!(jpe_stream_retarget(h, 100, 100), 5);
+            jpe_stream_destroy(h);
         }
     }
 
@@ -453,15 +467,15 @@ mod world_abi_tests {
         // world never finishes loading under load.
         let h = make(0, 1);
         unsafe {
-            jpe_world_retarget(h, 0, 0);
+            jpe_stream_retarget(h, 0, 0);
             let mut generated = 0u32;
             let mut remaining = 0u32;
             let mut elapsed = 0u64;
-            let rc = jpe_world_pump(h, 0, &mut generated, &mut remaining, &mut elapsed);
+            let rc = jpe_stream_pump(h, 0, &mut generated, &mut remaining, &mut elapsed);
             assert_eq!(rc, 1, "a zero budget must generate exactly one column");
             assert_eq!(generated, 1);
             assert_eq!(remaining, 4);
-            jpe_world_destroy(h);
+            jpe_stream_destroy(h);
         }
     }
 
@@ -469,10 +483,10 @@ mod world_abi_tests {
     fn a_pump_respects_the_per_frame_cap() {
         let h = make(0, 4);
         unsafe {
-            assert_eq!(jpe_world_set_max_columns_per_pump(h, 3), 3);
-            jpe_world_retarget(h, 0, 0);
+            assert_eq!(jpe_stream_set_max_columns_per_pump(h, 3), 3);
+            jpe_stream_retarget(h, 0, 0);
             let mut generated = 0u32;
-            let rc = jpe_world_pump(
+            let rc = jpe_stream_pump(
                 h,
                 1_000_000,
                 &mut generated,
@@ -481,7 +495,7 @@ mod world_abi_tests {
             );
             assert_eq!(rc, 3, "the cap must win even with a generous budget");
             assert_eq!(generated, 3);
-            jpe_world_destroy(h);
+            jpe_stream_destroy(h);
         }
     }
 
@@ -489,9 +503,9 @@ mod world_abi_tests {
     fn the_cap_is_clamped_not_trusted() {
         let h = make(0, 1);
         unsafe {
-            assert_eq!(jpe_world_set_max_columns_per_pump(h, 0), 1);
-            assert_eq!(jpe_world_set_max_columns_per_pump(h, u32::MAX), 4096);
-            jpe_world_destroy(h);
+            assert_eq!(jpe_stream_set_max_columns_per_pump(h, 0), 1);
+            assert_eq!(jpe_stream_set_max_columns_per_pump(h, u32::MAX), 4096);
+            jpe_stream_destroy(h);
         }
     }
 
@@ -499,11 +513,11 @@ mod world_abi_tests {
     fn drain_empties_the_queue_within_its_frame_budget() {
         let h = make(0, 2);
         unsafe {
-            jpe_world_retarget(h, 0, 0);
-            let total = jpe_world_drain(h, 1_000_000, 100);
+            jpe_stream_retarget(h, 0, 0);
+            let total = jpe_stream_drain(h, 1_000_000, 100);
             assert_eq!(total, 13, "drain must generate every queued column");
-            assert_eq!(jpe_world_remaining(h), 0);
-            jpe_world_destroy(h);
+            assert_eq!(jpe_stream_remaining(h), 0);
+            jpe_stream_destroy(h);
         }
     }
 
@@ -511,12 +525,12 @@ mod world_abi_tests {
     fn drain_honours_max_frames() {
         let h = make(0, 3);
         unsafe {
-            jpe_world_set_max_columns_per_pump(h, 1);
-            jpe_world_retarget(h, 0, 0);
-            let total = jpe_world_drain(h, 1_000_000, 4);
+            jpe_stream_set_max_columns_per_pump(h, 1);
+            jpe_stream_retarget(h, 0, 0);
+            let total = jpe_stream_drain(h, 1_000_000, 4);
             assert_eq!(total, 4, "one column per frame for four frames");
-            assert_eq!(jpe_world_remaining(h), 29 - 4);
-            jpe_world_destroy(h);
+            assert_eq!(jpe_stream_remaining(h), 29 - 4);
+            jpe_stream_destroy(h);
         }
     }
 
@@ -530,12 +544,12 @@ mod world_abi_tests {
         let h = make(0, 1);
         unsafe {
             let budget = 64u64 * 1024 * 1024;
-            let chunk = jpe_world_chunk_blocks(h) * 2; // u16 per block
-            assert_eq!(jpe_world_set_cache_budget(h, budget), 0);
+            let chunk = jpe_stream_chunk_blocks(h) * 2; // u16 per block
+            assert_eq!(jpe_stream_set_cache_budget(h, budget), 0);
 
             let mut resident = u64::MAX;
             let mut capacity = 0u64;
-            assert_eq!(jpe_world_cache_stats(h, &mut resident, &mut capacity), 0);
+            assert_eq!(jpe_stream_cache_stats(h, &mut resident, &mut capacity), 0);
             assert!(capacity <= budget, "capacity must not exceed the budget");
             assert!(
                 budget - capacity < chunk,
@@ -547,7 +561,7 @@ mod world_abi_tests {
                 "capacity must be a whole number of columns"
             );
             assert!(resident <= capacity, "resident must fit inside capacity");
-            jpe_world_destroy(h);
+            jpe_stream_destroy(h);
         }
     }
 
@@ -562,14 +576,14 @@ mod world_abi_tests {
         unsafe {
             // Whatever set_budget returns for zero, the observable contract is
             // that the cache is not enabled afterwards.
-            let _ = jpe_world_set_cache_budget(h, 0);
+            let _ = jpe_stream_set_cache_budget(h, 0);
             let mut resident = u64::MAX;
             assert_eq!(
-                jpe_world_cache_stats(h, &mut resident, std::ptr::null_mut()),
+                jpe_stream_cache_stats(h, &mut resident, std::ptr::null_mut()),
                 JPE_WORLD_ERR_CACHE,
                 "a disabled cache has no stats to report"
             );
-            jpe_world_destroy(h);
+            jpe_stream_destroy(h);
         }
     }
 
@@ -581,13 +595,13 @@ mod world_abi_tests {
             // channel directly: the contract under test is that success wipes
             // the stale message, not that some particular call fails.
             (*h).set_error("stale failure");
-            assert!(!CStr::from_ptr(jpe_world_last_error(h)).to_bytes().is_empty());
-            jpe_world_retarget(h, 0, 0);
+            assert!(!CStr::from_ptr(jpe_stream_last_error(h)).to_bytes().is_empty());
+            jpe_stream_retarget(h, 0, 0);
             assert!(
-                CStr::from_ptr(jpe_world_last_error(h)).to_bytes().is_empty(),
+                CStr::from_ptr(jpe_stream_last_error(h)).to_bytes().is_empty(),
                 "a successful call must clear the stale error"
             );
-            jpe_world_destroy(h);
+            jpe_stream_destroy(h);
         }
     }
 
@@ -595,8 +609,8 @@ mod world_abi_tests {
     fn out_pointers_may_be_null() {
         let h = make(0, 1);
         unsafe {
-            jpe_world_retarget(h, 0, 0);
-            let rc = jpe_world_pump(
+            jpe_stream_retarget(h, 0, 0);
+            let rc = jpe_stream_pump(
                 h,
                 1_000_000,
                 std::ptr::null_mut(),
@@ -605,10 +619,10 @@ mod world_abi_tests {
             );
             assert!(rc >= 1);
             assert_eq!(
-                jpe_world_centre(h, std::ptr::null_mut(), std::ptr::null_mut()),
+                jpe_stream_centre(h, std::ptr::null_mut(), std::ptr::null_mut()),
                 0
             );
-            jpe_world_destroy(h);
+            jpe_stream_destroy(h);
         }
     }
 
@@ -621,13 +635,13 @@ mod world_abi_tests {
         // hit the guard instead of finishing.
         let h = make(0, 3);
         unsafe {
-            jpe_world_retarget(h, 0, 0);
-            let queued = jpe_world_remaining(h);
+            jpe_stream_retarget(h, 0, 0);
+            let queued = jpe_stream_remaining(h);
             assert_eq!(queued, 29, "radius 3 must queue 29 columns");
 
             let mut frames = 0u32;
-            while jpe_world_remaining(h) > 0 {
-                let generated = jpe_world_pump(
+            while jpe_stream_remaining(h) > 0 {
+                let generated = jpe_stream_pump(
                     h,
                     0,
                     std::ptr::null_mut(),
@@ -639,7 +653,7 @@ mod world_abi_tests {
                 assert!(frames < 1000, "streaming did not terminate");
             }
             assert_eq!(frames, queued as u32, "one column per pump, no stalls");
-            jpe_world_destroy(h);
+            jpe_stream_destroy(h);
         }
     }
 }
