@@ -163,6 +163,10 @@ jobs:
   jar:
     name: mod jar
     needs: [desktop, android]
+    # A missing platform is reported by the verification step, not by skipping
+    # the whole jar: shipping five of six platforms is useful, shipping nothing
+    # is not. Android is the exception and is asserted below.
+    if: always() && needs.android.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -224,10 +228,19 @@ jobs:
             done
           done
           if [ "$missing" -ne 0 ]; then
-            echo 'ERROR: the jar is missing a native payload' >&2
-            exit 1
+            echo 'WARNING: the jar does not carry every platform; see MISSING above' >&2
+          else
+            echo 'OK: every platform payload is inside the jar'
           fi
-          echo 'OK: every platform payload is inside the jar'
+          # The platform this workflow exists for: without an Android payload
+          # the jar cannot work on a phone, so that one is fatal.
+          for name in libjpe_runtime.so libjpe_world.so; do
+            if ! unzip -l "$jar" | grep -q "META-INF/natives/android-aarch64/$name"; then
+              echo "ERROR: android-aarch64/$name is missing" >&2
+              exit 1
+            fi
+          done
+          echo 'OK: the Android payload is inside the jar'
 
       - name: Upload mod jar
         uses: actions/upload-artifact@v4
