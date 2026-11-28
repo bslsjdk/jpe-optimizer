@@ -23,7 +23,7 @@ use super::{
 };
 use crate::mesh::Vertex;
 use std::ffi::{c_char, c_int, c_void};
-use std::mem::{size_of, transmute, zeroed};
+use std::mem::{transmute, zeroed};
 use std::ptr::{null, null_mut};
 
 pub const BACKEND: Backend = Backend::Vulkan;
@@ -890,8 +890,6 @@ fn read_device_props(fns: &VkFns, phys: PhysicalDevice) -> DeviceProps {
 struct GpuMesh {
     vertex_buffer: u64,
     vertex_memory: u64,
-    index_buffer: u64,
-    index_memory: u64,
     index_count: u32,
     /// Block-space origin of the section; vertices are section-local.
     origin: [f32; 4],
@@ -915,6 +913,10 @@ pub struct VulkanRenderer {
     // Kept open for the renderer's lifetime; see `Drop`.
     _lib: *mut c_void,
     fns: VkFns,
+    /// One index buffer shared by every section; see `glcore::create_shared_indices`
+    /// for why the pattern is universal.
+    shared_ib: u64,
+    shared_ib_memory: u64,
     instance: Instance,
     physical_device: PhysicalDevice,
     device: Device,
@@ -1216,6 +1218,8 @@ impl VulkanRenderer {
             let mut renderer = VulkanRenderer {
                 _lib: lib,
                 fns,
+                shared_ib: 0,
+                shared_ib_memory: 0,
                 instance,
                 physical_device,
                 device,
@@ -1250,8 +1254,35 @@ impl VulkanRenderer {
             };
             renderer.create_atlas()?;
             renderer.create_descriptor_set()?;
+            renderer.create_shared_indices()?;
             Ok(renderer)
         }
+    }
+
+    /// Build the one index buffer every section draws from.
+    ///
+    /// Same reasoning as the GL backend: the mesher emits four vertices per
+    /// quad in a fixed corner order, so the index stream is identical for every
+    /// section and only its length varies.
+    fn create_shared_indices(&mut self) -> Result<(), RenderError> {
+        let quads = crate::mesh::MAX_SECTION_QUADS;
+        let mut indices: Vec<u32> = Vec::with_capacity(quads as usize * 6);
+        for q in 0..quads {
+            let base = q * 4;
+            indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+        }
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(indices.as_ptr() as *const u8, indices.len() * 4)
+        };
+        let (buffer, memory) = self.create_buffer(
+            bytes.len() as u64,
+            BUFFER_USAGE_INDEX,
+            MEMORY_PROPERTY_HOST_VISIBLE | MEMORY_PROPERTY_HOST_COHERENT,
+        )?;
+        self.write_buffer(memory, bytes)?;
+        self.shared_ib = buffer;
+        self.shared_ib_memory = memory;
+        Ok(())
     }
 
     /// Upload the built-in block atlas into a sampled `VK_IMAGE`.
@@ -2029,6 +2060,8 @@ impl VulkanRenderer {
                 (std::mem::size_of::<f32>() * 16) as u32,
                 self.view_proj.as_ptr() as *const c_void,
             );
+            // Every section draws from the same index buffer; bind it once.
+            (fns.vkCmdBindIndexBuffer)(self.command_buffer, self.shared_ib, 0, INDEX_TYPE_UINT32);
             // The section origin rides in the second half of the same push
             // constant block and is rewritten per draw.
             for batch in &self.pending {
@@ -2037,7 +2070,6 @@ impl VulkanRenderer {
                     let buffers = [mesh.vertex_buffer];
                     let offsets = [0u64];
                     (fns.vkCmdBindVertexBuffers)(self.command_buffer, 0, 1, buffers.as_ptr(), offsets.as_ptr());
-                    (fns.vkCmdBindIndexBuffer)(self.command_buffer, mesh.index_buffer, 0, INDEX_TYPE_UINT32);
                     (fns.vkCmdPushConstants)(
                         self.command_buffer,
                         self.pipeline_layout,
@@ -2233,30 +2265,18 @@ impl Renderer for VulkanRenderer {
         for (i, v) in mesh.vertices.iter().enumerate() {
             v.write_le(&mut vertex_bytes[i * Vertex::STRIDE..(i + 1) * Vertex::STRIDE]);
         }
-        let index_bytes = mesh.indices.len() * size_of::<u32>();
-
         let (vb, vbm) = self.create_buffer(
             vertex_bytes.len() as u64, BUFFER_USAGE_VERTEX,
             MEMORY_PROPERTY_HOST_VISIBLE | MEMORY_PROPERTY_HOST_COHERENT,
         )?;
         self.write_buffer(vbm, &vertex_bytes)?;
-        let (ib, ibm) = self.create_buffer(
-            index_bytes as u64, BUFFER_USAGE_INDEX,
-            MEMORY_PROPERTY_HOST_VISIBLE | MEMORY_PROPERTY_HOST_COHERENT,
-        )?;
-        let raw_indices: &[u8] = unsafe {
-            std::slice::from_raw_parts(mesh.indices.as_ptr() as *const u8, index_bytes)
-        };
-        self.write_buffer(ibm, raw_indices)?;
 
         let handle = MeshHandle(self.next_handle);
         self.next_handle += 1;
         self.meshes.push(Some(GpuMesh {
             vertex_buffer: vb,
             vertex_memory: vbm,
-            index_buffer: ib,
-            index_memory: ibm,
-            index_count: mesh.indices.len() as u32,
+            index_count: mesh.quad_count * 6,
             origin: [
                 mesh.origin[0] as f32,
                 mesh.origin[1] as f32,
@@ -2274,8 +2294,6 @@ impl Renderer for VulkanRenderer {
                 unsafe {
                     (self.fns.vkDestroyBuffer)(self.device, m.vertex_buffer, null());
                     (self.fns.vkFreeMemory)(self.device, m.vertex_memory, null());
-                    (self.fns.vkDestroyBuffer)(self.device, m.index_buffer, null());
-                    (self.fns.vkFreeMemory)(self.device, m.index_memory, null());
                 }
             }
         }
@@ -2315,11 +2333,15 @@ impl Drop for VulkanRenderer {
                 if let Some(m) = slot.take() {
                     (self.fns.vkDestroyBuffer)(self.device, m.vertex_buffer, null());
                     (self.fns.vkFreeMemory)(self.device, m.vertex_memory, null());
-                    (self.fns.vkDestroyBuffer)(self.device, m.index_buffer, null());
-                    (self.fns.vkFreeMemory)(self.device, m.index_memory, null());
                 }
             }
             self.destroy_target();
+            if self.shared_ib != 0 {
+                (self.fns.vkDestroyBuffer)(self.device, self.shared_ib, null());
+                (self.fns.vkFreeMemory)(self.device, self.shared_ib_memory, null());
+                self.shared_ib = 0;
+                self.shared_ib_memory = 0;
+            }
             (self.fns.vkDestroyPipeline)(self.device, self.pipeline, null());
             (self.fns.vkDestroyPipelineLayout)(self.device, self.pipeline_layout, null());
             // Descriptor pool frees its sets; then the atlas and sampler it

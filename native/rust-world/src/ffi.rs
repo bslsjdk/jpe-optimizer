@@ -32,7 +32,7 @@ pub const JAVA_ABI_VERSION: u32 = 2;
 
 /// Worst-case quads for one 16^3 section: a checkerboard of 2048 solid blocks,
 /// every face exposed.
-pub const MAX_SECTION_QUADS: u32 = 2048 * 6;
+pub const MAX_SECTION_QUADS: u32 = crate::mesh::MAX_SECTION_QUADS;
 
 #[derive(Default)]
 struct Registry {

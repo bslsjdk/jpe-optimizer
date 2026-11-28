@@ -338,7 +338,6 @@ impl Profile {
 struct GlMesh {
     vao: u32,
     vbo: u32,
-    ibo: u32,
     index_count: u32,
     /// Block-space origin of the section. Vertices are section-local, so this
     /// is what puts the section in the world, as a per-draw uniform.
@@ -374,6 +373,14 @@ pub struct GlCore {
     u_origin: i32,
     /// Built-in block atlas (see [`atlas_pixels`]).
     atlas: u32,
+    /// One index buffer shared by every section.
+    ///
+    /// The mesher emits quads as four vertices in a fixed corner order, so the
+    /// index stream is always `0,1,2,0,2,3, 4,5,6,4,6,7, ...` regardless of
+    /// what the section contains. Storing it per section cost 24 bytes a quad
+    /// -- as much as the vertices themselves -- for a pattern that never
+    /// varies. A mesh with q quads draws the first 6q entries.
+    shared_ibo: u32,
     /// Column-major view-projection applied to every frame.
     view_proj: Mat4,
     meshes: Vec<Option<GlMesh>>,
@@ -506,6 +513,7 @@ impl GlCore {
                 return Err(RenderError::Api("gl: shader uniform missing"));
             }
             let atlas = create_atlas(&gl)?;
+            let shared_ibo = create_shared_indices(&gl)?;
 
             Ok(GlCore {
                 gl,
@@ -519,6 +527,7 @@ impl GlCore {
                 u_atlas,
                 u_origin,
                 atlas,
+                shared_ibo,
                 view_proj: MAT4_IDENTITY,
                 meshes: Vec::new(),
                 next_handle: 1,
@@ -674,8 +683,9 @@ impl GlCore {
             }
             std::borrow::Cow::Owned(buf)
         };
-        let index_bytes = mesh.indices.len() * std::mem::size_of::<u32>();
-
+        if mesh.quad_count > crate::mesh::MAX_SECTION_QUADS {
+            return Err(RenderError::InvalidMesh);
+        }
         let gl = &self.gl;
         // SAFETY: creates VAO/buffers for this mesh and uploads its bytes.
         unsafe {
@@ -715,15 +725,9 @@ impl GlCore {
                 4usize as *const c_void,
             );
 
-            let mut ibo = 0u32;
-            (gl.glGenBuffers)(1, &mut ibo);
-            (gl.glBindBuffer)(GL_ELEMENT_ARRAY_BUFFER, ibo);
-            (gl.glBufferData)(
-                GL_ELEMENT_ARRAY_BUFFER,
-                index_bytes as isize,
-                mesh.indices.as_ptr() as *const c_void,
-                GL_STATIC_DRAW,
-            );
+            // The element buffer is VAO state, so binding the shared one here
+            // is what attaches it to this section's vertex array.
+            (gl.glBindBuffer)(GL_ELEMENT_ARRAY_BUFFER, self.shared_ibo);
 
             (gl.glBindVertexArray)(0);
             (gl.glBindBuffer)(GL_ARRAY_BUFFER, 0);
@@ -733,8 +737,7 @@ impl GlCore {
             self.meshes.push(Some(GlMesh {
                 vao,
                 vbo,
-                ibo,
-                index_count: mesh.indices.len() as u32,
+                index_count: mesh.quad_count * 6,
                 origin: [
                     mesh.origin[0] as f32,
                     mesh.origin[1] as f32,
@@ -755,7 +758,6 @@ impl GlCore {
                 unsafe {
                     (self.gl.glDeleteVertexArrays)(1, &m.vao);
                     (self.gl.glDeleteBuffers)(1, &m.vbo);
-                    (self.gl.glDeleteBuffers)(1, &m.ibo);
                 }
             }
         }
@@ -984,7 +986,6 @@ impl Drop for GlCore {
                 if let Some(m) = slot.take() {
                     (self.gl.glDeleteVertexArrays)(1, &m.vao);
                     (self.gl.glDeleteBuffers)(1, &m.vbo);
-                    (self.gl.glDeleteBuffers)(1, &m.ibo);
                 }
             }
             self.destroy_target();
@@ -992,6 +993,10 @@ impl Drop for GlCore {
                 (self.gl.glBindTexture)(GL_TEXTURE_2D, 0);
                 (self.gl.glDeleteTextures)(1, &self.atlas);
                 self.atlas = 0;
+            }
+            if self.shared_ibo != 0 {
+                (self.gl.glDeleteBuffers)(1, &self.shared_ibo);
+                self.shared_ibo = 0;
             }
             if self.program != 0 {
                 (self.gl.glDeleteProgram)(self.program);
@@ -1006,6 +1011,37 @@ impl Drop for GlCore {
 // --- helpers --------------------------------------------------------------
 
 /// Upload the built-in block atlas as a `GL_TEXTURE_2D`.
+/// Build the one index buffer every section draws from.
+///
+/// The mesher emits each quad as four vertices in a fixed corner order, so the
+/// index stream is `0,1,2,0,2,3, 4,5,6,4,6,7, ...` for every section, whatever
+/// it contains. A section with q quads therefore draws the first 6q entries.
+unsafe fn create_shared_indices(gl: &GlFns) -> Result<u32, RenderError> {
+    let quads = crate::mesh::MAX_SECTION_QUADS as usize;
+    let mut indices: Vec<u32> = Vec::with_capacity(quads * 6);
+    for q in 0..quads as u32 {
+        let base = q * 4;
+        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    // SAFETY: standard buffer creation on the current context.
+    unsafe {
+        let mut ibo = 0u32;
+        (gl.glGenBuffers)(1, &mut ibo);
+        if ibo == 0 {
+            return Err(RenderError::Api("gl: glGenBuffers failed"));
+        }
+        (gl.glBindBuffer)(GL_ELEMENT_ARRAY_BUFFER, ibo);
+        (gl.glBufferData)(
+            GL_ELEMENT_ARRAY_BUFFER,
+            (indices.len() * 4) as isize,
+            indices.as_ptr() as *const c_void,
+            GL_STATIC_DRAW,
+        );
+        (gl.glBindBuffer)(GL_ELEMENT_ARRAY_BUFFER, 0);
+        Ok(ibo)
+    }
+}
+
 unsafe fn create_atlas(gl: &GlFns) -> Result<u32, RenderError> {
     let pixels = atlas_pixels();
     // SAFETY: standard texture creation on the current context; the id is

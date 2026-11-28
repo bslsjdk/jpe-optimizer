@@ -34,6 +34,14 @@ pub struct ChunkSection {
     non_air: u32,
 }
 
+/// Upper bound on the quads one section can emit.
+///
+/// A section holds 4096 blocks. Exposed faces are maximised by a 3D
+/// checkerboard: 2048 isolated blocks x 6 faces = 12288 quads, and greedy
+/// meshing only ever merges, never adds. Both renderers size their shared
+/// index buffer from this, so it has to be a real bound rather than a guess.
+pub const MAX_SECTION_QUADS: u32 = 2048 * 6;
+
 /// Highest block id that gets a shared uniform array. The native generator uses
 /// ids 0..=27; 64 leaves room for a resource pack and costs 512 KiB of static
 /// table, which is nothing against the 250 MiB it saves.
