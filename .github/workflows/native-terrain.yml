@@ -15,7 +15,7 @@ on:
       - 'native/cpp-world/**'
       - 'native/rust-runtime/**'
       - '.github/workflows/native-terrain.yml'
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 permissions:
   contents: read
