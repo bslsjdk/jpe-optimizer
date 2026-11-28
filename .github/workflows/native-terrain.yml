@@ -15,11 +15,6 @@ on:
       - 'native/cpp-world/**'
       - 'native/rust-runtime/**'
       - '.github/workflows/native-terrain.yml'
-  pull_request:
-    paths:
-      - 'native/cpp-world/**'
-      - 'native/rust-runtime/**'
-      - '.github/workflows/native-terrain.yml'
   workflow_dispatch:
 
 permissions:
