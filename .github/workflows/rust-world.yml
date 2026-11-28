@@ -187,6 +187,14 @@ jobs:
             target
           key: cpp-bridge-${{ runner.os }}-${{ hashFiles('native/rust-world/Cargo.lock', 'native/rust-world/build.rs') }}
           restore-keys: cpp-bridge-${{ runner.os }}-
+      - name: Install Mesa software drivers
+        run: |
+          sudo apt-get update
+          # libegl1 provides the `libEGL.so.1` SONAME; libgl1/libgles2 provide
+          # `libGL.so.1`/`libGLESv2.so.2`; libvulkan1 is the Vulkan loader itself.
+          sudo apt-get install -y --no-install-recommends \
+            mesa-vulkan-drivers libegl-mesa0 libgl1-mesa-dri \
+            libegl1 libgl1 libgles2 libglvnd0 libvulkan1
       - name: Build with the C++ generator linked in
         working-directory: native/rust-world
         run: |
