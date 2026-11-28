@@ -69,22 +69,79 @@ def generateModMetadata = tasks.register("generateModMetadata", ProcessResources
 
 sourceSets.main.resources.srcDir(generateModMetadata)
 
-// Ship the native runtime inside the mod jar. A dedicated server starts in its
-// own working directory, so a relative target/ path cannot be resolved there;
-// NativeLibraryLoader unpacks this resource on first use.
-def nativeRelease = layout.projectDirectory.dir('native/rust-runtime/target/release')
+// ---------------------------------------------------------------------------
+// Native payload
+//
+// Two cdylibs ship inside the jar and are unpacked on first use:
+//   libjpe_runtime  the density/perlin kernels
+//   libjpe_world    the Rust world engine, which carries the C++ terrain
+//                   generator when built with --features cpp-bridge
+//
+// They are read from a staging tree, native/bundled/<platform>/<file>, so the
+// jar always packs exactly what the build produced, and one platform's build
+// never overwrites another's. A cross-compiled matrix fills this tree; a local
+// desktop build falls back to the crate target directories so a developer does
+// not have to run the matrix to get a working jar.
+//
+// A dedicated server starts in its own working directory, so a relative
+// target/ path cannot be resolved there. NativeLibraryLoader unpacks these
+// resources into the JVM temporary directory instead.
+// ---------------------------------------------------------------------------
+def bundledNatives = layout.projectDirectory.dir('native/bundled')
+def nativeFallbackDirs = [
+        'jpe_runtime': layout.projectDirectory.dir('native/rust-runtime/target/release'),
+        'jpe_world'  : layout.projectDirectory.dir('native/rust-world/target/release'),
+]
+def nativeFileNames = {
+    String base, String platform ->
+        platform.startsWith('windows') ? base + '.dll'
+                : platform.startsWith('macos') ? 'lib' + base + '.dylib'
+                : 'lib' + base + '.so'
+}
+
+/** Platforms the jar can carry a native payload for. */
+ext.bundledPlatforms = ['linux-x86_64', 'linux-aarch64', 'macos-x86_64', 'macos-aarch64',
+                        'windows-x86_64', 'android-aarch64']
+
+// Collect what the jar will ship. Missing platforms are skipped, so a desktop
+// build still produces a jar rather than failing on an absent cross target.
+ext.collectNatives = { Directory target ->
+    def produced = []
+    ext.bundledPlatforms.each { platform ->
+        nativeFileNames.keySet().each { base ->
+            String name = nativeFileNames(base, platform)
+            File staged = bundledNatives.dir(platform).file(name).asFile
+            File source = staged.exists() ? staged
+                    : nativeFallbackDirs[base].file(name).asFile
+            if (source.exists()) {
+                target.dir(platform).file(name).bytes = source.bytes
+                produced << platform + '/' + name
+            }
+        }
+    }
+    return produced
+}
+
+def stagedNatives = layout.buildDirectory.dir('natives')
+def stageNatives = tasks.register('stageNatives') {
+    group = 'build'
+    description = 'Collects the native payload that ships inside the mod jar.'
+    def target = stagedNatives
+    outputs.dir(target)
+    doLast {
+        def produced = ext.collectNatives(target.get())
+        if (produced.isEmpty()) {
+            logger.warn('jpe: no native payload found; the jar will ship without one')
+        } else {
+            produced.each { logger.lifecycle('jpe native: ' + it) }
+        }
+    }
+}
+
 tasks.named('processResources') {
-    from(nativeRelease) {
-        include 'libjpe_runtime.so'
-        into 'META-INF/natives/linux-x86_64'
-    }
-    from(nativeRelease) {
-        include 'libjpe_runtime.dylib'
-        into 'META-INF/natives/macos-aarch64'
-    }
-    from(nativeRelease) {
-        include 'jpe_runtime.dll'
-        into 'META-INF/natives/windows-x86_64'
+    dependsOn stageNatives
+    from(stagedNatives) {
+        into 'META-INF/natives'
     }
 }
 
