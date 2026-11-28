@@ -66,11 +66,17 @@ pub fn section_local_index(x: usize, y: usize, z: usize) -> usize {
 
 /// Index into a full column for a section-local coordinate.
 ///
-/// This is the one place the section/column translation happens on the read
-/// path. `section_base` is the section's first y within the column.
+/// `section_base_y` is the section's first **y within the column**, not a
+/// block offset. For section `i` that is `i * SECTION_HEIGHT`. Mixing the two
+/// up is silent -- both are just integers -- so the parameter is named for its
+/// unit and the test below pins the relationship.
+///
+/// Note the asymmetry with `Section::from_column`, which takes a section
+/// *index* and multiplies by `SECTION_BLOCKS` itself. They are different
+/// quantities on purpose: one addresses a block, the other addresses a plane.
 #[inline]
-pub fn column_index(section_base: usize, x: usize, y: usize, z: usize) -> usize {
-    let column_y = section_base + y;
+pub fn column_index(section_base_y: usize, x: usize, y: usize, z: usize) -> usize {
+    let column_y = section_base_y + y;
     (column_y << 8) | (z << 4) | x
 }
 
@@ -168,9 +174,19 @@ impl MemoryModel {
 
     /// The 1 GiB heap preset: 320 MiB of terrain, radius 20.
     ///
-    /// 1257 columns at full height would be 241 MiB of raw blocks; trimming to
-    /// the 8 sections that actually carry terrain brings the working set down
-    /// to roughly a third of that, leaving headroom for the mesher.
+    /// 1257 columns at full height is 235.6 MiB, which *does* fit inside 320
+    /// MiB. So sections are not what makes this preset affordable -- the
+    /// budget already covers whole columns, and `capacity_columns` (1706) is
+    /// larger than the disc (1257).
+    ///
+    /// What sections buy is granularity, not headroom: the mesher wants 16^3
+    /// boxes, and handing it a slice of a column keeps the mesher from having
+    /// to know the column layout at all. Trimming also keeps the *Rust-side*
+    /// working set small, which matters once meshes are retained alongside
+    /// blocks -- but the generator's own cache is still column-granular, so
+    /// the dominant term does not move until that cache learns about sections.
+    /// Stating this here because the earlier draft of this file claimed the
+    /// trim was what made the preset fit, and that was simply wrong.
     pub fn for_one_gigabyte() -> Self {
         let radius = 20;
         let columns = Self::disc_columns(radius);
@@ -313,17 +329,21 @@ mod terrain_source_tests {
     /// The section layout must match the C++ column layout bit for bit.
     #[test]
     fn section_index_matches_the_column_layout() {
-        // Walk every block of one section and check the two index formulas
-        // agree with an independent triple loop.
-        let base = 3 * SECTION_BLOCKS;
+        // Section 3: its y base is 3 * 16, its block base is 3 * 4096. Both
+        // numbers appear below, and the whole point of the test is that they
+        // describe the same section without ever being interchangeable.
+        let index = 3usize;
+        let base_y = index * SECTION_HEIGHT;
+        let base_blocks = index * SECTION_BLOCKS;
+
         for y in 0..SECTION_HEIGHT {
             for z in 0..SECTION_WIDTH {
                 for x in 0..SECTION_WIDTH {
                     let local = section_local_index(x, y, z);
-                    let column = column_index(base, x, y, z);
+                    let column = column_index(base_y, x, y, z);
                     assert_eq!(
                         column,
-                        base + local,
+                        base_blocks + local,
                         "section-local and column indices disagree at {}, {}, {}",
                         x,
                         y,
@@ -331,6 +351,22 @@ mod terrain_source_tests {
                     );
                 }
             }
+        }
+    }
+
+    /// A section's y base and its block base must describe the same section.
+    #[test]
+    fn the_two_section_bases_agree() {
+        for index in 0..SECTIONS_PER_COLUMN {
+            let base_y = index * SECTION_HEIGHT;
+            let base_blocks = index * SECTION_BLOCKS;
+            // The first block of the section, addressed both ways.
+            assert_eq!(
+                column_index(base_y, 0, 0, 0),
+                base_blocks,
+                "section {} has mismatched y and block bases",
+                index
+            );
         }
     }
 
@@ -406,14 +442,24 @@ mod terrain_source_tests {
         assert_eq!(model.radius, 20);
         assert_eq!(model.columns, 1257);
 
-        // Whole columns do not fit: that is the entire reason for sections.
+        // Whole columns fit. Asserting the real number keeps the doc honest:
+        // if a future height change flips this, the preset needs revisiting.
         assert!(
-            model.whole_column_bytes() > model.budget_bytes,
-            "the preset is pointless if whole columns already fit"
+            model.whole_column_bytes() <= model.budget_bytes,
+            "whole columns no longer fit: {} > {}",
+            model.whole_column_bytes(),
+            model.budget_bytes
         );
+        assert_eq!(model.capacity_columns(), 1706);
+        assert!(model.capacity_columns() > model.columns);
 
-        // Eight kept sections per column does fit, with room to spare.
+        // Section trimming shrinks the Rust-side working set well below the
+        // column total, which is what leaves room for meshes.
         let trimmed = model.section_trimmed_bytes(8);
+        assert!(
+            trimmed < model.whole_column_bytes(),
+            "8 sections/column should be smaller than the whole columns"
+        );
         assert!(
             trimmed < model.budget_bytes,
             "8 sections/column needs {} bytes, budget is {}",
